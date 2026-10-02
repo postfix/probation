@@ -16,14 +16,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use common::{TestClock, TestServer, sample_config};
-use package_firewall::config::{Config, ConfigError};
-use package_firewall::policy::{Ecosystem, blocklist};
-use package_firewall::store::cache::ProjectKey;
+use probation::config::{Config, ConfigError};
+use probation::policy::{Ecosystem, blocklist};
+use probation::store::cache::ProjectKey;
 use url::Url;
 
 /// Cargo builds the binary for this test and hands us its path; the exit codes SPEC
 /// §4 specifies belong to the command, not to a library call.
-const BINARY: &str = env!("CARGO_BIN_EXE_package-firewall");
+const BINARY: &str = env!("CARGO_BIN_EXE_probation");
 
 /// Each fixture with the reason its refusal must name. The same table drives the
 /// library check and the command check, so the two cannot report different things.
@@ -74,6 +74,15 @@ const INVALID_CONFIGS: &[(&str, &str)] = &[
         "artifact_larger_than_cache.toml",
         "invalid `max_artifact_bytes`",
     ),
+    (
+        "zero_osv_cache_ttl_seconds.toml",
+        "invalid `osv_cache_ttl_seconds`",
+    ),
+    (
+        "zero_osv_request_timeout_ms.toml",
+        "invalid `osv_request_timeout_ms`",
+    ),
+    ("invalid_osv_mode.toml", "invalid `osv_mode`"),
 ];
 
 const INVALID_BLOCKLISTS: &[(&str, &str)] = &[
@@ -168,10 +177,16 @@ fn deleting_any_sample_key_is_reported_as_that_key_missing() {
     };
 
     let keys: Vec<String> = text.lines().filter_map(key_of).collect();
-    assert_eq!(keys.len(), 17, "the sample carries every documented key");
+    assert_eq!(keys.len(), 20, "the sample carries every documented key");
 
     /// The keys `src/config.rs` gives a default, which a file may leave out.
-    const WITH_DEFAULTS: &[&str] = &["max_references_per_project", "metadata_max_age_seconds"];
+    const WITH_DEFAULTS: &[&str] = &[
+        "max_references_per_project",
+        "metadata_max_age_seconds",
+        "osv_cache_ttl_seconds",
+        "osv_request_timeout_ms",
+        "osv_mode",
+    ];
 
     for key in &keys {
         let without: Vec<&str> = text
@@ -202,6 +217,22 @@ fn every_invalid_config_fixture_is_refused_with_its_reason() {
             "{fixture}: expected a refusal naming `{reason}`, got `{err}`"
         );
     }
+}
+
+#[test]
+fn osv_mode_defaults_to_enforce_when_absent() {
+    let config =
+        Config::load(Path::new("config.sample.toml")).expect("the sample configuration is valid");
+    assert_eq!(config.osv_mode, probation::osv::OsvMode::Enforce);
+
+    let text = fs::read_to_string("config.sample.toml").expect("the sample is readable");
+    let without: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("osv_mode"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let config = Config::from_toml_str(&without).expect("osv_mode is optional");
+    assert_eq!(config.osv_mode, probation::osv::OsvMode::Enforce);
 }
 
 #[test]
@@ -310,11 +341,11 @@ fn the_check_commands_write_nothing() {
     let sample = fs::read_to_string("config.sample.toml").expect("the sample is readable");
     let config = sample
         .replace(
-            "/var/lib/package-firewall",
+            "/var/lib/probation",
             &root.join("data").display().to_string(),
         )
         .replace(
-            "/etc/package-firewall/blocklist.json",
+            "/etc/probation/blocklist.json",
             &root.join("blocklist.json").display().to_string(),
         );
     fs::write(&config_path, config).expect("the test configuration is written");
@@ -543,7 +574,7 @@ fn a_zero_ceiling_is_accepted_and_disables_the_rule() {
         .expect("zero disables the ceiling rather than failing the below-the-TTL check");
     assert_eq!(config.metadata_max_age_seconds, 0);
     assert_eq!(
-        package_firewall::store::effective_max_age_micros(
+        probation::store::effective_max_age_micros(
             &ProjectKey::new(Ecosystem::Npm, "anything"),
             config.metadata_max_age_seconds
         ),
@@ -609,7 +640,7 @@ fn tp5a_log_file_max_bytes_requires_path() {
     // The same size *with* a path is the ordinary configuration, so the rule is the
     // pairing and not the key itself.
     let config = Config::from_toml_str(&sample_with(&[
-        "log_file_path = \"/var/log/package-firewall/decisions.ndjson\"",
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
         "log_file_max_bytes = 1048576",
     ]))
     .expect("a size alongside a path is valid");
@@ -620,7 +651,7 @@ fn tp5a_log_file_max_bytes_requires_path() {
 #[test]
 fn tp5a_log_file_max_bytes_rejects_zero() {
     let err = Config::from_toml_str(&sample_with(&[
-        "log_file_path = \"/var/log/package-firewall/decisions.ndjson\"",
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
         "log_file_max_bytes = 0",
     ]))
     .expect_err("a zero size is refused");
@@ -644,7 +675,7 @@ fn both_log_file_keys_are_optional_and_the_size_has_a_default() {
     assert_eq!(bare.log_file_path, None, "delivery is off by default");
 
     let configured = Config::from_toml_str(&sample_with(&[
-        "log_file_path = \"/var/log/package-firewall/decisions.ndjson\"",
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
     ]))
     .expect("a path on its own is valid");
     assert_eq!(
@@ -736,17 +767,31 @@ fn tp6_siem_url_scheme_rule() {
         );
     }
 
-    let err = Config::from_toml_str(&sample_with(&["siem_url = \"http://collector.example/ingest\""]))
-        .expect_err("plaintext to a host that is not this machine is refused");
+    let err = Config::from_toml_str(&sample_with(&[
+        "siem_url = \"http://collector.example/ingest\"",
+    ]))
+    .expect_err("plaintext to a host that is not this machine is refused");
     assert!(
-        matches!(&err, ConfigError::Invalid { key: "siem_url", .. }),
+        matches!(
+            &err,
+            ConfigError::Invalid {
+                key: "siem_url",
+                ..
+            }
+        ),
         "the refusal names the key an operator can fix, got `{err}`"
     );
 
     let err = Config::from_toml_str(&sample_with(&["siem_url = \"not a url\""]))
         .expect_err("a collector that is not a URL is refused");
     assert!(
-        matches!(&err, ConfigError::Invalid { key: "siem_url", .. }),
+        matches!(
+            &err,
+            ConfigError::Invalid {
+                key: "siem_url",
+                ..
+            }
+        ),
         "the refusal names the key an operator can fix, got `{err}`"
     );
 }
@@ -788,10 +833,144 @@ fn tp5c_consumer_identification_requires_a_sink() {
     // Either sink on its own is a destination, so the rule is the pairing and not the
     // key itself.
     for sink in [
-        "log_file_path = \"/var/log/package-firewall/decisions.ndjson\"",
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
         "siem_url = \"https://siem.example.org/ingest\"",
     ] {
         Config::from_toml_str(&sample_with(&[sink, "log_consumer_identification = true"]))
             .unwrap_or_else(|err| panic!("`{sink}` is a destination for them: {err}"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rated load guard, slice 1: the two delivery queue budget keys
+// ---------------------------------------------------------------------------
+
+/// `delivery::DEFAULT_QUEUE_MAX_BYTES`, restated. `mod delivery` is `pub(crate)`, so
+/// this external test crate cannot name the constant; pinning its value is the only
+/// form the claim has here, and it is a real one — an accidental change to the
+/// shipped default fails this line. `ceil(5 min x 200 req/s x BYTES_PER_RECORD)`: the
+/// stated 200 req/s reference load, not the rated-load bench's measured ceiling,
+/// which the formula could not fit under. Documented in `docs/operations.md` §8
+/// (C13 as amended, C39).
+const DEFAULT_QUEUE_MAX_BYTES: u64 = 1875 * 1024 * 1024;
+
+/// An operator who writes neither key gets a memory budget all the same, and the same
+/// one for both sinks. The default is not conditional on a sink being configured: the
+/// shipped sample has both sinks commented out and still carries both budgets.
+#[test]
+fn rl5_absent_budgets_take_the_default() {
+    let config = sample_config();
+    assert_eq!(
+        config.log_queue_max_bytes, config.siem_queue_max_bytes,
+        "one default, not one per sink: the two keys mean the same thing"
+    );
+    assert_eq!(
+        config.log_queue_max_bytes.get(),
+        DEFAULT_QUEUE_MAX_BYTES,
+        "the shipped default is a memory budget, the same shape as cache_max_bytes"
+    );
+}
+
+/// A budget too small to hold one whole record is a queue of zero records, which is
+/// exactly the buffer `mpsc::channel` panics on. Refused by name at load, so that
+/// panic is unreachable rather than merely unlikely — and the refusal states the real
+/// minimum, because "1 is too small" leaves the operator guessing what is not.
+#[test]
+fn rl2_budget_below_one_record_is_refused() {
+    let err = Config::from_toml_str(&sample_with(&[
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
+        "log_queue_max_bytes = 1",
+    ]))
+    .expect_err("a budget that cannot hold one record is refused");
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Invalid {
+                key: "log_queue_max_bytes",
+                ..
+            }
+        ),
+        "the refusal names the key an operator can fix, got `{err}`"
+    );
+    assert!(
+        err.to_string().contains("32768"),
+        "and the smallest budget that would work, got `{err}`"
+    );
+
+    // One whole record is the boundary, and it is accepted: the rule is the quotient
+    // reaching zero, not a round number someone picked.
+    let config = Config::from_toml_str(&sample_with(&[
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
+        "log_queue_max_bytes = 32768",
+    ]))
+    .expect("a budget holding exactly one record is valid");
+    assert_eq!(config.log_queue_max_bytes.get(), 32_768);
+}
+
+/// The ceiling is a byte ceiling, not a record count: two sinks at the maximum is
+/// 8 GiB of resident queue once slice 2 bounds `method` and a record has an upper
+/// bound at all, which is already the operator's call to make. Beyond it a
+/// figure is far more likely a typo than an intention, and a typo that only shows up
+/// as an out-of-memory kill hours later is worth refusing at load.
+#[test]
+fn rl3_budget_above_the_ceiling_is_refused() {
+    let err = Config::from_toml_str(&sample_with(&[
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
+        "log_queue_max_bytes = 5368709120",
+    ]))
+    .expect_err("five gibibytes of queue for one sink is refused");
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Invalid {
+                key: "log_queue_max_bytes",
+                ..
+            }
+        ),
+        "the refusal names the key an operator can fix, got `{err}`"
+    );
+    assert!(
+        err.to_string().contains("4294967296"),
+        "and the ceiling it exceeded, got `{err}`"
+    );
+
+    // The ceiling itself is accepted, so the rule is "above", not "at".
+    let config = Config::from_toml_str(&sample_with(&[
+        "log_file_path = \"/var/log/probation/decisions.ndjson\"",
+        "log_queue_max_bytes = 4294967296",
+    ]))
+    .expect("a budget at the ceiling is valid");
+    assert_eq!(config.log_queue_max_bytes.get(), 4_294_967_296);
+}
+
+/// A budget with no sink to size is an operator who believes delivery is on and is
+/// getting nothing — the same mistake, and the same refusal, as `log_file_max_bytes`
+/// without `log_file_path`.
+#[test]
+fn rl4_budget_without_its_sink_is_refused() {
+    let err = Config::from_toml_str(&sample_with(&["siem_queue_max_bytes = 1048576"]))
+        .expect_err("a queue budget with no collector to feed is refused");
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Invalid {
+                key: "siem_queue_max_bytes",
+                ..
+            }
+        ),
+        "the refusal names the key an operator can fix, got `{err}`"
+    );
+    assert!(
+        err.to_string().contains("siem_url"),
+        "and the key it depends on, got `{err}`"
+    );
+
+    // The same budget *with* its sink is the ordinary configuration, so the rule is
+    // the pairing and not the key itself.
+    let config = Config::from_toml_str(&sample_with(&[
+        "siem_url = \"https://siem.example.org/ingest\"",
+        "siem_queue_max_bytes = 1048576",
+    ]))
+    .expect("a budget alongside its collector is valid");
+    assert_eq!(config.siem_queue_max_bytes.get(), 1_048_576);
 }

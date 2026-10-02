@@ -34,14 +34,14 @@ use common::{
     config_with_open_blocklist, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     wait_until,
 };
-use package_firewall::artifacts::content::ContentKey;
-use package_firewall::artifacts::download;
-use package_firewall::config::Config;
-use package_firewall::policy::{BlocklistSnapshot, Ecosystem};
-use package_firewall::store::rows::{
+use probation::artifacts::content::ContentKey;
+use probation::artifacts::download;
+use probation::config::Config;
+use probation::policy::{BlocklistSnapshot, Ecosystem};
+use probation::store::rows::{
     ArtifactReference, ProjectRefresh, ReferenceId, ReferenceRow, ReferenceUpsert,
 };
-use package_firewall::upstream::UpstreamValidators;
+use probation::upstream::UpstreamValidators;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use url::Url;
@@ -185,9 +185,15 @@ async fn harness_with(
 
     let versions: Vec<&str> = artifacts.iter().map(|(version, _)| *version).collect();
     let registry = FakeRegistry::new();
-    registry.answer(&npm_upstream_path(WIDGET), FakeAnswer::Body(document(&versions)));
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(document(&versions)),
+    );
     for (version, answer) in artifacts {
-        registry.answer(&npm_artifact_upstream_path(WIDGET, &filename(version)), answer);
+        registry.answer(
+            &npm_artifact_upstream_path(WIDGET, &filename(version)),
+            answer,
+        );
     }
 
     let clock = TestClock::at_rfc3339(NOW);
@@ -509,9 +515,11 @@ async fn a_panic_in_the_transfer_task_does_not_wedge_the_reference() {
         "its waiters are given a real failure, not silence"
     );
 
-    wait_until("the dead slot is gone from the in-flight table", PATIENCE, || {
-        app.downloads.waiting_on(&id) == 0
-    })
+    wait_until(
+        "the dead slot is gone from the in-flight table",
+        PATIENCE,
+        || app.downloads.waiting_on(&id) == 0,
+    )
     .await;
     assert!(
         !app.downloads.publishing(&id),
@@ -527,7 +535,11 @@ async fn a_panic_in_the_transfer_task_does_not_wedge_the_reference() {
         2,
         "the second request started a transfer of its own rather than joining a dead slot"
     );
-    assert_eq!(harness.temp_files(), 0, "and neither attempt left a file behind");
+    assert_eq!(
+        harness.temp_files(),
+        0,
+        "and neither attempt left a file behind"
+    );
     assert_eq!(app.content.reserved_bytes(), 0, "or a reservation");
 
     // The storage task stops when the last handle to it goes; this test is holding one.
@@ -550,7 +562,7 @@ fn large_body() -> String {
 async fn published_key(
     harness: &Harness,
     id: ReferenceId,
-) -> package_firewall::artifacts::content::ContentKey {
+) -> probation::artifacts::content::ContentKey {
     let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         if let Some(key) = harness.reference(id).await.content_key {
@@ -622,7 +634,7 @@ async fn response_lifetime_timeout_releases_pin_and_permit() {
     let id = harness.reference_id(&path);
     assert_eq!(
         app.limits.active_available(),
-        app.limits.max_active() ,
+        app.limits.max_active(),
         "no request is holding a permit yet"
     );
     let reader = SlowReader::get(&harness.server, &path).await;
@@ -687,7 +699,7 @@ async fn eviction_never_removes_an_open_file() {
     for version in [V1, V2, V3] {
         let path = harness.artifact_path(version).await;
         assert_eq!(harness.server.get(&path).await.status().as_u16(), 200);
-        package_firewall::tasks::maintenance::run_once(&app).await;
+        probation::tasks::maintenance::run_once(&app).await;
         harness.clock.advance_seconds(60);
         paths.push(path);
     }
@@ -701,7 +713,7 @@ async fn eviction_never_removes_an_open_file() {
         upstream_before,
         "served from the cache, so the only thing that read changed is its access time"
     );
-    package_firewall::tasks::maintenance::run_once(&app).await;
+    probation::tasks::maintenance::run_once(&app).await;
 
     let keys: Vec<_> = {
         let mut keys = Vec::new();
@@ -734,7 +746,7 @@ async fn eviction_never_removes_an_open_file() {
     // Room for two of the three. The budget is passed in rather than configured so
     // that no background pass can have acted on it first.
     let budget = sizes[0] + sizes[1] + 1;
-    package_firewall::tasks::maintenance::evict_to_budget(&app, budget).await;
+    probation::tasks::maintenance::evict_to_budget(&app, budget).await;
 
     assert_eq!(
         app.content.open_count(&keys[1]),
@@ -762,7 +774,11 @@ async fn eviction_never_removes_an_open_file() {
         "and the evicted file's mapping went with it"
     );
 
-    let plan = app.store().eviction_plan().await.expect("the content index");
+    let plan = app
+        .store()
+        .eviction_plan()
+        .await
+        .expect("the content index");
     assert!(
         plan.total_bytes <= budget,
         "the cache is back inside its budget: {} bytes",
@@ -800,7 +816,10 @@ async fn overload_is_refused_not_queued() {
     let client = common::downstream_client();
     let holding = tokio::spawn(async move {
         let response = client.get(url).send().await.expect("the request completes");
-        (response.status().as_u16(), response.bytes().await.expect("a body"))
+        (
+            response.status().as_u16(),
+            response.bytes().await.expect("a body"),
+        )
     });
 
     gate.wait_until_reached().await;

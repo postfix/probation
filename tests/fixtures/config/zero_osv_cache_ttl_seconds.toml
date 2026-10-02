@@ -1,0 +1,18 @@
+# Deliberately invalid: a zero OSV cache TTL
+listen = "127.0.0.1:8080"
+public_url = "https://packages.example.org"
+data_dir = "/var/lib/probation"
+blocklist_file = "/etc/probation/blocklist.json"
+cooldown_seconds = 86400
+metadata_ttl_seconds = 300
+blocklist_poll_seconds = 5
+cache_max_bytes = 107374182400        # 100 GiB, including temporary downloads
+memory_cache_max_bytes = 268435456    # 256 MiB cache budget, not total process RSS
+max_artifact_bytes = 5368709120       # 5 GiB
+max_metadata_bytes = 67108864         # 64 MiB after decompression
+max_blocklist_bytes = 134217728       # 128 MiB
+max_upstream_requests = 32
+max_artifact_downloads = 8
+max_active_requests = 1024
+max_references_per_project = 20000
+osv_cache_ttl_seconds = 0

@@ -10,8 +10,10 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{FakeAnswer, FakeRegistry, TestClock, TestServer, fake_origins, npm_upstream_path, sample_config};
-use package_firewall::policy::Digest;
+use common::{
+    FakeAnswer, FakeRegistry, TestClock, TestServer, fake_origins, npm_upstream_path, sample_config,
+};
+use probation::policy::Digest;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -84,7 +86,7 @@ async fn harness(blocklist_document: &str) -> Harness {
     let server = TestServer::start_with_upstream(
         config,
         clock.shared(),
-        registry as Arc<dyn package_firewall::upstream::Transport>,
+        registry as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;

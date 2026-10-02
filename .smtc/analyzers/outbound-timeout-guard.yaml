@@ -1,0 +1,57 @@
+# Guards invariant C12c (docs/plans/osv-intel/03-program-design.md, threat
+# G1): the outbound `POST /v1/querybatch` call in `batcher::flush`
+# (src/osv/batcher.rs) must stay wrapped in `tokio::time::timeout` so a
+# hung OSV connection fails the whole batch open instead of blocking. Same
+# `relation: {}` fix and reasoning as the sibling spec
+# `enqueue-timeout-guard.yaml` -- read that file's header first for why
+# `must_dominate: true` was tried and rejected.
+#
+# READ THE PASS CONDITION BEFORE READING THE FINDINGS. This spec does NOT
+# pass at zero findings when scoped to its product file. It passes when
+# `src/osv/batcher.rs:149` -- `tokio::time::timeout(request_timeout,
+# send(client, url, &body)).await` -- is ABSENT from the findings, with
+# exactly the seven known non-target findings below and no others. A
+# finding AT line 149 is the breach this spec exists to catch (the
+# `timeout` wrap was removed or the call moved out of `flush`). A finding
+# at any OTHER line, or a different count of the seven, means the file
+# changed and needs re-validating, not that the spec is broken.
+#
+# WHY ZERO ISN'T THE PASS CONDITION. `send` is the name of two different
+# things in this one file: the free function `send(client, url, &body)`
+# that `flush` calls under `timeout` (the invariant's actual target, line
+# 149), and that free function's OWN body, which performs the real network
+# call as `client.post(..).send()` (line 195) -- a second, unrelated call
+# site also named `send`. `ordered_obligation`'s `relation: {}` only
+# checks same-function co-occurrence, not call-graph transitivity, so the
+# inner primitive at line 195 is correctly-by-the-letter flagged: no
+# `timeout` call exists in ITS OWN function body, even though it is
+# already covered by its caller's wrap one level up. The schema offers no
+# predicate to exclude it: `calls:` accepts only `name`, `receiver_type`,
+# `package` (confirmed via the daemon's own schema-validation error), and
+# `receiver_type` cannot select this free-function call either --
+# confirmed experimentally that ANY `receiver_type` predicate, including
+# `["^$"]`, structurally drops every call site that has no receiver at
+# all, rather than matching or excluding by regex. The same file's
+# `#[cfg(test)]` module adds six more `tx.send`/`reply.send`/`waiter.send`
+# call sites with no `timeout` in their own test functions (lines 286,
+# 325, 360, 398, 399, 427), for the same underlying reason. This repo has
+# an established precedent for a non-zero, count-and-line-checked pass
+# condition when a clean zero isn't reachable with the current schema:
+# see `.smtc/analyzers/consumer-identity-extension-read.yaml`.
+#
+# Validated against:
+#   - docs/plans/osv-intel/controls/unsafe/unwrapped_outbound_send.rs:
+#     fires (the outer `send(client).await` has no `timeout` in its own
+#     function).
+#   - docs/plans/osv-intel/controls/safe/wrapped_outbound_send.rs: zero
+#     findings, confirmed non-vacuous (`find_guards` matched 1, not 0).
+#   - src/osv/batcher.rs (the product root): exactly seven findings, at
+#     lines 195, 286, 325, 360, 398, 399, 427 -- all documented above --
+#     and line 149 absent, confirming the target site is recognized as
+#     guarded.
+name: outbound-timeout-guard
+kind: ordered_obligation
+severity: high
+guard: {calls: {name: ["timeout"]}}
+operation: {calls: {name: ["send"]}}
+relation: {}

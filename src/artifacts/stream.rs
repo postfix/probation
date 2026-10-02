@@ -46,7 +46,10 @@ pub struct Authorized {
 
 impl Authorized {
     /// The one way to obtain a witness. `Allow` and nothing else.
-    pub fn from_decision(decision: Decision, blocklist_revision: Option<u64>) -> Option<Authorized> {
+    pub fn from_decision(
+        decision: Decision,
+        blocklist_revision: Option<u64>,
+    ) -> Option<Authorized> {
         match decision {
             Decision::Allow => Some(Authorized {
                 blocklist_revision,
@@ -257,7 +260,14 @@ impl IntoResponse for ArtifactResponse {
             None => Body::empty(),
             Some(file) => {
                 let start = self.range.map_or(0, |range| range.start);
-                file_body(file, start, length, self.write_idle, self.lifetime, self.permit)
+                file_body(
+                    file,
+                    start,
+                    length,
+                    self.write_idle,
+                    self.lifetime,
+                    self.permit,
+                )
             }
         };
 
@@ -307,9 +317,12 @@ fn file_body(
         let _permit = permit;
         let mut file = file;
 
-        if tokio::time::timeout(lifetime, produce(&mut file, start, length, write_idle, &chunks))
-            .await
-            .is_err()
+        if tokio::time::timeout(
+            lifetime,
+            produce(&mut file, start, length, write_idle, &chunks),
+        )
+        .await
+        .is_err()
         {
             tracing::info!(
                 seconds = lifetime.as_secs(),
@@ -318,9 +331,10 @@ fn file_body(
         }
     });
 
-    Body::from_stream(futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver.recv().await.map(|chunk| (chunk, receiver))
-    }))
+    Body::from_stream(futures_util::stream::unfold(
+        receiver,
+        |mut receiver| async move { receiver.recv().await.map(|chunk| (chunk, receiver)) },
+    ))
 }
 
 /// Reads `length` bytes from `start` into `chunks`, giving up if the consumer takes
@@ -385,10 +399,12 @@ mod tests {
             Authorized::from_decision(Decision::Deny(DenyReason::BlockedDigest), Some(7)).is_none()
         );
         assert!(
-            Authorized::from_decision(Decision::Hold {
-                eligible_at_micros: 1
-            },
-            Some(7))
+            Authorized::from_decision(
+                Decision::Hold {
+                    eligible_at_micros: 1
+                },
+                Some(7)
+            )
             .is_none()
         );
         assert!(Authorized::from_decision(Decision::Unavailable, None).is_none());
@@ -424,8 +440,17 @@ mod tests {
 
     #[test]
     fn a_range_past_the_end_is_unsatisfiable() {
-        assert_eq!(parse_range(Some("bytes=10-12"), 10), RangeRequest::Unsatisfiable);
-        assert_eq!(parse_range(Some("bytes=5-2"), 10), RangeRequest::Unsatisfiable);
-        assert_eq!(parse_range(Some("bytes=0-0"), 0), RangeRequest::Unsatisfiable);
+        assert_eq!(
+            parse_range(Some("bytes=10-12"), 10),
+            RangeRequest::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range(Some("bytes=5-2"), 10),
+            RangeRequest::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range(Some("bytes=0-0"), 0),
+            RangeRequest::Unsatisfiable
+        );
     }
 }

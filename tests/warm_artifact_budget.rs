@@ -123,7 +123,11 @@ async fn through_firewall(payload: &str) -> Vec<Duration> {
     // the whole upstream transfer and hashes it. Everything measured is a verified
     // cache hit afterwards.
     for _ in 0..WARMUP {
-        let response = client.get(&url).send().await.expect("the request completes");
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .expect("the request completes");
         assert!(
             response.status().is_success(),
             "the artifact answered {}",
@@ -191,7 +195,7 @@ fn document() -> String {
 fn payload() -> String {
     let mut bytes = String::with_capacity(PAYLOAD_BYTES);
     while bytes.len() < PAYLOAD_BYTES {
-        bytes.push_str("package-firewall-warm-artifact-budget-payload\n");
+        bytes.push_str("probation-warm-artifact-budget-payload\n");
     }
     bytes.truncate(PAYLOAD_BYTES);
     bytes

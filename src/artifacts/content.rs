@@ -20,8 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::io::AsyncWriteExt;
 
@@ -294,10 +294,12 @@ impl ContentStore {
 
         // The bytes, then the metadata: after this the file's contents survive a
         // power loss, which is what makes the rename meaningful.
-        file.sync_all().await.map_err(|source| ContentError::Write {
-            path: path.clone(),
-            source,
-        })?;
+        file.sync_all()
+            .await
+            .map_err(|source| ContentError::Write {
+                path: path.clone(),
+                source,
+            })?;
         steps.push(SyncStep::SyncFile);
         drop(file);
 
@@ -395,7 +397,10 @@ impl ContentStore {
 
         // Off the request path by construction: the write happens in the maintenance
         // pass that drains this (SPEC §10).
-        self.touched.lock().expect("the touched-key list").push(*key);
+        self.touched
+            .lock()
+            .expect("the touched-key list")
+            .push(*key);
 
         Ok(PinnedFile {
             file,
@@ -636,7 +641,10 @@ mod tests {
         assert!(path.exists());
 
         drop(temp);
-        assert!(!path.exists(), "an abandoned download leaves no file behind");
+        assert!(
+            !path.exists(),
+            "an abandoned download leaves no file behind"
+        );
     }
 
     #[tokio::test]
@@ -701,7 +709,10 @@ mod tests {
 
         drop(temp);
         assert_eq!(store.reserved_bytes(), 0);
-        assert!(store.create_temp(60).await.is_ok(), "and the budget is free again");
+        assert!(
+            store.create_temp(60).await.is_ok(),
+            "and the budget is free again"
+        );
     }
 
     /// SPEC §10: "Never evict open files."
@@ -714,7 +725,10 @@ mod tests {
         temp.write_all(b"held").await.expect("the write");
         store.publish(temp, &key(5)).await.expect("the publication");
 
-        let held = store.open_verified(&key(5), 4).await.expect("the open file");
+        let held = store
+            .open_verified(&key(5), 4)
+            .await
+            .expect("the open file");
         assert_eq!(store.open_count(&key(5)), 1);
         assert!(!store.evict(&key(5)).await, "an open file is left alone");
         assert!(store.path_for(&key(5)).exists());

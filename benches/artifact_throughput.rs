@@ -96,7 +96,10 @@ async fn run() {
         );
         let (baseline, measured) =
             through_firewall(&payload, &upstream, &baseline_client, &baseline_url).await;
-        report(&format!("  baseline, unfiltered local file, paired with {shape}"), &baseline);
+        report(
+            &format!("  baseline, unfiltered local file, paired with {shape}"),
+            &baseline,
+        );
         report(&format!("  firewall, {shape}"), &measured);
         compare(shape, &baseline, &measured);
     }
@@ -207,7 +210,7 @@ fn document(versions: usize) -> String {
 fn payload() -> String {
     let mut bytes = String::with_capacity(PAYLOAD_BYTES);
     while bytes.len() < PAYLOAD_BYTES {
-        bytes.push_str("package-firewall-artifact-throughput-benchmark-payload\n");
+        bytes.push_str("probation-artifact-throughput-benchmark-payload\n");
     }
     bytes.truncate(PAYLOAD_BYTES);
     bytes
@@ -226,23 +229,17 @@ async fn start_baseline(blob: PathBuf) -> SocketAddr {
                 let file = tokio::fs::File::open(&blob)
                     .await
                     .expect("the baseline file opens");
-                Body::from_stream(futures_util::stream::unfold(
-                    file,
-                    |mut file| async move {
-                        let mut buffer = vec![0u8; CHUNK_BYTES];
-                        match file.read(&mut buffer).await {
-                            Ok(0) => None,
-                            Ok(read) => {
-                                buffer.truncate(read);
-                                Some((
-                                    Ok::<_, std::io::Error>(bytes::Bytes::from(buffer)),
-                                    file,
-                                ))
-                            }
-                            Err(err) => Some((Err(err), file)),
+                Body::from_stream(futures_util::stream::unfold(file, |mut file| async move {
+                    let mut buffer = vec![0u8; CHUNK_BYTES];
+                    match file.read(&mut buffer).await {
+                        Ok(0) => None,
+                        Ok(read) => {
+                            buffer.truncate(read);
+                            Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buffer)), file))
                         }
-                    },
-                ))
+                        Err(err) => Some((Err(err), file)),
+                    }
+                }))
             }
         }),
     );

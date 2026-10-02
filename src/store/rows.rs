@@ -165,10 +165,9 @@ impl ReferenceRow {
     /// Columns in the order `SELECT_REFERENCE` asks for them.
     pub(crate) fn from_row(row: &Row) -> Result<ReferenceRow, StoreError> {
         let id = blob(row, 0, "artifact_references.id")?;
-        let id: [u8; 32] = id
-            .as_ref()
-            .try_into()
-            .map_err(|_| StoreError::Corrupt("artifact_references.id is not 32 bytes".to_owned()))?;
+        let id: [u8; 32] = id.as_ref().try_into().map_err(|_| {
+            StoreError::Corrupt("artifact_references.id is not 32 bytes".to_owned())
+        })?;
 
         let ecosystem = text(row, 1, "artifact_references.ecosystem")?;
         let ecosystem = Ecosystem::from_tag(&ecosystem)

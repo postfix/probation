@@ -17,13 +17,13 @@ use common::{
     fake_origins, fixture, logs, npm_upstream_path, publish_blocklist, sample_config, snapshot,
     wait_until,
 };
-use package_firewall::http::error::ApiError;
 use nodejs_semver::Version;
-use package_firewall::npm::tags::highest_eligible_stable_at_or_below;
-use package_firewall::policy::Ecosystem;
-use package_firewall::store::cache::{ProjectKey, RenderKey, Representation};
-use package_firewall::store::rows::ProjectRefresh;
-use package_firewall::upstream::UpstreamValidators;
+use probation::http::error::ApiError;
+use probation::npm::tags::highest_eligible_stable_at_or_below;
+use probation::policy::Ecosystem;
+use probation::store::cache::{ProjectKey, RenderKey, Representation};
+use probation::store::rows::ProjectRefresh;
+use probation::upstream::UpstreamValidators;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -77,7 +77,7 @@ async fn harness(now: &str, cooldown: u64, answers: &[(&str, FakeAnswer)]) -> Ha
 async fn harness_configured(
     now: &str,
     answers: &[(&str, FakeAnswer)],
-    tweak: impl FnOnce(&mut package_firewall::config::Config),
+    tweak: impl FnOnce(&mut probation::config::Config),
 ) -> Harness {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let mut config = config_with_open_blocklist(dir.path());
@@ -92,7 +92,7 @@ async fn harness_configured(
     let server = TestServer::start_with_upstream(
         config,
         clock.shared(),
-        Arc::clone(&registry) as Arc<dyn package_firewall::upstream::Transport>,
+        Arc::clone(&registry) as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;
@@ -298,10 +298,7 @@ async fn latest_omitted_when_no_eligible_candidate_is_at_or_below_it() {
     let harness = harness(
         NOW,
         ONE_DAY,
-        &[(
-            "fixture-narrow",
-            FakeAnswer::Body(document.to_owned()),
-        )],
+        &[("fixture-narrow", FakeAnswer::Body(document.to_owned()))],
     )
     .await;
     let rendered = harness.server.json("/npm/fixture-narrow").await;
@@ -634,8 +631,14 @@ async fn exact_version_route_applies_the_same_checks() {
     // a tag the rules dropped is simply not there.
     let latest = harness.server.json(&format!("/npm/{WIDGET}/latest")).await;
     assert_eq!(latest["version"], Value::from("1.0.89"));
-    assert_eq!(harness.server.status(&format!("/npm/{WIDGET}/beta")).await, 404);
-    assert_eq!(harness.server.status(&format!("/npm/{WIDGET}/9.9.9")).await, 404);
+    assert_eq!(
+        harness.server.status(&format!("/npm/{WIDGET}/beta")).await,
+        404
+    );
+    assert_eq!(
+        harness.server.status(&format!("/npm/{WIDGET}/9.9.9")).await,
+        404
+    );
 
     harness.shutdown().await;
 }
@@ -735,7 +738,7 @@ async fn with_reference_cap(cap: u32, document: &str) -> Harness {
     let server = TestServer::start_with_upstream(
         config,
         clock.shared(),
-        Arc::clone(&registry) as Arc<dyn package_firewall::upstream::Transport>,
+        Arc::clone(&registry) as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;
@@ -805,7 +808,10 @@ async fn a_second_identical_request_issues_no_query_and_no_upstream_call() {
     let first = harness.server.json(&format!("/npm/{WIDGET}")).await;
     let commands = harness.server.store_commands();
     let calls = harness.registry.calls().len();
-    assert!(commands > 0 && calls == 1, "the first request is a cold one");
+    assert!(
+        commands > 0 && calls == 1,
+        "the first request is a cold one"
+    );
 
     let second = harness.server.json(&format!("/npm/{WIDGET}")).await;
     assert_eq!(second, first);
@@ -936,12 +942,14 @@ async fn an_upstream_failure_is_reported_as_itself() {
         NOW,
         ONE_DAY,
         &[
-            (WIDGET, FakeAnswer::Fail(
-                package_firewall::upstream::UpstreamError::Timeout,
-            )),
-            ("fixture-broken", FakeAnswer::Fail(
-                package_firewall::upstream::UpstreamError::Status(500),
-            )),
+            (
+                WIDGET,
+                FakeAnswer::Fail(probation::upstream::UpstreamError::Timeout),
+            ),
+            (
+                "fixture-broken",
+                FakeAnswer::Fail(probation::upstream::UpstreamError::Status(500)),
+            ),
             ("fixture-garbage", FakeAnswer::Body("not json".to_owned())),
         ],
     )
@@ -968,7 +976,7 @@ async fn no_blocklist_is_503_before_anything_is_fetched() {
     let server = TestServer::start_with_upstream(
         config,
         TestClock::at_rfc3339(NOW).shared(),
-        Arc::clone(&registry) as Arc<dyn package_firewall::upstream::Transport>,
+        Arc::clone(&registry) as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;
@@ -1013,9 +1021,9 @@ async fn concurrent_cold_requests_cause_exactly_one_metadata_refresh() {
     let requests: Vec<_> = (0..6)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(async move {
-                package_firewall::npm::ensure_fresh_project(&app, WIDGET).await
-            })
+            tokio::spawn(
+                async move { probation::npm::ensure_fresh_project(&app, WIDGET).await },
+            )
         })
         .collect();
 
@@ -1073,17 +1081,19 @@ async fn a_panic_in_a_metadata_refresh_does_not_wedge_the_project() {
 
     let refreshing = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
     };
     gate.wait_until_reached().await;
 
     let waiter = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
     };
-    wait_until("the second request joined the one refresh", PATIENCE, || {
-        app.downloads.metadata().waiting_on(&key) == 2
-    })
+    wait_until(
+        "the second request joined the one refresh",
+        PATIENCE,
+        || app.downloads.metadata().waiting_on(&key) == 2,
+    )
     .await;
     gate.release();
 
@@ -1116,7 +1126,7 @@ async fn a_panic_in_a_metadata_refresh_does_not_wedge_the_project() {
     );
     let later = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::npm::ensure_fresh_project(&app, WIDGET),
+        probation::npm::ensure_fresh_project(&app, WIDGET),
     )
     .await
     .expect("a later request for the same project is not wedged behind the dead one");
@@ -1158,7 +1168,7 @@ fn server_now(harness: &Harness) -> i64 {
 fn projection_of(
     harness: &Harness,
     name: &str,
-) -> Option<Arc<package_firewall::store::cache::RenderedResponse>> {
+) -> Option<Arc<probation::store::cache::RenderedResponse>> {
     harness
         .server
         .running()
@@ -1173,7 +1183,7 @@ fn projection_of(
 }
 
 /// The same, for [`VALIDATED`], which is the package most of these tests use.
-fn projection(harness: &Harness) -> Option<Arc<package_firewall::store::cache::RenderedResponse>> {
+fn projection(harness: &Harness) -> Option<Arc<probation::store::cache::RenderedResponse>> {
     projection_of(harness, VALIDATED)
 }
 
@@ -1271,7 +1281,10 @@ async fn an_upstream_304_renews_freshness_without_a_refetch() {
 
     harness.clock.advance_seconds(metadata_ttl() + 1);
     let second = harness.server.json(&path).await;
-    assert_eq!(second, first, "a 304 serves the document upstream still has");
+    assert_eq!(
+        second, first,
+        "a 304 serves the document upstream still has"
+    );
 
     assert_eq!(harness.metadata_calls(VALIDATED), 2);
     let conditional = harness.registry.conditional_calls(&upstream);
@@ -1759,7 +1772,7 @@ async fn a_304_with_unexpected_validators_is_still_a_revalidation() {
 /// this is what proves the client never hands one over.
 #[tokio::test]
 async fn a_304_with_a_body_and_extra_headers_yields_no_bytes() {
-    use package_firewall::upstream::{MetadataRequest, MetadataResponse, OriginKind};
+    use probation::upstream::{MetadataRequest, MetadataResponse, OriginKind};
     use wiremock::ResponseTemplate;
     use wiremock::matchers::{method, path};
 
@@ -1821,10 +1834,8 @@ const RACE_PUBLISHED: &str = "2026-04-01T00:00:00Z";
 /// `tests/fixtures/artifacts/harmless-widget-1.0.0.tgz`, as `sha256sum` and
 /// `openssl dgst -sha512 -binary | base64` report it.
 const RACE_SHA256: &str = "029830248baf17af5d9a9e23d3e7054a8860882d1cdc06bbbb1549056d347acb";
-const RACE_SRI: &str =
-    "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
-const RACE_OTHER_SRI: &str =
-    "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
+const RACE_SRI: &str = "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
+const RACE_OTHER_SRI: &str = "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
 
 fn race_document() -> String {
     let mut versions = serde_json::Map::new();
@@ -1914,10 +1925,7 @@ async fn a_computed_digest_block_hides_the_version_at_the_next_resolution_under_
     let (seen, read) = {
         let app = server.app();
         let (seen, read) = app.store().caches().projects.get_with_seen(&key);
-        (
-            seen,
-            read.expect("the listing above cached the project"),
-        )
+        (seen, read.expect("the listing above cached the project"))
     };
     assert!(
         read.pins.is_empty(),
@@ -2011,7 +2019,8 @@ fn validating_answer(name: &str) -> (String, FakeAnswer) {
 }
 
 async fn ceiling_harness(max_age: u64, names: &[&str]) -> Harness {
-    let owned: Vec<(String, FakeAnswer)> = names.iter().map(|name| validating_answer(name)).collect();
+    let owned: Vec<(String, FakeAnswer)> =
+        names.iter().map(|name| validating_answer(name)).collect();
     let answers: Vec<(&str, FakeAnswer)> = owned
         .iter()
         .map(|(name, answer)| (name.as_str(), answer.clone()))
@@ -2026,7 +2035,10 @@ async fn ceiling_harness(max_age: u64, names: &[&str]) -> Harness {
 
 /// The row on disk, read through the store rather than through the memory cache: the
 /// column itself is the subject of these tests, not a copy of it.
-async fn stored_project(harness: &Harness, name: &str) -> package_firewall::store::rows::ProjectRow {
+async fn stored_project(
+    harness: &Harness,
+    name: &str,
+) -> probation::store::rows::ProjectRow {
     harness
         .server
         .running()
@@ -2040,7 +2052,7 @@ async fn stored_project(harness: &Harness, name: &str) -> package_firewall::stor
 
 /// This project's effective ceiling in whole seconds.
 fn ceiling_seconds(name: &str, max_age: u64) -> i64 {
-    package_firewall::store::effective_max_age_micros(
+    probation::store::effective_max_age_micros(
         &ProjectKey::new(Ecosystem::Npm, name),
         max_age,
     )
@@ -2284,8 +2296,18 @@ async fn two_projects_fetched_together_do_not_expire_together() {
     // Fetched together, as a bulk seed or a restore would.
     harness.server.json(&early).await;
     harness.server.json(&late).await;
-    assert_eq!(stored_project(&harness, CEILING_EARLY).await.fetched_at_micros, t0);
-    assert_eq!(stored_project(&harness, CEILING_LATE).await.fetched_at_micros, t0);
+    assert_eq!(
+        stored_project(&harness, CEILING_EARLY)
+            .await
+            .fetched_at_micros,
+        t0
+    );
+    assert_eq!(
+        stored_project(&harness, CEILING_LATE)
+            .await
+            .fetched_at_micros,
+        t0
+    );
 
     // Revalidated together, shortly before the earlier of the two ceilings.
     harness.clock.advance_seconds(early_ceiling - 50);
@@ -2323,9 +2345,8 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
         let configured = max_age as i64 * 1_000_000;
         for index in 0..500 {
             let key = ProjectKey::new(Ecosystem::Npm, format!("fixture-spread-{index}"));
-            let effective =
-                package_firewall::store::effective_max_age_micros(&key, max_age)
-                    .expect("a nonzero maximum age has a ceiling");
+            let effective = probation::store::effective_max_age_micros(&key, max_age)
+                .expect("a nonzero maximum age has a ceiling");
 
             assert!(
                 effective <= configured,
@@ -2337,13 +2358,13 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
             );
             assert_eq!(
                 effective,
-                package_firewall::store::effective_max_age_micros(&key, max_age).unwrap(),
+                probation::store::effective_max_age_micros(&key, max_age).unwrap(),
                 "the offset is deterministic, so a restart lands on the same ceiling"
             );
         }
     }
     assert_eq!(
-        package_firewall::store::effective_max_age_micros(
+        probation::store::effective_max_age_micros(
             &ProjectKey::new(Ecosystem::Npm, VALIDATED),
             0
         ),
@@ -2446,7 +2467,10 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
 
     // Seeded by a full fetch, then upstream starts parking every revalidation.
     harness.server.json(&format!("/npm/{VALIDATED}")).await;
-    assert_eq!(stored_project(&harness, VALIDATED).await.fetched_at_micros, t0);
+    assert_eq!(
+        stored_project(&harness, VALIDATED).await.fetched_at_micros,
+        t0
+    );
     harness.registry.answer(
         &upstream,
         FakeAnswer::GatedNotModified {
@@ -2460,7 +2484,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     harness.clock.advance_seconds(ceiling - 60);
     let leader = tokio::spawn({
         let app = Arc::clone(&app);
-        async move { package_firewall::npm::ensure_fresh_project(&app, VALIDATED).await }
+        async move { probation::npm::ensure_fresh_project(&app, VALIDATED).await }
     });
     gate.wait_until_reached().await;
     assert_eq!(
@@ -2475,14 +2499,14 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     // depends on, and the one a `tokio::join!` of two futures cannot guarantee.
     harness.clock.advance_seconds(70);
     assert!(
-        package_firewall::store::is_over_age(&key, CEILING_MAX_AGE, t0, server_now(&harness)),
+        probation::store::is_over_age(&key, CEILING_MAX_AGE, t0, server_now(&harness)),
         "the joiner's own classification differs from the leader's: by this clock the \
          copy is over-age, so an UNCOALESCED request here would send no validators"
     );
 
     let joiner = tokio::spawn({
         let app = Arc::clone(&app);
-        async move { package_firewall::npm::ensure_fresh_project(&app, VALIDATED).await }
+        async move { probation::npm::ensure_fresh_project(&app, VALIDATED).await }
     });
     // Positive evidence that the joiner coalesced rather than becoming a second
     // leader: two `join()` calls landed on the one slot. Had it started a slot of its
@@ -2539,7 +2563,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     );
     assert!(
         matches!(
-            package_firewall::npm::ensure_fresh_project(&app, VALIDATED).await,
+            probation::npm::ensure_fresh_project(&app, VALIDATED).await,
             Err(ApiError::UpstreamInvalid)
         ),
         "an uncoalesced over-age request sends no validators, so a 304 answering it is \
@@ -2555,7 +2579,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     harness.registry.go_offline();
     assert!(
         matches!(
-            package_firewall::npm::ensure_fresh_project(&app, VALIDATED).await,
+            probation::npm::ensure_fresh_project(&app, VALIDATED).await,
             Err(ApiError::UpstreamFailure)
         ),
         "the copy is over-age against the clock this request reads, and is refused"

@@ -1,4 +1,4 @@
-# Operating Package Firewall
+# Operating Probation
 
 This is the operator's document: how to run the service, what it protects, what it
 does **not** protect, where its capacity limits actually are, and how to back it up
@@ -30,17 +30,17 @@ checks; that is all it means.
 ### From the container image
 
 ```sh
-docker build -t package-firewall:mvp .
-docker run --rm package-firewall:mvp check-config /etc/package-firewall/config.toml
-docker run -d --name package-firewall \
+docker build -t probation:mvp .
+docker run --rm probation:mvp check-config /etc/probation/config.toml
+docker run -d --name probation \
   -p 127.0.0.1:8080:8080 \
-  -v /srv/package-firewall:/var/lib/package-firewall \
-  -v /etc/package-firewall:/etc/package-firewall:ro \
-  package-firewall:mvp serve --config /etc/package-firewall/config.toml
+  -v /srv/probation:/var/lib/probation \
+  -v /etc/probation:/etc/probation:ro \
+  probation:mvp serve --config /etc/probation/config.toml
 ```
 
-The image ships `config.sample.toml` at `/etc/package-firewall/config.toml` and
-`blocklist.sample.json` at `/etc/package-firewall/blocklist.json`, with one edit made
+The image ships `config.sample.toml` at `/etc/probation/config.toml` and
+`blocklist.sample.json` at `/etc/probation/blocklist.json`, with one edit made
 at build time: `listen` becomes `0.0.0.0:8080`, because SPEC §3's loopback default
 would make the published port unreachable from outside the container's own network
 namespace. Publish that port only to the reverse proxy (section 6), not to a network.
@@ -60,9 +60,9 @@ Both are in the `Dockerfile` with that reasoning beside them.
 
 ```sh
 cargo build --release --locked
-./target/release/package-firewall check-config  /etc/package-firewall/config.toml
-./target/release/package-firewall check-blocklist /etc/package-firewall/blocklist.json
-./target/release/package-firewall serve --config /etc/package-firewall/config.toml
+./target/release/probation check-config  /etc/probation/config.toml
+./target/release/probation check-blocklist /etc/probation/blocklist.json
+./target/release/probation serve --config /etc/probation/config.toml
 ```
 
 Both validation commands exit non-zero on the first problem, name it, and write
@@ -76,6 +76,7 @@ is an outage.
 | --- | --- |
 | `GET /health/live` | The process is answering. Stays `200` through an expired blocklist and through unusable storage. |
 | `GET /health/ready` | A valid blocklist is in force **and** storage is usable. `503` otherwise. No upstream is probed. |
+| `GET /health/delivery` | **Alerting only — never wire this into a probe.** `503` while a decision record was lost to either sink in the last 60 s, `200` otherwise; `/health/ready` is unaffected either way. See section 8, "The rated load". |
 
 Point your orchestrator's liveness probe at the first and its readiness probe at the
 second. They are deliberately different questions: a service with an expired blocklist
@@ -249,6 +250,16 @@ already held in a client's own cache keeps working. That is the boundary of a re
 proxy, not a defect in this one — removing an installed package is endpoint
 remediation, and whatever handles that in your environment is what handles it here.
 
+### OSV enforcement mode
+
+`osv_mode` decides what an OSV match does, independent of the operator's own
+blocklist: `enforce` (default) denies the request, `diagnostic` checks and logs a
+match but never denies, and `off` skips the OSV check entirely. Changing it requires
+a restart, like every other configuration key. `diagnostic` mode has no counter or
+metric distinct from ordinary allowed traffic — the NDJSON `reason` field is the only
+signal a would-be-blocked match happened, so an operator watching for it should
+grep/alert on that exact string rather than expect a dedicated metric.
+
 ## 5. Backup, restore, and recovery failure
 
 ### What to back up
@@ -273,9 +284,9 @@ and its write-ahead log in inconsistent states. There is no online-backup comman
 this release.
 
 ```sh
-docker stop package-firewall    # the image sets STOPSIGNAL SIGINT, so this is graceful
-tar -C /srv/package-firewall -czf state-$(date -u +%Y%m%dT%H%M%SZ).tgz state/
-docker start package-firewall
+docker stop probation    # the image sets STOPSIGNAL SIGINT, so this is graceful
+tar -C /srv/probation -czf state-$(date -u +%Y%m%dT%H%M%SZ).tgz state/
+docker start probation
 ```
 
 Never delete `firewall.db-wal` as part of cleaning up temporary artifact files. It is
@@ -413,7 +424,7 @@ and `405` responses that reach no handler:
 
 ```json
 {"level":"INFO","fields":{"message":"request decided","request_id":"req-0000000000000003",
- "method":"GET","ecosystem":"npm","package":"\"left-pad\"","version":"","status":200,
+ "method":"\"GET\"","ecosystem":"npm","package":"\"left-pad\"","version":"","status":200,
  "result":"ALLOWED","reason":"the request was served","blocklist_revision":42,
  "cache":"miss","duration_micros":415780,"bytes":23563}}
 ```
@@ -425,7 +436,9 @@ client's authorization headers, cookies and proxy credentials are never forwarde
 upstream.
 
 Set the level with `RUST_LOG`; the default is `info`. There is no metrics service in
-this release — counters and timing summaries are emitted to stdout periodically.
+this release — counters and timing summaries are emitted to stdout periodically. The
+decision log itself is pinned and not silenceable by `RUST_LOG` — see "The rated load"
+below.
 
 ### Delivering decisions to a file
 
@@ -440,6 +453,7 @@ exactly the stdout line it writes today.
 | --- | --- | --- |
 | `log_file_path` | absent — delivery is off | The file decisions are appended to. |
 | `log_file_max_bytes` | `104857600` (100 MiB) | The size at which the live file is rolled over. Refused without `log_file_path`, and refused as zero. |
+| `log_queue_max_bytes` | `1966080000` (1,875 MiB) — see "The rated load" below | The in-memory budget for records queued while the file cannot keep up. Refused without `log_file_path`, refused as zero, and refused above `4294967296` (4 GiB). |
 
 Each line carries the same fields as the stdout decision line — twelve, or thirteen
 with `consumer` when `log_consumer_identification` is on — plus an
@@ -483,9 +497,10 @@ task and connects nowhere.
 | --- | --- | --- |
 | `siem_url` | absent — delivery is off | The collector records are `POST`ed to. Must use `https` unless the host is a loopback address or `localhost`; anything else is refused at startup. |
 | `siem_auth_header` | `Authorization` | The header the credential is sent under. Refused without `siem_url`, and refused if it is not a valid HTTP header name. |
+| `siem_queue_max_bytes` | `1966080000` (1,875 MiB) — see "The rated load" below | The in-memory budget for records held while the collector is unreachable, on top of the one in-flight batch the retry loop always holds. Refused without `siem_url`, refused as zero, and refused above `4294967296` (4 GiB). Two sinks are two queues: a deployment with both configured pays both. |
 
 **The credential is never written in the configuration file.** It is read once at
-startup from the environment variable `OSPREY_SIEM_AUTH`, kept only as a
+startup from the environment variable `PROBATION_SIEM_AUTH`, kept only as a
 redacted-in-`Debug` header value, and never stored on the configuration or written to
 any log line — only the header *name* appears in the startup line. With the variable
 unset, delivery is unauthenticated. With it set to something that is not a legal HTTP
@@ -572,6 +587,111 @@ on.**
 - **`check_config` validates keys, not destinations.** It writes nothing, so it cannot
   open the log file, and it can report a configuration as valid that then fails at
   boot because `log_file_path` cannot be opened.
+
+### The rated load, and what a default deployment survives
+
+**The rated figure.** Measured on the reference machine — AMD Ryzen 9 7950X3D
+(16 cores / 32 threads), 124 GiB RAM, Linux 7.1.8, `rustc` 1.96.0, release profile —
+`cargo bench --bench delivery_rated_load` drives the delivery pipeline through the file
+sink for ten minutes and finds the highest rate it sustains with **zero records
+dropped**: **N = 59,288 decided requests per second.** Below this figure this release
+loses no decision record to the delivery pipeline; nothing here says anything about the
+rest of the request path. This figure is **published for reference, as this machine's
+ceiling — it is not what the default queue budget below is sized against**, because no
+honest budget could cover an outage at it (see below). `cargo bench` (with no `--bench`
+flag) does not run this target — it takes ten minutes and is invoked by name (see
+`README.md`).
+
+**`BYTES_PER_RECORD` — a ceiling, not a mean.** Every queue is sized in bytes, not
+records, from `BYTES_PER_RECORD = 32,768`: `3 x FIELD_CEILING_BYTES` (10,242 — 256
+characters, 4 bytes per UTF-8 code point, 10 bytes for the worst-case `Debug` escape,
+2 quotes — for `package`, `version` and `method`) plus a 64-byte timestamp, a 64-byte
+request id, a 512-byte reason and the 256 bytes `size_of::<Decision>()` allows, rounded
+up to the next power of two: `30,726 + 64 + 64 + 512 + 256 = 31,622 <= 32,768`. A
+record's real heap footprint is bounded by this figure by construction (`rl16b`,
+`rl22`); it is never averaged down by smaller records, so `budget / BYTES_PER_RECORD`
+is always a safe lower bound on how many records a budget holds.
+
+**Why the default is sized from a stated reference load, not from `N`.** The formula
+that would size a default budget to survive a five-minute collector outage **at the
+rated (measured) load**, `ceil(5 min x N x BYTES_PER_RECORD)`, computes to roughly
+**543 GiB per sink** (555,825 MiB) at the measured `N` — about 136 times past
+`MAX_QUEUE_MAX_BYTES` (4 GiB, the largest budget either key accepts). No operator would
+set that, and raising the ceiling to fit it would mean accepting far more resident
+memory risk for a number nobody could use. `N` is a synthetic ceiling in the first
+place: the bench drives `/health/live` in a closed loop with no upstream registry round
+trip in the path, so it measures what the delivery pipeline alone can sustain, not what
+real package-manager traffic produces — a real deployment's request rate is bottlenecked
+far below `N` by actual npm/PyPI upstream latency and by `max_upstream_requests`
+(default 32 concurrent).
+
+So **the default is derived from a stated 200 requests/second reference load** instead:
+`ceil(5 min x 200 x BYTES_PER_RECORD) = 1,875 MiB` per sink. At that reference load the
+default buys the full five minutes:
+
+> outage tolerance = budget / BYTES_PER_RECORD / rate = 60,000 records / 200/s = **300
+> seconds (5 minutes)**.
+
+At the measured `N` the same default buys far less — about **1 second** — which is
+stated here so the gap is never a surprise:
+
+> at the rated (measured) figure: 60,000 records / 59,288/s ≈ **1.0
+> seconds**.
+
+Compute your own deployment's tolerance from the same formula, using your own observed
+decided-requests-per-second rather than either published number:
+
+> your tolerance (seconds) = your `*_queue_max_bytes` / 32,768 / your observed
+> requests/second.
+
+**The budget is additive, not a cap on total memory.** `log_queue_max_bytes` and
+`siem_queue_max_bytes` each bound one sink's own queue, on top of
+`memory_cache_max_bytes` (section 3) and everything else this process holds — they do
+not share a pool with it or with each other. The SIEM sink additionally holds one
+serialized batch outside its queue budget for as long as the collector is unreachable
+(up to 256 records) — the batch the retry loop is currently attempting to deliver.
+
+**Upgrade note.** Before this feature, an unreachable SIEM collector cost records after
+roughly seven seconds, once the fixed three-attempt backoff ladder (100 ms, 500 ms,
+2 s) gave up on a batch. **Starting with this release, a deployment that sets neither
+new key loses nothing until its 1,875 MiB default queue is full** — records are held
+and retried for as long as the collector stays down, up to that budget, and only
+records past it are dropped and counted. An operator who was relying on the old
+~7-second failure window to bound memory during an outage should read the tolerance
+formula above and, if 1,875 MiB is more than their host can spare, set
+`siem_queue_max_bytes` explicitly to a smaller budget — or raise it, up to the 4 GiB
+`MAX_QUEUE_MAX_BYTES` ceiling, for a deployment whose real traffic runs above the
+200 req/s reference load.
+
+**`GET /health/delivery` is an alerting signal, never a probe target.** It answers
+`503` while a decision record was lost in the last 60 seconds and `200` otherwise
+(section 2, "Health endpoints"); `/health/ready` never reflects this state, on purpose,
+so a firewall that is shedding decision records is never pulled out of a load
+balancer's rotation for it. **Do not wire it into a liveness, readiness or load-balancer
+health check** — it is unauthenticated, and a caller who can trigger a loss and then
+poll it can otherwise use it to confirm things about the deployment they should not be
+able to. Poll it only at an interval **strictly shorter than 60 seconds**: the quiet
+window is measured from the first probe that observes a loss, not from the loss itself,
+so a gap of 60 seconds or more between probes can read `200` immediately after a real
+loss.
+
+**stdout's decision trail, restated.** stdout carries every decided request — including
+router-level `404` and `405` responses — **except**: the console writer itself
+discarding a write (a dead pipe reader, or `ENOSPC` on a redirected stdout); a handler
+that panics before `tracing::info!` runs; the host's log transport truncating the
+stream under volume it cannot keep up with (the decision trail shares stdout with this
+process's other diagnostic lines, and applies no volume control of its own); or a
+**span- or field-qualified** `RUST_LOG` directive that out-specifies the pin below.
+None of these four has a demonstrated trigger in this release; they are named so an
+operator investigating a missing decision line knows where to look.
+
+**The decision log's level is pinned.** No level or target directive set through
+`RUST_LOG` can silence `probation::http::logging` — `RUST_LOG=warn`,
+`RUST_LOG=hyper=debug` and an empty `RUST_LOG` all still print every decision line,
+because this process appends its own `info` directive for that target after parsing
+whatever the operator sets. The one exception is the fourth item above: a directive
+that names a **span or field** on that same target still out-specifies the pin. Use
+`RUST_LOG` freely to control every other target's verbosity.
 
 ## 9. Failure responses
 
@@ -741,11 +861,11 @@ alongside the current ones — plus npm 12, the current upstream stable major:
 | pip | **26.2.1** | 25.1.1 (the interpreter's) | **25.0.1** |
 
 Every version in bold is pinned by version in the test files and installed out of tree,
-at `~/.local/share/package-firewall-e2e-clients` or wherever
-`PACKAGE_FIREWALL_E2E_CLIENTS` points:
+at `~/.local/share/probation-e2e-clients` or wherever
+`PROBATION_E2E_CLIENTS` points:
 
 ```sh
-ROOT=~/.local/share/package-firewall-e2e-clients
+ROOT=~/.local/share/probation-e2e-clients
 npm install --prefix $ROOT/npm-12.0.2  npm@12.0.2
 npm install --prefix $ROOT/npm-10.9.9  npm@10.9.9
 python3 -m pip install --target $ROOT/pip-26.2.1 pip==26.2.1
@@ -754,7 +874,7 @@ python3 -m pip install --target $ROOT/pip-25.0.1 pip==25.0.1
 
 npm 12 declares its supported engines as `^22.22.2 || ^24.15.0 || >=26.0.0`, so its leg
 runs under a Node it supports rather than whatever is on `PATH`. It is looked for at
-`~/.nvm/versions/node/v24.19.0/bin`, or at `PACKAGE_FIREWALL_E2E_NODE_BIN`:
+`~/.nvm/versions/node/v24.19.0/bin`, or at `PROBATION_E2E_NODE_BIN`:
 
 ```sh
 nvm install v24.19.0

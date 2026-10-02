@@ -1,8 +1,8 @@
 # Deliberately invalid: public_url is not https
 listen = "127.0.0.1:8080"
 public_url = "http://packages.example.org"
-data_dir = "/var/lib/package-firewall"
-blocklist_file = "/etc/package-firewall/blocklist.json"
+data_dir = "/var/lib/probation"
+blocklist_file = "/etc/probation/blocklist.json"
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
 blocklist_poll_seconds = 5

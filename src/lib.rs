@@ -13,6 +13,7 @@ pub mod config;
 pub(crate) mod delivery;
 pub mod http;
 pub mod npm;
+pub mod osv;
 pub mod policy;
 pub mod pypi;
 pub mod store;
@@ -49,6 +50,24 @@ pub struct AppDeps {
     pub clock: Arc<dyn Clock>,
     pub transport: Arc<dyn Transport>,
     pub origins: OriginSet,
+    /// The HTTP client `App::start` builds `osv::OsvClient` from (D3): production
+    /// hands in a real `reqwest::Client`, and a test hands in one built with
+    /// `.resolve("api.osv.dev", <address nothing listens on>)`, so the fixed OSV
+    /// endpoint address OSV's batcher always targets resolves to an immediate,
+    /// local, deterministic connection refusal instead of a real socket — see
+    /// `osv::tests::offline_osv_client` for the exact construction. `App::start`,
+    /// not `AppDeps`'s caller, is the one and only place `osv::OsvClient::new` is
+    /// called: it needs `drain`, the `CancellationToken` `App::start` creates for
+    /// exactly this purpose (mirroring `delivery::build`'s own use of it), which
+    /// does not exist yet at the point an `AppDeps` is built.
+    pub osv_client: reqwest::Client,
+    /// Where the OSV batcher sends its `POST /v1/querybatch` calls. `None` in
+    /// production and in every test that only needs OSV out of the way
+    /// (`osv::unreachable_client()`'s fail-open path): `App::start` then pins it to
+    /// the real, fixed endpoint (D4). A test that needs OSV to actually answer
+    /// something — a match, not just a refusal — sets this to a local server's URL
+    /// instead, alongside a plain `osv_client`.
+    pub osv_base_url: Option<url::Url>,
 }
 
 /// The shared state every handler sees.
@@ -80,6 +99,10 @@ pub struct App {
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
+    /// OSV vulnerability intelligence (D3). Private, matching `policy`/`store`'s
+    /// privacy: reached only through `osv::evaluate` call sites that already hold
+    /// `&App`.
+    osv: osv::OsvClient,
 }
 
 impl App {
@@ -97,7 +120,10 @@ impl App {
     }
 
     pub fn blocklist_revision(&self) -> Option<u64> {
-        self.policy.load().as_ref().map(|snapshot| snapshot.revision)
+        self.policy
+            .load()
+            .as_ref()
+            .map(|snapshot| snapshot.revision)
     }
 
     pub fn store(&self) -> &StoreHandle {
@@ -116,6 +142,13 @@ impl App {
         self.delivery.is_empty()
     }
 
+    /// Every decision record a sink has lost since the process started. Unlike the
+    /// summary's per-window counts, nothing resets it.
+    #[cfg(feature = "test-support")]
+    pub fn delivery_lost_total(&self) -> u64 {
+        self.delivery.lost_total()
+    }
+
     /// Binds the configured address and starts serving. Returns once the listener
     /// is bound, so a caller can read the bound port before the first request.
     ///
@@ -131,9 +164,7 @@ impl App {
 
         // SPEC §4's `memory_cache_max_bytes`. The caches travel with the store
         // handle, because they exist to keep callers from reaching its queues.
-        let caches = Arc::new(MemoryCaches::new(
-            deps.config.memory_cache_max_bytes.get(),
-        ));
+        let caches = Arc::new(MemoryCaches::new(deps.config.memory_cache_max_bytes.get()));
 
         let (store, store_task) = match opened.connection {
             Ok(connection) => {
@@ -148,17 +179,39 @@ impl App {
 
         // SPEC §10: "On startup […] remove incomplete artifact temporary files." A
         // crash must never leave one where a later request could find it.
-        let content = ContentStore::new(
-            &deps.config.data_dir,
-            deps.config.cache_max_bytes.get(),
-        );
+        let content = ContentStore::new(&deps.config.data_dir, deps.config.cache_max_bytes.get());
         content.remove_temp_files();
         let limits = Limits::new(&deps.config);
 
         // The drain token is not the shutdown token: the sinks must outlive the
-        // requests that are still being answered when shutdown begins.
+        // requests that are still being answered when shutdown begins. The osv
+        // batcher is spawned with this same token, following the delivery sinks'
+        // own pattern exactly (D3) — it is available here, well before `shutdown`
+        // exists below, which is why this (and not `AppDeps`'s caller) is the one
+        // place `osv::OsvClient::new` is called.
         let drain = CancellationToken::new();
-        let (delivery, delivery_tasks) = delivery::build(&deps.config, drain.clone())?;
+        let (delivery, mut delivery_tasks) = delivery::build(&deps.config, drain.clone())?;
+        let osv_cache_ttl = std::time::Duration::from_secs(deps.config.osv_cache_ttl_seconds.get());
+        let osv_request_timeout =
+            std::time::Duration::from_millis(deps.config.osv_request_timeout_ms.get());
+        let (osv, osv_task) = match deps.osv_base_url {
+            Some(url) => osv::OsvClient::spawn_with(
+                deps.osv_client,
+                url,
+                osv_cache_ttl,
+                osv_request_timeout,
+                deps.config.osv_mode,
+                drain.clone(),
+            ),
+            None => osv::OsvClient::new(
+                deps.osv_client,
+                osv_cache_ttl,
+                osv_request_timeout,
+                deps.config.osv_mode,
+                drain.clone(),
+            ),
+        };
+        delivery_tasks.push(osv_task);
 
         let app = Arc::new(App {
             config: deps.config,
@@ -171,6 +224,7 @@ impl App {
             downloads: DownloadCoordinator::new(),
             limits,
             delivery,
+            osv,
         });
 
         restore_blocklist(&app).await;
@@ -188,12 +242,7 @@ impl App {
         let local_addr = listener.local_addr().map_err(StartupError::Serve)?;
 
         let shutdown = CancellationToken::new();
-        let tasks = tasks::spawn(
-            Arc::clone(&app),
-            shutdown.clone(),
-            watcher,
-            delivery_tasks,
-        );
+        let tasks = tasks::spawn(Arc::clone(&app), shutdown.clone(), watcher, delivery_tasks);
 
         let signal = shutdown.clone();
         let server = tokio::spawn({
@@ -345,7 +394,7 @@ pub enum StartupError {
     Serve(std::io::Error),
     /// Decision-log delivery could not be set up. The text is a fixed `&'static str`
     /// on purpose: it is printed by `check_config` (`src/main.rs`) and by the startup
-    /// log, and the rejection it most often reports is a malformed `OSPREY_SIEM_AUTH`.
+    /// log, and the rejection it most often reports is a malformed `PROBATION_SIEM_AUTH`.
     /// Nothing that could carry part of that value can be put here.
     Delivery(&'static str),
 }

@@ -20,9 +20,9 @@ use common::{
     npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path, publish_blocklist,
     snapshot_with,
 };
-use package_firewall::artifacts::content::{ContentKey, ContentStore, SyncStep};
-use package_firewall::config::Config;
-use package_firewall::store::rows::{ReferenceId, ReferenceRow};
+use probation::artifacts::content::{ContentKey, ContentStore, SyncStep};
+use probation::config::Config;
+use probation::store::rows::{ReferenceId, ReferenceRow};
 use serde_json::{Map, Value, json};
 
 const WIDGET: &str = "fixture-widget";
@@ -31,8 +31,7 @@ const VERSION: &str = "1.0.0";
 const PUBLISHED: &str = "2026-04-01T00:00:00Z";
 const NOW: &str = "2026-04-06T12:00:00Z";
 const BODY_SHA256: &str = "029830248baf17af5d9a9e23d3e7054a8860882d1cdc06bbbb1549056d347acb";
-const BODY_SRI: &str =
-    "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
+const BODY_SRI: &str = "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
 
 fn body() -> String {
     common::fixture("artifacts/harmless-widget-1.0.0.tgz")
@@ -255,7 +254,11 @@ async fn crash_between_rename_and_commit_leaves_no_downloadable_temp_file() {
         Some(BODY_SHA256),
         "the mapping that exists now is the one this run verified and committed"
     );
-    assert_eq!(second.temp_count(), 0, "and it left no temporary file of its own");
+    assert_eq!(
+        second.temp_count(),
+        0,
+        "and it left no temporary file of its own"
+    );
     second.server.shutdown().await;
 }
 
@@ -310,7 +313,9 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
             2,
             "2026-04-05T00:00:00Z",
             "2099-01-01T00:00:00Z",
-            &format!(r#"{{"ecosystem":"npm","name":"{WIDGET}","version":null,"reason":"malware"}}"#),
+            &format!(
+                r#"{{"ecosystem":"npm","name":"{WIDGET}","version":null,"reason":"malware"}}"#
+            ),
             "",
         ),
         common::parse_rfc3339(NOW),

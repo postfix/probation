@@ -143,9 +143,7 @@ fn confirm(
     }
     let normalized = normalize(distribution);
     if normalized != project {
-        return Err(UnsupportedFilename::OtherProject {
-            named: normalized,
-        });
+        return Err(UnsupportedFilename::OtherProject { named: normalized });
     }
     if parse_version(version).is_none() {
         return Err(UnsupportedFilename::UnparsableVersion);
@@ -184,9 +182,13 @@ pub enum UnsupportedFilename {
     UnknownExtension,
     /// Not five or six `-`-separated components, or a six-component name whose third
     /// component is not a build tag.
-    WheelShape { components: usize },
+    WheelShape {
+        components: usize,
+    },
     /// The filename names a different project from the one being served.
-    OtherProject { named: String },
+    OtherProject {
+        named: String,
+    },
     UnparsableVersion,
     /// No split of an sdist name yields this project and a PEP 440 version.
     NoIdentity,

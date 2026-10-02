@@ -99,7 +99,11 @@ async fn run() {
         load.push(tokio::spawn(async move {
             let mut served = 0u64;
             while !stop.load(Ordering::Relaxed) {
-                let response = client.get(&url).send().await.expect("the request completes");
+                let response = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .expect("the request completes");
                 let _ = response.bytes().await.expect("a body");
                 served += 1;
             }
@@ -170,7 +174,12 @@ fn blocklist(revision: u64, extra: &str) -> String {
         blocked.push(',');
         blocked.push_str(extra);
     }
-    common::snapshot(revision, "2020-01-01T00:00:00Z", "2099-01-01T00:00:00Z", &blocked)
+    common::snapshot(
+        revision,
+        "2020-01-01T00:00:00Z",
+        "2099-01-01T00:00:00Z",
+        &blocked,
+    )
 }
 
 /// Resident set size, from `/proc/self/statm`'s second field in pages.

@@ -31,18 +31,17 @@ use crate::concurrency::Resolution;
 use crate::http::error::ApiError;
 use crate::http::logging;
 use crate::policy::{
-    self, BlocklistSnapshot, Candidate, Decision, Digest, Ecosystem, HashAlgorithm,
-    PublicationTime,
+    BlocklistSnapshot, Candidate, Decision, Digest, Ecosystem, HashAlgorithm, PublicationTime,
 };
 use crate::pypi::filename::{FileIdentity, UnsupportedFilename, file_identity};
 use crate::pypi::render::ListedFile;
-use crate::store::{self, StoreError};
 use crate::store::cache::{
     AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{
     ArtifactReference, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert,
 };
+use crate::store::{self, StoreError};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, UpstreamError};
 
 pub use name::{InvalidProjectName, ProjectName};
@@ -234,12 +233,9 @@ async fn current_project(
         stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale).await?,
     };
 
-    caches.projects.insert_if_current(
-        key,
-        Arc::clone(&cached),
-        cached.approximate_bytes(),
-        seen,
-    );
+    caches
+        .projects
+        .insert_if_current(key, Arc::clone(&cached), cached.approximate_bytes(), seen);
     Ok(cached)
 }
 
@@ -290,10 +286,9 @@ async fn resolve(
     monotonic: Instant,
 ) -> Result<Resolved, ApiError> {
     let cached = current_project(app, name, now, monotonic).await?;
-    let ttl_micros = i64::try_from(
-        Duration::from_secs(app.config.metadata_ttl_seconds).as_micros(),
-    )
-    .unwrap_or(i64::MAX);
+    let ttl_micros =
+        i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
+            .unwrap_or(i64::MAX);
 
     let files = parse_stored(app, name, &cached.row.payload)?;
 
@@ -315,10 +310,18 @@ async fn resolve(
             // an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&file.id),
         };
-        let decision = policy::evaluate(Some(snapshot), now, app.config.cooldown_seconds, &candidate);
+        let decision = crate::osv::evaluate(
+            &app.osv,
+            Some(snapshot),
+            now,
+            app.config.cooldown_seconds,
+            &candidate,
+        )
+        .await;
         if let Decision::Hold { eligible_at_micros } = decision {
-            next_release =
-                Some(next_release.map_or(eligible_at_micros, |held: i64| held.min(eligible_at_micros)));
+            next_release = Some(
+                next_release.map_or(eligible_at_micros, |held: i64| held.min(eligible_at_micros)),
+            );
         }
         decisions.push(decision);
     }
@@ -463,10 +466,7 @@ async fn refresh(
     // would otherwise redirect to.
     let url = app
         .origins
-        .url_for(
-            OriginKind::PypiMetadata,
-            &["simple", name.as_str(), ""],
-        )
+        .url_for(OriginKind::PypiMetadata, &["simple", name.as_str(), ""])
         .map_err(|rejection| {
             tracing::warn!(project = %name, %rejection, "refused to build an upstream URL");
             ApiError::NotFound
@@ -745,7 +745,10 @@ fn project_file(name: &ProjectName, raw: &Value) -> Result<ProjectFile, Unusable
         .get("filename")
         .and_then(Value::as_str)
         .ok_or(UnusableFile::NoFilename)?;
-    let url = raw.get("url").and_then(Value::as_str).ok_or(UnusableFile::NoUrl)?;
+    let url = raw
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or(UnusableFile::NoUrl)?;
     let upstream_url = Url::parse(url).map_err(|_| UnusableFile::UrlNotAUrl)?;
 
     let identity = file_identity(filename, name.as_str()).map_err(UnusableFile::Identity)?;

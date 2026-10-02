@@ -148,7 +148,9 @@ fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     // 64:ff9b:1::/48 is deliberately not decoded: its embedding depends on the
     // prefix length, and being outside 2000::/3 it is refused wholesale anyway.
     if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
-        return Some(Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]));
+        return Some(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
     }
     // 2002::/16, 6to4 (RFC 3056): the IPv4 address sits in bits 16-48.
     if segments[0] == 0x2002 {

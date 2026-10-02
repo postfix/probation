@@ -53,7 +53,7 @@ use crate::App;
 use crate::artifacts::content::{ContentError, ContentKey};
 use crate::concurrency::{Resolution, SingleFlight, Slot};
 use crate::http::error::ApiError;
-use crate::policy::{self, Candidate, Decision, Digest, Ecosystem, HashAlgorithm};
+use crate::policy::{Candidate, Decision, Digest, Ecosystem, HashAlgorithm};
 use crate::store::cache::{CachedProject, ProjectKey};
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::store::{PinOutcome, StoreError};
@@ -314,13 +314,10 @@ async fn transfer(
             // and the next resolution loads the project afresh. Reuse is
             // generation-checked, the way `RenderedResponse::is_reusable` already is,
             // rather than bounded by `metadata_ttl_seconds`.
-            app.store()
-                .caches()
-                .projects
-                .remove(&ProjectKey::new(
-                    row.reference.ecosystem,
-                    row.reference.name.as_str(),
-                ));
+            app.store().caches().projects.remove(&ProjectKey::new(
+                row.reference.ecosystem,
+                row.reference.name.as_str(),
+            ));
         }
         PinOutcome::MatchedExisting => {}
         PinOutcome::Conflict => {
@@ -340,7 +337,8 @@ async fn transfer(
     let now = app.clock.now_utc_micros();
     let snapshot = app.blocklist();
     let pinned = computed.pinned_digests();
-    let decision = policy::evaluate(
+    let decision = crate::osv::evaluate(
+        &app.osv,
         snapshot.as_deref(),
         now,
         app.config.cooldown_seconds,
@@ -352,7 +350,8 @@ async fn transfer(
             advertised_digests: &row.reference.expected,
             pinned_digests: &pinned,
         },
-    );
+    )
+    .await;
     if decision != Decision::Allow {
         // SPEC §9: "If a computed digest reveals a block not visible in upstream
         // metadata, invalidate that project's filtered metadata."
@@ -435,11 +434,7 @@ fn verify_advertised(expected: &[Digest], computed: &Computed) -> Result<(), Dow
         HashAlgorithm::Sha1,
     ]
     .into_iter()
-    .find(|algorithm| {
-        expected
-            .iter()
-            .any(|digest| digest.algorithm == *algorithm)
-    });
+    .find(|algorithm| expected.iter().any(|digest| digest.algorithm == *algorithm));
 
     let Some(algorithm) = strongest else {
         return Ok(());
@@ -467,11 +462,19 @@ fn verify_advertised(expected: &[Digest], computed: &Computed) -> Result<(), Dow
 pub enum DownloadError {
     Upstream(UpstreamError),
     /// The bytes do not match what upstream said they would be.
-    IntegrityMismatch { expected: Digest, computed: Digest },
+    IntegrityMismatch {
+        expected: Digest,
+        computed: Digest,
+    },
     /// The bytes do not match what this reference has always meant (STATE-01).
     PinConflict,
-    SizeMismatch { declared: u64, actual: u64 },
-    TooLarge { limit: u64 },
+    SizeMismatch {
+        declared: u64,
+        actual: u64,
+    },
+    TooLarge {
+        limit: u64,
+    },
     /// The local filesystem could not take the bytes. SPEC §10: a `503`, never a
     /// relaxation of policy.
     Capacity(ContentError),
@@ -514,15 +517,11 @@ impl fmt::Display for DownloadError {
                 write!(f, "policy refused the verified bytes: {decision:?}")
             }
             DownloadError::Storage(err) => write!(f, "{err}"),
-            DownloadError::Overloaded => {
-                f.write_str("no artifact download permit was available")
-            }
+            DownloadError::Overloaded => f.write_str("no artifact download permit was available"),
             DownloadError::Cancelled => {
                 f.write_str("the last waiter left before the download was published")
             }
-            DownloadError::Aborted => {
-                f.write_str("the artifact transfer ended without completing")
-            }
+            DownloadError::Aborted => f.write_str("the artifact transfer ended without completing"),
         }
     }
 }
@@ -628,7 +627,11 @@ mod tests {
         assert_eq!(coordinator.waiting_on(&id), 2);
 
         drop(second);
-        assert_eq!(coordinator.waiting_on(&id), 1, "one leaving leaves the other");
+        assert_eq!(
+            coordinator.waiting_on(&id),
+            1,
+            "one leaving leaves the other"
+        );
 
         drop(first);
         assert_eq!(coordinator.waiting_on(&id), 0);

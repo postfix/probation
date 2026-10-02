@@ -37,3 +37,14 @@ pub async fn ready(State(app): State<Arc<App>>) -> StatusCode {
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
+
+/// `503` while a decision-log record was lost in the last 60 s, `200` otherwise
+/// (including with no sink). An alerting signal, not a probe target: `/health/ready`
+/// stays green while records are shed, and no serving decision reads this state.
+pub async fn delivery(State(app): State<Arc<App>>) -> StatusCode {
+    if app.delivery.is_shedding(app.clock.now_utc_micros()) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
+}

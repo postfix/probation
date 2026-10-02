@@ -13,6 +13,8 @@ use reqwest::header::{self, HeaderName};
 use serde::Deserialize;
 use url::{Host, Url};
 
+use crate::{delivery, osv};
+
 /// The validated configuration. The `NonZero*` types make "zero polling intervals
 /// and zero capacity limits are invalid" a type error rather than a check someone
 /// can forget; `cooldown_seconds`, `metadata_ttl_seconds` and
@@ -54,13 +56,29 @@ pub struct Config {
     /// no HTTP client is constructed and no delivery task is spawned.
     pub siem_url: Option<Url>,
     /// The header the credential is sent under, defaulted at validation. Only the
-    /// *name* lives here: the value is read from `OSPREY_SIEM_AUTH` inside
+    /// *name* lives here: the value is read from `PROBATION_SIEM_AUTH` inside
     /// `delivery::build` and never placed on this struct, which derives `Debug`.
     pub siem_auth_header: HeaderName,
     /// Whether a delivered record carries the peer address of the connection that
     /// asked. False unless an operator turns it on, and refused unless at least one
     /// sink is configured to receive what it records.
     pub log_consumer_identification: bool,
+    /// How much memory the log file sink's queue may hold, defaulted at validation.
+    /// A memory budget rather than a record count, the same shape as
+    /// `memory_cache_max_bytes`, and additive to it.
+    pub log_queue_max_bytes: NonZeroU64,
+    /// The same budget for the SIEM sink's queue. Two sinks are two queues, so a
+    /// deployment with both configured pays both.
+    pub siem_queue_max_bytes: NonZeroU64,
+    /// How long an OSV lookup's answer is trusted before it is asked again (C13).
+    pub osv_cache_ttl_seconds: NonZeroU64,
+    /// How long one OSV batch flush's outbound call may take before it fails open
+    /// (C12c/C14). The same figure bounds both the outbound call and each waiter's
+    /// reply, so there is one knob rather than two that could drift apart.
+    pub osv_request_timeout_ms: NonZeroU64,
+    /// Whether OSV enforcement denies, only logs, or is skipped entirely (C16-C18b,
+    /// D5/D6). Defaults to `Enforce` — today's behaviour — when absent.
+    pub osv_mode: osv::OsvMode,
 }
 
 /// The default for the one key SPEC §4 does not list. It is a Gate 3 addition
@@ -76,6 +94,21 @@ const DEFAULT_METADATA_MAX_AGE_SECONDS: u64 = 86_400;
 /// What a decision log file costs when the operator names one and says nothing about
 /// its size: 100 MiB live, so 200 MiB including the one rollover generation.
 const DEFAULT_LOG_FILE_MAX_BYTES: NonZeroU64 = NonZeroU64::new(100 * 1024 * 1024).unwrap();
+
+/// What a delivery queue costs when the operator says nothing about it. The figure
+/// belongs to `delivery`, which also divides by it: a budget the operator writes and
+/// the record size it is divided by must come from one place or they can disagree.
+const DEFAULT_QUEUE_MAX_BYTES: NonZeroU64 =
+    NonZeroU64::new(delivery::DEFAULT_QUEUE_MAX_BYTES).unwrap();
+
+/// D4: 5 minutes, so a repeat lookup for the same version is answered from cache
+/// rather than re-asked on every request.
+const DEFAULT_OSV_CACHE_TTL_SECONDS: NonZeroU64 = NonZeroU64::new(300).unwrap();
+
+/// D4: an architect's estimate (not sourced from OSV's documented SLA — Gate 3
+/// least-confident-decision 3), short enough to keep C12c's outbound-call bound and
+/// C14's per-waiter reply bound both tight.
+const DEFAULT_OSV_REQUEST_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(500).unwrap();
 
 /// The file as written, before validation. Unknown keys are rejected so a typo in
 /// an operator's configuration is an error rather than a silently ignored line.
@@ -103,10 +136,15 @@ struct RawConfig {
     max_references_per_project: u32,
     log_file_path: Option<PathBuf>,
     log_file_max_bytes: Option<u64>,
+    log_queue_max_bytes: Option<u64>,
+    siem_queue_max_bytes: Option<u64>,
     siem_url: Option<String>,
     siem_auth_header: Option<String>,
     #[serde(default)]
     log_consumer_identification: bool,
+    osv_cache_ttl_seconds: Option<u64>,
+    osv_request_timeout_ms: Option<u64>,
+    osv_mode: Option<String>,
 }
 
 fn default_max_references_per_project() -> u32 {
@@ -147,9 +185,14 @@ const OPTIONAL_KEYS: &[&str] = &[
     "metadata_max_age_seconds",
     "log_file_path",
     "log_file_max_bytes",
+    "log_queue_max_bytes",
     "siem_url",
+    "siem_queue_max_bytes",
     "siem_auth_header",
     "log_consumer_identification",
+    "osv_cache_ttl_seconds",
+    "osv_request_timeout_ms",
+    "osv_mode",
 ];
 
 impl Config {
@@ -248,6 +291,9 @@ impl RawConfig {
             })?,
             None => DEFAULT_LOG_FILE_MAX_BYTES,
         };
+        // Read before the struct literal moves the path out of `self`.
+        let log_file_path_set = self.log_file_path.is_some();
+        let siem_url_set = self.siem_url.is_some();
 
         // Same rule, same reason: a credential header with no collector to send it to
         // is an operator who believes delivery is on and is getting nothing.
@@ -337,6 +383,40 @@ impl RawConfig {
             siem_url,
             siem_auth_header,
             log_consumer_identification: self.log_consumer_identification,
+            log_queue_max_bytes: queue_budget(
+                "log_queue_max_bytes",
+                self.log_queue_max_bytes,
+                "log_file_path",
+                log_file_path_set,
+            )?,
+            siem_queue_max_bytes: queue_budget(
+                "siem_queue_max_bytes",
+                self.siem_queue_max_bytes,
+                "siem_url",
+                siem_url_set,
+            )?,
+            osv_cache_ttl_seconds: match self.osv_cache_ttl_seconds {
+                Some(value) => nonzero_u64("osv_cache_ttl_seconds", value)?,
+                None => DEFAULT_OSV_CACHE_TTL_SECONDS,
+            },
+            osv_request_timeout_ms: match self.osv_request_timeout_ms {
+                Some(value) => nonzero_u64("osv_request_timeout_ms", value)?,
+                None => DEFAULT_OSV_REQUEST_TIMEOUT_MS,
+            },
+            osv_mode: match self.osv_mode {
+                Some(value) => match value.to_lowercase().as_str() {
+                    "enforce" => osv::OsvMode::Enforce,
+                    "diagnostic" => osv::OsvMode::Diagnostic,
+                    "off" => osv::OsvMode::Off,
+                    _ => {
+                        return Err(invalid(
+                            "osv_mode",
+                            format!("must be one of enforce, diagnostic, off, got {value:?}"),
+                        ));
+                    }
+                },
+                None => osv::OsvMode::Enforce,
+            },
         })
     }
 }
@@ -371,6 +451,50 @@ fn check_keys(table: &toml::Table) -> Result<(), ConfigError> {
 
 fn invalid(key: &'static str, reason: String) -> ConfigError {
     ConfigError::Invalid { key, reason }
+}
+
+/// One delivery queue budget: defaulted when absent, checked when present.
+///
+/// The two keys share every rule, so the rules are written once — two copies are two
+/// chances to change only one. The lower bound is decided by calling the same
+/// `capacity_for` the queue is actually built with, rather than by restating its
+/// division here, so the refusal and the arithmetic cannot disagree.
+fn queue_budget(
+    key: &'static str,
+    value: Option<u64>,
+    sink_key: &'static str,
+    sink_configured: bool,
+) -> Result<NonZeroU64, ConfigError> {
+    // An absent key takes the default whether or not its sink is on: the two rules are
+    // independent, and a default conditioned on the sink would leave the shipped
+    // sample — which configures neither — with no budget at all.
+    let Some(value) = value else {
+        return Ok(DEFAULT_QUEUE_MAX_BYTES);
+    };
+    if !sink_configured {
+        return Err(invalid(key, format!("has no effect without {sink_key}")));
+    }
+    let value = nonzero_u64(key, value)?;
+    if value.get() > delivery::MAX_QUEUE_MAX_BYTES {
+        return Err(invalid(
+            key,
+            format!("must not exceed {} bytes", delivery::MAX_QUEUE_MAX_BYTES),
+        ));
+    }
+    match delivery::capacity_for(value.get()) {
+        Ok(_) => Ok(value),
+        Err(delivery::CapacityError::TooSmall) => Err(invalid(
+            key,
+            format!(
+                "must be at least {} bytes, which is one decision record",
+                delivery::BYTES_PER_RECORD
+            ),
+        )),
+        Err(delivery::CapacityError::TooLarge) => Err(invalid(
+            key,
+            format!("must not exceed {} bytes", delivery::MAX_QUEUE_MAX_BYTES),
+        )),
+    }
 }
 
 fn nonzero_u64(key: &'static str, value: u64) -> Result<NonZeroU64, ConfigError> {

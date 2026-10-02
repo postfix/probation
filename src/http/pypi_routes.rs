@@ -153,7 +153,10 @@ mod tests {
 
     fn try_accepting(accept: &str) -> Result<Representation, ApiError> {
         let mut headers = HeaderMap::new();
-        headers.insert(header::ACCEPT, HeaderValue::from_str(accept).expect("a header"));
+        headers.insert(
+            header::ACCEPT,
+            HeaderValue::from_str(accept).expect("a header"),
+        );
         negotiate(&headers)
     }
 
@@ -174,7 +177,11 @@ mod tests {
             "a low quality on JSON is honoured rather than matched on substring"
         );
         assert_eq!(accepting("text/html"), Representation::PypiHtml);
-        assert_eq!(accepting("*/*"), Representation::PypiHtml, "a tie goes to HTML");
+        assert_eq!(
+            accepting("*/*"),
+            Representation::PypiHtml,
+            "a tie goes to HTML"
+        );
         assert_eq!(
             negotiate(&HeaderMap::new()).expect("an absent Accept header means anything"),
             Representation::PypiHtml

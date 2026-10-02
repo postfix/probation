@@ -1,6 +1,8 @@
-# osprey
+# probation
 
-Open-Source Package Firewall for npm and PyPI.
+[![crates.io](https://img.shields.io/crates/v/probation.svg)](https://crates.io/crates/probation)
+
+Open-source package firewall for npm and PyPI.
 
 A self-hosted registry proxy that hides releases younger than a configured delay and
 hides known-malicious packages and artifacts. `npm` and `pip` keep doing the
@@ -19,19 +21,29 @@ harmless.
 
 ## Quick start
 
+From [crates.io](https://crates.io/crates/probation) (needs the build tools listed
+under [Building and testing](#building-and-testing)):
+
+```sh
+cargo install probation --locked
+probation check-config config.sample.toml
+```
+
+or from a checkout:
+
 ```sh
 cargo build --release --locked
-./target/release/package-firewall check-config config.sample.toml
-./target/release/package-firewall serve --config /etc/package-firewall/config.toml
+./target/release/probation check-config config.sample.toml
+./target/release/probation serve --config /etc/probation/config.toml
 ```
 
 or from the container image:
 
 ```sh
-docker build -t package-firewall:mvp .
+docker build -t probation:mvp .
 docker run -d -p 127.0.0.1:8080:8080 \
-  -v /srv/package-firewall:/var/lib/package-firewall \
-  package-firewall:mvp serve --config /etc/package-firewall/config.toml
+  -v /srv/probation:/var/lib/probation \
+  probation:mvp serve --config /etc/probation/config.toml
 ```
 
 Point clients at it:
@@ -73,6 +85,7 @@ cargo test                                  # offline; no test reaches a public 
 cargo test --test e2e_npm -- --ignored      # drives the real npm client
 cargo test --test e2e_pip -- --ignored      # drives the real pip client
 cargo bench                                 # the SPEC §12 measurements
+cargo bench --bench delivery_rated_load     # ten minutes; the rated-load figure below
 ```
 
 Building needs `cmake`, a C compiler and `perl` in addition to the Rust toolchain
@@ -83,6 +96,13 @@ with `pip`, `setuptools` and `build`.
 Benchmark results against the specification's acceptance targets — every one of them
 met, with the pre-change baseline kept alongside — are in
 [`docs/operations.md`](docs/operations.md) §10.
+
+**Rated load:** the delivery pipeline sustains **59,288 decided requests/second** with
+zero records lost, measured on the reference hardware named in
+[`docs/operations.md`](docs/operations.md) §8. The default queue budget is sized from a
+stated 200 requests/second reference load, not from that ceiling — §8 explains why and
+states what a default deployment's budget survives and how to compute your own
+tolerance.
 
 ## Documents
 

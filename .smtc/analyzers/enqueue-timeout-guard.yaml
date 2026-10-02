@@ -1,0 +1,51 @@
+# Guards invariant C12a (docs/plans/osv-intel/03-program-design.md, threat G2):
+# the OSV lookup's bounded-channel enqueue in `OsvClient::resolve`
+# (src/osv/mod.rs) must stay wrapped in `tokio::time::timeout` so a full
+# channel fails the check open instead of blocking the caller. The threat
+# this guards is a LATER edit that awaits `self.tx.send(..)` directly,
+# dropping the `OSV_ENQUEUE_TIMEOUT` wrap.
+#
+# WHAT THIS CHECK IS: an ordered_obligation (same-function co-occurrence of
+# a `timeout` call and a `send` call), not a call-graph/dataflow query. An
+# earlier attempt at this spec set `relation: {must_dominate: true}` at the
+# spec's top level; both real-site runs failed outright
+# (`analysis_failed: required dominance cannot resolve guard location or
+# order`). `sf-smtc-doctor` found two problems with that: `must_dominate`
+# belongs nested under `relation:`, not the spec's top level, and even
+# nested correctly, its statement-order algorithm cannot resolve a guard
+# and operation that share one statement (as this call site does:
+# `tokio::time::timeout(OSV_ENQUEUE_TIMEOUT, self.tx.send(..)).await` -- the
+# guard and the operation are the same expression). The fix used here is
+# `relation: {}` (default/omitted `must_dominate`), which checks same-
+# function co-occurrence instead of statement order and handles this shape.
+#
+# SCOPE: `--root src/osv/mod.rs`, not `src/osv/` or wider. `send` is too
+# generic a name to scope to the whole crate or even the whole `osv`
+# module: `src/osv/batcher.rs` independently defines an outbound-POST
+# helper also named `send` (guarded separately, see the sibling spec
+# `outbound-timeout-guard.yaml`) plus several `tx.send`/`reply.send` calls
+# in its own `#[cfg(test)]` module, none of which this invariant is about.
+# Scoping to the one file that actually declares `OsvClient::resolve`
+# keeps the check to exactly the site the invariant governs.
+#
+# Validated against:
+#   - docs/plans/osv-intel/controls/unsafe/unbounded_enqueue.rs: fires (the
+#     bare `tx.send(1).await` has no `timeout` in its function).
+#   - docs/plans/osv-intel/controls/safe/bounded_enqueue.rs: zero findings,
+#     confirmed non-vacuous (`find_guards` matched 1, not 0).
+#   - src/osv/mod.rs (the product root): zero findings, confirmed non-
+#     vacuous (`find_operations` matched the one `self.tx.send(..)` call
+#     site; it is absent from the findings because `timeout` co-occurs in
+#     the same `resolve` function).
+#   - the whole `src/` tree (non-vacuity/blast-radius check, not this
+#     spec's day-to-day scope): the same pattern also correctly flags real
+#     unguarded `send` calls elsewhere in the repo (e.g.
+#     src/delivery/siem.rs:155, src/store/mod.rs, src/osv/batcher.rs's
+#     test module) -- proof this is a live, non-trivial obligation and not
+#     an always-pass.
+name: enqueue-timeout-guard
+kind: ordered_obligation
+severity: high
+guard: {calls: {name: ["timeout"]}}
+operation: {calls: {name: ["send"]}}
+relation: {}

@@ -278,7 +278,10 @@ mod tests {
             serde_json::from_slice(&project_json("bard", &[hostile()], &["1.0".to_owned()]))
                 .expect("the rendered listing parses");
 
-        assert_eq!(json["files"][0]["filename"], Value::from(hostile().filename));
+        assert_eq!(
+            json["files"][0]["filename"],
+            Value::from(hostile().filename)
+        );
         assert_eq!(json["files"][0]["yanked"], Value::from("bad & '<wrong>'"));
         assert_eq!(json["versions"][0], Value::from("1.0"));
         assert_eq!(json["meta"]["api-version"], Value::from("1.1"));

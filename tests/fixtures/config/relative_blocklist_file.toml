@@ -1,7 +1,7 @@
 # Deliberately invalid: blocklist_file is relative
 listen = "127.0.0.1:8080"
 public_url = "https://packages.example.org"
-data_dir = "/var/lib/package-firewall"
+data_dir = "/var/lib/probation"
 blocklist_file = "relative/blocklist.json"
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300

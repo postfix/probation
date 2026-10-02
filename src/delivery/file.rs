@@ -8,7 +8,6 @@ use std::num::NonZeroU64;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::fs::{File, OpenOptions};
@@ -17,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::Record;
+use super::counters::SinkCounters;
 
 /// How long the drain may take once it has been asked to finish. Imposed by the
 /// caller rather than trusted to the write, so the deadline holds even when the
@@ -33,18 +33,18 @@ pub(super) async fn run(
     max_bytes: NonZeroU64,
     mut rx: mpsc::Receiver<Record>,
     drain: CancellationToken,
-    drops: Arc<AtomicU64>,
+    counters: Arc<SinkCounters>,
 ) {
     let mut writer = Writer::new(path, max_bytes);
 
     loop {
         tokio::select! {
             received = rx.recv() => match received {
-                Some(record) => writer.append(record, &drops).await,
+                Some(record) => writer.append(record, &counters).await,
                 None => break,
             },
             () = drain.cancelled() => {
-                self::drain(&mut writer, &mut rx, &drops, DRAIN_DEADLINE).await;
+                self::drain(&mut writer, &mut rx, &counters, DRAIN_DEADLINE).await;
                 break;
             }
         }
@@ -62,17 +62,17 @@ pub(super) async fn run(
 async fn drain(
     writer: &mut Writer,
     rx: &mut mpsc::Receiver<Record>,
-    drops: &AtomicU64,
+    counters: &SinkCounters,
     deadline: Duration,
 ) {
     let drained = tokio::time::timeout(deadline, async {
         while let Ok(record) = rx.try_recv() {
-            writer.append(record, drops).await;
+            writer.append(record, counters).await;
         }
     })
     .await;
     if drained.is_err() {
-        drops.fetch_add(rx.len() as u64 + 1, Ordering::Relaxed);
+        counters.lose(rx.len() as u64 + 1);
     }
 }
 
@@ -100,9 +100,9 @@ impl Writer {
         }
     }
 
-    async fn append(&mut self, record: Record, drops: &AtomicU64) {
+    async fn append(&mut self, record: Record, counters: &SinkCounters) {
         let Ok(mut line) = serde_json::to_string(&record) else {
-            drops.fetch_add(1, Ordering::Relaxed);
+            counters.lose(1);
             return;
         };
         line.push('\n');
@@ -112,12 +112,12 @@ impl Writer {
         // that has happened there is nothing truthful to compare the threshold
         // against. Deciding before it is what lets the first record after a restart
         // land on top of a file that is already at the cap.
-        if !self.open(drops).await {
+        if !self.open(counters).await {
             return;
         }
         if self.written.saturating_add(cost) >= self.max_bytes {
             self.roll_over().await;
-            if !self.open(drops).await {
+            if !self.open(counters).await {
                 return;
             }
         }
@@ -139,7 +139,7 @@ impl Writer {
                     error = %err,
                     "a decision record could not be written to the log file"
                 );
-                drops.fetch_add(1, Ordering::Relaxed);
+                counters.lose(1);
                 self.file = None;
             }
         }
@@ -148,7 +148,7 @@ impl Writer {
     /// Opens the file for append when there is no handle, and takes its current
     /// length as the tally — so a restart does not forget how full the file already
     /// is. Returns whether there is a handle to write to.
-    async fn open(&mut self, drops: &AtomicU64) -> bool {
+    async fn open(&mut self, counters: &SinkCounters) -> bool {
         if self.file.is_some() {
             return true;
         }
@@ -178,7 +178,7 @@ impl Writer {
                     error = %err,
                     "the decision log file could not be opened"
                 );
-                drops.fetch_add(1, Ordering::Relaxed);
+                counters.lose(1);
                 false
             }
         }
@@ -246,9 +246,9 @@ mod tests {
             .expect("the channel has room");
         }
         let mut writer = Writer::new(path.clone(), NonZeroU64::MAX);
-        let drops = AtomicU64::new(0);
+        let counters = SinkCounters::new();
 
-        drain(&mut writer, &mut rx, &drops, Duration::ZERO).await;
+        drain(&mut writer, &mut rx, &counters, Duration::ZERO).await;
 
         let written = std::fs::read_to_string(&path)
             .map(|text| text.lines().count() as u64)
@@ -257,12 +257,58 @@ mod tests {
             written < QUEUED,
             "inconclusive: no cut-off happened, all {written} records were written"
         );
-        let dropped = drops.load(Ordering::Relaxed);
+        let dropped = counters.total();
         // One high when the cut lands after the in-hand record's write finished.
         assert!(
             (QUEUED..=QUEUED + 1).contains(&(written + dropped)),
             "every queued record is either in the file or counted as dropped: \
              {written} written, {dropped} dropped"
         );
+    }
+
+    fn summary() -> Record {
+        Record::RequestSummary(Summary {
+            timestamp: String::new(),
+            requests: 0,
+            errors: 0,
+            bytes: 0,
+            mean_duration_micros: 0,
+            window_micros: 0,
+            dropped_file: 0,
+            dropped_siem: 0,
+        })
+    }
+
+    /// rl7, the drain-deadline site: what the deadline cuts off lands in the window.
+    #[tokio::test]
+    async fn rl7_file_drain_deadline_counts_in_the_window() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let (tx, mut rx) = mpsc::channel(10_000);
+        for _ in 0..10_000 {
+            tx.try_send(summary()).expect("the channel has room");
+        }
+        let mut writer = Writer::new(dir.path().join("d.ndjson"), NonZeroU64::MAX);
+        let counters = SinkCounters::new();
+        drain(&mut writer, &mut rx, &counters, Duration::ZERO).await;
+        assert!(counters.take_window() > 0);
+    }
+
+    /// rl7, the write-error site: `/dev/full` opens and then refuses every write.
+    #[tokio::test]
+    async fn rl7_file_write_error_counts_in_the_window() {
+        let mut writer = Writer::new(PathBuf::from("/dev/full"), NonZeroU64::MAX);
+        let counters = SinkCounters::new();
+        writer.append(summary(), &counters).await;
+        assert_eq!(counters.take_window(), 1);
+    }
+
+    /// rl7, the unopenable site.
+    #[tokio::test]
+    async fn rl7_file_unopenable_counts_in_the_window() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut writer = Writer::new(dir.path().join("missing/d.ndjson"), NonZeroU64::MAX);
+        let counters = SinkCounters::new();
+        writer.append(summary(), &counters).await;
+        assert_eq!(counters.take_window(), 1);
     }
 }

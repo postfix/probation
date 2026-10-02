@@ -17,9 +17,9 @@ use common::{
     fake_origins, fixture, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     pypi_upstream_path, wait_until,
 };
-use package_firewall::http::error::ApiError;
-use package_firewall::policy::Ecosystem;
-use package_firewall::store::cache::ProjectKey;
+use probation::http::error::ApiError;
+use probation::policy::Ecosystem;
+use probation::store::cache::ProjectKey;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
@@ -77,7 +77,7 @@ async fn harness(now: &str, answers: &[(&str, FakeAnswer)]) -> Harness {
     let server = TestServer::start_with_upstream(
         config,
         clock.shared(),
-        Arc::clone(&registry) as Arc<dyn package_firewall::upstream::Transport>,
+        Arc::clone(&registry) as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;
@@ -120,13 +120,13 @@ async fn npm_dropped_leader_does_not_wedge_the_project() {
 
     let leader = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
     };
     gate.wait_until_reached().await;
 
     let joiner = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
     };
     wait_until("the joiner shares the leader's refresh", PATIENCE, || {
         app.downloads.metadata().waiting_on(&key) == 2
@@ -164,7 +164,7 @@ async fn npm_dropped_leader_does_not_wedge_the_project() {
     );
     let retried = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::npm::ensure_fresh_project(&app, WIDGET),
+        probation::npm::ensure_fresh_project(&app, WIDGET),
     )
     .await
     .expect("a retry after the dropped leader is not wedged behind it");
@@ -198,13 +198,13 @@ async fn pypi_dropped_leader_does_not_wedge_the_project() {
 
     let leader = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await })
+        tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
     };
     gate.wait_until_reached().await;
 
     let joiner = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await })
+        tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
     };
     wait_until("the joiner shares the leader's refresh", PATIENCE, || {
         app.downloads.metadata().waiting_on(&key) == 2
@@ -229,10 +229,12 @@ async fn pypi_dropped_leader_does_not_wedge_the_project() {
     )
     .await;
 
-    harness.registry.answer(&path, FakeAnswer::Body(bard_document(BARD)));
+    harness
+        .registry
+        .answer(&path, FakeAnswer::Body(bard_document(BARD)));
     let retried = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::pypi::ensure_fresh_project(&app, BARD),
+        probation::pypi::ensure_fresh_project(&app, BARD),
     )
     .await
     .expect("a retry after the dropped PyPI leader is not wedged behind it");
@@ -283,9 +285,9 @@ async fn npm_and_pypi_projects_of_the_same_name_do_not_collide() {
     // The npm refresh is parked in flight.
     let npm_request = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move {
-            package_firewall::npm::ensure_fresh_project(&app, SHARED_NAME).await
-        })
+        tokio::spawn(
+            async move { probation::npm::ensure_fresh_project(&app, SHARED_NAME).await },
+        )
     };
     gate.wait_until_reached().await;
     wait_until("the npm refresh is in flight", PATIENCE, || {
@@ -297,7 +299,7 @@ async fn npm_and_pypi_projects_of_the_same_name_do_not_collide() {
     // behind, coalesced into, or answered by the gated npm entry.
     let pypi_result = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::pypi::ensure_fresh_project(&app, SHARED_NAME),
+        probation::pypi::ensure_fresh_project(&app, SHARED_NAME),
     )
     .await
     .expect("HANG: the PyPI request is blocked behind the unrelated gated npm refresh");
@@ -316,7 +318,10 @@ async fn npm_and_pypi_projects_of_the_same_name_do_not_collide() {
         .await
         .expect("the npm refresh finishes")
         .expect("the npm task finishes");
-    assert!(npm_result.is_ok(), "the npm project also answers: {npm_result:?}");
+    assert!(
+        npm_result.is_ok(),
+        "the npm project also answers: {npm_result:?}"
+    );
 
     assert_eq!(harness.metadata_calls(&npm_path), 1);
     assert_eq!(harness.metadata_calls(&pypi_path), 1);
@@ -385,7 +390,7 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
         .nth(3)
         .expect("the artifact path has a reference id");
     let reference_id =
-        package_firewall::store::rows::ReferenceId::parse_hex(id_hex).expect("hex reference id");
+        probation::store::rows::ReferenceId::parse_hex(id_hex).expect("hex reference id");
     let row = app
         .store()
         .get_reference(reference_id)
@@ -397,7 +402,7 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
     let transfer = {
         let app = Arc::clone(&app);
         let row = row.clone();
-        tokio::spawn(async move { package_firewall::artifacts::download::fetch(&app, &row).await })
+        tokio::spawn(async move { probation::artifacts::download::fetch(&app, &row).await })
     };
 
     // Concurrently, drop a metadata leader for an unrelated project.
@@ -413,7 +418,7 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
     let metadata_key = ProjectKey::new(Ecosystem::Npm, OTHER);
     let metadata_leader = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, OTHER).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, OTHER).await })
     };
     metadata_gate.wait_until_reached().await;
     metadata_leader.abort();
@@ -421,8 +426,10 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
     let transfer_result = tokio::time::timeout(PATIENCE, transfer)
         .await
         .expect("HANG: the panicking transfer did not resolve")
-        .expect("the requesting task itself does not panic; the coalescing mechanism \
-                 converts the panic in the spawned transfer task into a normal error");
+        .expect(
+            "the requesting task itself does not panic; the coalescing mechanism \
+                 converts the panic in the spawned transfer task into a normal error",
+        );
     assert!(
         transfer_result.is_err(),
         "the request is told the transfer failed rather than seeing a wrong success"
@@ -448,7 +455,7 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
     );
     let retried_transfer = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::artifacts::download::fetch(&app, &row),
+        probation::artifacts::download::fetch(&app, &row),
     )
     .await
     .expect("the transfer is retryable after the panic, unaffected by the metadata churn");
@@ -459,7 +466,7 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
         .answer(&other_path, FakeAnswer::Body(npm_document(OTHER, VERSION)));
     let retried_metadata = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::npm::ensure_fresh_project(&app, OTHER),
+        probation::npm::ensure_fresh_project(&app, OTHER),
     )
     .await
     .expect("the metadata project is retryable after its leader was dropped");
@@ -494,26 +501,32 @@ async fn npm_joiner_dropped_mid_refresh_does_not_affect_the_leader_or_other_join
 
     let leader = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
     };
     gate.wait_until_reached().await;
 
     let mut joiners: Vec<_> = (0..3)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, WIDGET).await })
+            tokio::spawn(
+                async move { probation::npm::ensure_fresh_project(&app, WIDGET).await },
+            )
         })
         .collect();
-    wait_until("all three joiners share the leader's refresh", PATIENCE, || {
-        app.downloads.metadata().waiting_on(&key) == 4
-    })
+    wait_until(
+        "all three joiners share the leader's refresh",
+        PATIENCE,
+        || app.downloads.metadata().waiting_on(&key) == 4,
+    )
     .await;
 
     let leaving = joiners.remove(0);
     leaving.abort();
-    wait_until("the joiner that left is gone; the leader is unaffected", PATIENCE, || {
-        app.downloads.metadata().waiting_on(&key) == 3
-    })
+    wait_until(
+        "the joiner that left is gone; the leader is unaffected",
+        PATIENCE,
+        || app.downloads.metadata().waiting_on(&key) == 3,
+    )
     .await;
 
     gate.release();
@@ -576,7 +589,9 @@ async fn many_late_subscribers_never_hang_on_an_already_resolved_refresh() {
         let leader = {
             let app = Arc::clone(&app);
             let name = name.clone();
-            tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, &name).await })
+            tokio::spawn(
+                async move { probation::npm::ensure_fresh_project(&app, &name).await },
+            )
         };
         gate.wait_until_reached().await;
 
@@ -588,9 +603,9 @@ async fn many_late_subscribers_never_hang_on_an_already_resolved_refresh() {
             .map(|_| {
                 let app = Arc::clone(&app);
                 let name = name.clone();
-                tokio::spawn(
-                    async move { package_firewall::npm::ensure_fresh_project(&app, &name).await },
-                )
+                tokio::spawn(async move {
+                    probation::npm::ensure_fresh_project(&app, &name).await
+                })
             })
             .collect();
 
@@ -643,11 +658,15 @@ async fn many_late_subscribers_never_hang_on_an_already_resolved_refresh() {
 async fn ttl_expiry_bursts_never_cause_more_than_one_refresh_per_window() {
     let name = "race-boundary-widget";
     let path = npm_upstream_path(name);
-    let harness = harness(NOW, &[(&path, FakeAnswer::Body(npm_document(name, "1.0.0")))]).await;
+    let harness = harness(
+        NOW,
+        &[(&path, FakeAnswer::Body(npm_document(name, "1.0.0")))],
+    )
+    .await;
     let app = harness.server.app();
 
     // Prime the cache once so every later call takes the TTL-expired branch.
-    package_firewall::npm::ensure_fresh_project(&app, name)
+    probation::npm::ensure_fresh_project(&app, name)
         .await
         .expect("the priming request succeeds");
     let primed_calls = harness.metadata_calls(&path);
@@ -661,7 +680,9 @@ async fn ttl_expiry_bursts_never_cause_more_than_one_refresh_per_window() {
         let requesters: Vec<_> = (0..24)
             .map(|_| {
                 let app = Arc::clone(&app);
-                tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, name).await })
+                tokio::spawn(async move {
+                    probation::npm::ensure_fresh_project(&app, name).await
+                })
             })
             .collect();
         for requester in requesters {
@@ -696,7 +717,7 @@ async fn ttl_expiry_bursts_never_cause_more_than_one_refresh_per_window() {
 
     let parked = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::npm::ensure_fresh_project(&app, name).await })
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, name).await })
     };
     gate.wait_until_reached().await;
 
@@ -718,13 +739,15 @@ async fn ttl_expiry_bursts_never_cause_more_than_one_refresh_per_window() {
     // The leader has answered and its own `Waiter` has dropped, but `held` keeps the
     // count above zero — so if the slot is still in the table now, only a missing
     // `finish()` can have left it there.
-    harness.registry.answer(&path, FakeAnswer::Body(npm_document(name, "1.0.0")));
+    harness
+        .registry
+        .answer(&path, FakeAnswer::Body(npm_document(name, "1.0.0")));
     let before_stale = harness.metadata_calls(&path);
     harness.advance_seconds(ONE_DAY as i64 + 1);
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::npm::ensure_fresh_project(&app, name),
+        probation::npm::ensure_fresh_project(&app, name),
     )
     .await
     .expect("the post-TTL request is not wedged behind the answered slot")

@@ -2,12 +2,12 @@
 //! newline-delimited JSON.
 //!
 //! Everything the collector can do to this process is bounded here. The client carries
-//! its own per-attempt timeout, the retry ladder is finite, and the drain is cut off by
-//! a deadline the caller imposes rather than one the request is trusted to honour. A
+//! its own per-attempt timeout, the hold on an undelivered batch is bounded by shutdown
+//! and by the queue budget rather than by a retry count, and the drain is cut off by a
+//! deadline the caller imposes rather than one the request is trusted to honour. A
 //! collector that stops answering costs records — which are counted — and nothing else.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::Record;
+use super::counters::SinkCounters;
 
 /// How many records one `POST` carries at most.
 const BATCH_RECORDS: usize = 256;
@@ -26,7 +27,9 @@ const BATCH_RECORDS: usize = 256;
 /// How long a partial batch waits for company before it goes anyway.
 const BATCH_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The backoff before each retry. Its length *is* the retry count: three.
+/// The backoff before each retry. The ladder is climbed once and its last entry, 2 s,
+/// is then the interval between every further attempt while the collector is
+/// unreachable: the batch is held, not dropped.
 const BACKOFF: [Duration; 3] = [
     Duration::from_millis(100),
     Duration::from_millis(500),
@@ -48,7 +51,7 @@ pub(super) async fn run(
     auth: Option<(HeaderName, HeaderValue)>,
     mut rx: mpsc::Receiver<Record>,
     drain: CancellationToken,
-    drops: Arc<AtomicU64>,
+    counters: Arc<SinkCounters>,
 ) {
     let mut batch: Vec<Record> = Vec::new();
     // Meaningful only while `batch` is non-empty, which is exactly when its branch is
@@ -65,13 +68,13 @@ pub(super) async fn run(
                     }
                     batch.push(record);
                     if batch.len() >= BATCH_RECORDS {
-                        send(&client, &url, auth.as_ref(), &mut batch, &drops).await;
+                        send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
                     }
                 }
                 None => break,
             },
             () = tokio::time::sleep_until(deadline), if !batch.is_empty() => {
-                send(&client, &url, auth.as_ref(), &mut batch, &drops).await;
+                send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
             }
             () = drain.cancelled() => {
                 // Whatever is already queued, and nothing more — the same reasoning as
@@ -81,11 +84,11 @@ pub(super) async fn run(
                     while let Ok(record) = rx.try_recv() {
                         batch.push(record);
                         if batch.len() >= BATCH_RECORDS {
-                            send(&client, &url, auth.as_ref(), &mut batch, &drops).await;
+                            send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
                         }
                     }
                     if !batch.is_empty() {
-                        send(&client, &url, auth.as_ref(), &mut batch, &drops).await;
+                        send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
                     }
                 })
                 .await;
@@ -94,7 +97,7 @@ pub(super) async fn run(
                 // left on the queue behind it. Counted rather than lost quietly.
                 let lost = (batch.len() + rx.len()) as u64;
                 if lost != 0 {
-                    drops.fetch_add(lost, Ordering::Relaxed);
+                    counters.lose(lost);
                 }
                 break;
             }
@@ -115,7 +118,8 @@ async fn send(
     url: &Url,
     auth: Option<&(HeaderName, HeaderValue)>,
     batch: &mut Vec<Record>,
-    drops: &AtomicU64,
+    counters: &SinkCounters,
+    drain: &CancellationToken,
 ) {
     let count = batch.len() as u64;
     let mut body = String::new();
@@ -123,6 +127,8 @@ async fn send(
         if let Ok(line) = serde_json::to_string(&record) {
             body.push_str(&line);
             body.push('\n');
+        } else {
+            counters.lose(1);
         }
     }
     // From here the records exist nowhere else: they are off the queue and out of
@@ -131,7 +137,7 @@ async fn send(
     // whole future is awaited inside the drain deadline's `timeout`, and a future cut
     // off at an await point is dropped rather than resumed — `Drop` runs, so
     // cancellation is counted by construction rather than by remembering to.
-    let mut unsent = Unsent { count, drops };
+    let mut unsent = Unsent { count, counters };
     // Cloned once per attempt, and a `Bytes` clone is a refcount bump rather than the
     // batch again.
     let body = Bytes::from(body);
@@ -175,28 +181,34 @@ async fn send(
         if !retryable {
             break;
         }
-        let Some(backoff) = BACKOFF.get(attempt) else {
-            break;
-        };
-        tokio::time::sleep(*backoff).await;
+        // The hold: a server error or throttle is retried for as long as the drain
+        // has not begun, so the queue behind this batch accumulates instead of the
+        // batch being discarded. Shutdown must be able to interrupt it, or it would
+        // block on this task for as long as the collector is down.
+        let backoff = BACKOFF[attempt.min(BACKOFF.len() - 1)];
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            // `unsent` is still armed, and its `Drop` counts the batch.
+            () = drain.cancelled() => return,
+        }
         attempt += 1;
     }
 
     tracing::warn!(
         records = count,
-        "a batch of decision records was dropped after the SIEM collector would not take it"
+        "a batch of decision records was dropped after the SIEM collector refused it"
     );
     // `unsent` is still armed, and its `Drop` is what does the counting.
 }
 
 /// A batch that has left `batch` and has not been delivered yet.
 ///
-/// It adds to `drops` exactly once, and only ever adds: the counter is read and reset
+/// It adds to `counters` exactly once, and only ever adds: the counter is read and reset
 /// with `swap(0, ..)` by the summary path, so a pessimistic add followed by a subtract
 /// could underflow a counter someone had just reset and wrap to near `u64::MAX`.
 struct Unsent<'a> {
     count: u64,
-    drops: &'a AtomicU64,
+    counters: &'a SinkCounters,
 }
 
 impl Unsent<'_> {
@@ -209,7 +221,71 @@ impl Unsent<'_> {
 impl Drop for Unsent<'_> {
     fn drop(&mut self) {
         if self.count != 0 {
-            self.drops.fetch_add(self.count, Ordering::Relaxed);
+            self.counters.lose(self.count);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// rl7, the two SIEM sites. A collector that accepts and never answers holds the
+    /// first full batch inside `send` until the drain deadline cuts it off; that batch
+    /// is counted by `Unsent::drop` (256) and the records still queued behind it by the
+    /// deadline site, so a window of 300 needs both.
+    #[tokio::test]
+    async fn rl7_siem_drain_deadline_and_unsent_count_in_the_window() {
+        use crate::delivery::Summary;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let hold = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let total = BATCH_RECORDS + 44;
+        let (tx, rx) = mpsc::channel(total);
+        for _ in 0..total {
+            tx.try_send(Record::RequestSummary(Summary {
+                timestamp: String::new(),
+                requests: 0,
+                errors: 0,
+                bytes: 0,
+                mean_duration_micros: 0,
+                window_micros: 0,
+                dropped_file: 0,
+                dropped_siem: 0,
+            }))
+            .unwrap();
+        }
+        let drain = CancellationToken::new();
+        drain.cancel();
+        let counters = Arc::new(SinkCounters::new());
+        run(Client::new(), url, None, rx, drain, Arc::clone(&counters)).await;
+        hold.abort();
+
+        assert_eq!(counters.take_window(), total as u64);
+    }
+
+    /// rl7, the `Unsent::drop` site on its own: an undelivered batch is counted whole,
+    /// and a delivered one is not.
+    #[test]
+    fn rl7_unsent_counts_an_undelivered_batch() {
+        let counters = SinkCounters::new();
+        drop(Unsent {
+            count: 5,
+            counters: &counters,
+        });
+        let mut delivered = Unsent {
+            count: 7,
+            counters: &counters,
+        };
+        delivered.delivered();
+        drop(delivered);
+        assert_eq!(counters.take_window(), 5);
     }
 }

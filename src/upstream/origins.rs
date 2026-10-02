@@ -142,7 +142,10 @@ impl OriginSet {
         // bare origin, which `admit` then passes because nothing was appended, and a
         // request for the wrong resource would leave the process. So the name is
         // refused here, which is the only layer that can still tell it apart.
-        if segments.iter().any(|segment| matches!(*segment, "." | "..")) {
+        if segments
+            .iter()
+            .any(|segment| matches!(*segment, "." | ".."))
+        {
             return Err(UrlRejection::PathEscape);
         }
 
@@ -217,10 +220,7 @@ impl OriginSet {
             .unwrap_or(OriginKind::NpmMetadata);
         // `admit` cannot succeed here: `kind_of` and `admit` agree on scheme, host
         // and port, so a URL that passes one passes the other.
-        Err(self
-            .admit(url, closest)
-            .err()
-            .unwrap_or(UrlRejection::Host))
+        Err(self.admit(url, closest).err().unwrap_or(UrlRejection::Host))
     }
 
     /// `https` always; `http` only for a test origin, which is the only way

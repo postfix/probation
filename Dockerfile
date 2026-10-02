@@ -1,4 +1,4 @@
-# Package Firewall — container image (SPEC §3: "Ship one Rust binary and a container
+# Probation — container image (SPEC §3: "Ship one Rust binary and a container
 # image built from it").
 #
 # Plain Dockerfile syntax throughout: no BuildKit-only features, no cache mounts and
@@ -36,7 +36,7 @@ COPY benches ./benches
 # `--locked` is the point of shipping Cargo.lock: the image is built from the exact
 # dependency graph the tests ran against, and a lockfile that no longer matches the
 # manifest fails the build instead of silently resolving something else.
-RUN cargo build --release --locked --bin package-firewall
+RUN cargo build --release --locked --bin probation
 
 FROM docker.io/library/debian:bookworm-slim
 
@@ -44,11 +44,11 @@ RUN apt-get update \
  && apt-get install --yes --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /src/target/release/package-firewall /usr/local/bin/package-firewall
+COPY --from=build /src/target/release/probation /usr/local/bin/probation
 
 # The shipped samples, at the paths SPEC §4's command lines name.
-COPY config.sample.toml /etc/package-firewall/config.toml
-COPY blocklist.sample.json /etc/package-firewall/blocklist.json
+COPY config.sample.toml /etc/probation/config.toml
+COPY blocklist.sample.json /etc/probation/blocklist.json
 
 # Two edits to the sample, both forced by the container rather than by taste:
 #
@@ -57,24 +57,24 @@ COPY blocklist.sample.json /etc/package-firewall/blocklist.json
 #     container's own network namespace is what the loopback default was protecting.
 #     Keep the instance behind the reverse proxy SPEC §3 assumes, and publish the port
 #     only to that proxy.
-#   * `blocklist_file` already points at `/etc/package-firewall/blocklist.json`, which
+#   * `blocklist_file` already points at `/etc/probation/blocklist.json`, which
 #     is where the sample lands, so it is left alone. The shipped sample carries a
 #     distant `expires_at` so the image starts ready; a deployment mounts its
 #     producer's real snapshot over this path.
-RUN sed --in-place 's|^listen = .*|listen = "0.0.0.0:8080"|' /etc/package-firewall/config.toml \
- && package-firewall check-config /etc/package-firewall/config.toml \
- && package-firewall check-blocklist /etc/package-firewall/blocklist.json
+RUN sed --in-place 's|^listen = .*|listen = "0.0.0.0:8080"|' /etc/probation/config.toml \
+ && probation check-config /etc/probation/config.toml \
+ && probation check-blocklist /etc/probation/blocklist.json
 
 # SPEC §10: the service holds an exclusive lock on its data directory and owns
 # everything in it. It runs as a normal user, so nothing in the image needs root.
-RUN useradd --system --create-home --home-dir /var/lib/package-firewall firewall \
- && chown firewall:firewall /var/lib/package-firewall
+RUN useradd --system --create-home --home-dir /var/lib/probation firewall \
+ && chown firewall:firewall /var/lib/probation
 USER firewall
 
 # Artifact bytes and the state database live here. SPEC §10 and `docs/operations.md`:
 # the state database and its write-ahead log are NOT inside `cache_max_bytes`, so this
 # volume needs headroom beyond that budget.
-VOLUME ["/var/lib/package-firewall"]
+VOLUME ["/var/lib/probation"]
 
 EXPOSE 8080
 
@@ -86,5 +86,5 @@ EXPOSE 8080
 # `docs/operations.md`; this line stops it biting anyone using the image.
 STOPSIGNAL SIGINT
 
-ENTRYPOINT ["package-firewall"]
-CMD ["serve", "--config", "/etc/package-firewall/config.toml"]
+ENTRYPOINT ["probation"]
+CMD ["serve", "--config", "/etc/probation/config.toml"]

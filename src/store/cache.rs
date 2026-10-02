@@ -482,8 +482,12 @@ mod tests {
         // Reading "second" sets its bit again, so the next sweep spends a lap on it
         // and reclaims the newcomer instead.
         put(&mut shard, "third");
-        shard.entries["second"].referenced.store(true, Ordering::Relaxed);
-        shard.entries["third"].referenced.store(false, Ordering::Relaxed);
+        shard.entries["second"]
+            .referenced
+            .store(true, Ordering::Relaxed);
+        shard.entries["third"]
+            .referenced
+            .store(false, Ordering::Relaxed);
         assert!(shard.reclaim_one());
         assert!(
             shard.entries.contains_key("second"),
@@ -515,10 +519,18 @@ mod tests {
         let cache = cache();
         let small = ProjectKey::new(Ecosystem::Npm, "small");
         cache.insert(small.clone(), Arc::new(1), 8);
-        cache.insert(ProjectKey::new(Ecosystem::Npm, "huge"), Arc::new(2), 1 << 40);
+        cache.insert(
+            ProjectKey::new(Ecosystem::Npm, "huge"),
+            Arc::new(2),
+            1 << 40,
+        );
 
         assert_eq!(cache.get(&small).as_deref(), Some(&1));
-        assert!(cache.get(&ProjectKey::new(Ecosystem::Npm, "huge")).is_none());
+        assert!(
+            cache
+                .get(&ProjectKey::new(Ecosystem::Npm, "huge"))
+                .is_none()
+        );
     }
 
     #[test]

@@ -17,11 +17,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use common::{TestServer, WiremockUpstream, config_with_open_blocklist, fake_origins};
-use package_firewall::upstream::origins::{OriginKind, UrlRejection};
-use package_firewall::upstream::reqwest_transport::refusal_in;
-use package_firewall::upstream::resolver::{GuardedResolver, is_public};
 use futures_util::StreamExt;
-use package_firewall::upstream::{
+use probation::upstream::origins::{OriginKind, UrlRejection};
+use probation::upstream::reqwest_transport::refusal_in;
+use probation::upstream::resolver::{GuardedResolver, is_public};
+use probation::upstream::{
     ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, Transport, UpstreamError,
     UpstreamValidators,
 };
@@ -81,7 +81,10 @@ fn test_origins_work_through_the_constructor() {
         "a test origin set is the one place the private-address gate opens"
     );
     assert_eq!(
-        origins.admit(&parse("http://127.0.0.1:8080/left-pad"), OriginKind::NpmMetadata),
+        origins.admit(
+            &parse("http://127.0.0.1:8080/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Ok(()),
         "the constructor's own origin is admitted"
     );
@@ -101,16 +104,25 @@ fn test_origins_work_through_the_constructor() {
     // else, a port nobody configured is refused, and a host nobody configured is
     // refused outright.
     assert_eq!(
-        origins.admit(&parse("http://127.0.0.1:8081/left-pad"), OriginKind::NpmMetadata),
+        origins.admit(
+            &parse("http://127.0.0.1:8081/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::ForeignOrigin),
         "the PyPI socket is a different origin even on the same loopback host"
     );
     assert_eq!(
-        origins.admit(&parse("http://127.0.0.1:9999/left-pad"), OriginKind::NpmMetadata),
+        origins.admit(
+            &parse("http://127.0.0.1:9999/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::Port)
     );
     assert_eq!(
-        origins.admit(&parse("https://127.0.0.1:8080/left-pad"), OriginKind::NpmMetadata),
+        origins.admit(
+            &parse("https://127.0.0.1:8080/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::Scheme),
         "the relaxation is per origin: this one was configured as http"
     );
@@ -124,11 +136,17 @@ fn test_origins_work_through_the_constructor() {
     let production = OriginSet::production();
     assert!(!production.allows_private_addresses());
     assert_eq!(
-        production.admit(&parse("http://127.0.0.1:8080/left-pad"), OriginKind::NpmMetadata),
+        production.admit(
+            &parse("http://127.0.0.1:8080/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::Scheme)
     );
     assert_eq!(
-        production.admit(&parse("http://registry.npmjs.org/left-pad"), OriginKind::NpmMetadata),
+        production.admit(
+            &parse("http://registry.npmjs.org/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::Scheme),
         "even the right host is refused over plain http"
     );
@@ -174,7 +192,9 @@ async fn production_origin_set_rejects_private_addresses() {
         "fd00::1".parse().expect("a unique-local address"),
         "fe80::1".parse().expect("a link-local address"),
         // The same loopback address wearing an IPv6 costume.
-        "::ffff:127.0.0.1".parse().expect("a mapped loopback address"),
+        "::ffff:127.0.0.1"
+            .parse()
+            .expect("a mapped loopback address"),
     ];
     for addr in refused {
         assert!(!is_public(*addr), "{addr} must not be treated as public");
@@ -241,7 +261,10 @@ fn an_ipv6_address_cannot_hide_a_private_ipv4_target() {
     ];
     for (text, what) in hiding {
         let addr: IpAddr = text.parse().expect("a test address");
-        assert!(!is_public(addr), "{what} ({text}) must not be treated as public");
+        assert!(
+            !is_public(addr),
+            "{what} ({text}) must not be treated as public"
+        );
     }
 }
 
@@ -258,16 +281,25 @@ fn every_special_purpose_ipv6_range_is_refused() {
         ("5f00::1", "SRv6 SIDs, RFC 9602"),
         ("2001::1", "Teredo, inside IETF protocol assignments"),
         ("2001:2::1", "benchmarking, RFC 5180"),
-        ("2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff", "the top of 2001::/23"),
+        (
+            "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "the top of 2001::/23",
+        ),
         ("3fff::1", "documentation, RFC 9637"),
-        ("3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff", "the top of 3fff::/20"),
+        (
+            "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "the top of 3fff::/20",
+        ),
         ("2620:4f:8000::1", "AS112-v6 direct delegation"),
         ("4000::1", "outside global unicast"),
         ("c000::1", "outside global unicast"),
     ];
     for (text, what) in refused {
         let addr: IpAddr = text.parse().expect("a test address");
-        assert!(!is_public(addr), "{text} ({what}) must not be treated as public");
+        assert!(
+            !is_public(addr),
+            "{text} ({what}) must not be treated as public"
+        );
     }
 
     // The boundaries of 2000::/3 itself, so the allowlist is not quietly off by one.
@@ -289,7 +321,7 @@ fn every_special_purpose_ipv6_range_is_refused() {
 /// the one constructor that could relax anything.
 #[tokio::test]
 async fn no_config_key_or_env_var_relaxes_origins() {
-    use package_firewall::config::Config;
+    use probation::config::Config;
 
     // 1. No configuration key reaches the boundary. Unknown keys are rejected, so
     //    adding one is a startup failure rather than a silent relaxation.
@@ -317,9 +349,9 @@ async fn no_config_key_or_env_var_relaxes_origins() {
     //    the assertions, with every other client-building test held off meanwhile.
     let guard = ENVIRONMENT.lock().await;
     let variables = [
-        ("PACKAGE_FIREWALL_ALLOW_PRIVATE_ADDRESSES", "1"),
+        ("PROBATION_ALLOW_PRIVATE_ADDRESSES", "1"),
         ("ALLOW_PRIVATE_ADDRESSES", "true"),
-        ("PACKAGE_FIREWALL_NPM_ORIGIN", "http://127.0.0.1:1/"),
+        ("PROBATION_NPM_ORIGIN", "http://127.0.0.1:1/"),
         ("NPM_CONFIG_REGISTRY", "http://127.0.0.1:1/"),
         // Port 1 accepts nothing, so a client that honoured this would fail to
         // reach the socket the request below really does reach.
@@ -340,7 +372,10 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         "no environment variable opens the private-address gate"
     );
     assert_eq!(
-        production.admit(&parse("http://127.0.0.1:1/left-pad"), OriginKind::NpmMetadata),
+        production.admit(
+            &parse("http://127.0.0.1:1/left-pad"),
+            OriginKind::NpmMetadata
+        ),
         Err(UrlRejection::Scheme)
     );
     assert_eq!(
@@ -463,7 +498,11 @@ async fn cross_origin_redirect_rejected() {
         other => panic!("expected a refused redirect, got {other:?}"),
     }
     assert_eq!(
-        foreign.received_requests().await.expect("the recorded requests").len(),
+        foreign
+            .received_requests()
+            .await
+            .expect("the recorded requests")
+            .len(),
         0,
         "the foreign origin was never contacted"
     );
@@ -487,10 +526,10 @@ async fn a_refused_redirect_names_its_resolved_target() {
     // Protocol-relative: no scheme, so `Url::parse` alone cannot resolve it.
     Mock::given(method("GET"))
         .and(path("/protocol-relative"))
-        .respond_with(ResponseTemplate::new(302).insert_header(
-            "location",
-            format!("//{foreign_authority}/stolen").as_str(),
-        ))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("//{foreign_authority}/stolen").as_str()),
+        )
         .mount(&upstream.server)
         .await;
 
@@ -504,10 +543,17 @@ async fn a_refused_redirect_names_its_resolved_target() {
             format!("http://{foreign_authority}/stolen"),
             "the refusal must name where it was being sent"
         ),
-        other => panic!("expected a refused redirect, got {other:?}", other = other.err()),
+        other => panic!(
+            "expected a refused redirect, got {other:?}",
+            other = other.err()
+        ),
     }
     assert_eq!(
-        foreign.received_requests().await.expect("the recorded requests").len(),
+        foreign
+            .received_requests()
+            .await
+            .expect("the recorded requests")
+            .len(),
         0
     );
 
@@ -545,7 +591,10 @@ async fn a_refused_redirect_names_its_resolved_target() {
                 "the refusal named the hop it was at, not the hop it was sent to: {to}"
             );
         }
-        other => panic!("expected a refused redirect, got {other:?}", other = other.err()),
+        other => panic!(
+            "expected a refused redirect, got {other:?}",
+            other = other.err()
+        ),
     }
 }
 
@@ -565,7 +614,9 @@ async fn url_credentials_rejected() {
     // Before the request: the same origin, wearing credentials.
     let credentialed = parse(&format!("http://npm:secret@{authority}/left-pad"));
     assert_eq!(
-        upstream.origins.admit(&credentialed, OriginKind::NpmMetadata),
+        upstream
+            .origins
+            .admit(&credentialed, OriginKind::NpmMetadata),
         Err(UrlRejection::Credentials)
     );
     assert_eq!(
@@ -578,7 +629,12 @@ async fn url_credentials_rejected() {
         UpstreamError::RejectedUrl(UrlRejection::Credentials)
     );
     assert_eq!(
-        upstream.server.received_requests().await.expect("the recorded requests").len(),
+        upstream
+            .server
+            .received_requests()
+            .await
+            .expect("the recorded requests")
+            .len(),
         0,
         "nothing left the process"
     );
@@ -661,7 +717,11 @@ async fn unexpected_port_rejected() {
         "expected a refused redirect, got {refusal:?}"
     );
     assert_eq!(
-        other.received_requests().await.expect("the recorded requests").len(),
+        other
+            .received_requests()
+            .await
+            .expect("the recorded requests")
+            .len(),
         0,
         "the other port was never contacted"
     );
@@ -685,7 +745,7 @@ async fn client_authorization_cookies_and_proxy_credentials_are_never_forwarded(
     let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
     let server = TestServer::start_with_upstream(
         config_with_open_blocklist(blocklist_dir.path()),
-        Arc::new(package_firewall::clock::SystemClock),
+        Arc::new(probation::clock::SystemClock),
         Arc::clone(&upstream.transport),
         upstream.origins.clone(),
     )
@@ -912,7 +972,7 @@ async fn a_dot_dot_package_name_never_reaches_upstream() {
     let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
     let server = TestServer::start_with_upstream(
         config_with_open_blocklist(blocklist_dir.path()),
-        Arc::new(package_firewall::clock::SystemClock),
+        Arc::new(probation::clock::SystemClock),
         Arc::clone(&registry) as Arc<dyn Transport>,
         fake_origins(),
     )
@@ -955,15 +1015,25 @@ fn a_package_name_cannot_change_the_upstream_host() {
                     panic!("`{name}` was refused rather than encoded: {rejection}")
                 });
 
-            assert_eq!(built.host_str(), origin.host_str(), "`{name}` moved the host");
-            assert_eq!(built.scheme(), origin.scheme(), "`{name}` changed the scheme");
+            assert_eq!(
+                built.host_str(),
+                origin.host_str(),
+                "`{name}` moved the host"
+            );
+            assert_eq!(
+                built.scheme(),
+                origin.scheme(),
+                "`{name}` changed the scheme"
+            );
             assert_eq!(
                 built.port_or_known_default(),
                 origin.port_or_known_default(),
                 "`{name}` changed the port"
             );
-            assert!(built.username().is_empty() && built.password().is_none(),
-                "`{name}` introduced credentials");
+            assert!(
+                built.username().is_empty() && built.password().is_none(),
+                "`{name}` introduced credentials"
+            );
             assert_eq!(built.query(), None, "`{name}` introduced a query");
             assert_eq!(built.fragment(), None, "`{name}` introduced a fragment");
             assert_eq!(
@@ -1020,13 +1090,17 @@ async fn the_npm_route_reports_upstream_outcomes_apart() {
     let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
     let server = TestServer::start_with_upstream(
         config_with_open_blocklist(blocklist_dir.path()),
-        Arc::new(package_firewall::clock::SystemClock),
+        Arc::new(probation::clock::SystemClock),
         Arc::clone(&registry) as Arc<dyn Transport>,
         fake_origins(),
     )
     .await;
 
-    assert_eq!(server.status("/npm/slow").await, 504, "a timeout is its own row");
+    assert_eq!(
+        server.status("/npm/slow").await,
+        504,
+        "a timeout is its own row"
+    );
     assert_eq!(server.status("/npm/broken").await, 502);
     assert_eq!(server.status("/npm/garbage").await, 502);
     assert_eq!(
@@ -1037,7 +1111,11 @@ async fn the_npm_route_reports_upstream_outcomes_apart() {
     // Slice 5 renders this one; slice 4 proves only that it was fetched.
     assert_eq!(server.status("/npm/fine").await, 404);
 
-    let asked: Vec<String> = registry.calls().iter().map(|url| url.path().to_owned()).collect();
+    let asked: Vec<String> = registry
+        .calls()
+        .iter()
+        .map(|url| url.path().to_owned())
+        .collect();
     assert_eq!(asked, ["/slow", "/broken", "/garbage", "/missing", "/fine"]);
 
     server.shutdown().await;

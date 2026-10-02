@@ -1,18 +1,24 @@
 [package]
-name = "package-firewall"
+name = "probation"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96.0"
 license = "Apache-2.0"
 description = "A filtering proxy for npm and PyPI that withholds packages until they are eligible."
-publish = false
+repository = "https://github.com/postfix/probation"
+readme = "README.md"
+keywords = ["npm", "pypi", "supply-chain", "proxy", "security"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+# Planning history and analyzer state are repository-only; the crate ships source,
+# tests and the operator documents.
+exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/docs/codebase-overview.md", "/.smtc", "/.claude"]
 
 [lib]
-name = "package_firewall"
+name = "probation"
 path = "src/lib.rs"
 
 [[bin]]
-name = "package-firewall"
+name = "probation"
 path = "src/main.rs"
 
 # SPEC §12's acceptance table is stated in p95 latencies, throughput ratios and a
@@ -31,6 +37,13 @@ harness = false
 [[bench]]
 name = "blocklist_swap"
 harness = false
+
+# Ten minutes long, so bare `cargo bench` must not run it: `bench = false` leaves it
+# to be named, `cargo bench --bench delivery_rated_load`.
+[[bench]]
+name = "delivery_rated_load"
+harness = false
+bench = false
 
 [features]
 # Test-only controls compiled out of every default build. `Limits::set_response_timeouts`
@@ -83,5 +96,9 @@ url = "2.5.8"
 #
 # This crate, as its own tests see it. Cargo unifies the two, so the library the test
 # binaries link carries `test-support` while `cargo build` does not.
-package-firewall = { path = ".", features = ["test-support"] }
+probation = { path = ".", features = ["test-support"] }
+# The three invariant rows of the rated-load plan each state a claim over a whole
+# input domain, which a hand-picked example cannot falsify. Shrunk counterexamples
+# are committed under `proptest-regressions/` and replayed on the next run.
+proptest = "1.11.0"
 wiremock = "0.6.5"

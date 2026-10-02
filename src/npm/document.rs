@@ -190,10 +190,7 @@ fn take_object(
 }
 
 /// Which `time` entries survive when `keep` is the set of versions that did.
-pub fn prune_time(
-    time: &Map<String, Value>,
-    keep: impl Fn(&str) -> bool,
-) -> Map<String, Value> {
+pub fn prune_time(time: &Map<String, Value>, keep: impl Fn(&str) -> bool) -> Map<String, Value> {
     time.iter()
         .filter(|(key, _)| TIME_METADATA_KEYS.contains(&key.as_str()) || keep(key))
         .map(|(key, value)| (key.clone(), value.clone()))
@@ -209,7 +206,10 @@ pub enum DocumentError {
     /// TM-1: one pathological document would otherwise hold the single storage task
     /// for the length of one very large transaction, delaying every other operation
     /// including an urgent blocklist commit.
-    TooManyReferences { count: usize, limit: u32 },
+    TooManyReferences {
+        count: usize,
+        limit: u32,
+    },
 }
 
 impl fmt::Display for DocumentError {
@@ -345,10 +345,7 @@ mod tests {
         let document = PackageDocument::parse(DOCUMENT.as_bytes()).expect("a valid document");
         assert!(matches!(
             document.entries(1),
-            Err(DocumentError::TooManyReferences {
-                count: 2,
-                limit: 1
-            })
+            Err(DocumentError::TooManyReferences { count: 2, limit: 1 })
         ));
     }
 

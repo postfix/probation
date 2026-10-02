@@ -44,13 +44,13 @@ use axum::http::Method;
 
 use crate::App;
 use crate::artifacts::content::PinnedFile;
-use crate::{npm, pypi};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
 use crate::http::error::ApiError;
 use crate::http::logging;
-use crate::policy::{self, BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
+use crate::policy::{BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
 use crate::store::StoreError;
 use crate::store::rows::{ReferenceId, ReferenceRow};
+use crate::{npm, osv, pypi};
 
 pub use download::{DownloadError, VerifiedContent};
 pub use reference::{ArtifactReference, InvalidReferenceId};
@@ -97,7 +97,7 @@ pub async fn serve_artifact(
     }
 
     let pinned = row.pinned_digests();
-    match evaluate(app, &snapshot, now, &row, &pinned) {
+    match evaluate(app, &snapshot, now, &row, &pinned).await {
         Decision::Allow => {}
         other => return Err(decision_error(other, now)),
     }
@@ -105,7 +105,7 @@ pub async fn serve_artifact(
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
     ensure_membership(app, &row).await?;
-    match evaluate(app, &snapshot, now, &row, &pinned) {
+    match evaluate(app, &snapshot, now, &row, &pinned).await {
         Decision::Allow => {}
         other => return Err(decision_error(other, now)),
     }
@@ -134,7 +134,7 @@ pub async fn serve_artifact(
     // policy check immediately before response creation."
     let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    let decision = evaluate(app, &snapshot, now, &row, &pinned);
+    let decision = evaluate(app, &snapshot, now, &row, &pinned).await;
     let Some(auth) = Authorized::from_decision(decision, Some(snapshot.revision)) else {
         // No witness, no body — and not because a caller remembered to check.
         return Err(decision_error(decision, now));
@@ -188,15 +188,18 @@ async fn ensure_membership(app: &App, row: &ReferenceRow) -> Result<(), ApiError
 }
 
 /// One `now`, one snapshot, and both kinds of digest knowledge: what upstream
-/// advertised and what we computed ourselves (SPEC §9).
-fn evaluate(
+/// advertised and what we computed ourselves (SPEC §9). Routes through
+/// `osv::evaluate` (D2) rather than calling `policy::evaluate` directly, so OSV is
+/// resolved for a candidate this checkpoint would otherwise allow.
+async fn evaluate(
     app: &App,
     snapshot: &BlocklistSnapshot,
     now: i64,
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
-    policy::evaluate(
+    osv::evaluate(
+        &app.osv,
         Some(snapshot),
         now,
         app.config.cooldown_seconds,
@@ -209,6 +212,7 @@ fn evaluate(
             pinned_digests: pinned,
         },
     )
+    .await
 }
 
 /// The reference record, from memory where possible. SPEC §9: the record is
@@ -325,6 +329,24 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
         DenyReason::MalformedTimestamp => "the upstream publication time is malformed",
         DenyReason::FutureTimestamp => "the upstream publication time is in the future",
         DenyReason::NoTimestamp => "no publication time has been established",
+        DenyReason::BlockedByOsv => {
+            "the artifact is blocked by a known OSV malicious-package advisory"
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exhaustive match compiles, and the new arm renders a real, non-empty
+    /// reason string rather than the placeholder every other arm already has.
+    #[test]
+    fn deny_reason_maps_blocked_by_osv_in_artifacts_mod() {
+        assert_eq!(
+            deny_reason(DenyReason::BlockedByOsv),
+            "the artifact is blocked by a known OSV malicious-package advisory"
+        );
     }
 }
 
@@ -385,4 +407,3 @@ fn storage_error(err: &StoreError) -> ApiError {
         }
     }
 }
-

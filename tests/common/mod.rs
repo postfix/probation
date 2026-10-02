@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use package_firewall::clock::{Clock, SystemClock};
-use package_firewall::config::Config;
-use package_firewall::upstream::{
+use probation::clock::{Clock, SystemClock};
+use probation::config::Config;
+use probation::upstream::{
     ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, ReqwestTransport,
     Transport, UpstreamError, UpstreamValidators,
 };
-use package_firewall::{App, AppDeps, Running};
+use probation::{App, AppDeps, Running};
 use tempfile::TempDir;
 use url::Url;
 
@@ -159,7 +159,46 @@ impl TestServer {
         let data_dir = tempfile::tempdir().expect("a temporary data directory");
         config.data_dir = data_dir.path().to_path_buf();
 
-        let running = start(config, clock, transport, origins).await;
+        let running = start(
+            config,
+            clock,
+            transport,
+            origins,
+            probation::osv::unreachable_client(),
+            None,
+        )
+        .await;
+        TestServer {
+            running,
+            client: downstream_client(),
+            _data_dir: Some(data_dir),
+        }
+    }
+
+    /// The same seam, for a test that needs OSV to actually answer something — a
+    /// match, not just `start_with_upstream`'s fail-open refusal. `osv_client` and
+    /// `osv_base_url` replace the offline default, typically a plain
+    /// `reqwest::Client::new()` and a local `wiremock` server's URL.
+    pub async fn start_with_upstream_and_osv(
+        mut config: Config,
+        clock: Arc<dyn Clock>,
+        transport: Arc<dyn Transport>,
+        origins: OriginSet,
+        osv_client: reqwest::Client,
+        osv_base_url: Url,
+    ) -> TestServer {
+        let data_dir = tempfile::tempdir().expect("a temporary data directory");
+        config.data_dir = data_dir.path().to_path_buf();
+
+        let running = start(
+            config,
+            clock,
+            transport,
+            origins,
+            osv_client,
+            Some(osv_base_url),
+        )
+        .await;
         TestServer {
             running,
             client: downstream_client(),
@@ -169,11 +208,23 @@ impl TestServer {
 
     /// Starts in a directory the test owns, so a later start can find what this one
     /// persisted. `config.data_dir` is overwritten with `data_dir`.
-    pub async fn start_in(data_dir: &Path, mut config: Config, clock: Arc<dyn Clock>) -> TestServer {
+    pub async fn start_in(
+        data_dir: &Path,
+        mut config: Config,
+        clock: Arc<dyn Clock>,
+    ) -> TestServer {
         config.data_dir = data_dir.to_path_buf();
 
         let (transport, origins) = fake_upstream();
-        let running = start(config, clock, transport, origins).await;
+        let running = start(
+            config,
+            clock,
+            transport,
+            origins,
+            probation::osv::unreachable_client(),
+            None,
+        )
+        .await;
         TestServer {
             running,
             client: downstream_client(),
@@ -191,7 +242,15 @@ impl TestServer {
     ) -> TestServer {
         config.data_dir = data_dir.to_path_buf();
 
-        let running = start(config, clock, registry, fake_origins()).await;
+        let running = start(
+            config,
+            clock,
+            registry,
+            fake_origins(),
+            probation::osv::unreachable_client(),
+            None,
+        )
+        .await;
         TestServer {
             running,
             client: downstream_client(),
@@ -221,7 +280,8 @@ impl TestServer {
             status.is_success(),
             "{path} answered {status}, not a document: {body}"
         );
-        serde_json::from_str(&body).unwrap_or_else(|err| panic!("{path} is not JSON: {err}: {body}"))
+        serde_json::from_str(&body)
+            .unwrap_or_else(|err| panic!("{path} is not JSON: {err}: {body}"))
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -235,7 +295,7 @@ impl TestServer {
     /// The application, for a test that drives a library entry point directly rather
     /// than through a socket — which is how a concurrency test gets a future it can
     /// drop at an instant of its own choosing.
-    pub fn app(&self) -> Arc<package_firewall::App> {
+    pub fn app(&self) -> Arc<probation::App> {
         Arc::clone(self.running.app())
     }
 
@@ -249,7 +309,11 @@ impl TestServer {
 
     /// The same request with headers of the test's choosing. Used to prove that
     /// what a client sends this proxy is not what this proxy sends upstream.
-    pub async fn get_with_headers(&self, path: &str, headers: &[(&str, &str)]) -> reqwest::Response {
+    pub async fn get_with_headers(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::Response {
         let mut request = self.client.get(self.url(path));
         for (name, value) in headers {
             request = request.header(*name, *value);
@@ -453,10 +517,7 @@ pub fn raw_header(response: &str, name: &str) -> Option<String> {
 /// The body of an HTTP/1.1 response read off a raw socket: everything after the
 /// blank line.
 pub fn body_bytes(response: &[u8]) -> &[u8] {
-    match response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-    {
+    match response.windows(4).position(|window| window == b"\r\n\r\n") {
         Some(at) => &response[at + 4..],
         None => &[],
     }
@@ -467,12 +528,16 @@ async fn start(
     clock: Arc<dyn Clock>,
     transport: Arc<dyn Transport>,
     origins: OriginSet,
+    osv_client: reqwest::Client,
+    osv_base_url: Option<Url>,
 ) -> Running {
     App::start(AppDeps {
         config,
         clock,
         transport,
         origins,
+        osv_client,
+        osv_base_url,
     })
     .await
     .expect("the server binds and starts")
@@ -490,7 +555,10 @@ pub enum FakeAnswer {
     /// `ETag` of `etag`, and `304` to any request whose `If-None-Match` carries that
     /// same `etag` — which is exactly the pair SPEC §10's revalidation needs, and the
     /// only way a test can tell a conditional request from a refetch.
-    Validated { etag: String, body: String },
+    Validated {
+        etag: String,
+        body: String,
+    },
     /// Metadata only: answers `304` whatever the request carried — including a
     /// request that carried no validator at all, which no conforming registry would
     /// ever do.
@@ -523,11 +591,16 @@ pub enum FakeAnswer {
     /// stands in for any bug that could panic inside a transfer — an unwrap, an index,
     /// a dependency — and it is how a test reaches the transfer task's unwind path
     /// without putting a panic in the product code to reach it.
-    PanicsMidStream { head: String },
+    PanicsMidStream {
+        head: String,
+    },
     /// Metadata only: waits at `gate`, then answers with `body`. A refresh parked here
     /// is genuinely in flight, which is what lets a test be certain the requests that
     /// join it are concurrent with it rather than served one after another.
-    GatedMetadata { body: String, gate: Arc<Gate> },
+    GatedMetadata {
+        body: String,
+        gate: Arc<Gate>,
+    },
     /// Metadata only: waits at `gate`, then answers `304` carrying `etag`.
     ///
     /// The revalidation counterpart of [`FakeAnswer::GatedMetadata`], which can only
@@ -537,11 +610,16 @@ pub enum FakeAnswer {
     /// here provides. It answers `304` whatever the request carried, like
     /// [`FakeAnswer::AlwaysNotModified`]; a test registers it only after a seeding
     /// `200` has stored the validators the refresh will send.
-    GatedNotModified { etag: String, gate: Arc<Gate> },
+    GatedNotModified {
+        etag: String,
+        gate: Arc<Gate>,
+    },
     /// Metadata only: waits at `gate`, then panics. The metadata counterpart of
     /// [`FakeAnswer::PanicsMidStream`], and the same reason: it reaches the refresh's
     /// unwind path without putting a panic in the product code to reach it.
-    PanicsMidRefresh { gate: Arc<Gate> },
+    PanicsMidRefresh {
+        gate: Arc<Gate>,
+    },
 }
 
 /// A rendezvous between a test and a download in flight.
@@ -611,7 +689,10 @@ impl FakeRegistry {
     }
 
     pub fn calls(&self) -> Vec<Url> {
-        self.calls.lock().expect("the fake registry's calls").clone()
+        self.calls
+            .lock()
+            .expect("the fake registry's calls")
+            .clone()
     }
 
     /// The validators each conditional request for `path` carried, in order.
@@ -627,8 +708,7 @@ impl FakeRegistry {
 
     /// How many requests this registry has answered `304` rather than with a body.
     pub fn not_modified_answers(&self) -> usize {
-        self.not_modified
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.not_modified.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Makes every later call fail, as an unreachable upstream does. PERF-01's test
@@ -758,7 +838,7 @@ impl Transport for FakeRegistry {
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let capped = |body: String, declared: Option<u64>| ArtifactBody {
             declared_length: declared,
-            stream: package_firewall::upstream::capped(
+            stream: probation::upstream::capped(
                 Box::pin(futures_util::stream::once(async move {
                     Ok(bytes::Bytes::from(body))
                 })),
@@ -781,10 +861,7 @@ impl Transport for FakeRegistry {
                     (Some(head), Some(tail), gate),
                     |(head, tail, gate)| async move {
                         if let Some(head) = head {
-                            return Some((
-                                Ok(bytes::Bytes::from(head)),
-                                (None, tail, gate),
-                            ));
+                            return Some((Ok(bytes::Bytes::from(head)), (None, tail, gate)));
                         }
                         let tail = tail?;
                         // The download is now genuinely in flight and half arrived.
@@ -794,10 +871,7 @@ impl Transport for FakeRegistry {
                 );
                 Ok(ArtifactBody {
                     declared_length: Some(declared),
-                    stream: package_firewall::upstream::capped(
-                        Box::pin(stream),
-                        req.max_bytes,
-                    ),
+                    stream: probation::upstream::capped(Box::pin(stream), req.max_bytes),
                 })
             }
             FakeAnswer::PanicsMidStream { head } => {
@@ -810,10 +884,7 @@ impl Transport for FakeRegistry {
                 });
                 Ok(ArtifactBody {
                     declared_length: Some(declared),
-                    stream: package_firewall::upstream::capped(
-                        Box::pin(stream),
-                        req.max_bytes,
-                    ),
+                    stream: probation::upstream::capped(Box::pin(stream), req.max_bytes),
                 })
             }
             FakeAnswer::Missing => Err(UpstreamError::Status(404)),
@@ -849,10 +920,7 @@ pub fn fake_upstream() -> (Arc<dyn Transport>, OriginSet) {
 /// test that spelled that by hand would be asserting on its own guess.
 pub fn npm_upstream_path(name: &str) -> String {
     fake_origins()
-        .url_for(
-            package_firewall::upstream::OriginKind::NpmMetadata,
-            &[name],
-        )
+        .url_for(probation::upstream::OriginKind::NpmMetadata, &[name])
         .expect("the fake origin builds a URL for this name")
         .path()
         .to_owned()
@@ -864,7 +932,7 @@ pub fn npm_upstream_path(name: &str) -> String {
 pub fn pypi_upstream_path(name: &str) -> String {
     fake_origins()
         .url_for(
-            package_firewall::upstream::OriginKind::PypiMetadata,
+            probation::upstream::OriginKind::PypiMetadata,
             &["simple", name, ""],
         )
         .expect("the fake origin builds a URL for this project")
@@ -876,8 +944,8 @@ pub fn pypi_upstream_path(name: &str) -> String {
 /// on.
 pub async fn body_error(response: reqwest::Response) -> String {
     let body = response.text().await.expect("a body");
-    let value: serde_json::Value =
-        serde_json::from_str(&body).unwrap_or_else(|err| panic!("the body is not JSON: {err}: {body}"));
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|err| panic!("the body is not JSON: {err}: {body}"));
     value["error"]
         .as_str()
         .unwrap_or_else(|| panic!("the error body names an error: {body}"))
@@ -995,7 +1063,10 @@ pub mod logs {
 
     impl io::Write for Captured {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().expect("the capture buffer").extend_from_slice(buf);
+            self.0
+                .lock()
+                .expect("the capture buffer")
+                .extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -1114,9 +1185,11 @@ pub fn snapshot_with(
 /// is a new snapshot in force at an instant they choose, without waiting a polling
 /// interval for it.
 pub fn publish_blocklist(server: &TestServer, document: &str, now_micros: i64) {
-    let snapshot =
-        package_firewall::policy::BlocklistSnapshot::parse_and_validate(document.as_bytes(), now_micros)
-            .expect("the test blocklist is valid");
+    let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
+        document.as_bytes(),
+        now_micros,
+    )
+    .expect("the test blocklist is valid");
     server
         .running()
         .app()
@@ -1138,7 +1211,7 @@ pub struct TriggerClock {
     /// `Arc` here would be a cycle, and `Running::shutdown` — which closes the store
     /// queues by dropping the last `App` — would wait for a storage task that never
     /// stops.
-    app: Mutex<Option<std::sync::Weak<package_firewall::App>>>,
+    app: Mutex<Option<std::sync::Weak<probation::App>>>,
     document: Mutex<Option<String>>,
 }
 
@@ -1159,11 +1232,9 @@ impl TriggerClock {
 
     /// Publishes `document` on the next clock reading, once.
     pub fn arm(&self, server: &TestServer, document: &str) {
-        *self.app.lock().expect("the trigger's app") =
-            Some(Arc::downgrade(server.running().app()));
+        *self.app.lock().expect("the trigger's app") = Some(Arc::downgrade(server.running().app()));
         *self.document.lock().expect("the trigger's document") = Some(document.to_owned());
-        self.armed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn fired(&self) -> bool {
@@ -1179,9 +1250,7 @@ impl TriggerClock {
 impl Clock for TriggerClock {
     fn now_utc_micros(&self) -> i64 {
         let now = self.inner.now_utc_micros();
-        if self
-            .armed
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
             && let (Some(app), Some(document)) = (
                 self.app
                     .lock()
@@ -1194,7 +1263,7 @@ impl Clock for TriggerClock {
                     .clone(),
             )
         {
-            let snapshot = package_firewall::policy::BlocklistSnapshot::parse_and_validate(
+            let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
                 document.as_bytes(),
                 now,
             )
@@ -1292,4 +1361,141 @@ pub fn database_path(data_dir: &Path) -> PathBuf {
 
 pub fn wal_path(data_dir: &Path) -> PathBuf {
     data_dir.join("state").join("firewall.db-wal")
+}
+
+// ---------------------------------------------------------------------------
+// The rated-load driver
+// ---------------------------------------------------------------------------
+
+/// Three independent measurements of one rated-load run, plus the achieved rate.
+#[derive(Debug)]
+pub struct RatedLoadResult {
+    /// Requests issued and answered.
+    pub offered: u64,
+    /// Distinct decided `request_id`s plus summary records, read from the destination.
+    pub delivered: u64,
+    /// The application's monotonic loss total, read after shutdown.
+    pub dropped: u64,
+    /// Requests in the timed window (`offered` less the one warm-up request per worker) over its seconds.
+    pub achieved: f64,
+}
+
+/// Offers `GET /health/live` at `target_rate` per second for `duration` against the
+/// file sink alone, then reconciles. `target_rate` above what the build can sustain
+/// runs unpaced, so `achieved` is then the build's ceiling.
+///
+/// `log_file_max_bytes` is sized for the whole run unless the caller changed it from
+/// the sample's value. A rotation destroys the previous generation, so a rotated run
+/// is void and panics rather than reporting a low `delivered`.
+pub async fn drive_rated_load(
+    mut config: Config,
+    target_rate: u32,
+    duration: Duration,
+) -> RatedLoadResult {
+    const WORKERS: u32 = 32;
+    assert!(config.siem_url.is_none(), "exactly one sink: the file sink");
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+    config.log_file_path = Some(path.clone());
+    if config.log_file_max_bytes == sample_config().log_file_max_bytes {
+        let records = u64::from(target_rate).saturating_mul(duration.as_secs() + 1) + 1;
+        let bytes = records.saturating_mul(4096).max(1 << 20);
+        config.log_file_max_bytes = std::num::NonZeroU64::new(bytes).unwrap();
+    }
+    // Longer than any run: the only summary is the one shutdown flushes (C65).
+    probation::http::logging::set_summary_window(Duration::from_secs(3600));
+
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    let app = server.app(); // cloned before shutdown drops the server's handle
+    let url = server.url("/health/live");
+    let offered = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let interval = Duration::from_secs_f64(f64::from(WORKERS) / f64::from(target_rate));
+
+    // Each worker opens its connection with one request that is counted in `offered`
+    // but sits outside the timed window: 32 simultaneous connects take over a second
+    // to accept in a debug build, and that is not the request rate being measured.
+    let barrier = Arc::new(tokio::sync::Barrier::new(WORKERS as usize + 1));
+    let workers: Vec<_> = (0..WORKERS)
+        .map(|_| {
+            let (client, url, offered) = (downstream_client(), url.clone(), Arc::clone(&offered));
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                let get = || async {
+                    let status = client.get(&url).send().await.expect("a response").status();
+                    assert!(status.is_success(), "/health/live answered {status}");
+                    offered.fetch_add(1, Ordering::Relaxed);
+                };
+                get().await;
+                barrier.wait().await;
+                let started = Instant::now();
+                let mut next = started;
+                while started.elapsed() < duration {
+                    get().await;
+                    next += interval;
+                    tokio::time::sleep_until(next.into()).await;
+                }
+            })
+        })
+        .collect();
+    barrier.wait().await;
+    let started = Instant::now();
+    for worker in workers {
+        worker.await.expect("a load worker");
+    }
+    let elapsed = started.elapsed();
+    // `Running::shutdown` awaits the store task, which ends only when every `App`
+    // handle is gone, so this clone must be dropped before shutdown can return. The
+    // tally is therefore read while shutdown runs, once the shutdown summary — the
+    // last record offered, queued behind everything else — is in the file: by then
+    // the drain has finished and no loss site can fire again.
+    let shutdown = tokio::spawn(server.shutdown());
+    let drain_limit = Instant::now() + Duration::from_secs(6);
+    let mut seen_summary = false;
+    while !seen_summary && Instant::now() < drain_limit {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        seen_summary = std::fs::read_to_string(&path)
+            .is_ok_and(|text| text.contains("\"event\":\"request_summary\""));
+    }
+    let dropped = app.delivery_lost_total();
+    // The summary may itself have been dropped by a small queue, and that is counted;
+    // absent and uncounted means the file sink's 5 s drain deadline cut the tail off,
+    // and the reconciliation is then not exact.
+    assert!(
+        seen_summary || dropped > 0,
+        "the drain deadline was hit, so the reconciliation is not exact"
+    );
+    drop(app);
+    shutdown.await.expect("the shutdown task");
+
+    let mut rolled = path.clone().into_os_string();
+    rolled.push(".1");
+    assert!(
+        !Path::new(&rolled).exists(),
+        "the file sink rotated: the run is void, delivered would be under-counted"
+    );
+    let text = std::fs::read_to_string(&path).expect("the delivery file is readable");
+    let mut ids = std::collections::HashSet::new();
+    let mut summaries = 0;
+    for line in text.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).expect("one JSON object a line");
+        match record["event"].as_str() {
+            Some("request_decided") => {
+                ids.insert(
+                    record["request_id"]
+                        .as_str()
+                        .expect("a request_id")
+                        .to_owned(),
+                );
+            }
+            Some("request_summary") => summaries += 1,
+            other => panic!("unexpected record kind {other:?}"),
+        }
+    }
+    let offered = offered.load(Ordering::Relaxed);
+    RatedLoadResult {
+        offered,
+        delivered: ids.len() as u64 + summaries,
+        dropped,
+        achieved: (offered - u64::from(WORKERS)) as f64 / elapsed.as_secs_f64(),
+    }
 }

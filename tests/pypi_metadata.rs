@@ -19,13 +19,13 @@ use common::{
     FakeAnswer, FakeRegistry, Gate, TestClock, TestServer, fake_origins, fixture, logs,
     pypi_upstream_path, sample_config, wait_until,
 };
-use package_firewall::config::Config;
-use package_firewall::http::error::ApiError;
-use package_firewall::policy::Ecosystem;
-use package_firewall::store::cache::{ProjectKey, RenderKey, Representation};
-use package_firewall::store::rows::ProjectRefresh;
-use package_firewall::upstream::UpstreamValidators;
-use package_firewall::pypi::filename::file_identity;
+use probation::config::Config;
+use probation::http::error::ApiError;
+use probation::policy::Ecosystem;
+use probation::pypi::filename::file_identity;
+use probation::store::cache::{ProjectKey, RenderKey, Representation};
+use probation::store::rows::ProjectRefresh;
+use probation::upstream::UpstreamValidators;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -85,12 +85,7 @@ impl Harness {
             .as_array()
             .expect("`files` is an array")
             .iter()
-            .map(|file| {
-                file["filename"]
-                    .as_str()
-                    .expect("a filename")
-                    .to_owned()
-            })
+            .map(|file| file["filename"].as_str().expect("a filename").to_owned())
             .collect()
     }
 
@@ -175,7 +170,7 @@ async fn harness_configured(
     let server = TestServer::start_with_upstream(
         config,
         clock.shared(),
-        Arc::clone(&registry) as Arc<dyn package_firewall::upstream::Transport>,
+        Arc::clone(&registry) as Arc<dyn probation::upstream::Transport>,
         fake_origins(),
     )
     .await;
@@ -229,7 +224,9 @@ fn anchor_texts(html: &str) -> Vec<String> {
     while let Some(start) = rest.find("<a ") {
         rest = &rest[start..];
         let Some(open) = rest.find('>') else { break };
-        let Some(close) = rest.find("</a>") else { break };
+        let Some(close) = rest.find("</a>") else {
+            break;
+        };
         found.push(unescape(&rest[open + 1..close]));
         rest = &rest[close + 4..];
     }
@@ -285,7 +282,13 @@ async fn name_normalisation_and_canonical_redirect() {
         "",
         &[(
             BARD,
-            document(BARD, vec![file("friendly_bard-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z")]),
+            document(
+                BARD,
+                vec![file(
+                    "friendly_bard-1.0-py3-none-any.whl",
+                    "2020-01-01T00:00:00Z",
+                )],
+            ),
         )],
     )
     .await;
@@ -305,7 +308,10 @@ async fn name_normalisation_and_canonical_redirect() {
     }
 
     // The trailing slash is part of the canonical form.
-    let raw = harness.server.raw_get("/pypi/simple/friendly-bard", &[]).await;
+    let raw = harness
+        .server
+        .raw_get("/pypi/simple/friendly-bard", &[])
+        .await;
     assert_eq!(status_of(&raw), 301);
     assert_eq!(
         header_of(&raw, "location").as_deref(),
@@ -411,7 +417,10 @@ async fn a_project_named_artifacts_still_resolves() {
             "artifacts",
             document(
                 "artifacts",
-                vec![file("artifacts-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z")],
+                vec![file(
+                    "artifacts-1.0-py3-none-any.whl",
+                    "2020-01-01T00:00:00Z",
+                )],
             ),
         )],
     )
@@ -466,7 +475,10 @@ async fn requires_python_and_yanked_preserved() {
     );
 
     let html = harness.listing(BARD, HTML_ACCEPT).await;
-    assert!(html.contains(r#"data-requires-python="&gt;=3.9""#), "{html}");
+    assert!(
+        html.contains(r#"data-requires-python="&gt;=3.9""#),
+        "{html}"
+    );
     assert!(
         html.contains(r#"data-yanked="built from the wrong tag""#),
         "{html}"
@@ -580,8 +592,14 @@ async fn wheel_filename_identity() {
                 BARD,
                 vec![
                     file("friendly_bard-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z"),
-                    file("friendly_bard-1.0-3-py3-none-any.whl", "2020-01-01T00:00:00Z"),
-                    file("friendly_bard-1.0.0-py3-none-any.whl", "2020-01-01T00:00:00Z"),
+                    file(
+                        "friendly_bard-1.0-3-py3-none-any.whl",
+                        "2020-01-01T00:00:00Z",
+                    ),
+                    file(
+                        "friendly_bard-1.0.0-py3-none-any.whl",
+                        "2020-01-01T00:00:00Z",
+                    ),
                     file("friendly_bard-1.1-py3-none-any.whl", "2020-01-01T00:00:00Z"),
                 ],
             ),
@@ -814,10 +832,7 @@ async fn existing_project_with_no_eligible_files_returns_empty_listing() {
 
     let response = harness
         .server
-        .get_with_headers(
-            &format!("/pypi/simple/{BARD}/"),
-            &[("accept", JSON_ACCEPT)],
-        )
+        .get_with_headers(&format!("/pypi/simple/{BARD}/"), &[("accept", JSON_ACCEPT)])
         .await;
     assert_eq!(
         response.status().as_u16(),
@@ -859,11 +874,23 @@ async fn known_project_index_lists_only_seen_projects() {
         &[
             (
                 BARD,
-                document(BARD, vec![file("friendly_bard-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z")]),
+                document(
+                    BARD,
+                    vec![file(
+                        "friendly_bard-1.0-py3-none-any.whl",
+                        "2020-01-01T00:00:00Z",
+                    )],
+                ),
             ),
             (
                 OTHER,
-                document(OTHER, vec![file("other_project-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z")]),
+                document(
+                    OTHER,
+                    vec![file(
+                        "other_project-1.0-py3-none-any.whl",
+                        "2020-01-01T00:00:00Z",
+                    )],
+                ),
             ),
         ],
     )
@@ -918,7 +945,13 @@ async fn a_warm_listing_touches_neither_the_database_nor_upstream() {
         "",
         &[(
             BARD,
-            document(BARD, vec![file("friendly_bard-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z")]),
+            document(
+                BARD,
+                vec![file(
+                    "friendly_bard-1.0-py3-none-any.whl",
+                    "2020-01-01T00:00:00Z",
+                )],
+            ),
         )],
     )
     .await;
@@ -992,9 +1025,9 @@ async fn concurrent_cold_requests_cause_exactly_one_metadata_refresh() {
     let requests: Vec<_> = (0..6)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(async move {
-                package_firewall::pypi::ensure_fresh_project(&app, BARD).await
-            })
+            tokio::spawn(
+                async move { probation::pypi::ensure_fresh_project(&app, BARD).await },
+            )
         })
         .collect();
 
@@ -1053,17 +1086,19 @@ async fn a_panic_in_a_metadata_refresh_does_not_wedge_the_project() {
 
     let refreshing = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await })
+        tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
     };
     gate.wait_until_reached().await;
 
     let waiter = {
         let app = Arc::clone(&app);
-        tokio::spawn(async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await })
+        tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
     };
-    wait_until("the second request joined the one refresh", PATIENCE, || {
-        app.downloads.metadata().waiting_on(&key) == 2
-    })
+    wait_until(
+        "the second request joined the one refresh",
+        PATIENCE,
+        || app.downloads.metadata().waiting_on(&key) == 2,
+    )
     .await;
     gate.release();
 
@@ -1090,13 +1125,12 @@ async fn a_panic_in_a_metadata_refresh_does_not_wedge_the_project() {
 
     // Upstream is healthy again, and the project is servable rather than wedged behind
     // the dead refresh.
-    harness.registry.answer(
-        &pypi_upstream_path(BARD),
-        FakeAnswer::Body(bard_document()),
-    );
+    harness
+        .registry
+        .answer(&pypi_upstream_path(BARD), FakeAnswer::Body(bard_document()));
     let later = tokio::time::timeout(
         Duration::from_secs(5),
-        package_firewall::pypi::ensure_fresh_project(&app, BARD),
+        probation::pypi::ensure_fresh_project(&app, BARD),
     )
     .await
     .expect("a later request for the same project is not wedged behind the dead one");
@@ -1136,7 +1170,7 @@ fn server_now(harness: &Harness) -> i64 {
 }
 
 /// The cached projection for [`BARD`]'s JSON listing, or none if there is not one.
-fn projection(harness: &Harness) -> Option<Arc<package_firewall::store::cache::RenderedResponse>> {
+fn projection(harness: &Harness) -> Option<Arc<probation::store::cache::RenderedResponse>> {
     harness
         .server
         .running()
@@ -1224,7 +1258,10 @@ async fn an_upstream_304_renews_freshness_without_a_refetch() {
 
     harness.clock.advance_seconds(metadata_ttl() + 1);
     let second = harness.json_listing(BARD).await;
-    assert_eq!(second, first, "a 304 serves the document upstream still has");
+    assert_eq!(
+        second, first,
+        "a 304 serves the document upstream still has"
+    );
 
     assert_eq!(harness.metadata_calls(BARD), 2);
     let conditional = harness.registry.conditional_calls(&upstream);
@@ -1264,13 +1301,19 @@ async fn a_304_still_rebuilds_the_representation_when_the_blocklist_changed() {
     let harness = validated_harness().await;
 
     assert!(
-        harness.json_filenames(BARD).await.contains(&WHEEL_1_1.to_owned()),
+        harness
+            .json_filenames(BARD)
+            .await
+            .contains(&WHEEL_1_1.to_owned()),
         "1.1 starts out listed"
     );
     // Warmed on purpose: HTML is a representation of its own, so both cached
     // projections have to be rebuilt, not just the one this test reads first.
     assert!(
-        harness.html_filenames(BARD).await.contains(&WHEEL_1_1.to_owned()),
+        harness
+            .html_filenames(BARD)
+            .await
+            .contains(&WHEEL_1_1.to_owned()),
         "in both serialisations"
     );
 
@@ -1301,7 +1344,10 @@ async fn a_304_still_rebuilds_the_representation_when_the_blocklist_changed() {
     );
     assert!(after.contains(&WHEEL_1_0.to_owned()));
     assert!(
-        !harness.html_filenames(BARD).await.contains(&WHEEL_1_1.to_owned()),
+        !harness
+            .html_filenames(BARD)
+            .await
+            .contains(&WHEEL_1_1.to_owned()),
         "the warm HTML projection was rebuilt too, rather than served on"
     );
 
@@ -1399,7 +1445,10 @@ async fn projection_expires_at_next_hold_release() {
     .await;
 
     assert!(
-        !harness.json_filenames(BARD).await.contains(&WHEEL_1_1.to_owned()),
+        !harness
+            .json_filenames(BARD)
+            .await
+            .contains(&WHEEL_1_1.to_owned()),
         "1.1 is two minutes short of its ten-minute cooldown"
     );
     assert_eq!(
@@ -1414,7 +1463,10 @@ async fn projection_expires_at_next_hold_release() {
     // without anything being asked upstream.
     harness.clock.advance_seconds(121);
     assert!(
-        harness.json_filenames(BARD).await.contains(&WHEEL_1_1.to_owned())
+        harness
+            .json_filenames(BARD)
+            .await
+            .contains(&WHEEL_1_1.to_owned())
     );
     assert_eq!(
         harness.metadata_calls(BARD),
@@ -1510,7 +1562,7 @@ const SURPRISING: &str = "surprising-project";
 fn projection_of(
     harness: &Harness,
     name: &str,
-) -> Option<Arc<package_firewall::store::cache::RenderedResponse>> {
+) -> Option<Arc<probation::store::cache::RenderedResponse>> {
     harness
         .server
         .running()
@@ -1624,7 +1676,10 @@ async fn a_304_whose_stored_document_is_unparseable_commits_nothing() {
 
     let response = harness
         .server
-        .get_with_headers(&format!("/pypi/simple/{CORRUPT}/"), &[("accept", JSON_ACCEPT)])
+        .get_with_headers(
+            &format!("/pypi/simple/{CORRUPT}/"),
+            &[("accept", JSON_ACCEPT)],
+        )
         .await;
     assert_eq!(response.status().as_u16(), 502);
     assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
@@ -1729,7 +1784,7 @@ async fn a_304_with_unexpected_validators_is_still_a_revalidation() {
 /// hands one over.
 #[tokio::test]
 async fn a_304_with_a_body_and_extra_headers_yields_no_bytes() {
-    use package_firewall::upstream::{MetadataRequest, MetadataResponse, OriginKind};
+    use probation::upstream::{MetadataRequest, MetadataResponse, OriginKind};
     use wiremock::ResponseTemplate;
     use wiremock::matchers::{method, path};
 
@@ -1835,10 +1890,7 @@ async fn artifact_harness() -> (TestServer, TempDir) {
     let config = config_with(dir.path(), "", ONE_DAY);
 
     let registry = FakeRegistry::new();
-    registry.answer(
-        &pypi_upstream_path(BARD),
-        FakeAnswer::Body(pin_document()),
-    );
+    registry.answer(&pypi_upstream_path(BARD), FakeAnswer::Body(pin_document()));
     registry.answer(
         &pypi_artifact_upstream_path(PIN_FILENAME),
         FakeAnswer::Body(fixture("artifacts/harmless-widget-1.0.0.tgz")),
@@ -1874,7 +1926,10 @@ fn file_path(listing: &Value, filename: &str) -> String {
 
 async fn json_listing_of(server: &TestServer, project: &str) -> Value {
     let body = server
-        .get_with_headers(&format!("/pypi/simple/{project}/"), &[("accept", JSON_ACCEPT)])
+        .get_with_headers(
+            &format!("/pypi/simple/{project}/"),
+            &[("accept", JSON_ACCEPT)],
+        )
         .await
         .text()
         .await
@@ -1919,10 +1974,7 @@ async fn a_computed_digest_block_hides_the_file_from_the_next_metadata_listing()
     // One download, which is what teaches this instance the file's SHA-256. The
     // document advertises no hashes at all, so this is the only way that digest can
     // become known — and the only way a block on it can reach the listing.
-    assert_eq!(
-        server.status(&file_path(&listing, PIN_FILENAME)).await,
-        200
-    );
+    assert_eq!(server.status(&file_path(&listing, PIN_FILENAME)).await, 200);
 
     common::publish_blocklist(
         &server,
@@ -2041,7 +2093,7 @@ async fn ceiling_harness(max_age: u64, projects: &[&str]) -> Harness {
 async fn stored_project(
     harness: &Harness,
     project: &str,
-) -> package_firewall::store::rows::ProjectRow {
+) -> probation::store::rows::ProjectRow {
     harness
         .server
         .running()
@@ -2055,7 +2107,7 @@ async fn stored_project(
 
 /// This project's effective ceiling in whole seconds.
 fn ceiling_seconds(project: &str, max_age: u64) -> i64 {
-    package_firewall::store::effective_max_age_micros(
+    probation::store::effective_max_age_micros(
         &ProjectKey::new(Ecosystem::PyPi, project),
         max_age,
     )
@@ -2307,11 +2359,15 @@ async fn two_projects_fetched_together_do_not_expire_together() {
     harness.json_listing(CEILING_EARLY).await;
     harness.json_listing(CEILING_LATE).await;
     assert_eq!(
-        stored_project(&harness, CEILING_EARLY).await.fetched_at_micros,
+        stored_project(&harness, CEILING_EARLY)
+            .await
+            .fetched_at_micros,
         t0
     );
     assert_eq!(
-        stored_project(&harness, CEILING_LATE).await.fetched_at_micros,
+        stored_project(&harness, CEILING_LATE)
+            .await
+            .fetched_at_micros,
         t0
     );
 
@@ -2351,7 +2407,7 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
         let configured = max_age as i64 * 1_000_000;
         for index in 0..500 {
             let key = ProjectKey::new(Ecosystem::PyPi, format!("fixture-spread-{index}"));
-            let effective = package_firewall::store::effective_max_age_micros(&key, max_age)
+            let effective = probation::store::effective_max_age_micros(&key, max_age)
                 .expect("a nonzero maximum age has a ceiling");
 
             assert!(
@@ -2364,13 +2420,13 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
             );
             assert_eq!(
                 effective,
-                package_firewall::store::effective_max_age_micros(&key, max_age).unwrap(),
+                probation::store::effective_max_age_micros(&key, max_age).unwrap(),
                 "the offset is deterministic, so a restart lands on the same ceiling"
             );
         }
     }
     assert_eq!(
-        package_firewall::store::effective_max_age_micros(
+        probation::store::effective_max_age_micros(
             &ProjectKey::new(Ecosystem::PyPi, BARD),
             0
         ),
@@ -2485,7 +2541,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     harness.clock.advance_seconds(ceiling - 60);
     let leader = tokio::spawn({
         let app = Arc::clone(&app);
-        async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await }
+        async move { probation::pypi::ensure_fresh_project(&app, BARD).await }
     });
     gate.wait_until_reached().await;
     assert_eq!(
@@ -2500,14 +2556,14 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     // depends on, and the one a `tokio::join!` of two futures cannot guarantee.
     harness.clock.advance_seconds(70);
     assert!(
-        package_firewall::store::is_over_age(&key, CEILING_MAX_AGE, t0, server_now(&harness)),
+        probation::store::is_over_age(&key, CEILING_MAX_AGE, t0, server_now(&harness)),
         "the joiner's own classification differs from the leader's: by this clock the \
          copy is over-age, so an UNCOALESCED request here would send no validators"
     );
 
     let joiner = tokio::spawn({
         let app = Arc::clone(&app);
-        async move { package_firewall::pypi::ensure_fresh_project(&app, BARD).await }
+        async move { probation::pypi::ensure_fresh_project(&app, BARD).await }
     });
     // Positive evidence that the joiner coalesced rather than becoming a second
     // leader: two `join()` calls landed on the one slot. Had it started a slot of its
@@ -2564,7 +2620,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     );
     assert!(
         matches!(
-            package_firewall::pypi::ensure_fresh_project(&app, BARD).await,
+            probation::pypi::ensure_fresh_project(&app, BARD).await,
             Err(ApiError::UpstreamInvalid)
         ),
         "an uncoalesced over-age request sends no validators, so a 304 answering it is \
@@ -2580,7 +2636,7 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
     harness.registry.go_offline();
     assert!(
         matches!(
-            package_firewall::pypi::ensure_fresh_project(&app, BARD).await,
+            probation::pypi::ensure_fresh_project(&app, BARD).await,
             Err(ApiError::UpstreamFailure)
         ),
         "the copy is over-age against the clock this request reads, and is refused"

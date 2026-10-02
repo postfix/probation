@@ -21,7 +21,7 @@ use common::{
     config_with_open_blocklist, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     publish_blocklist, snapshot_with,
 };
-use package_firewall::store::rows::ReferenceId;
+use probation::store::rows::ReferenceId;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -38,14 +38,12 @@ const NOW: &str = "2026-04-06T12:00:00Z";
 const BODY_SHA256: &str = "029830248baf17af5d9a9e23d3e7054a8860882d1cdc06bbbb1549056d347acb";
 const BODY_SHA512: &str = "72e64e9e9403218ba8896d15a6576c64b994690fde6701a3547793650a1745d4de04c8799a3d57c8732512a4f33e36055b7031cee2998bc71be0667640fe06ee";
 const BODY_SHA1: &str = "06e87889ae32c865ca8a744b780e57253f0b0a47";
-const BODY_SRI: &str =
-    "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
+const BODY_SRI: &str = "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
 
 /// `tests/fixtures/artifacts/tampered-widget-1.0.0.tgz` — the same reference, other
 /// bytes.
 const TAMPERED_SHA256: &str = "f753ce595d22fe1a96c17aa0d93e1fc1bfcb1d7bfa756b23d96f67ff31ffdc3b";
-const TAMPERED_SRI: &str =
-    "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
+const TAMPERED_SRI: &str = "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
 
 fn body() -> String {
     common::fixture("artifacts/harmless-widget-1.0.0.tgz")
@@ -114,7 +112,7 @@ impl Harness {
         ReferenceId::parse_hex(hex).expect("the reference id is hexadecimal")
     }
 
-    async fn reference(&self, path: &str) -> package_firewall::store::rows::ReferenceRow {
+    async fn reference(&self, path: &str) -> probation::store::rows::ReferenceRow {
         self.server
             .running()
             .app()
@@ -197,7 +195,9 @@ fn blocklist(revision: u64, packages: &str, hashes: &str) -> String {
 }
 
 fn blocked_digest(algorithm: &str, digest: &str) -> String {
-    format!(r#"{{"algorithm":"{algorithm}","digest":"{digest}","reason":"known malicious artifact"}}"#)
+    format!(
+        r#"{{"algorithm":"{algorithm}","digest":"{digest}","reason":"known malicious artifact"}}"#
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +233,9 @@ async fn zero_body_bytes_before_cold_verification_completes() {
         .await
         .expect("the server accepts a connection");
     socket
-        .write_all(format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
         .await
         .expect("the request is written");
 
@@ -252,13 +254,10 @@ async fn zero_body_bytes_before_cold_verification_completes() {
 
     gate.release();
     let mut response = Vec::new();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        socket.read_to_end(&mut response),
-    )
-    .await
-    .expect("the response arrives once verification completes")
-    .expect("the response is read");
+    tokio::time::timeout(Duration::from_secs(5), socket.read_to_end(&mut response))
+        .await
+        .expect("the response arrives once verification completes")
+        .expect("the response is read");
     let response = String::from_utf8_lossy(&response).into_owned();
 
     assert!(
@@ -391,8 +390,14 @@ async fn eviction_and_refetch_preserve_pins() {
 
     assert_eq!(harness.server.status(&path).await, 200);
     let pinned = harness.reference(&path).await;
-    assert_eq!(pinned.pinned_sha256.map(hex::encode).as_deref(), Some(BODY_SHA256));
-    assert_eq!(pinned.pinned_sha512.map(hex::encode).as_deref(), Some(BODY_SHA512));
+    assert_eq!(
+        pinned.pinned_sha256.map(hex::encode).as_deref(),
+        Some(BODY_SHA256)
+    );
+    assert_eq!(
+        pinned.pinned_sha512.map(hex::encode).as_deref(),
+        Some(BODY_SHA512)
+    );
     assert!(pinned.content_key.is_some());
 
     // A metadata refresh rewrites the whole reference row. SPEC §9 keeps the pins
@@ -445,7 +450,10 @@ async fn changed_bytes_for_the_same_reference_are_refused_with_502() {
 
     assert_eq!(harness.server.status(&path).await, 200);
     let pinned = harness.reference(&path).await;
-    assert_eq!(pinned.pinned_sha256.map(hex::encode).as_deref(), Some(BODY_SHA256));
+    assert_eq!(
+        pinned.pinned_sha256.map(hex::encode).as_deref(),
+        Some(BODY_SHA256)
+    );
     assert!(
         pinned.reference.expected.is_empty(),
         "upstream advertised nothing, so only the pins can refuse the new bytes"
@@ -531,7 +539,9 @@ async fn local_block_denies_with_upstream_unreachable() {
         &harness.server,
         &blocklist(
             2,
-            &format!(r#"{{"ecosystem":"npm","name":"{WIDGET}","version":null,"reason":"malware"}}"#),
+            &format!(
+                r#"{{"ecosystem":"npm","name":"{WIDGET}","version":null,"reason":"malware"}}"#
+            ),
             "",
         ),
         common::parse_rfc3339(NOW),

@@ -1,16 +1,16 @@
-# Package Firewall sample configuration (SPEC §4).
+# Probation sample configuration (SPEC §4).
 #
 # Configuration changes require a restart; blocklist changes do not.
 
 listen = "127.0.0.1:8080"
 public_url = "https://packages.example.org"
-data_dir = "/var/lib/package-firewall"
+data_dir = "/var/lib/probation"
 # The snapshot your blocklist producer writes and replaces atomically. It is not
 # the `blocklist.sample.json` in this repository: that sample carries a deliberately
 # distant `expires_at` so it always validates, while a producer's real snapshot
 # carries a short window. Without a valid snapshot the service starts, answers
 # /health/live but not /health/ready, and refuses every package request.
-blocklist_file = "/etc/package-firewall/blocklist.json"
+blocklist_file = "/etc/probation/blocklist.json"
 
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
@@ -41,11 +41,17 @@ max_references_per_project = 20000
 # Every decision is appended to this file as one JSON object per line, in addition to
 # stdout. Exactly one process may write it, and it must not be handed to an external
 # `logrotate` — this process renames the file itself.
-# log_file_path = "/var/log/package-firewall/decisions.ndjson"
+# log_file_path = "/var/log/probation/decisions.ndjson"
 # The live file is rolled to `<log_file_path>.1` when it reaches this size, replacing
 # any previous `.1`. One generation is kept, so the pair costs at most twice this.
 # Has no effect without `log_file_path`, and is refused rather than ignored.
 # log_file_max_bytes = 104857600        # 100 MiB live, 200 MiB with the rollover
+# How much memory this sink's queue may hold while the file falls behind — a memory
+# budget, like `memory_cache_max_bytes`, and additive to it. Records are dropped and
+# counted once the queue is full, so this trades memory for headroom against a slow
+# disk. Absent means 64 MiB. Has no effect without `log_file_path`, and is refused
+# rather than ignored.
+# log_queue_max_bytes = 67108864        # 64 MiB
 
 # The collector decisions are also POSTed to, batched as newline-delimited JSON at 256
 # records or two seconds, whichever comes first. Absent by default: with no `siem_url`
@@ -53,10 +59,16 @@ max_references_per_project = 20000
 # host is a loopback address or `localhost`.
 # siem_url = "https://siem.example.org/services/collector/raw"
 # The header the credential is sent under. The credential itself is never written here:
-# it is read from the environment variable `OSPREY_SIEM_AUTH` at startup, and delivery
+# it is read from the environment variable `PROBATION_SIEM_AUTH` at startup, and delivery
 # is unauthenticated when that variable is unset. Has no effect without `siem_url`, and
 # is refused rather than ignored.
 # siem_auth_header = "Authorization"
+# The same budget for this sink's queue, and the one that decides how long a collector
+# outage costs nothing: records accumulate here while the collector is away and are
+# dropped and counted once it is full. Absent means 64 MiB. Two sinks are two queues,
+# so a deployment with both configured pays both. Has no effect without `siem_url`,
+# and is refused rather than ignored.
+# siem_queue_max_bytes = 67108864       # 64 MiB
 
 # Whether every delivered record also carries the peer IP of the connection that asked,
 # as a `consumer` field. Off by default, and with it off no record carries the field at
@@ -72,3 +84,19 @@ max_references_per_project = 20000
 # Refused at startup without `log_file_path` or `siem_url`, so the addresses it records
 # reach a durable destination the operator chose.
 # log_consumer_identification = false
+
+# OSV vulnerability intelligence: every candidate a producer's own blocklist would
+# otherwise allow is also checked against OSV before it is served. A candidate is
+# never blocked while an OSV lookup is unresolved: an absent, slow or unreachable OSV
+# endpoint costs staleness, never availability.
+#
+# How long an OSV lookup's answer is trusted before it is asked again. Optional,
+# and 300 (5 minutes) if left out.
+osv_cache_ttl_seconds = 300
+# How long one OSV batch flush's outbound call may take before it fails open.
+# Optional, and 500 if left out.
+osv_request_timeout_ms = 500
+# Whether OSV enforcement denies (`enforce`), only checks and logs a match without
+# denying (`diagnostic`), or is skipped entirely (`off`). Optional, and `enforce` if
+# left out — today's behaviour. Changing it requires a restart, like every other key.
+osv_mode = "enforce"

@@ -28,13 +28,13 @@ use crate::http::error::ApiError;
 use crate::http::logging;
 use crate::npm::document::{PackageDocument, VersionEntry};
 use crate::policy::{
-    self, BlocklistSnapshot, Candidate, Decision, DenyReason, Ecosystem, PublicationTime,
+    BlocklistSnapshot, Candidate, Decision, DenyReason, Ecosystem, PublicationTime,
 };
-use crate::store::{self, StoreError};
 use crate::store::cache::{
     AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert};
+use crate::store::{self, StoreError};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, UpstreamError};
 
 pub use name::{InvalidPackageName, PackageName};
@@ -198,12 +198,9 @@ async fn current_project(
         stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale).await?,
     };
 
-    caches.projects.insert_if_current(
-        key,
-        Arc::clone(&cached),
-        cached.approximate_bytes(),
-        seen,
-    );
+    caches
+        .projects
+        .insert_if_current(key, Arc::clone(&cached), cached.approximate_bytes(), seen);
     Ok(cached)
 }
 
@@ -258,7 +255,11 @@ pub async fn ensure_fresh_project(
 /// Stored rather than upstream: a refresh must always parse what upstream just sent,
 /// but SPEC §10 says a warm request parses nothing, and `MemoryCaches::stored_parses`
 /// is what a test asserts that on.
-fn parse_stored(app: &App, name: &PackageName, payload: &[u8]) -> Result<PackageDocument, ApiError> {
+fn parse_stored(
+    app: &App,
+    name: &PackageName,
+    payload: &[u8],
+) -> Result<PackageDocument, ApiError> {
     app.store().caches().note_stored_parse();
     PackageDocument::parse(payload).map_err(|err| {
         tracing::error!(package = %name, error = %err, "the stored project payload is unusable");
@@ -274,10 +275,9 @@ async fn resolve(
     monotonic: Instant,
 ) -> Result<Resolved, ApiError> {
     let cached = current_project(app, name, now, monotonic).await?;
-    let ttl_micros = i64::try_from(
-        Duration::from_secs(app.config.metadata_ttl_seconds).as_micros(),
-    )
-    .unwrap_or(i64::MAX);
+    let ttl_micros =
+        i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
+            .unwrap_or(i64::MAX);
 
     let document = parse_stored(app, name, &cached.row.payload)?;
     let entries = document
@@ -302,12 +302,14 @@ async fn resolve(
             // reader putting an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&entry.id),
         };
-        let decision = policy::evaluate(
+        let decision = crate::osv::evaluate(
+            &app.osv,
             Some(snapshot),
             now,
             app.config.cooldown_seconds,
             &candidate,
-        );
+        )
+        .await;
 
         match decision {
             Decision::Allow => {
@@ -315,7 +317,8 @@ async fn resolve(
             }
             Decision::Hold { eligible_at_micros } => {
                 next_release = Some(
-                    next_release.map_or(eligible_at_micros, |held: i64| held.min(eligible_at_micros)),
+                    next_release
+                        .map_or(eligible_at_micros, |held: i64| held.min(eligible_at_micros)),
                 );
             }
             Decision::Deny(_) | Decision::Unavailable => {}
@@ -365,10 +368,7 @@ async fn resolve(
 
 /// SPEC §5: upstream's own timestamp wins; otherwise the committed first-seen time
 /// for that exact reference; otherwise `Unknown`, which never becomes eligible.
-fn publication_of(
-    entry: &VersionEntry,
-    first_seen: &HashMap<ReferenceId, i64>,
-) -> PublicationTime {
+fn publication_of(entry: &VersionEntry, first_seen: &HashMap<ReferenceId, i64>) -> PublicationTime {
     match entry.publication {
         PublicationTime::Upstream(micros) => PublicationTime::Upstream(micros),
         PublicationTime::Malformed => PublicationTime::Malformed,
@@ -754,6 +754,26 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
         DenyReason::MalformedTimestamp => "the upstream publication time is malformed",
         DenyReason::FutureTimestamp => "the upstream publication time is in the future",
         DenyReason::NoTimestamp => "no publication time has been established",
+        DenyReason::BlockedByOsv => {
+            "the version is blocked by a known OSV malicious-package advisory"
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exhaustive match compiles, and the new arm renders a real, non-empty
+    /// reason string rather than the placeholder every other arm already has.
+    /// Mirrors `artifacts::tests::deny_reason_maps_blocked_by_osv_in_artifacts_mod`;
+    /// tests only this one-line match arm, not Slice 2's `osv::evaluate` wiring.
+    #[test]
+    fn deny_reason_maps_blocked_by_osv_in_npm_mod() {
+        assert_eq!(
+            deny_reason(DenyReason::BlockedByOsv),
+            "the version is blocked by a known OSV malicious-package advisory"
+        );
     }
 }
 

@@ -20,12 +20,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    FakeAnswer, FakeRegistry, Gate, TestClock, TestServer, config_with_open_blocklist, downstream_client,
-    fake_origins, fake_upstream, npm_upstream_path, sample_config,
+    FakeAnswer, FakeRegistry, Gate, TestClock, TestServer, config_with_open_blocklist,
+    downstream_client, fake_origins, fake_upstream, npm_upstream_path, sample_config,
 };
-use package_firewall::clock::SystemClock;
-use package_firewall::upstream::Transport;
-use package_firewall::{App, AppDeps, StartupError};
+use probation::clock::SystemClock;
+use probation::upstream::Transport;
+use probation::{App, AppDeps, StartupError};
 use serde_json::Value;
 use url::Url;
 use wiremock::matchers::method;
@@ -97,6 +97,98 @@ async fn tp1_file_sink_appends_ndjson() {
             "the delivered `{field}` is the one stdout reported; the two must not drift"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 4 (D7): `osv_mode: diagnostic` substitutes the reason, never the result
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn record_osv_diagnostic_match_sets_the_reason_without_changing_result() {
+    use wiremock::matchers::path;
+
+    const NAME: &str = "left-pad";
+    const VERSION: &str = "1.0.0";
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let log_path = dir.path().join("decisions.ndjson");
+
+    let osv_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/querybatch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [{"vulns": [{"id": "MAL-2026-0001"}]}]
+        })))
+        .mount(&osv_server)
+        .await;
+    let osv_url = Url::parse(&format!("{}/v1/querybatch", osv_server.uri()))
+        .expect("a valid OSV mock URL");
+
+    let mut config = config_with_open_blocklist(dir.path());
+    config.log_file_path = Some(log_path.clone());
+    config.osv_mode = probation::osv::OsvMode::Diagnostic;
+    // A solitary lookup — nothing else fills the batch — only flushes on
+    // `OSV_BATCH_INTERVAL` (2s), which is longer than the sample config's default
+    // `osv_request_timeout_ms` (500ms); without widening it here, `check` always
+    // fails open before the batcher ever flushes, and the real match this test needs
+    // is never observed. See `tests/e2e_npm.rs`'s identical widening for the same
+    // reason.
+    config.osv_request_timeout_ms = NonZeroU64::new(4_000).expect("4000 is non-zero");
+
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(NAME),
+        FakeAnswer::Body(
+            serde_json::json!({
+                "name": NAME,
+                "dist-tags": {"latest": VERSION},
+                "versions": {
+                    VERSION: {
+                        "name": NAME,
+                        "version": VERSION,
+                        "dist": {"tarball": format!("https://packages.example.org/npm/artifacts/x/{NAME}-{VERSION}.tgz")},
+                    }
+                },
+                "time": {VERSION: "2026-04-01T00:00:00Z"},
+            })
+            .to_string(),
+        ),
+    );
+
+    let server = TestServer::start_with_upstream_and_osv(
+        config,
+        Arc::new(SystemClock),
+        Arc::clone(&registry) as Arc<dyn Transport>,
+        fake_origins(),
+        reqwest::Client::new(),
+        osv_url,
+    )
+    .await;
+
+    let response = server.get(&format!("/npm/{NAME}")).await;
+    assert!(
+        response.status().is_success(),
+        "the metadata request itself is served: {}",
+        response.status()
+    );
+    server.shutdown().await;
+
+    let decisions = decided_records(&log_path);
+    assert_eq!(
+        decisions.len(),
+        1,
+        "one delivered record for the one request made: {decisions:?}"
+    );
+    let record = &decisions[0];
+
+    assert_eq!(record["result"], "ALLOWED");
+    // `OSV_DIAGNOSTIC_REASON` is `pub(crate)` (D7) and unreachable from an
+    // integration test, so this asserts the exact string it names.
+    assert_eq!(
+        record["reason"],
+        "the request would be blocked by a known OSV malicious-package advisory \
+         (diagnostic mode: not enforced)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +315,9 @@ async fn tp3_default_config_opens_nothing() {
     );
     assert_eq!(
         server.running().background_task_count(),
-        2,
-        "the blocklist poller and the maintenance pass, and no delivery task beside them"
+        3,
+        "the blocklist poller, the maintenance pass, and the always-on osv batcher \
+         (Slice 1, D3) — no delivery task beside them, since neither sink is configured"
     );
 
     server.get(PACKAGE).await;
@@ -415,6 +508,8 @@ async fn tp16_unopenable_log_path_fails_startup() {
         clock: Arc::new(SystemClock),
         transport,
         origins,
+        osv_client: probation::osv::unreachable_client(),
+        osv_base_url: None,
     })
     .await;
     // `Running` is not `Debug`, so this cannot be an `expect_err`.
@@ -492,7 +587,10 @@ async fn tp17_log_file_mode_is_0600() {
     let mut config = sample_config();
     config.log_file_path = Some(probed.clone());
     let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
-    assert!(probed.exists(), "startup created the file before any record");
+    assert!(
+        probed.exists(),
+        "startup created the file before any record"
+    );
     assert_eq!(mode_of(&probed), 0o600, "and created it owner-only");
     server.shutdown().await;
 
@@ -504,9 +602,11 @@ async fn tp17_log_file_mode_is_0600() {
     config.log_file_max_bytes = NonZeroU64::new(CAP).expect("a non-zero cap");
     let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
     server.get(PACKAGE).await;
-    common::wait_until("the first record is written", Duration::from_secs(5), || {
-        size_of(&path) > 0
-    })
+    common::wait_until(
+        "the first record is written",
+        Duration::from_secs(5),
+        || size_of(&path) > 0,
+    )
     .await;
     assert_eq!(mode_of(&path), 0o600, "the live file is owner-only");
     for _ in 0..80 {
@@ -515,7 +615,11 @@ async fn tp17_log_file_mode_is_0600() {
     server.shutdown().await;
     let rolled = rollover_of(&path);
     assert!(rolled.exists(), "the requests crossed the cap");
-    assert_eq!(mode_of(&rolled), 0o600, "the rolled generation is owner-only");
+    assert_eq!(
+        mode_of(&rolled),
+        0o600,
+        "the rolled generation is owner-only"
+    );
     assert_eq!(
         mode_of(&path),
         0o600,
@@ -685,9 +789,15 @@ async fn tp20_delivered_records_carry_timestamp() {
 // TP-7: a drop is counted per sink, and reaches a durable destination
 // ---------------------------------------------------------------------------
 
-/// Enough requests to fill the SIEM sink's 4096-record queue and overflow it while the
-/// collector holds the sink's one in-flight batch hostage.
+/// Enough requests to fill the SIEM sink's queue and overflow it while the collector
+/// holds the sink's one in-flight batch hostage.
 const OVERFLOW_REQUESTS: usize = 5_000;
+
+/// Sixty-four records' worth of SIEM queue, pinned so this test owns its own overflow
+/// premise. The shipped default is a memory budget an operator may raise and a later
+/// slice will raise again; a test whose premise is "the default queue is smaller than
+/// `OVERFLOW_REQUESTS`" would go quietly green the day it stops being true.
+const TP7_SIEM_QUEUE_MAX_BYTES: u64 = 64 * 32 * 1024;
 
 #[tokio::test]
 async fn tp7_drop_is_counted_and_read_back_from_file() {
@@ -698,6 +808,8 @@ async fn tp7_drop_is_counted_and_read_back_from_file() {
     let mut config = sample_config();
     config.log_file_path = Some(path.clone());
     config.siem_url = Some(wedged_collector().await);
+    config.siem_queue_max_bytes =
+        NonZeroU64::new(TP7_SIEM_QUEUE_MAX_BYTES).expect("a non-zero budget");
 
     let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
 
@@ -965,6 +1077,8 @@ async fn tp11b_credential_absent_from_startup_rejection() {
         clock: Arc::new(SystemClock),
         transport,
         origins,
+        osv_client: probation::osv::unreachable_client(),
+        osv_base_url: None,
     })
     .await;
     // `Running` is not `Debug`, so this cannot be an `expect_err`.
@@ -979,7 +1093,7 @@ async fn tp11b_credential_absent_from_startup_rejection() {
 
     let text = err.to_string();
     assert!(
-        text.contains("OSPREY_SIEM_AUTH"),
+        text.contains("PROBATION_SIEM_AUTH"),
         "an operator is told which variable to fix: {text}"
     );
     assert!(
@@ -1070,7 +1184,7 @@ async fn tp15b_drain_cutoff_records_are_counted() {
     );
 }
 
-/// Sums `dropped_siem` across every [`flush_drop_tail`](package_firewall) line.
+/// Sums `dropped_siem` across every [`flush_drop_tail`](probation) line.
 fn drain_tail_dropped_siem(text: &str) -> u64 {
     text.lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -1133,7 +1247,7 @@ async fn silent_collector() -> Url {
     Url::parse(&format!("http://{addr}/ingest")).expect("a collector URL")
 }
 
-/// `OSPREY_SIEM_AUTH` is process-global and these tests run in parallel, so every test
+/// `PROBATION_SIEM_AUTH` is process-global and these tests run in parallel, so every test
 /// that starts a SIEM sink takes this lock first — whether it wants a credential or
 /// not — and clears the variable again on the way out. Serialising only the writers is
 /// not enough: a reader started outside the lock picks up whichever value happens to be
@@ -1150,8 +1264,8 @@ impl AuthEnv {
         // environment, and the only readers are the servers started while it is held.
         unsafe {
             match value {
-                Some(value) => std::env::set_var("OSPREY_SIEM_AUTH", value),
-                None => std::env::remove_var("OSPREY_SIEM_AUTH"),
+                Some(value) => std::env::set_var("PROBATION_SIEM_AUTH", value),
+                None => std::env::remove_var("PROBATION_SIEM_AUTH"),
             }
         }
         AuthEnv(guard)
@@ -1161,7 +1275,7 @@ impl AuthEnv {
 impl Drop for AuthEnv {
     fn drop(&mut self) {
         // SAFETY: as above — the lock is still held, and is released after this.
-        unsafe { std::env::remove_var("OSPREY_SIEM_AUTH") };
+        unsafe { std::env::remove_var("PROBATION_SIEM_AUTH") };
     }
 }
 
@@ -1184,8 +1298,9 @@ fn delivered(path: &Path) -> Vec<Value> {
         .unwrap_or_else(|err| panic!("{} is readable: {err}", path.display()));
     text.lines()
         .map(|line| {
-            serde_json::from_str(line)
-                .unwrap_or_else(|err| panic!("every delivered line is one JSON object: {err}: {line}"))
+            serde_json::from_str(line).unwrap_or_else(|err| {
+                panic!("every delivered line is one JSON object: {err}: {line}")
+            })
         })
         .collect()
 }
@@ -1285,8 +1400,8 @@ mod stdout {
 
         /// The fields of the one decision line carrying `request_id`.
         pub fn decision_line(&self, request_id: &str) -> Option<Map<String, Value>> {
-            let text = String::from_utf8_lossy(&self.0.lock().expect("the capture buffer"))
-                .into_owned();
+            let text =
+                String::from_utf8_lossy(&self.0.lock().expect("the capture buffer")).into_owned();
             text.lines()
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())
                 .filter_map(|line| line.get("fields")?.as_object().cloned())
@@ -1296,4 +1411,746 @@ mod stdout {
                 })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// RL-1: a queue holds the operator's memory budget, not a fixed 4096 records
+// ---------------------------------------------------------------------------
+
+/// Eight records' worth of SIEM queue — `8 x BYTES_PER_RECORD`, that constant being
+/// `pub(crate)` and so unnameable from here. Small enough that the requests below
+/// overflow it, and nowhere near the 4096 records the queue held before it was sized
+/// from the budget.
+const RL1_SIEM_QUEUE_MAX_BYTES: u64 = 8 * 32 * 1024;
+
+/// Deliberately fewer than 4096: a queue that ignored the budget would absorb every
+/// one of these and report no loss at all, which is what makes the count below
+/// evidence for the budget rather than for overflow in general.
+const RL1_REQUESTS: usize = 512;
+
+/// An operator who writes a small `siem_queue_max_bytes` gets a small queue. The
+/// observable is the loss: the same run against the fixed 4096-record queue loses
+/// nothing, because 512 records fit it.
+#[tokio::test]
+async fn rl1_queue_capacity_follows_the_budget() {
+    let _env = AuthEnv::set(None).await;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+
+    let mut config = sample_config();
+    config.log_file_path = Some(path.clone());
+    config.siem_url = Some(wedged_collector().await);
+    config.siem_queue_max_bytes =
+        NonZeroU64::new(RL1_SIEM_QUEUE_MAX_BYTES).expect("a non-zero budget");
+
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    for _ in 0..RL1_REQUESTS {
+        server.get(PACKAGE).await;
+    }
+    server.shutdown().await;
+
+    let summaries: Vec<Value> = delivered(&path)
+        .into_iter()
+        .filter(|record| record["event"] == "request_summary")
+        .collect();
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary["dropped_siem"].as_u64() > Some(0)),
+        "a budget of eight records overflows within {RL1_REQUESTS} requests; a queue \
+         still sized at a fixed 4096 would report none of it: {summaries:?}"
+    );
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| summary["dropped_file"].as_u64() == Some(0)),
+        "and the sink whose budget was left alone keeps its own capacity: {summaries:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RL-24: a record a sink could not take is still on stdout
+// ---------------------------------------------------------------------------
+
+/// Sixty-four records' worth of SIEM queue, pinned for the reason `TP-7` pins its
+/// own: a test whose premise is "the shipped default is smaller than the loop below"
+/// goes quietly green the day a later slice raises the default.
+const RL24_SIEM_QUEUE_MAX_BYTES: u64 = 64 * 32 * 1024;
+
+/// SPEC §11 puts the decision line on stdout, and the durable sinks are the copy,
+/// not the record. So the line is written before the record is offered, and an
+/// operator whose collector is down still has the complete trail on the console —
+/// the whole of what makes a dropped record recoverable. This is the regression
+/// guard for the extraction of `build_decision`, which rewrote that region.
+#[tokio::test]
+async fn rl24_a_record_a_sink_lost_is_still_on_stdout() {
+    let captured = stdout::capture();
+    let _env = AuthEnv::set(None).await;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+
+    let mut config = sample_config();
+    config.log_file_path = Some(path.clone());
+    config.siem_url = Some(wedged_collector().await);
+    config.siem_queue_max_bytes =
+        NonZeroU64::new(RL24_SIEM_QUEUE_MAX_BYTES).expect("a non-zero budget");
+
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    // The collector never answers, so the SIEM queue fills and stays full long before
+    // this loop ends: the last request's record is offered to a sink with nowhere to
+    // put it.
+    for _ in 1..OVERFLOW_REQUESTS {
+        server.get(PACKAGE).await;
+    }
+    let request_id = decided(&server, PACKAGE).await;
+    server.shutdown().await;
+
+    let summaries: Vec<Value> = delivered(&path)
+        .into_iter()
+        .filter(|record| record["event"] == "request_summary")
+        .collect();
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary["dropped_siem"].as_u64() > Some(0)),
+        "the premise: records were lost by the wedged collector's sink: {summaries:?}"
+    );
+
+    let line = captured
+        .decision_line(&request_id)
+        .unwrap_or_else(|| panic!("a stdout decision line for {request_id}"));
+    for field in DECISION_FIELDS {
+        assert!(
+            line.get(field).is_some(),
+            "the console keeps the whole record a sink could not take, including \
+             `{field}`: {line:?}"
+        );
+    }
+    // The method a lossy run prints is the record's own, escaped exactly once. Two
+    // applications of the bound would read `"\"GET\""` here, and nothing else in this
+    // repository asserts the value of this field.
+    assert_eq!(
+        line.get("method").and_then(Value::as_str),
+        Some("\"GET\""),
+        "the method is bounded once, by the one place that bounds it: {line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RL-24b: an operator's RUST_LOG cannot silence the decision line
+// ---------------------------------------------------------------------------
+
+/// Reaps the served child when a failed assertion unwinds past it; the normal path
+/// takes the child out first, so this then does nothing.
+struct ServedChild(Option<std::process::Child>);
+
+impl Drop for ServedChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Runs the built binary with `rust_log`, sends it one decided request, stops it with
+/// SIGTERM, and returns its stdout with the file sink's decision records.
+async fn serve_once_with_rust_log(rust_log: &str) -> (String, Vec<Value>) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let log_path = dir.path().join("decisions.ndjson");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("a free loopback port")
+        .local_addr()
+        .expect("its address")
+        .port();
+    let config_path = dir.path().join("config.toml");
+    let sample = std::fs::read_to_string("config.sample.toml").expect("the sample config");
+    let mut config = String::new();
+    for line in sample.lines() {
+        let key = line.split('=').next().unwrap_or("").trim();
+        match key {
+            "listen" => config.push_str(&format!("listen = \"127.0.0.1:{port}\"\n")),
+            "data_dir" => config.push_str(&format!("data_dir = {:?}\n", dir.path().join("data"))),
+            _ => {
+                config.push_str(line);
+                config.push('\n');
+            }
+        }
+    }
+    config.push_str(&format!("log_file_path = {log_path:?}\n"));
+    std::fs::write(&config_path, config).expect("a written config");
+
+    let mut child = ServedChild(Some(
+        std::process::Command::new(env!("CARGO_BIN_EXE_probation"))
+            .args(["serve", "--config"])
+            .arg(&config_path)
+            .env("RUST_LOG", rust_log)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the built binary starts"),
+    ));
+
+    let url = format!("http://127.0.0.1:{port}{PACKAGE}");
+    let mut answered = false;
+    for _ in 0..100 {
+        if reqwest::get(&url).await.is_ok() {
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        answered,
+        "the served binary answered a request within ten seconds"
+    );
+
+    let killed = std::process::Command::new("kill")
+        .args([
+            "-TERM",
+            &child.0.as_ref().expect("a live child").id().to_string(),
+        ])
+        .status()
+        .expect("kill(1) runs");
+    assert!(killed.success(), "SIGTERM was delivered");
+    let output = child
+        .0
+        .take()
+        .expect("a live child")
+        .wait_with_output()
+        .expect("the binary exits");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        decided_records(&log_path),
+    )
+}
+
+/// The decision line is the audit trail, so a `RUST_LOG` that names some other level
+/// or target must not take it off stdout. Span- and field-qualified directives are
+/// not claimed.
+#[tokio::test]
+async fn rl24b_rust_log_cannot_silence_the_decision_line() {
+    for rust_log in ["warn", "hyper=debug", "probation::http::logging=off"] {
+        let (stdout, records) = serve_once_with_rust_log(rust_log).await;
+        assert!(
+            stdout
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .any(|line| {
+                    line["target"] == "probation::http::logging"
+                        && line["fields"]["message"] == "request decided"
+                }),
+            "RUST_LOG={rust_log}: the decision line is on stdout; stdout was: {stdout:?}"
+        );
+        assert!(
+            !records.is_empty(),
+            "RUST_LOG={rust_log}: the record is in the file sink"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RL-8 / RL-9: the window count is read-and-reset, the total is never reset
+// ---------------------------------------------------------------------------
+
+/// A run that spans several summary windows, against a collector that never answers so
+/// the SIEM queue keeps overflowing. Each window reports only its own losses (RL-8), so
+/// no single window can equal the run's loss; the total nothing resets can (RL-9).
+#[tokio::test]
+async fn rl9_the_monotonic_total_is_never_reset() {
+    let _env = AuthEnv::set(None).await;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+
+    let mut config = sample_config();
+    config.log_file_path = Some(path.clone());
+    config.siem_url = Some(wedged_collector().await);
+    config.siem_queue_max_bytes =
+        NonZeroU64::new(RL1_SIEM_QUEUE_MAX_BYTES).expect("a non-zero budget");
+
+    probation::http::logging::set_summary_window(Duration::from_millis(100));
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    let app = server.app();
+
+    let mut totals = Vec::new();
+    for _ in 0..4 {
+        for _ in 0..RL1_REQUESTS {
+            server.get(PACKAGE).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        totals.push(app.delivery_lost_total());
+    }
+    drop(app);
+    server.shutdown().await;
+    probation::http::logging::set_summary_window(Duration::from_secs(60));
+
+    assert!(
+        totals.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the total never goes down: {totals:?}"
+    );
+    let windows: Vec<u64> = delivered(&path)
+        .into_iter()
+        .filter(|record| record["event"] == "request_summary")
+        .filter_map(|summary| summary["dropped_siem"].as_u64())
+        .collect();
+    let largest = windows.iter().copied().max().unwrap_or(0);
+    assert!(
+        windows.iter().filter(|&&lost| lost > 0).count() >= 2,
+        "the run spans several windows that each lost something: {windows:?}"
+    );
+    assert!(
+        totals.last().copied().unwrap_or(0) > largest,
+        "the total {totals:?} exceeds any one window {windows:?}, because a window is reset"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RL-12..16c, RL-25: GET /health/delivery, the shedding signal
+// ---------------------------------------------------------------------------
+
+const RL_HEALTH_SIEM_QUEUE_MAX_BYTES: u64 = 64 * 32 * 1024;
+
+/// A collector that holds every connection unanswered until `true` is sent on the
+/// returned handle, then answers each request `200`. A probe's own record is offered
+/// to the sink like any other, so recovery is only observable once the queue can drain.
+async fn gated_collector() -> (Url, tokio::sync::watch::Sender<bool>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a loopback listener");
+    let addr = listener.local_addr().expect("the listener's address");
+    let (open, _) = tokio::sync::watch::channel(false);
+    let gate = open.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut opened = gate.subscribe();
+            tokio::spawn(async move {
+                if opened.wait_for(|open| *open).await.is_err() {
+                    return;
+                }
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    // Read until the request goes idle, then answer it.
+                    let mut got = false;
+                    while let Ok(Ok(n)) =
+                        tokio::time::timeout(Duration::from_millis(50), stream.read(&mut buf)).await
+                    {
+                        if n == 0 {
+                            return;
+                        }
+                        got = true;
+                    }
+                    if got
+                        && stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (
+        Url::parse(&format!("http://{addr}/ingest")).expect("a collector URL"),
+        open,
+    )
+}
+
+/// A server whose only sink is a gated SIEM, driven until it has lost a record.
+async fn shedding_server(
+    clock: &Arc<TestClock>,
+) -> (
+    TestServer,
+    tempfile::TempDir,
+    tokio::sync::watch::Sender<bool>,
+) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    let (url, gate) = gated_collector().await;
+    config.siem_url = Some(url);
+    config.siem_queue_max_bytes =
+        NonZeroU64::new(RL_HEALTH_SIEM_QUEUE_MAX_BYTES).expect("a non-zero budget");
+    let server = TestServer::start_with(config, clock.shared()).await;
+    for _ in 0..OVERFLOW_REQUESTS {
+        server.get(PACKAGE).await;
+    }
+    assert!(
+        server.app().delivery_lost_total() > 0,
+        "the premise: the wedged collector cost a record"
+    );
+    (server, dir, gate)
+}
+
+/// Lets the collector answer and waits until an offered record is no longer lost, so
+/// that the probe under test cannot itself move the total.
+async fn recover(server: &TestServer, gate: &tokio::sync::watch::Sender<bool>) {
+    gate.send_replace(true);
+    let app = server.app();
+    for _ in 0..200 {
+        let before = app.delivery_lost_total();
+        server.get("/health/live").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if app.delivery_lost_total() == before {
+            return;
+        }
+    }
+    panic!("the queue never drained");
+}
+
+#[tokio::test]
+async fn rl12_delivery_is_200_when_nothing_is_shed() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+
+    // No sink at all.
+    let bare = TestServer::start_with(sample_config(), clock.shared()).await;
+    bare.get(PACKAGE).await;
+    assert_eq!(bare.status("/health/delivery").await, 200);
+    bare.shutdown().await;
+
+    // A sink that keeps up: a file, with some traffic and no loss.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = sample_config();
+    config.log_file_path = Some(dir.path().join("decisions.ndjson"));
+    let server = TestServer::start_with(config, clock.shared()).await;
+    for _ in 0..20 {
+        server.get(PACKAGE).await;
+    }
+    assert_eq!(server.app().delivery_lost_total(), 0);
+    assert_eq!(server.status("/health/delivery").await, 200);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn rl13_delivery_is_503_right_after_a_loss() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+    let (server, _dir, gate) = shedding_server(&clock).await;
+    assert_eq!(server.status("/health/delivery").await, 503);
+    gate.send_replace(true);
+    server.shutdown().await;
+}
+
+/// The first probe is what stamps the change, so it is made before the clock moves.
+#[tokio::test]
+async fn rl14_delivery_recovers_after_sixty_quiet_seconds() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+    let (server, _dir, gate) = shedding_server(&clock).await;
+    recover(&server, &gate).await;
+    assert_eq!(server.status("/health/delivery").await, 503);
+    clock.advance_seconds(59);
+    assert_eq!(server.status("/health/delivery").await, 503);
+    clock.advance_seconds(2);
+    assert_eq!(server.status("/health/delivery").await, 200);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn rl15_readiness_stays_green_while_delivery_sheds() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+    let (server, _dir, gate) = shedding_server(&clock).await;
+    assert_eq!(server.status("/health/ready").await, 200);
+    assert_eq!(server.status("/health/delivery").await, 503);
+    gate.send_replace(true);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn rl16c_a_backwards_clock_step_does_not_latch_503() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+    let (server, _dir, gate) = shedding_server(&clock).await;
+    recover(&server, &gate).await;
+    assert_eq!(server.status("/health/delivery").await, 503);
+    clock.rewind_wall_clock_seconds(3_600);
+    assert_eq!(server.status("/health/delivery").await, 200);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn rl25_delivery_has_no_body_and_is_not_cacheable() {
+    let _env = AuthEnv::set(None).await;
+    let clock = TestClock::at_rfc3339("2026-01-01T00:00:00Z");
+    let (server, _dir, gate) = shedding_server(&clock).await;
+    recover(&server, &gate).await;
+    for (expected, label) in [(503, "shedding"), (200, "quiet")] {
+        if expected == 200 {
+            clock.advance_seconds(61);
+        }
+        let response = server.get("/health/delivery").await;
+        assert_eq!(response.status(), expected, "{label}");
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .map(|v| v.as_bytes()),
+            Some(&b"no-store"[..]),
+            "{label}"
+        );
+        assert!(
+            response.bytes().await.expect("a body").is_empty(),
+            "{label}"
+        );
+    }
+    server.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// RL-10 / RL-23: the SIEM sink holds its batch while the collector is unreachable
+// ---------------------------------------------------------------------------
+
+/// A collector that answers every request `503` at once and records when each arrived.
+/// Unlike [`silent_collector`], whose answer never comes and so hides a hot-spin behind
+/// the client's own request timeout, this one makes the retry cadence the only thing
+/// spacing the arrivals apart. `Connection: close` keeps every attempt a fresh
+/// connection, so an arrival is an attempt.
+async fn prompt_503_collector() -> (Url, Arc<std::sync::Mutex<Vec<std::time::Instant>>>) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a loopback listener");
+    let addr = listener.local_addr().expect("the listener's address");
+    let arrivals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&arrivals);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                // The whole request, body included, so the close is clean.
+                loop {
+                    let Ok(read) = stream.read(&mut chunk).await else {
+                        return;
+                    };
+                    if read == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..read]);
+                    let Some(head) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let text = String::from_utf8_lossy(&buf[..head]).to_ascii_lowercase();
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= head + 4 + length {
+                        break;
+                    }
+                }
+                recorded.lock().unwrap().push(std::time::Instant::now());
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    )
+                    .await;
+            });
+        }
+    });
+    (
+        Url::parse(&format!("http://{addr}/ingest")).expect("a collector URL"),
+        arrivals,
+    )
+}
+
+/// Distinct decided `request_id`s in the bodies a wiremock collector was sent.
+async fn decided_ids_received(collector: &MockServer) -> BTreeSet<String> {
+    collector
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|request| {
+            String::from_utf8_lossy(&request.body)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| record["event"] == "request_decided")
+                .filter_map(|record| record["request_id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn rl10_siem_holds_its_queue_while_the_collector_is_unreachable() {
+    // Taken outside the timeout: the wait for the lock is other tests' running time.
+    let _env = AuthEnv::set(None).await;
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let collector = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&collector)
+            .await;
+
+        let mut config = sample_config();
+        config.siem_url = Some(Url::parse(&collector.uri()).expect("the collector's URL"));
+        let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+
+        for _ in 0..20 {
+            server.get(PACKAGE).await;
+        }
+        // Well past the ~2.6 s the retry ladder takes to run out. Without a hold the
+        // first batch is discarded here, and only what is offered afterwards survives.
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        for _ in 0..20 {
+            server.get(PACKAGE).await;
+        }
+        assert_eq!(
+            server.app().delivery_lost_total(),
+            0,
+            "an unreachable collector costs nothing while the queue has room"
+        );
+
+        collector.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&collector)
+            .await;
+
+        let mut got = 0;
+        for _ in 0..40 {
+            got = decided_ids_received(&collector).await.len();
+            if got >= 40 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        server.shutdown().await;
+        assert_eq!(
+            got, 40,
+            "every record offered during the outage is delivered on recovery"
+        );
+    })
+    .await
+    .expect("HANG: rl10 did not finish");
+}
+
+#[tokio::test]
+async fn rl10b_a_non_retryable_rejection_is_counted_immediately() {
+    // Taken outside the timeout: the wait for the lock is other tests' running time.
+    let _env = AuthEnv::set(None).await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("decisions.ndjson");
+        let collector = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(302))
+            .up_to_n_times(1)
+            .mount(&collector)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&collector)
+            .await;
+
+        let mut config = sample_config();
+        config.log_file_path = Some(path.clone());
+        config.siem_url = Some(Url::parse(&collector.uri()).expect("the collector's URL"));
+        let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+        let app = server.app();
+
+        for expected in [1, 2] {
+            server.get(PACKAGE).await;
+            // Past the two-second batch timer, so the batch has been sent and refused.
+            tokio::time::sleep(Duration::from_millis(3500)).await;
+            assert_eq!(
+                app.delivery_lost_total(),
+                expected,
+                "the refused batch is counted before shutdown, not on the drain tail"
+            );
+        }
+        drop(app);
+        assert_eq!(
+            collector.received_requests().await.expect("recorded").len(),
+            2,
+            "a 302 and a 401 are each tried once: the hold does not engage"
+        );
+
+        server.shutdown().await;
+        assert!(
+            delivered(&path)
+                .iter()
+                .filter(|record| record["event"] == "request_summary")
+                .any(|summary| summary["dropped_siem"].as_u64() >= Some(2)),
+            "and the summary record carries them"
+        );
+    })
+    .await
+    .expect("HANG: rl10b did not finish");
+}
+
+#[tokio::test]
+async fn rl23_shutdown_completes_while_the_collector_is_unreachable() {
+    let _env = AuthEnv::set(None).await;
+    let mut config = sample_config();
+    config.siem_url = Some(wedged_collector().await);
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    let app = server.app();
+
+    for _ in 0..30 {
+        server.get(PACKAGE).await;
+    }
+    // Long enough for the sink to have taken the batch and be holding it.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // `Running::shutdown` cannot finish while this test holds an `App`, because the
+    // storage queue stays open, so the held records are read once the sinks are
+    // done and the handle is awaited after the clone is dropped.
+    let started = std::time::Instant::now();
+    let shutdown = tokio::spawn(server.shutdown());
+    while app.delivery_lost_total() < 30 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the sinks finish within the drain deadline and count what they held: {}",
+            app.delivery_lost_total()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    drop(app);
+    tokio::time::timeout(Duration::from_secs(20), shutdown)
+        .await
+        .expect("HANG: shutdown did not return")
+        .expect("the shutdown task ran");
+}
+
+#[tokio::test]
+async fn rl23b_the_hold_does_not_hot_spin() {
+    // Taken outside the timeout: the wait for the lock is other tests' running time,
+    // not this test's.
+    let _env = AuthEnv::set(None).await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (url, arrivals) = prompt_503_collector().await;
+        let mut config = sample_config();
+        config.siem_url = Some(url);
+        let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+
+        server.get(PACKAGE).await;
+        // Two seconds of batch timer, then at least twelve of hold.
+        tokio::time::sleep(Duration::from_secs(15)).await;
+
+        let times = arrivals.lock().unwrap().clone();
+        assert!(
+            times.len() >= 5,
+            "the hold keeps trying: {} arrivals",
+            times.len()
+        );
+        // The first three are the existing ladder's attempt and two short retries.
+        for pair in times[3..].windows(2) {
+            let gap = pair[1] - pair[0];
+            // 50 ms under the 2 s cap: the two ends are stamped on the server side.
+            assert!(
+                gap >= Duration::from_millis(1950),
+                "retries beyond the ladder are spaced by the 2 s cap, not hot-spinning: {gap:?}"
+            );
+        }
+        server.shutdown().await;
+    })
+    .await
+    .expect("HANG: rl23b did not finish");
 }

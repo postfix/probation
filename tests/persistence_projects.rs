@@ -14,13 +14,13 @@ use common::{
     FakeAnswer, FakeRegistry, TestClock, TestServer, npm_upstream_path, parse_rfc3339,
     sample_config,
 };
-use package_firewall::policy::Ecosystem;
-use package_firewall::store::cache::MemoryCaches;
-use package_firewall::store::rows::{
+use probation::policy::Ecosystem;
+use probation::store::cache::MemoryCaches;
+use probation::store::rows::{
     ArtifactReference, Generation, ProjectRefresh, ReferenceId, ReferenceUpsert,
 };
-use package_firewall::store::{StoreHandle, startup};
-use package_firewall::upstream::UpstreamValidators;
+use probation::store::{StoreHandle, startup};
+use probation::upstream::UpstreamValidators;
 use serde_json::Value;
 use tempfile::TempDir;
 use url::Url;
@@ -38,7 +38,7 @@ async fn store(dir: &TempDir) -> (StoreHandle, tokio::task::JoinHandle<()>) {
         .await
         .expect("the data directory opens");
     let connection = opened.connection.expect("a fresh database recovers");
-    package_firewall::store::spawn(
+    probation::store::spawn(
         connection,
         opened.lock,
         Arc::new(MemoryCaches::new(1 << 20)),
@@ -51,8 +51,10 @@ fn reference(version: &str, filename: &str) -> ArtifactReference {
         name: "widget".to_owned(),
         version: version.to_owned(),
         filename: filename.to_owned(),
-        upstream_url: Url::parse(&format!("https://npm.invalid/widget/-/widget-{version}.tgz"))
-            .expect("a test URL"),
+        upstream_url: Url::parse(&format!(
+            "https://npm.invalid/widget/-/widget-{version}.tgz"
+        ))
+        .expect("a test URL"),
         expected: Vec::new(),
     }
 }
@@ -242,7 +244,7 @@ fn registry_answering(document: String) -> Arc<FakeRegistry> {
 }
 
 /// The data directory, the blocklist file, and the configuration a restart reuses.
-fn config_in(dir: &TempDir, cooldown: u64) -> package_firewall::config::Config {
+fn config_in(dir: &TempDir, cooldown: u64) -> probation::config::Config {
     let blocklist_file = dir.path().join("blocklist.json");
     if !blocklist_file.exists() {
         std::fs::write(

@@ -41,7 +41,7 @@ const ARTIFACT_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// the chain length is bounded here.
 const MAX_REDIRECT_HOPS: usize = 5;
 
-const USER_AGENT: &str = concat!("package-firewall/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("probation/", env!("CARGO_PKG_VERSION"));
 
 pub struct ReqwestTransport {
     origins: OriginSet,

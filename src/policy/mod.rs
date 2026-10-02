@@ -9,7 +9,7 @@ pub mod digest;
 pub use blocklist::{BlocklistError, BlocklistSnapshot, Replacement, check_replacement};
 pub use digest::{Digest, HashAlgorithm, InvalidDigest};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ecosystem {
     Npm,
     PyPi,
@@ -74,6 +74,9 @@ pub enum DenyReason {
     MalformedTimestamp,
     FutureTimestamp,
     NoTimestamp,
+    /// A confirmed OSV `MAL-*` match (`osv_matched: true` on `evaluate`). Checked at
+    /// the same tier as the producer package/version checks, before the digest check.
+    BlockedByOsv,
 }
 
 /// One thing being judged: an npm version, or one PyPI file.
@@ -106,6 +109,7 @@ pub fn evaluate(
     now_utc_micros: i64,
     cooldown_seconds: u64,
     candidate: &Candidate<'_>,
+    osv_matched: bool,
 ) -> Decision {
     let Some(snapshot) = snapshot else {
         return Decision::Unavailable;
@@ -119,6 +123,15 @@ pub fn evaluate(
     }
     if snapshot.blocks_version(candidate.ecosystem, candidate.name, candidate.version) {
         return Decision::Deny(DenyReason::BlockedVersion);
+    }
+    // Checked at the same tier as the producer package/version checks, before the
+    // digest check (Gate 2 Fit table) — and never resolved here: the caller
+    // (`osv::evaluate`) is the only place OSV is ever asked, so this function stays
+    // pure. `osv_matched: false` contributes no block, which is what keeps OSV an
+    // OR-only signal (C1): it can only ever add a deny, never remove one already
+    // decided above.
+    if osv_matched {
+        return Decision::Deny(DenyReason::BlockedByOsv);
     }
     // Advertised and pinned alike: known malware always overrides age, and a digest
     // we computed ourselves is as conclusive as one upstream published.
@@ -207,19 +220,31 @@ mod tests {
         let candidate = candidate(PublicationTime::Upstream(published), &[]);
 
         assert_eq!(
-            evaluate(Some(&snapshot), eligible - 1, DAY_SECONDS, &candidate),
+            evaluate(
+                Some(&snapshot),
+                eligible - 1,
+                DAY_SECONDS,
+                &candidate,
+                false
+            ),
             Decision::Hold {
                 eligible_at_micros: eligible
             },
             "one microsecond before the threshold is still held"
         );
         assert_eq!(
-            evaluate(Some(&snapshot), eligible, DAY_SECONDS, &candidate),
+            evaluate(Some(&snapshot), eligible, DAY_SECONDS, &candidate, false),
             Decision::Allow,
             "exactly at the threshold is allowed: the boundary is inclusive-allow"
         );
         assert_eq!(
-            evaluate(Some(&snapshot), eligible + SECOND, DAY_SECONDS, &candidate),
+            evaluate(
+                Some(&snapshot),
+                eligible + SECOND,
+                DAY_SECONDS,
+                &candidate,
+                false
+            ),
             Decision::Allow
         );
     }
@@ -230,7 +255,7 @@ mod tests {
         let just_published = candidate(PublicationTime::Upstream(now), &[]);
 
         assert_eq!(
-            evaluate(Some(&empty_snapshot()), now, 0, &just_published),
+            evaluate(Some(&empty_snapshot()), now, 0, &just_published, false),
             Decision::Allow,
             "a release published this instant is eligible when the cooldown is zero"
         );
@@ -240,7 +265,7 @@ mod tests {
             "",
         );
         assert_eq!(
-            evaluate(Some(&blocked), now, 0, &just_published),
+            evaluate(Some(&blocked), now, 0, &just_published, false),
             Decision::Deny(DenyReason::BlockedPackage),
             "a zero cooldown disables the age rule only, never a block"
         );
@@ -256,7 +281,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 DAY_SECONDS,
-                &candidate(PublicationTime::Malformed, &[])
+                &candidate(PublicationTime::Malformed, &[]),
+                false
             ),
             Decision::Deny(DenyReason::MalformedTimestamp)
         );
@@ -265,7 +291,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 DAY_SECONDS,
-                &candidate(PublicationTime::Upstream(now + SECOND), &[])
+                &candidate(PublicationTime::Upstream(now + SECOND), &[]),
+                false
             ),
             Decision::Deny(DenyReason::FutureTimestamp)
         );
@@ -274,7 +301,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 0,
-                &candidate(PublicationTime::Upstream(now + 1), &[])
+                &candidate(PublicationTime::Upstream(now + 1), &[]),
+                false
             ),
             Decision::Deny(DenyReason::FutureTimestamp),
             "a zero cooldown does not excuse a timestamp in the future"
@@ -291,7 +319,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 DAY_SECONDS,
-                &candidate(PublicationTime::Unknown, &[])
+                &candidate(PublicationTime::Unknown, &[]),
+                false
             ),
             Decision::Deny(DenyReason::NoTimestamp)
         );
@@ -300,7 +329,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 0,
-                &candidate(PublicationTime::Unknown, &[])
+                &candidate(PublicationTime::Unknown, &[]),
+                false
             ),
             Decision::Deny(DenyReason::NoTimestamp),
             "an untimed artifact is never eligible, cooldown or not"
@@ -313,7 +343,8 @@ mod tests {
                 &candidate(
                     PublicationTime::FirstSeen(now - 10 * 24 * 3600 * SECOND),
                     &[]
-                )
+                ),
+                false
             ),
             Decision::Allow,
             "a committed first-seen time is a real age"
@@ -337,7 +368,13 @@ mod tests {
         )
         .expect("valid inside its own window");
         assert_eq!(
-            evaluate(Some(&expired), now, DAY_SECONDS, &candidate(old, &[])),
+            evaluate(
+                Some(&expired),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &[]),
+                false
+            ),
             Decision::Unavailable
         );
 
@@ -352,7 +389,8 @@ mod tests {
                 Some(&package_blocked),
                 now,
                 DAY_SECONDS,
-                &candidate(fresh, &[])
+                &candidate(fresh, &[]),
+                false
             ),
             Decision::Deny(DenyReason::BlockedPackage)
         );
@@ -366,7 +404,8 @@ mod tests {
                 Some(&version_blocked),
                 now,
                 DAY_SECONDS,
-                &candidate(old, &[])
+                &candidate(old, &[]),
+                false
             ),
             Decision::Deny(DenyReason::BlockedVersion),
             "a block denies a release that age alone would allow"
@@ -384,24 +423,134 @@ mod tests {
             ..candidate(old, &[])
         };
         assert_eq!(
-            evaluate(Some(&digest_blocked), now, DAY_SECONDS, &pinned_candidate),
+            evaluate(
+                Some(&digest_blocked),
+                now,
+                DAY_SECONDS,
+                &pinned_candidate,
+                false
+            ),
             Decision::Deny(DenyReason::BlockedDigest)
         );
 
         // Hold beats allow, and with nothing left to object to the answer is allow.
         let clear = empty_snapshot();
         assert!(matches!(
-            evaluate(Some(&clear), now, DAY_SECONDS, &candidate(fresh, &[])),
+            evaluate(
+                Some(&clear),
+                now,
+                DAY_SECONDS,
+                &candidate(fresh, &[]),
+                false
+            ),
             Decision::Hold { .. }
         ));
         assert_eq!(
-            evaluate(Some(&clear), now, DAY_SECONDS, &candidate(old, &[])),
+            evaluate(Some(&clear), now, DAY_SECONDS, &candidate(old, &[]), false),
             Decision::Allow
         );
         assert_eq!(
-            evaluate(None, now, DAY_SECONDS, &candidate(old, &[])),
+            evaluate(None, now, DAY_SECONDS, &candidate(old, &[]), false),
             Decision::Unavailable,
             "no snapshot at all is the same refusal as an expired one"
+        );
+
+        // OSV is interleaved at the producer package/version tier, before the digest
+        // check: an otherwise-clean, fresh candidate that OSV alone matches is
+        // denied rather than allowed or held.
+        assert_eq!(
+            evaluate(Some(&clear), now, DAY_SECONDS, &candidate(fresh, &[]), true),
+            Decision::Deny(DenyReason::BlockedByOsv)
+        );
+    }
+
+    #[test]
+    fn osv_matched_true_denies_before_digest_check() {
+        let now = at("2026-09-17T00:00:00Z");
+        let snapshot = empty_snapshot();
+        let old = PublicationTime::Upstream(now - 10 * 24 * 3600 * SECOND);
+
+        assert_eq!(
+            evaluate(
+                Some(&snapshot),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &[]),
+                true
+            ),
+            Decision::Deny(DenyReason::BlockedByOsv),
+            "an otherwise-clean candidate OSV matches is denied, not allowed"
+        );
+    }
+
+    #[test]
+    fn evaluate_never_lets_osv_unblock_a_producer_deny() {
+        let now = at("2026-09-17T00:00:00Z");
+        let old = PublicationTime::Upstream(now - 10 * 24 * 3600 * SECOND);
+        let package_blocked = snapshot_with(
+            r#"{"ecosystem":"npm","name":"left-pad","version":null,"reason":"malware"}"#,
+            "",
+        );
+
+        // `osv_matched: false` must not undo a producer-tier block (C1, OR-only
+        // merge): the reason stays the producer's own, not `BlockedByOsv` and not
+        // `Allow`.
+        assert_eq!(
+            evaluate(
+                Some(&package_blocked),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &[]),
+                false
+            ),
+            Decision::Deny(DenyReason::BlockedPackage),
+            "OSV cannot unblock what the producer's own snapshot already denies"
+        );
+    }
+
+    /// `osv_matched: false` is a no-op at every tier: one representative case per
+    /// pre-slice `Decision` shape, all asserting the exact result that tier's own
+    /// dedicated test above already established, so today's behavior (before this
+    /// parameter existed) is provably unchanged by its addition.
+    #[test]
+    fn osv_matched_false_is_indistinguishable_from_todays_behavior() {
+        let now = at("2026-09-17T00:00:00Z");
+        let old = PublicationTime::Upstream(now - 10 * 24 * 3600 * SECOND);
+        let fresh = PublicationTime::Upstream(now - SECOND);
+
+        let package_blocked = snapshot_with(
+            r#"{"ecosystem":"npm","name":"left-pad","version":null,"reason":"malware"}"#,
+            "",
+        );
+        assert_eq!(
+            evaluate(
+                Some(&package_blocked),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &[]),
+                false
+            ),
+            Decision::Deny(DenyReason::BlockedPackage)
+        );
+
+        let clear = empty_snapshot();
+        assert!(matches!(
+            evaluate(
+                Some(&clear),
+                now,
+                DAY_SECONDS,
+                &candidate(fresh, &[]),
+                false
+            ),
+            Decision::Hold { .. }
+        ));
+        assert_eq!(
+            evaluate(Some(&clear), now, DAY_SECONDS, &candidate(old, &[]), false),
+            Decision::Allow
+        );
+        assert_eq!(
+            evaluate(None, now, DAY_SECONDS, &candidate(old, &[]), false),
+            Decision::Unavailable
         );
     }
 
@@ -418,7 +567,13 @@ mod tests {
         let other = [Digest::parse_hex(HashAlgorithm::Sha512, &"a".repeat(128)).expect("a digest")];
 
         assert_eq!(
-            evaluate(Some(&snapshot), now, DAY_SECONDS, &candidate(old, &blocked)),
+            evaluate(
+                Some(&snapshot),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &blocked),
+                false
+            ),
             Decision::Deny(DenyReason::BlockedDigest),
             "advertised by upstream"
         );
@@ -430,13 +585,20 @@ mod tests {
                 &Candidate {
                     pinned_digests: &blocked,
                     ..candidate(old, &other)
-                }
+                },
+                false
             ),
             Decision::Deny(DenyReason::BlockedDigest),
             "computed by us and never advertised upstream"
         );
         assert_eq!(
-            evaluate(Some(&snapshot), now, DAY_SECONDS, &candidate(old, &other)),
+            evaluate(
+                Some(&snapshot),
+                now,
+                DAY_SECONDS,
+                &candidate(old, &other),
+                false
+            ),
             Decision::Allow,
             "a digest that is not blocked does not deny"
         );
@@ -453,6 +615,7 @@ mod tests {
             now,
             u64::MAX,
             &candidate(PublicationTime::Upstream(published), &[]),
+            false,
         );
         assert_eq!(
             saturated,
@@ -468,7 +631,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 almost_max,
-                &candidate(PublicationTime::Upstream(published), &[])
+                &candidate(PublicationTime::Upstream(published), &[]),
+                false
             ),
             Decision::Hold {
                 eligible_at_micros: i64::MAX
@@ -481,7 +645,8 @@ mod tests {
                 Some(&snapshot),
                 now,
                 DAY_SECONDS,
-                &candidate(PublicationTime::Upstream(i64::MAX), &[])
+                &candidate(PublicationTime::Upstream(i64::MAX), &[]),
+                false
             ),
             Decision::Deny(DenyReason::FutureTimestamp),
             "a timestamp at the end of the range denies rather than overflowing"

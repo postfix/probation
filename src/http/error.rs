@@ -32,7 +32,9 @@ pub enum ApiError {
     },
     /// Denied by the blocklist, or by a publication time that cannot be trusted.
     /// There is no deadline: a block is not something to wait out.
-    Blocked { reason: &'static str },
+    Blocked {
+        reason: &'static str,
+    },
     /// Unknown package, reference, route, or upstream removal.
     NotFound,
     InvalidInput(&'static str),
@@ -102,9 +104,9 @@ impl ApiError {
             | ApiError::CapacityExhausted
             | ApiError::StorageUnusable
             | ApiError::InternalFailure => StatusCode::SERVICE_UNAVAILABLE,
-            ApiError::UpstreamFailure
-            | ApiError::UpstreamInvalid
-            | ApiError::IntegrityMismatch => StatusCode::BAD_GATEWAY,
+            ApiError::UpstreamFailure | ApiError::UpstreamInvalid | ApiError::IntegrityMismatch => {
+                StatusCode::BAD_GATEWAY
+            }
             ApiError::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
         }
     }
@@ -135,9 +137,7 @@ impl ApiError {
     /// `Display` output can travel out through here.
     pub fn reason(&self) -> String {
         match self {
-            ApiError::Held { .. } => {
-                "the release has not completed its cooldown period".to_owned()
-            }
+            ApiError::Held { .. } => "the release has not completed its cooldown period".to_owned(),
             ApiError::Blocked { reason } => (*reason).to_owned(),
             ApiError::NotFound => "no such route or resource".to_owned(),
             ApiError::InvalidInput(reason) => (*reason).to_owned(),
@@ -151,9 +151,7 @@ impl ApiError {
                 "no valid blocklist is loaded, so no package can be judged eligible".to_owned()
             }
             ApiError::Overloaded => "the service is at capacity".to_owned(),
-            ApiError::CapacityExhausted => {
-                "local storage could not take the artifact".to_owned()
-            }
+            ApiError::CapacityExhausted => "local storage could not take the artifact".to_owned(),
             ApiError::StorageUnusable => {
                 "local storage is unusable, so no decision can be committed".to_owned()
             }

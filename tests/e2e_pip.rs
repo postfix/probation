@@ -23,9 +23,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use common::TestServer;
-use package_firewall::clock::SystemClock;
-use package_firewall::config::Config;
-use package_firewall::upstream::{
+use probation::clock::SystemClock;
+use probation::config::Config;
+use probation::upstream::{
     ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, Transport,
     UpstreamError,
 };
@@ -102,13 +102,13 @@ fn pinned_pip(version: &str) -> PathBuf {
 /// Where the out-of-tree pinned clients live. Overridable so a different machine can
 /// put them somewhere else without editing this file.
 fn previous_clients_root() -> PathBuf {
-    if let Ok(root) = std::env::var("PACKAGE_FIREWALL_E2E_CLIENTS") {
+    if let Ok(root) = std::env::var("PROBATION_E2E_CLIENTS") {
         return PathBuf::from(root);
     }
     PathBuf::from(std::env::var("HOME").expect("HOME is set"))
         .join(".local")
         .join("share")
-        .join("package-firewall-e2e-clients")
+        .join("probation-e2e-clients")
 }
 
 // ---------------------------------------------------------------------------
@@ -145,10 +145,10 @@ impl Transport for Files {
                 let declared = bytes.len() as u64;
                 Ok(ArtifactBody {
                     declared_length: Some(declared),
-                    stream: package_firewall::upstream::capped(
-                        Box::pin(futures_util::stream::once(async move {
-                            Ok(Bytes::from(bytes))
-                        })),
+                    stream: probation::upstream::capped(
+                        Box::pin(futures_util::stream::once(
+                            async move { Ok(Bytes::from(bytes)) },
+                        )),
                         req.max_bytes,
                     ),
                 })
@@ -178,9 +178,8 @@ struct Distribution {
 
 impl Distribution {
     fn read(path: &Path) -> Distribution {
-        let bytes = std::fs::read(path).unwrap_or_else(|err| {
-            panic!("the build produced {}: {err}", path.display())
-        });
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|err| panic!("the build produced {}: {err}", path.display()));
         Distribution {
             filename: path
                 .file_name()
@@ -522,13 +521,20 @@ async fn sdist_case(client: Client) {
     let harness = Harness::start_for(client, "").await;
     let target = workspace.path().join("sdist-target");
 
-    let output = harness.pip(&target, &["--no-binary", ":all:", &format!("{BARD}=={OLD}")]);
+    let output = harness.pip(
+        &target,
+        &["--no-binary", ":all:", &format!("{BARD}=={OLD}")],
+    );
     assert!(
         output.status.success(),
         "[{label}] pip install from an sdist failed: {}",
         stderr(&output)
     );
-    assert_eq!(installed_version(&target), OLD, "[{label}] installed version");
+    assert_eq!(
+        installed_version(&target),
+        OLD,
+        "[{label}] installed version"
+    );
     assert!(target.join("friendly_bard").join("__init__.py").exists());
 
     harness.shutdown().await;

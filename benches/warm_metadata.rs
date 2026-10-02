@@ -17,7 +17,10 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{FakeAnswer, FakeRegistry, TestClock, TestServer, config_with_open_blocklist, fake_origins, fixture, npm_upstream_path};
+use common::{
+    FakeAnswer, FakeRegistry, TestClock, TestServer, config_with_open_blocklist, fake_origins,
+    fixture, npm_upstream_path,
+};
 
 const WIDGET: &str = "fixture-widget";
 /// The instant `tests/fixtures/npm/representative-100-versions.json` is read at, the
@@ -54,16 +57,14 @@ async fn run() {
     );
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_with_upstream(
-        config,
-        clock.shared(),
-        registry,
-        fake_origins(),
-    )
-    .await;
+    let server =
+        TestServer::start_with_upstream(config, clock.shared(), registry, fake_origins()).await;
 
     println!("SPEC §12 warm metadata and warm policy denial");
-    println!("  fixture: representative 100-version npm project, {} bytes upstream", fixture("npm/representative-100-versions.json").len());
+    println!(
+        "  fixture: representative 100-version npm project, {} bytes upstream",
+        fixture("npm/representative-100-versions.json").len()
+    );
 
     let document = format!("/npm/{WIDGET}");
     let denial = format!("/npm/{WIDGET}/{HELD}");
@@ -78,7 +79,12 @@ async fn run() {
 
     latency(&server, "warm metadata, p95 target 5 ms", &document, 200).await;
     latency(&server, "warm policy denial, p95 target 2 ms", &denial, 403).await;
-    throughput(&server, "warm metadata, target 1000 responses/second", &document).await;
+    throughput(
+        &server,
+        "warm metadata, target 1000 responses/second",
+        &document,
+    )
+    .await;
 
     assert_eq!(
         server.store_commands(),
@@ -127,7 +133,11 @@ async fn throughput(server: &TestServer, what: &str, path: &str) {
         workers.push(tokio::spawn(async move {
             let mut served = 0u64;
             while Instant::now() < deadline {
-                let response = client.get(&url).send().await.expect("the request completes");
+                let response = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .expect("the request completes");
                 assert!(response.status().is_success());
                 let _ = response.bytes().await.expect("a body");
                 served += 1;

@@ -6,16 +6,16 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use package_firewall::clock::{Clock, SystemClock};
-use package_firewall::config::Config;
-use package_firewall::policy::blocklist;
-use package_firewall::upstream::{OriginSet, ReqwestTransport};
-use package_firewall::{App, AppDeps};
+use probation::clock::{Clock, SystemClock};
+use probation::config::Config;
+use probation::policy::blocklist;
+use probation::upstream::{OriginSet, ReqwestTransport};
+use probation::{App, AppDeps};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "package-firewall",
+    name = "probation",
     version,
     about = "A filtering proxy for npm and PyPI that withholds packages until they are eligible."
 )]
@@ -58,7 +58,13 @@ async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info"))
+                .add_directive(
+                    "probation::http::logging=info"
+                        .parse()
+                        .expect("static directive"),
+                ),
         )
         .init();
 
@@ -133,6 +139,8 @@ async fn serve(config_path: &Path) -> ExitCode {
         clock: Arc::new(SystemClock),
         transport: Arc::new(ReqwestTransport::production()),
         origins: OriginSet::production(),
+        osv_client: reqwest::Client::new(),
+        osv_base_url: None,
     })
     .await
     {
@@ -152,7 +160,6 @@ async fn serve(config_path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-
 
     match running.shutdown().await {
         Ok(()) => ExitCode::SUCCESS,

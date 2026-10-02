@@ -107,7 +107,9 @@ impl fmt::Display for ProjectName {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InvalidProjectName {
     Empty,
-    TooLong { length: usize },
+    TooLong {
+        length: usize,
+    },
     /// A name begins and ends with a letter or a digit.
     Boundary,
     Character(char),

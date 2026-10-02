@@ -19,7 +19,7 @@ use common::{
     TestClock, TestServer, database_path, modified_of, replace_atomically,
     replace_atomically_preserving_mtime, rewrite_in_place, sample_config, set_modified, snapshot,
 };
-use package_firewall::config::Config;
+use probation::config::Config;
 
 /// Two polling intervals plus slack: SPEC §12's target for noticing a replaced file.
 const TWO_INTERVALS: Duration = Duration::from_millis(2_500);
@@ -90,12 +90,8 @@ async fn malformed_replacement_retains_last_good() {
     .expect("the snapshot is written");
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
     assert_eq!(server.status("/health/ready").await, 200);
 
     let captured = common::logs::capture();
@@ -141,12 +137,8 @@ async fn rollback_rejected() {
     .expect("the snapshot is written");
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
     assert_eq!(server.status("/health/ready").await, 200);
 
     // An older revision, valid in itself and with a longer window.
@@ -201,12 +193,8 @@ async fn readiness_false_at_expiry_liveness_true() {
     .expect("the snapshot is written");
 
     let clock = TestClock::at_rfc3339("2026-09-17T23:59:59Z");
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
 
     assert_eq!(server.status("/health/live").await, 200);
     assert_eq!(server.status("/health/ready").await, 200);
@@ -254,12 +242,8 @@ async fn same_length_same_second_atomic_replacement_is_detected() {
 
     fs::write(&blocklist_file, &first).expect("the snapshot is written");
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
     assert_eq!(server.status("/health/ready").await, 200);
 
     let before = modified_of(&blocklist_file);
@@ -305,12 +289,8 @@ async fn in_place_rewrite_is_detected_by_the_backstop_reread() {
 
     fs::write(&blocklist_file, &first).expect("the snapshot is written");
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
     assert_eq!(server.status("/health/ready").await, 200);
 
     let before = modified_of(&blocklist_file);
@@ -358,12 +338,8 @@ async fn a_window_rejection_is_retried_when_the_file_has_not_changed() {
     .expect("the snapshot is written");
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
     assert_eq!(
         server.status("/health/ready").await,
         503,

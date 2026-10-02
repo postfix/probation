@@ -22,9 +22,9 @@ use common::{
     config_with_open_blocklist, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     publish_blocklist, snapshot_with,
 };
-use package_firewall::clock::Clock;
-use package_firewall::policy::Ecosystem;
-use package_firewall::store::rows::ReferenceId;
+use probation::clock::Clock;
+use probation::policy::Ecosystem;
+use probation::store::rows::ReferenceId;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
@@ -37,15 +37,13 @@ const NOW: &str = "2026-04-06T12:00:00Z";
 /// `tests/fixtures/artifacts/harmless-widget-1.0.0.tgz`, as `sha256sum` and
 /// `openssl dgst -sha512 -binary | base64` report it.
 const BODY_SHA256: &str = "029830248baf17af5d9a9e23d3e7054a8860882d1cdc06bbbb1549056d347acb";
-const BODY_SRI: &str =
-    "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
+const BODY_SRI: &str = "sha512-cuZOnpQDIYuoiW0VpldsZLmUaQ/eZwGjVHeTZQoXRdTeBMh5mj1XyHMlEqTzPjYFW3AxzuKZi8cb4GZ2QP4G7g==";
 
 /// A second, different artifact — `tests/fixtures/artifacts/tampered-widget-1.0.0.tgz`
 /// under another version — so a listing can lose one version and keep another.
 const OTHER_VERSION: &str = "2.0.0";
 const OTHER_FILENAME: &str = "fixture-widget-2.0.0.tgz";
-const OTHER_SRI: &str =
-    "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
+const OTHER_SRI: &str = "sha512-hl/BywthAR9bBzuAS/JOKoCECO9fgaHl2bce2C43qs4r89tbyU9hMv02qnBf4Vn5193+NTmwCSt1RBlrihU54Q==";
 
 /// `metadata_ttl_seconds` in `config.sample.toml`, which every harness here uses.
 const METADATA_TTL_SECONDS: i64 = 300;
@@ -117,7 +115,7 @@ impl Harness {
         artifact_path(&document, VERSION)
     }
 
-    async fn reference(&self, path: &str) -> package_firewall::store::rows::ReferenceRow {
+    async fn reference(&self, path: &str) -> probation::store::rows::ReferenceRow {
         let hex = path.split('/').nth(3).expect("a reference id");
         self.server
             .running()
@@ -262,17 +260,27 @@ async fn blocklist_update_during_revalidation_of_cached_content_denies() {
     let harness = harness(clock.shared(), FakeAnswer::Body(body())).await;
     let path = harness.artifact_path().await;
 
-    assert_eq!(harness.server.status(&path).await, 200, "the content is now cached");
+    assert_eq!(
+        harness.server.status(&path).await,
+        200,
+        "the content is now cached"
+    );
     assert_eq!(harness.artifact_calls(), 1);
 
     // Fires on the next clock reading, which `serve_artifact` takes *after* loading
     // the snapshot its first check uses. The block names the artifact's SHA-256,
     // which upstream never advertised, so the final check has to consult the digests
     // this instance pinned as well as reload the snapshot.
-    clock.arm(&harness.server, &blocklist(2, "", &blocked_sha256(BODY_SHA256)));
+    clock.arm(
+        &harness.server,
+        &blocklist(2, "", &blocked_sha256(BODY_SHA256)),
+    );
 
     let response = harness.server.get(&path).await;
-    assert!(clock.fired(), "the update really was published inside the request");
+    assert!(
+        clock.fired(),
+        "the update really was published inside the request"
+    );
     assert_eq!(
         response.status().as_u16(),
         403,
@@ -302,7 +310,11 @@ async fn blocklist_update_during_revalidation_of_cached_content_denies() {
 /// is what isolates the final one.
 #[tokio::test]
 async fn previously_issued_url_is_refused_after_a_block() {
-    let harness = harness(TestClock::at_rfc3339(NOW).shared(), FakeAnswer::Body(body())).await;
+    let harness = harness(
+        TestClock::at_rfc3339(NOW).shared(),
+        FakeAnswer::Body(body()),
+    )
+    .await;
     // The URL a client was given while the package was still eligible.
     let issued = harness.artifact_path().await;
     assert_eq!(harness.server.status(&issued).await, 200);
@@ -485,7 +497,11 @@ async fn a_computed_digest_block_hides_the_version_from_the_next_metadata_listin
 /// the slice outcome, so it lands here rather than becoming an unowned obligation.
 #[tokio::test]
 async fn head_and_range_obey_the_same_policy() {
-    let harness = harness(TestClock::at_rfc3339(NOW).shared(), FakeAnswer::Body(body())).await;
+    let harness = harness(
+        TestClock::at_rfc3339(NOW).shared(),
+        FakeAnswer::Body(body()),
+    )
+    .await;
     let path = harness.artifact_path().await;
     let whole = body();
 
@@ -565,7 +581,11 @@ async fn head_and_range_obey_the_same_policy() {
 /// the two.
 #[tokio::test]
 async fn computed_sha256_block_absent_from_npm_sha512_metadata() {
-    let harness = harness(TestClock::at_rfc3339(NOW).shared(), FakeAnswer::Body(body())).await;
+    let harness = harness(
+        TestClock::at_rfc3339(NOW).shared(),
+        FakeAnswer::Body(body()),
+    )
+    .await;
     let path = harness.artifact_path().await;
 
     let row = harness.reference(&path).await;
@@ -573,7 +593,7 @@ async fn computed_sha256_block_absent_from_npm_sha512_metadata() {
         row.reference
             .expected
             .iter()
-            .all(|digest| digest.algorithm != package_firewall::policy::HashAlgorithm::Sha256),
+            .all(|digest| digest.algorithm != probation::policy::HashAlgorithm::Sha256),
         "upstream metadata advertises no SHA-256 at all: {:?}",
         row.reference.expected
     );
@@ -608,7 +628,11 @@ async fn computed_sha256_block_absent_from_npm_sha512_metadata() {
         row.pinned_sha256.map(hex::encode).as_deref(),
         Some(BODY_SHA256)
     );
-    assert_eq!(harness.content_files(), 0, "the blocked bytes are discarded");
+    assert_eq!(
+        harness.content_files(),
+        0,
+        "the blocked bytes are discarded"
+    );
 
     let after = harness
         .server

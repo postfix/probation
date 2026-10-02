@@ -102,7 +102,9 @@ fn check_part(part: &str) -> Result<(), InvalidPackageName> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InvalidPackageName {
     Empty,
-    TooLong { length: usize },
+    TooLong {
+        length: usize,
+    },
     /// Leading or trailing whitespace.
     Surrounding,
     /// A `@` with no `/scope` separator after it.
@@ -118,14 +120,15 @@ impl fmt::Display for InvalidPackageName {
         match self {
             InvalidPackageName::Empty => f.write_str("a package name cannot be empty"),
             InvalidPackageName::TooLong { length } => {
-                write!(f, "a package name is at most {MAX_LENGTH} characters, this is {length}")
+                write!(
+                    f,
+                    "a package name is at most {MAX_LENGTH} characters, this is {length}"
+                )
             }
             InvalidPackageName::Surrounding => {
                 f.write_str("a package name cannot begin or end with whitespace")
             }
-            InvalidPackageName::IncompleteScope => {
-                f.write_str("a scoped name is `@scope/name`")
-            }
+            InvalidPackageName::IncompleteScope => f.write_str("a scoped name is `@scope/name`"),
             InvalidPackageName::Separator => {
                 f.write_str("a package name holds at most one `/`, after its `@scope`")
             }

@@ -1,0 +1,27 @@
+## What problem do we have?
+Slices 1-3 make OSV blocking unconditional: any matched version is always denied, everywhere. The operator has no way to turn that check off, and no way to run it diagnostic-only (log a match without refusing). Both were raised by the user re-steering Gate 2, and neither exists today.
+
+## How will we solve it?
+Reopen Gate 4 to add Slice 4, additive only — none of Slices 1-3's behavior changes when the new key is absent:
+
+| Slice | Outcome | APIs used or changed | Witness | Temporary limit |
+|---|---|---|---|---|
+| 1 (standing) | A real request through `artifacts::serve_artifact` is OSV-checked end to end; `osv::OsvClient` batches a live `POST /v1/querybatch`, caches the answer, `policy::evaluate` denies a matched candidate at the correct order | `osv::OsvClient::new/check`, `osv::evaluate`, `osv::batcher::run`; `policy::evaluate` gains `osv_matched: bool`; `DenyReason::BlockedByOsv` | `cargo test --lib osv:: policy:: config::` and `cargo test --test config_validation` -> all PASS | fake/no-op `OsvClient` in `tests/common/mod.rs` — kept as the lasting test convention |
+| 2 (standing) | The same OSV check covers every production decision point: npm/PyPI per-version resolution and the artifact download path | `npm::resolve`, `pypi::resolve`, `artifacts::download.rs::transfer` route through `osv::evaluate` (unchanged signature) | `cargo test --lib npm:: pypi:: artifacts::download` and `cargo test --test decision_log_delivery` -> all PASS | none |
+| 3 (standing) | A real `npm install` is refused because OSV, not the blocklist, flags the resolved version; a negative case shows an OSV-clear resolution still succeeds | test-only: `TestServer::start_with_upstream_and_osv`, `Harness::start_for_with_osv`/`start_full`, an `osv_flags` `wiremock::MockServer` helper | `cargo test --test e2e_npm -- --ignored osv` -> `ok. 2 passed; 0 failed` | `osv_request_timeout_ms` widened to 4000ms only under a real OSV base URL |
+| 4 (new) | Operators switch OSV enforcement via `osv_mode`: `off` skips the check entirely, `enforce` denies exactly as today, `diagnostic` allows but logs the match; absent key keeps today's `enforce` behavior | new `pub enum OsvMode { Enforce, Diagnostic, Off }`; `OsvClient`/`new`/`spawn_with` gain a `mode: OsvMode` parameter (6 existing test sites updated); `osv::evaluate`'s body gains the three-way mode branch, signature unchanged; `Config`/`RawConfig` gain `osv_mode`, `validate()` gains its match arm; `RequestContext` gains `osv_diagnostic_match: AtomicBool`; `http::logging` gains `record_osv_diagnostic_match()` and `OSV_DIAGNOSTIC_REASON` | `cargo test --lib osv:: config:: http::logging::`, `cargo test --test config_validation`, `cargo test --test decision_log_delivery` -> all PASS (fails today: `OsvMode`/`osv_mode`/`record_osv_diagnostic_match` do not exist) | none — `Enforce` default is permanent, lasting behavior |
+
+Exact files Slice 4 touches: `src/osv/mod.rs`, `src/config.rs`, `src/lib.rs`, `src/http/logging.rs`, `tests/config_validation.rs`, `tests/decision_log_delivery.rs`, `config.sample.toml`, `docs/operations.md`. Design ground: `03-program-design.md` D5-D8 and `evidence/threat-model-3.md` (G1/T1/T2, all closed).
+
+## How will we confirm it is solved?
+- `osv_mode: off` -> a matched version is never checked. Check: `evaluate_off_mode_never_calls_check`, planned to pass.
+- `osv_mode: enforce` (or key absent) -> a matched version is denied, matching today. Checks: `evaluate_enforce_mode_denies_on_match`, `osv_mode_defaults_to_enforce_when_absent`, planned to pass.
+- `osv_mode: diagnostic` -> a matched version is allowed, and the match is logged without changing `result`. Checks: `evaluate_diagnostic_mode_allows_on_match`, `evaluate_diagnostic_mode_allows_without_match`, `record_osv_diagnostic_match_sets_the_reason_without_changing_result`, `record_osv_diagnostic_match_outside_a_request_is_a_no_op`, planned to pass.
+- An unrecognized `osv_mode` value hard-fails config validation. Check: `every_invalid_config_fixture_is_refused_with_its_reason` (3rd row), planned to pass.
+- These are the Test plan rows named in Slice 4's Acceptance list — none exist yet in `src/osv/mod.rs`, `src/config.rs`, `tests/config_validation.rs`, or `tests/decision_log_delivery.rs` (independently re-grepped and confirmed absent by `sf-gate-qa`); this is planned proof the tests are named and grounded, not an executed pass.
+
+Recommendation: approve the reopened Gate 4 slice plan. `sf-gate-qa` returned READY (13 files): Slice 4's row and interfaces section are internally consistent, D5-D8 pin concrete types with no open choice, dependencies (Slices 1-2, `http::logging`'s existing seam) are confirmed present in current source, and Red Team is correctly skipped — Gate 2 already modeled this exact design (FIX FIRST, closed by C17c) and Gate 3's D8 confirmed no new architecture.
+Limits: Gate QA did not execute the new tests — `OsvMode`, `osv_mode`, and `record_osv_diagnostic_match` are all confirmed absent today, so the witness commands are a currently-failing target, verified separately once Slice 4 is implemented and marked complete. Slice 4's Reviews are "qa, code-review, security" — the security review runs once the mode-branch code lands, watching specifically for `Off`/`Diagnostic` reachable without explicit config or a diagnostic match leaking into `result`.
+Reopened plan; Gates 1-3 and Slices 1-3 stand unchanged.
+Sources: docs/plans/osv-intel/04-slices.md, docs/plans/osv-intel/gate-4-qa.md
+Approve Gate 4, or what should change?

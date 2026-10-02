@@ -200,7 +200,10 @@ impl<K: Eq + Hash + Clone, V> SingleFlight<K, V> {
     /// rather than joining an answered one.
     fn finish(&self, key: &K, slot: &Arc<Slot<V>>) {
         let mut inflight = self.table();
-        if inflight.get(key).is_some_and(|held| Arc::ptr_eq(held, slot)) {
+        if inflight
+            .get(key)
+            .is_some_and(|held| Arc::ptr_eq(held, slot))
+        {
             inflight.remove(key);
         }
     }
@@ -316,8 +319,7 @@ mod tests {
     const BOUND: Duration = Duration::from_secs(5);
 
     /// The message every one of those bounds fails with.
-    const WHY: &str =
-        "the waiter never resolved: `Resolution` must publish with `send_replace`, not \
+    const WHY: &str = "the waiter never resolved: `Resolution` must publish with `send_replace`, not \
          `send`, which is a no-op when no receiver has subscribed yet";
 
     /// A slot answers its waiters once, and a later waiter reads the answer that is
@@ -332,8 +334,13 @@ mod tests {
             let slot = Arc::clone(&slot);
             tokio::spawn(async move { tokio::time::timeout(BOUND, slot.wait()).await })
         };
-        let mut resolution =
-            Resolution::new(flight.clone(), 1, Arc::clone(&slot), "abandoned", "1".to_owned());
+        let mut resolution = Resolution::new(
+            flight.clone(),
+            1,
+            Arc::clone(&slot),
+            "abandoned",
+            "1".to_owned(),
+        );
         resolution.answer("done");
 
         assert_eq!(

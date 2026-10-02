@@ -285,7 +285,13 @@ mod tests {
     #[test]
     fn an_untrusted_filename_cannot_escape_the_artifact_path() {
         let id = ReferenceId::parse_hex(&"ab".repeat(32)).expect("a reference id");
-        for filename in ["../../etc/passwd", "a/b", "x?y=1", "x#y", "//evil.invalid/x"] {
+        for filename in [
+            "../../etc/passwd",
+            "a/b",
+            "x?y=1",
+            "x#y",
+            "//evil.invalid/x",
+        ] {
             let url = artifact_url(&public_url(), Ecosystem::Npm, &id, filename);
             let parsed = Url::parse(&url).expect("the built URL parses");
             assert_eq!(parsed.host_str(), Some("packages.example.org"));

@@ -11,8 +11,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{TestClock, TestServer, database_path, sample_config, snapshot, wal_path};
-use package_firewall::config::Config;
-use package_firewall::{App, AppDeps};
+use probation::config::Config;
+use probation::{App, AppDeps};
 use tempfile::TempDir;
 
 /// Two polling intervals plus slack: SPEC §12's target for noticing a replaced file.
@@ -292,12 +292,8 @@ async fn restore_requires_a_current_blocklist_before_readiness() {
     // yet and the persisted snapshot has since expired.
     fs::remove_file(&blocklist_file).expect("the blocklist file is removed");
     let clock = TestClock::at_rfc3339("2026-09-18T12:00:00Z");
-    let server = TestServer::start_in(
-        data_dir.path(),
-        config_for(&blocklist_file),
-        clock.shared(),
-    )
-    .await;
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
 
     assert_eq!(
         server.status("/health/live").await,
@@ -351,6 +347,8 @@ async fn a_second_instance_cannot_take_the_data_directory_lock() {
         clock: TestClock::at_rfc3339(NOW),
         transport,
         origins,
+        osv_client: probation::osv::unreachable_client(),
+        osv_base_url: None,
     })
     .await;
 

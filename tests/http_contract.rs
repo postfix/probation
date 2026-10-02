@@ -22,8 +22,8 @@ use common::{
     fake_origins, logs, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     publish_blocklist, pypi_upstream_path, raw_header, raw_status, sample_config, snapshot,
 };
-use package_firewall::http::error::ApiError;
-use package_firewall::upstream::{Transport, UpstreamError};
+use probation::http::error::ApiError;
+use probation::upstream::{Transport, UpstreamError};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use url::Url;
@@ -127,7 +127,7 @@ async fn harness(answers: &[(&str, FakeAnswer)]) -> Harness {
 
 async fn harness_with(
     answers: &[(&str, FakeAnswer)],
-    adjust: impl FnOnce(&mut package_firewall::config::Config),
+    adjust: impl FnOnce(&mut probation::config::Config),
 ) -> Harness {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let mut config = config_with_open_blocklist(dir.path());
@@ -270,7 +270,10 @@ async fn held_or_blocked_is_403_with_eligible_at_and_retry_after() {
         common::parse_rfc3339(NOW),
     );
 
-    let response = harness.server.get(&format!("/npm/{WIDGET}/{ELIGIBLE}")).await;
+    let response = harness
+        .server
+        .get(&format!("/npm/{WIDGET}/{ELIGIBLE}"))
+        .await;
     assert_eq!(response.status().as_u16(), 403);
     assert!(
         response.headers().get("retry-after").is_none(),
@@ -341,7 +344,10 @@ async fn invalid_input_is_400() {
     let harness = widget().await;
 
     // SPEC §9: a reference id is 64 hexadecimal characters and nothing else.
-    let response = harness.server.get("/npm/artifacts/not-hexadecimal/f.tgz").await;
+    let response = harness
+        .server
+        .get("/npm/artifacts/not-hexadecimal/f.tgz")
+        .await;
     assert_eq!(response.status().as_u16(), 400);
     let invalid = body(response).await;
     assert_error_body(&invalid, "INVALID_INPUT");
@@ -349,7 +355,12 @@ async fn invalid_input_is_400() {
 
     // Hostile package names, over a raw socket: `reqwest` would decode `%2E` and
     // remove the dot segments client-side, so these would never reach the router.
-    for hostile in ["/npm/%2E%2E", "/npm/%2E%2E%2F%2E%2E", "/npm/a%3Ab", "/npm/a%20b"] {
+    for hostile in [
+        "/npm/%2E%2E",
+        "/npm/%2E%2E%2F%2E%2E",
+        "/npm/a%3Ab",
+        "/npm/a%20b",
+    ] {
         let response = harness.server.raw_get(hostile, &[]).await;
         assert_eq!(
             raw_status(&response),
@@ -386,7 +397,10 @@ async fn unsupported_route_405_and_406() {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
         .expect("a 405 says which methods the route does support");
-    assert!(allow.contains("GET"), "the Allow header names GET, got {allow:?}");
+    assert!(
+        allow.contains("GET"),
+        "the Allow header names GET, got {allow:?}"
+    );
     let refused = body(response).await;
     assert_error_body(&refused, "METHOD_NOT_ALLOWED");
     assert_decided(&captured, &request_id_of(&refused), 405);
@@ -469,8 +483,8 @@ async fn policy_unavailable_capacity_and_overload_are_503() {
     let captured = logs::capture_info();
 
     // No blocklist file at all: no policy is in force, so nothing is served.
-    let unpoliced = TestServer::start_with(sample_config(), TestClock::at_rfc3339(NOW).shared())
-        .await;
+    let unpoliced =
+        TestServer::start_with(sample_config(), TestClock::at_rfc3339(NOW).shared()).await;
     let response = unpoliced.get(&format!("/npm/{WIDGET}")).await;
     assert_eq!(response.status().as_u16(), 503);
     let unavailable = body(response).await;
@@ -501,7 +515,10 @@ async fn policy_unavailable_capacity_and_overload_are_503() {
     assert_eq!(ApiError::CapacityExhausted.status().as_u16(), 503);
     assert_eq!(ApiError::StorageUnusable.status().as_u16(), 503);
     assert_eq!(ApiError::InternalFailure.status().as_u16(), 503);
-    assert_eq!(ApiError::CapacityExhausted.error_code(), "CAPACITY_EXHAUSTED");
+    assert_eq!(
+        ApiError::CapacityExhausted.error_code(),
+        "CAPACITY_EXHAUSTED"
+    );
     assert_eq!(ApiError::StorageUnusable.error_code(), "STORAGE_UNUSABLE");
     assert_eq!(
         ApiError::InternalFailure.error_code(),
@@ -657,7 +674,12 @@ async fn cache_control_no_store_on_every_response() {
         (&artifact, None),
     ] {
         let response = match accept {
-            Some(accept) => harness.server.get_with_headers(path, &[("accept", accept)]).await,
+            Some(accept) => {
+                harness
+                    .server
+                    .get_with_headers(path, &[("accept", accept)])
+                    .await
+            }
             None => harness.server.get(path).await,
         };
         let status = response.status().as_u16();
@@ -728,8 +750,8 @@ async fn cache_control_no_store_on_every_response() {
 
     // SPEC §8: with no blocklist in force nothing is served, and that refusal is as
     // uncacheable as any other answer.
-    let unpoliced = TestServer::start_with(sample_config(), TestClock::at_rfc3339(NOW).shared())
-        .await;
+    let unpoliced =
+        TestServer::start_with(sample_config(), TestClock::at_rfc3339(NOW).shared()).await;
     for path in ["/health/ready", "/npm/anything"] {
         let response = unpoliced.get(path).await;
         assert_eq!(response.status().as_u16(), 503, "{path}");
@@ -1110,7 +1132,7 @@ async fn the_periodic_counter_summary_is_emitted() {
     let harness = widget().await;
 
     // A witness for a periodic emission cannot wait a minute for it.
-    package_firewall::http::logging::set_summary_window(Duration::ZERO);
+    probation::http::logging::set_summary_window(Duration::ZERO);
 
     let before = captured.lines_mentioning("request summary");
     harness.server.get("/health/live").await;
@@ -1147,7 +1169,11 @@ async fn the_periodic_counter_summary_is_emitted() {
 /// One decision line for `request_id`, at `status`.
 fn assert_decided(captured: &logs::Captured, request_id: &str, status: u16) {
     assert_eq!(
-        captured.lines_containing_all(&["request decided", request_id, &format!("status={status}")]),
+        captured.lines_containing_all(&[
+            "request decided",
+            request_id,
+            &format!("status={status}")
+        ]),
         1,
         "SPEC §11: one decision line per request, carrying its request ID and what it \
          answered. Captured:\n{}",

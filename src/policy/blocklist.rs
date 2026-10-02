@@ -548,7 +548,8 @@ mod tests {
                     publication: old,
                     advertised_digests: &[],
                     pinned_digests: &[],
-                }
+                },
+                false,
             ),
             Decision::Deny(DenyReason::BlockedVersion)
         );
@@ -843,7 +844,8 @@ mod tests {
                 86_400,
                 &candidate(PublicationTime::Upstream(
                     now() - 10 * 24 * 3600 * 1_000_000
-                ))
+                )),
+                false,
             ),
             Decision::Allow
         );
@@ -852,7 +854,8 @@ mod tests {
                 Some(&snapshot),
                 now(),
                 86_400,
-                &candidate(PublicationTime::Upstream(now() - 1_000_000))
+                &candidate(PublicationTime::Upstream(now() - 1_000_000)),
+                false,
             ),
             Decision::Hold { .. }
         ));

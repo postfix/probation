@@ -28,8 +28,8 @@
 //! `.smtc/analyzers/consumer-identity-extension-read.yaml` passes at exactly one
 //! inbound `extensions()` read — the `ConnectInfo` read in [`decide`].
 
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -104,6 +104,10 @@ struct RequestContext {
     /// handler has read it out of the store. Zero until then, and the request target
     /// answers for it.
     ecosystem: AtomicU8,
+    /// Set by `record_osv_diagnostic_match` (D7) when `osv_mode: diagnostic` and a
+    /// real OSV check would have matched. Read only by `decide`'s reason derivation
+    /// — never changes `result`.
+    osv_diagnostic_match: AtomicBool,
 }
 
 /// The codes [`RequestContext::ecosystem`] holds. Zero is "nothing recorded".
@@ -141,6 +145,18 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
 
+/// The reason substituted for the default `"the request was served"` when
+/// `osv_mode: diagnostic` would have denied the request (C17c).
+pub(crate) const OSV_DIAGNOSTIC_REASON: &str =
+    "the request would be blocked by a known OSV malicious-package advisory (diagnostic mode: not enforced)";
+
+/// Records that this request's OSV-blind decision would have been overturned by a
+/// real OSV match, under `osv_mode: diagnostic` (D5/D7). Called only from
+/// `osv::evaluate`; ignored outside a request, mirroring `record_cache`.
+pub fn record_osv_diagnostic_match() {
+    let _ = CONTEXT.try_with(|context| context.osv_diagnostic_match.store(true, Ordering::Relaxed));
+}
+
 /// The middleware that gives a request its identity and writes its decision line.
 ///
 /// It is the outermost layer, so the line it writes describes the response that
@@ -172,10 +188,9 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         id: next_id(),
         cache: AtomicU8::new(CacheStatus::Unattempted.code()),
         ecosystem: AtomicU8::new(0),
+        osv_diagnostic_match: AtomicBool::new(false),
     });
-    let response = CONTEXT
-        .scope(Arc::clone(&context), next.run(request))
-        .await;
+    let response = CONTEXT.scope(Arc::clone(&context), next.run(request)).await;
 
     let status = response.status();
     // A streamed artifact body has no exact size hint, but it does declare its length,
@@ -191,7 +206,13 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
     let error = response.extensions().get::<ApiError>().copied();
     let (result, reason) = match error {
         Some(error) => (error.error_code(), error.reason()),
-        None => ("ALLOWED", "the request was served".to_owned()),
+        None => {
+            if context.osv_diagnostic_match.load(Ordering::Relaxed) {
+                ("ALLOWED", OSV_DIAGNOSTIC_REASON.to_owned())
+            } else {
+                ("ALLOWED", "the request was served".to_owned())
+            }
+        }
     };
 
     // A handler that read a record knows better than the path does.
@@ -204,22 +225,21 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
     // The record is built first and the line is rendered from it, so the fields an
     // operator sees on stdout and the fields a sink delivers are the same fields by
     // construction rather than by two call sites agreeing.
-    let decision = Decision {
-        timestamp: delivery::rfc3339(app.clock.now_utc_micros()),
-        request_id: context.id.clone(),
-        method: method.to_string(),
+    let decision = build_decision(
+        delivery::rfc3339(app.clock.now_utc_micros()),
+        context.id.clone(),
+        method.as_str(),
         ecosystem,
-        package: target.package.unwrap_or_default(),
-        version: target.version.unwrap_or_default(),
-        status: status.as_u16(),
-        result,
+        target,
         reason,
-        blocklist_revision: app.blocklist_revision().unwrap_or(0),
-        cache: CacheStatus::from_code(context.cache.load(Ordering::Relaxed)).as_str(),
-        duration_micros: elapsed.as_micros() as u64,
+        status.as_u16(),
+        result,
+        app.blocklist_revision().unwrap_or(0),
+        CacheStatus::from_code(context.cache.load(Ordering::Relaxed)).as_str(),
+        elapsed.as_micros() as u64,
         bytes,
         consumer,
-    };
+    );
 
     tracing::info!(
         request_id = %decision.request_id,
@@ -250,6 +270,51 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         app.clock.as_ref(),
     );
     response
+}
+
+/// The one place a decision record is built, so the bound each field carries is
+/// applied once and in one place (C63).
+///
+/// Pure: it reads nothing and writes nothing. It exists so that the record-building
+/// step has a seam a property can call — [`decide`] is axum middleware that never
+/// yields the record — and it takes `method` as a `&str` rather than a `Method`
+/// because `http::Method` admits only RFC 7230 token bytes, which is not the domain
+/// the bound has to hold over.
+///
+/// `ecosystem` is passed rather than read off `target`: a handler that read a record
+/// knows better than the path does, and that override is the caller's to make.
+#[allow(clippy::too_many_arguments)]
+fn build_decision(
+    timestamp: String,
+    request_id: String,
+    method: &str,
+    ecosystem: &'static str,
+    target: Target,
+    reason: String,
+    status: u16,
+    result: &'static str,
+    blocklist_revision: u64,
+    cache: &'static str,
+    duration_micros: u64,
+    bytes: u64,
+    consumer: Option<IpAddr>,
+) -> Decision {
+    Decision {
+        timestamp,
+        request_id,
+        method: loggable(Some(method)).unwrap_or_default(),
+        ecosystem,
+        package: target.package.unwrap_or_default(),
+        version: target.version.unwrap_or_default(),
+        status,
+        result,
+        reason,
+        blocklist_revision,
+        cache,
+        duration_micros,
+        bytes,
+        consumer,
+    }
 }
 
 /// What the request target says about itself.
@@ -360,7 +425,9 @@ fn summarise(elapsed: Duration, bytes: u64, was_error: bool, sinks: &Sinks, cloc
     // Poisoning cannot lose a window: the guarded value is five integers and an
     // `Instant`, and no code between the two below can panic, so recovering from
     // a poisoned lock recovers a consistent count.
-    let mut counters = COUNTERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut counters = COUNTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     counters.requests += 1;
     counters.errors += u64::from(was_error);
     counters.bytes += bytes;
@@ -382,7 +449,9 @@ fn summarise(elapsed: Duration, bytes: u64, was_error: bool, sinks: &Sinks, cloc
 /// further records can be produced — and before the drain token is cancelled, so the
 /// summary is already queued when the sinks begin draining.
 pub(crate) fn flush_summary(sinks: &Sinks, clock: &dyn Clock) {
-    let mut counters = COUNTERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut counters = COUNTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let open_for = counters.opened.elapsed();
     let summary = close_window(&mut counters, open_for, sinks, clock);
     drop(counters);
@@ -464,7 +533,121 @@ pub fn set_summary_window(window: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use proptest::strategy::Strategy;
+
     use super::*;
+    use crate::delivery::{BYTES_PER_RECORD, FIELD_CEILING_BYTES};
+
+    /// The domain a generated route or method component is drawn from: the empty
+    /// string, control characters, multi-byte scalars, and lengths past
+    /// [`MAX_LOGGED_TARGET`] — none of which `http::Method` can hold, which is why
+    /// [`build_decision`] takes the string rather than the method (C57).
+    fn component(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(proptest::prelude::any::<char>(), 0..max_len)
+            .prop_map(String::from_iter)
+    }
+
+    /// One record built the way [`decide`] builds one: the generated method and path,
+    /// and the fixed values the process itself supplies for the rest.
+    fn decision_for(method: &str, path: &str) -> Decision {
+        let target = Target::of(path);
+        build_decision(
+            delivery::rfc3339(0),
+            next_id(),
+            method,
+            target.ecosystem,
+            target,
+            ApiError::PolicyUnavailable.reason(),
+            503,
+            "POLICY_UNAVAILABLE",
+            0,
+            CacheStatus::Unattempted.as_str(),
+            0,
+            0,
+            None,
+        )
+    }
+
+    /// What `BYTES_PER_RECORD` bounds: the struct itself plus every `String`'s
+    /// capacity. Not the serialized size, which is a different quantity (C29).
+    fn heap_footprint(decision: &Decision) -> u64 {
+        let strings = [
+            &decision.timestamp,
+            &decision.request_id,
+            &decision.method,
+            &decision.package,
+            &decision.version,
+            &decision.reason,
+        ];
+        size_of::<Decision>() as u64
+            + strings
+                .iter()
+                .map(|field| field.capacity() as u64)
+                .sum::<u64>()
+    }
+
+    proptest::proptest! {
+        /// `method` is bounded by the same idiom the other target fields use, so the
+        /// last unbounded field of a decision record has a ceiling (C22). An empty
+        /// method is the one input that is not quoted: `loggable` filters it to
+        /// `None` and `unwrap_or_default` applies, exactly as an absent package
+        /// already does (C69).
+        #[test]
+        fn rl16b_a_generated_method_is_bounded(method in component(1024)) {
+            let decision = decision_for(&method, "/npm/left-pad");
+
+            if method.is_empty() {
+                proptest::prop_assert_eq!(decision.method.as_str(), "");
+            } else {
+                proptest::prop_assert!(
+                    decision.method.starts_with('"') && decision.method.ends_with('"'),
+                    "a method reaches the record quoted, as a package does: {:?}",
+                    decision.method
+                );
+                proptest::prop_assert!(
+                    !decision.method.contains('\n') && !decision.method.contains('\r'),
+                    "a newline in a method must be escaped, not written: {:?}",
+                    decision.method
+                );
+            }
+
+            // "escaped exactly as `package` does", read off the shipped field rather
+            // than off a second call to `loggable`: the same string offered as a path
+            // component must come back identical. Two applications of `loggable` are
+            // not two escapes of one string, and this is where that shows (C63).
+            if !method.contains('/') {
+                let sibling = decision_for(&method, &format!("/npm/{method}"));
+                proptest::prop_assert_eq!(&sibling.method, &sibling.package);
+            }
+
+            proptest::prop_assert!(
+                decision.method.capacity() as u64 <= FIELD_CEILING_BYTES,
+                "the method field holds {} bytes against a {FIELD_CEILING_BYTES}-byte ceiling",
+                decision.method.capacity()
+            );
+        }
+
+        /// `BYTES_PER_RECORD` is what an operator's memory budget is divided by, so
+        /// it has to be a ceiling on a record rather than a mean: a queue sized from
+        /// a constant that understates a record holds more bytes than the budget
+        /// promises. The measurement is the heap footprint — the struct plus every
+        /// `String`'s capacity — and never the serialized size, which C29 states is
+        /// a different quantity.
+        #[test]
+        fn rl22_a_built_record_fits_the_per_record_ceiling(
+            method in component(20_000),
+            package in component(20_000),
+            version in component(20_000),
+        ) {
+            let decision = decision_for(&method, &format!("/npm/{package}/{version}"));
+            let footprint = heap_footprint(&decision);
+            proptest::prop_assert!(
+                footprint <= BYTES_PER_RECORD,
+                "a record built from generated input occupies {footprint} bytes, past the \
+                 {BYTES_PER_RECORD} an operator's queue budget is divided by"
+            );
+        }
+    }
 
     #[test]
     fn a_hostile_route_component_cannot_forge_a_log_line() {
@@ -483,6 +666,13 @@ mod tests {
         assert_eq!(target.ecosystem, "");
         assert!(target.package.is_none());
         assert!(target.version.is_none());
+    }
+
+    #[test]
+    fn record_osv_diagnostic_match_outside_a_request_is_a_no_op() {
+        // No `CONTEXT.scope` is active here, mirroring `record_cache`'s own
+        // outside-a-request tolerance: this must not panic.
+        record_osv_diagnostic_match();
     }
 
     #[test]

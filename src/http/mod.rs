@@ -40,6 +40,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
+        .route("/health/delivery", get(health::delivery))
         .route("/npm/-/ping", get(npm_routes::ping))
         .route("/npm/-", get(unsupported_npm_api))
         .route("/npm/-/{*rest}", get(unsupported_npm_api))

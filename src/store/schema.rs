@@ -105,7 +105,10 @@ CREATE TABLE IF NOT EXISTS content (
 /// Everything happens in one transaction, so a crash here leaves either the schema
 /// this build expects or nothing at all — never half of it.
 pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
-    let transaction = connection.transaction().await.map_err(SchemaError::Database)?;
+    let transaction = connection
+        .transaction()
+        .await
+        .map_err(SchemaError::Database)?;
 
     // `execute_batch` is not available on a transaction, so the statements are
     // issued one at a time inside it.
@@ -117,7 +120,10 @@ pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
     }
 
     let mut rows = transaction
-        .query("SELECT schema_version, engine_version FROM schema_meta WHERE id = 1", ())
+        .query(
+            "SELECT schema_version, engine_version FROM schema_meta WHERE id = 1",
+            (),
+        )
         .await
         .map_err(SchemaError::Database)?;
 
@@ -183,7 +189,10 @@ pub enum SchemaError {
     /// The database on disk carries another schema version. It is left exactly as it
     /// is: SPEC §10 forbids recreating it, because that would lose first-seen times,
     /// digest pins and the blocklist revision.
-    Mismatch { found: i64, expected: i64 },
+    Mismatch {
+        found: i64,
+        expected: i64,
+    },
     /// The schema row exists but a column does not hold what this build wrote.
     Corrupt(String),
 }
@@ -242,7 +251,10 @@ mod tests {
             .await
             .expect("a row that must survive the refusal");
         connection
-            .execute("UPDATE schema_meta SET schema_version = 999 WHERE id = 1", ())
+            .execute(
+                "UPDATE schema_meta SET schema_version = 999 WHERE id = 1",
+                (),
+            )
             .await
             .expect("the schema row is aged by hand");
 

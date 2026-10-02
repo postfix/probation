@@ -1,4 +1,4 @@
-# Package Firewall — Rust MVP Specification
+# Probation — Rust MVP Specification
 
 Status: reviewed implementation specification; runtime validation pending  
 Date: 2026-09-19  
@@ -9,7 +9,7 @@ Principles: KISS, YAGNI, fast warm requests, bounded resource use
 
 Developers and CI systems can install a compromised package immediately after publication, before a malware feed identifies it. Blocking only known malicious releases leaves this detection window open. Simply refusing a new download also breaks installations that could have used an older compatible release.
 
-Package Firewall is an open-source, self-hosted registry proxy for public npm and PyPI packages, implemented in Rust. It hides releases younger than a configured delay and hides known malicious packages and artifacts. Existing package managers resolve dependencies against the remaining candidates. Every artifact download through the firewall is checked before delivery.
+Probation is an open-source, self-hosted registry proxy for public npm and PyPI packages, implemented in Rust. It hides releases younger than a configured delay and hides known malicious packages and artifacts. Existing package managers resolve dependencies against the remaining candidates. Every artifact download through the firewall is checked before delivery.
 
 The default delay is 24 hours, configurable in seconds. An eligible package has passed the configured checks; eligibility is not proof that the package is harmless.
 
@@ -73,8 +73,8 @@ The MVP does not include a UI, package publishing, private registry federation, 
 ```toml
 listen = "127.0.0.1:8080"
 public_url = "https://packages.example.org"
-data_dir = "/var/lib/package-firewall"
-blocklist_file = "/etc/package-firewall/blocklist.json"
+data_dir = "/var/lib/probation"
+blocklist_file = "/etc/probation/blocklist.json"
 
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
@@ -96,9 +96,9 @@ Public upstreams are fixed in this release: `https://registry.npmjs.org` and `ht
 Reject invalid configuration, including an artifact limit larger than the total cache budget. Durations are nonnegative integers; zero cooldown explicitly disables only the age rule. Zero polling intervals and zero capacity limits are invalid. A nonzero `metadata_max_age_seconds` below `metadata_ttl_seconds` is invalid, because a ceiling beneath the revalidation interval would expire every copy before it could be revalidated; zero explicitly disables the ceiling and restores unbounded revalidation.
 
 ```text
-package-firewall serve --config /etc/package-firewall/config.toml
-package-firewall check-config --config /etc/package-firewall/config.toml
-package-firewall check-blocklist /etc/package-firewall/blocklist.json
+probation serve --config /etc/probation/config.toml
+probation check-config --config /etc/probation/config.toml
+probation check-blocklist /etc/probation/blocklist.json
 ```
 
 Validation commands exit nonzero on failure and do not modify state. No remote control endpoint is required.

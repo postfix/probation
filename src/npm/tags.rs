@@ -145,9 +145,7 @@ mod tests {
             !resolve(&tags(&[("latest", "1.0.0")]), &eligible(&["2.0.0"])).contains_key("latest"),
             "the fallback never moves latest up to a version the publisher had not shipped there"
         );
-        assert!(
-            !resolve(&tags(&[("latest", "1.0.0")]), &eligible(&[])).contains_key("latest")
-        );
+        assert!(!resolve(&tags(&[("latest", "1.0.0")]), &eligible(&[])).contains_key("latest"));
         assert!(
             !resolve(&tags(&[("latest", "not-a-version")]), &eligible(&["1.0.0"]))
                 .contains_key("latest"),
@@ -181,9 +179,6 @@ mod tests {
             Some("1.0.0"),
             "build metadata is not part of npm precedence"
         );
-        assert_eq!(
-            highest_eligible_stable_at_or_below("0.9.9", &set),
-            None
-        );
+        assert_eq!(highest_eligible_stable_at_or_below("0.9.9", &set), None);
     }
 }

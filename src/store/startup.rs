@@ -82,9 +82,7 @@ async fn open_database(path: &Path) -> Result<Connection, RecoveryError> {
     let log_bytes = std::fs::metadata(&log).map(|meta| meta.len()).unwrap_or(0);
     // An unreadable database counts as empty here: with a populated log beside it,
     // refusing is the answer either way.
-    let database_bytes = std::fs::metadata(path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
+    let database_bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
     if log_bytes > 0 && database_bytes == 0 {
         return Err(RecoveryError::OrphanedLog {
             database: path.to_path_buf(),

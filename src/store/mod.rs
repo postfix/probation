@@ -54,8 +54,7 @@ const SELECT_PROJECT: &str = "SELECT ecosystem, name, payload, etag, last_modifi
 
 /// SPEC §7's known-project index: the projects *this instance* has fetched, in a
 /// stable order so two renderings of one index are byte-identical.
-const SELECT_KNOWN_PROJECTS: &str =
-    "SELECT name FROM projects WHERE ecosystem = ?1 ORDER BY name";
+const SELECT_KNOWN_PROJECTS: &str = "SELECT name FROM projects WHERE ecosystem = ?1 ORDER BY name";
 
 const SELECT_PROJECT_GENERATIONS: &str =
     "SELECT generation, digest_generation FROM projects WHERE ecosystem = ?1 AND name = ?2";
@@ -692,7 +691,8 @@ async fn execute(connection: &mut Connection, command: StoreCommand) {
             now_micros,
             reply,
         } => {
-            let _ = reply.send(publish_content(connection, key, sha512, size, id, now_micros).await);
+            let _ =
+                reply.send(publish_content(connection, key, sha512, size, id, now_micros).await);
         }
         StoreCommand::ClearContentKey { key, reply } => {
             let _ = reply.send(clear_content_key(connection, key).await);
@@ -768,8 +768,9 @@ async fn list_project_first_seen(
             .ok()
             .and_then(|value| value.as_integer().copied())
             .ok_or_else(|| {
-                StoreError::Corrupt("artifact_references.first_seen_micros is not an integer"
-                    .to_owned())
+                StoreError::Corrupt(
+                    "artifact_references.first_seen_micros is not an integer".to_owned(),
+                )
             })?;
         first_seen.insert(ReferenceId::from_bytes(id), micros);
     }
