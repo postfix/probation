@@ -78,12 +78,8 @@ VOLUME ["/var/lib/probation"]
 
 EXPOSE 8080
 
-# `serve` waits on SIGINT and installs no SIGTERM handler, and as PID 1 it gets no
-# default disposition for a signal it has not handled — so a plain `docker stop` would
-# wait out its whole timeout and then SIGKILL the process. Naming the signal the
-# process actually listens for makes `docker stop` a graceful shutdown instead. The
-# underlying gap (no SIGTERM handler in the binary) is recorded in
-# `docs/operations.md`; this line stops it biting anyone using the image.
+# `serve` shuts down cleanly on SIGINT and SIGTERM alike, so `docker stop` works
+# either way; SIGINT is named here only to match the Ctrl-C path exactly.
 STOPSIGNAL SIGINT
 
 ENTRYPOINT ["probation"]

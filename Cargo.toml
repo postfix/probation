@@ -11,7 +11,7 @@ keywords = ["npm", "pypi", "supply-chain", "proxy", "security"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Planning history and analyzer state are repository-only; the crate ships source,
 # tests and the operator documents.
-exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/docs/codebase-overview.md", "/.smtc", "/.claude"]
+exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude"]
 
 [lib]
 name = "probation"
@@ -57,6 +57,9 @@ test-support = []
 arc-swap = "1.9.2"
 async-trait = "0.1.92"
 axum = "0.8.9"
+# Lets `serve` terminate TLS itself when `tls_cert_path`/`tls_key_path` are set,
+# instead of requiring an external reverse proxy for that one job.
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
 fs4 = "1.1.0"

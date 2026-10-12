@@ -79,6 +79,13 @@ pub struct Config {
     /// Whether OSV enforcement denies, only logs, or is skipped entirely (C16-C18b,
     /// D5/D6). Defaults to `Enforce` — today's behaviour — when absent.
     pub osv_mode: osv::OsvMode,
+    /// The certificate `serve` terminates TLS with, if it terminates TLS itself at
+    /// all. `None` unless both this and `tls_key_path` are set: `serve` then binds
+    /// plain HTTP, exactly as before this pair of keys existed, and a reverse proxy
+    /// is still the one terminating TLS, per SPEC §3.
+    pub tls_cert_path: Option<PathBuf>,
+    /// The private key paired with `tls_cert_path`. Both or neither; see there.
+    pub tls_key_path: Option<PathBuf>,
 }
 
 /// The default for the one key SPEC §4 does not list. It is a Gate 3 addition
@@ -145,6 +152,8 @@ struct RawConfig {
     osv_cache_ttl_seconds: Option<u64>,
     osv_request_timeout_ms: Option<u64>,
     osv_mode: Option<String>,
+    tls_cert_path: Option<PathBuf>,
+    tls_key_path: Option<PathBuf>,
 }
 
 fn default_max_references_per_project() -> u32 {
@@ -193,6 +202,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "osv_cache_ttl_seconds",
     "osv_request_timeout_ms",
     "osv_mode",
+    "tls_cert_path",
+    "tls_key_path",
 ];
 
 impl Config {
@@ -329,6 +340,25 @@ impl RawConfig {
             None => header::AUTHORIZATION,
         };
 
+        // Both or neither: a cert with no key (or a key with no cert) cannot start
+        // TLS, so it is refused up front rather than failing later at bind time with
+        // a less specific error.
+        match (&self.tls_cert_path, &self.tls_key_path) {
+            (Some(_), None) => {
+                return Err(invalid(
+                    "tls_cert_path",
+                    "requires tls_key_path to also be set".to_owned(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(invalid(
+                    "tls_key_path",
+                    "requires tls_cert_path to also be set".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+
         // Peer addresses recorded with no sink configured would reach only the
         // console — which the host keeps on disk under systemd or a container runtime,
         // but which is not a destination the operator chose. Refused by name rather
@@ -417,6 +447,8 @@ impl RawConfig {
                 },
                 None => osv::OsvMode::Enforce,
             },
+            tls_cert_path: self.tls_cert_path,
+            tls_key_path: self.tls_key_path,
         })
     }
 }

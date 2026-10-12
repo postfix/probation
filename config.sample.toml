@@ -1,26 +1,25 @@
 # Probation sample configuration (SPEC §4).
 #
-# Configuration changes require a restart; blocklist changes do not.
+# Config changes need a restart. Blocklist changes do not.
 
 listen = "127.0.0.1:8080"
 public_url = "https://packages.example.org"
 data_dir = "/var/lib/probation"
-# The snapshot your blocklist producer writes and replaces atomically. It is not
-# the `blocklist.sample.json` in this repository: that sample carries a deliberately
-# distant `expires_at` so it always validates, while a producer's real snapshot
-# carries a short window. Without a valid snapshot the service starts, answers
-# /health/live but not /health/ready, and refuses every package request.
+# The snapshot your blocklist producer writes and replaces atomically. This is
+# not the `blocklist.sample.json` in this repository: that sample has a far-off
+# `expires_at` so it always validates. Without a valid snapshot the service
+# starts, answers /health/live but not /health/ready, and refuses every
+# package request.
 blocklist_file = "/etc/probation/blocklist.json"
 
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
-# How old a cached project snapshot may become since its last FULL fetch, whatever
-# upstream keeps answering `304` to (SPEC §10). Each project's own ceiling is this
-# value less a deterministic offset of up to a tenth, so projects fetched together do
-# not all expire at once; the offset only ever shortens, so this stays a true
-# maximum. An over-age snapshot is never served: if the full fetch fails the request
-# is refused. Must not be below `metadata_ttl_seconds`. Set 0 to disable the ceiling
-# — which restores exactly the unbounded staleness it exists to close.
+# How old a cached project snapshot may get since its last FULL fetch, however
+# often upstream answers `304` (SPEC §10). Each project expires a little early,
+# by up to a tenth, so projects fetched together do not all expire at once. An
+# over-age snapshot is never served: if the full fetch fails, the request is
+# refused. Must not be below `metadata_ttl_seconds`. 0 removes the limit and
+# brings back the unbounded staleness it exists to close.
 metadata_max_age_seconds = 86400
 blocklist_poll_seconds = 5
 
@@ -34,69 +33,72 @@ max_artifact_downloads = 8
 max_active_requests = 1024
 max_references_per_project = 20000
 
-# Decision log delivery (§8 of docs/operations.md). Both keys are absent by default:
-# with no `log_file_path` this process opens no file and starts no delivery task, and
-# the stdout decision line is unchanged.
+# Decision log delivery (§8 of docs/operations.md). Both sinks are off by
+# default: with no `log_file_path` no file is opened, and with no `siem_url` no
+# HTTP client is built. The stdout decision line is always written.
 #
-# Every decision is appended to this file as one JSON object per line, in addition to
-# stdout. Exactly one process may write it, and it must not be handed to an external
-# `logrotate` — this process renames the file itself.
+# Every decision is appended to this file as one JSON object per line. Exactly
+# one process may write it. Never hand it to `logrotate`: this process rolls
+# the file itself.
 # log_file_path = "/var/log/probation/decisions.ndjson"
-# The live file is rolled to `<log_file_path>.1` when it reaches this size, replacing
-# any previous `.1`. One generation is kept, so the pair costs at most twice this.
-# Has no effect without `log_file_path`, and is refused rather than ignored.
+# The live file rolls over to `<log_file_path>.1` at this size, replacing any
+# previous `.1`. One generation is kept, so the pair costs at most twice this.
+# Refused without `log_file_path`.
 # log_file_max_bytes = 104857600        # 100 MiB live, 200 MiB with the rollover
-# How much memory this sink's queue may hold while the file falls behind — a memory
-# budget, like `memory_cache_max_bytes`, and additive to it. Records are dropped and
-# counted once the queue is full, so this trades memory for headroom against a slow
-# disk. Absent means 64 MiB. Has no effect without `log_file_path`, and is refused
-# rather than ignored.
-# log_queue_max_bytes = 67108864        # 64 MiB
+# How much memory this sink's queue may hold while the file falls behind. A
+# memory budget like `memory_cache_max_bytes`, and on top of it. Once the queue
+# is full, records are dropped and counted. Absent means 1875 MiB, enough for a
+# 5-minute outage at 200 requests/second. Refused without `log_file_path`.
+# log_queue_max_bytes = 1966080000      # 1875 MiB
 
-# The collector decisions are also POSTed to, batched as newline-delimited JSON at 256
-# records or two seconds, whichever comes first. Absent by default: with no `siem_url`
-# no HTTP client is built and no delivery task is started. Must use `https` unless the
-# host is a loopback address or `localhost`.
+# The collector decisions are also POSTed to, as newline-delimited JSON in
+# batches of 256 records or 2 seconds, whichever comes first. Must use `https`
+# unless the host is a loopback address or `localhost`.
 # siem_url = "https://siem.example.org/services/collector/raw"
-# The header the credential is sent under. The credential itself is never written here:
-# it is read from the environment variable `PROBATION_SIEM_AUTH` at startup, and delivery
-# is unauthenticated when that variable is unset. Has no effect without `siem_url`, and
-# is refused rather than ignored.
+# The header the credential is sent under. The credential itself never goes in
+# this file: it is read from the environment variable `PROBATION_SIEM_AUTH` at
+# startup. With that variable unset, delivery is unauthenticated. Refused
+# without `siem_url`.
 # siem_auth_header = "Authorization"
-# The same budget for this sink's queue, and the one that decides how long a collector
-# outage costs nothing: records accumulate here while the collector is away and are
-# dropped and counted once it is full. Absent means 64 MiB. Two sinks are two queues,
-# so a deployment with both configured pays both. Has no effect without `siem_url`,
-# and is refused rather than ignored.
-# siem_queue_max_bytes = 67108864       # 64 MiB
+# The same kind of budget for this sink's queue. It decides how long a collector
+# outage costs nothing: records queue here while the collector is away and are
+# dropped and counted once it is full. Absent means 1875 MiB. Two sinks are two
+# queues, so a deployment with both pays both. Refused without `siem_url`.
+# siem_queue_max_bytes = 1966080000     # 1875 MiB
 
-# Whether every delivered record also carries the peer IP of the connection that asked,
-# as a `consumer` field. Off by default, and with it off no record carries the field at
-# all. Privacy note: this records who is installing packages. What is recorded is the
-# peer address of the accepted TCP connection — never a port, and never anything the
-# caller supplies. Behind a forwarding hop, NAT or load balancer it identifies that
-# hop, not the machine that ran the install — see §8 of docs/operations.md. Turning it
-# off later erases nothing already written — in the log file, its `.1`, the collector,
-# or the host's console log, since the address is on the stdout decision line too.
-# The log file is created 0600; a pre-existing file keeps its mode and a group- or
-# world-accessible one is warned about once. With this on, a `log_file_path` that
-# cannot be opened stops startup.
-# Refused at startup without `log_file_path` or `siem_url`, so the addresses it records
-# reach a durable destination the operator chose.
+# Whether every delivered record also carries the peer IP of the connection
+# that asked, as a `consumer` field. Off by default, and then no record carries
+# the field. Privacy note: this records who is installing packages. It is the
+# peer address of the accepted TCP connection, never a port and never anything
+# the caller supplies. Behind a proxy, NAT, or load balancer it identifies that
+# hop, not the machine that ran the install (§8 of docs/operations.md).
+# Turning it off later erases nothing already written to the log file, its
+# `.1`, the collector, or the host's console log.
+# A log file this process creates gets mode 0600. A pre-existing file keeps its
+# mode, and a group- or world-readable one is warned about once. With this on,
+# a `log_file_path` that cannot be opened stops startup.
+# Refused without `log_file_path` or `siem_url`, so the addresses it records
+# reach a durable destination you chose.
 # log_consumer_identification = false
 
-# OSV vulnerability intelligence: every candidate a producer's own blocklist would
-# otherwise allow is also checked against OSV before it is served. A candidate is
-# never blocked while an OSV lookup is unresolved: an absent, slow or unreachable OSV
-# endpoint costs staleness, never availability.
+# OSV vulnerability intelligence: every candidate your own blocklist would
+# allow is also checked against OSV before it is served. A candidate is never
+# blocked while an OSV lookup is unresolved: a slow or unreachable OSV costs
+# staleness, never availability.
 #
-# How long an OSV lookup's answer is trusted before it is asked again. Optional,
-# and 300 (5 minutes) if left out.
+# How long an OSV answer is trusted before it is asked again. Optional, 300
+# (5 minutes) if left out.
 osv_cache_ttl_seconds = 300
-# How long one OSV batch flush's outbound call may take before it fails open.
-# Optional, and 500 if left out.
+# How long one OSV batch's outbound call may take before it fails open.
+# Optional, 500 if left out.
 osv_request_timeout_ms = 500
-# Whether OSV enforcement denies (`enforce`), only checks and logs a match without
-# denying (`diagnostic`), or is skipped entirely (`off`). Optional, and `enforce` if
-# left out — today's behaviour. Changing it requires a restart, like every other key.
+# What an OSV match does: `enforce` denies, `diagnostic` logs the match and
+# allows, `off` skips the check. Optional, `enforce` if left out.
 osv_mode = "enforce"
+
+# TLS: `serve` terminates it itself when both keys are set (§6 of
+# docs/operations.md says what still belongs in front of this service). Both
+# or neither: one without the other is refused. Absent by default, and then
+# `serve` binds plain HTTP.
+# tls_cert_path = "/etc/probation/tls/cert.pem"
+# tls_key_path = "/etc/probation/tls/key.pem"

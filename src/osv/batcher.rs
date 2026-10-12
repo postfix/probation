@@ -292,7 +292,7 @@ mod tests {
         }
 
         for waiter in waiters {
-            assert_eq!(waiter.await.unwrap(), false);
+            assert!(!waiter.await.unwrap());
         }
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),
@@ -334,7 +334,7 @@ mod tests {
         );
 
         tokio::time::sleep(OSV_BATCH_INTERVAL + Duration::from_millis(200)).await;
-        assert_eq!(reply.await.unwrap(), false);
+        assert!(!reply.await.unwrap());
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         drop(tx);
@@ -413,12 +413,11 @@ mod tests {
         let _ = handle.await;
         drop(server);
 
-        assert_eq!(
-            reply_a.await.unwrap(),
-            false,
+        assert!(
+            !reply_a.await.unwrap(),
             "every waiter fails open on a mismatch"
         );
-        assert_eq!(reply_b.await.unwrap(), false);
+        assert!(!reply_b.await.unwrap());
     }
 
     #[tokio::test]
@@ -444,9 +443,8 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 
         shutdown.cancel();
-        assert_eq!(
-            reply.await.unwrap(),
-            false,
+        assert!(
+            !reply.await.unwrap(),
             "the queued request is drained and actually answered by the collector on \
              shutdown, rather than left unanswered or dropped"
         );

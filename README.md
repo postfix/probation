@@ -2,42 +2,63 @@
 
 [![crates.io](https://img.shields.io/crates/v/probation.svg)](https://crates.io/crates/probation)
 
-Open-source package firewall for npm and PyPI.
+A firewall for npm and PyPI packages. You run it yourself, in front of your own
+`npm` and `pip` clients.
 
-A self-hosted registry proxy that hides releases younger than a configured delay and
-hides known-malicious packages and artifacts. `npm` and `pip` keep doing the
-dependency resolution; this decides what there is to resolve against, and verifies
-every artifact before delivering it.
+## The problem
 
-The problem it addresses: a compromised package can be installed the moment it is
-published, before any malware feed has seen it. Blocking only known-bad releases
-leaves that window open, and simply refusing a new download breaks installs that an
-older compatible release would have satisfied. So the firewall withholds the young
-release and lets the client resolve to an older eligible one — without anyone editing
-a requirement.
+A package can be hijacked and a bad version published in seconds. Malware
+scanners and blocklists take hours or days to catch up. In that gap, anyone who
+installs the package gets the bad version.
 
-Eligible means "passed the configured checks". It is not a claim that a package is
-harmless.
+## What it does
+
+Probation sits between your developers and the real npm and PyPI registries. It
+holds back any version published too recently (you choose how long, a day by
+default). If a newer version is held back, `npm` and `pip` fall back to the
+newest version that is allowed, as if the newer one did not exist yet. Nobody
+changes what they typed.
+
+It also checks every download against a blocklist you supply, by package name,
+by version, or by exact file.
+
+On top of your blocklist, it checks every package against [OSV](https://osv.dev),
+a free, open database of known vulnerabilities. This is on by default and needs
+no setup. If OSV is slow or unreachable, that never blocks a download. The extra
+check is skipped for that request. See [`docs/operations.md`](docs/operations.md)
+§4 to tune or disable it.
+
+"Allowed through" means it passed these checks. It is not a guarantee that a
+package is safe.
 
 ## Quick start
 
-From [crates.io](https://crates.io/crates/probation) (needs the build tools listed
-under [Building and testing](#building-and-testing)):
+Install it:
 
 ```sh
 cargo install probation --locked
+```
+
+No Rust toolchain on this machine? Build it in a container and install the
+binary on the host. This needs only Docker or Podman:
+
+```sh
+scripts/build-install.sh
+```
+
+Check a config file is valid:
+
+```sh
 probation check-config config.sample.toml
 ```
 
-or from a checkout:
+Run it:
 
 ```sh
-cargo build --release --locked
-./target/release/probation check-config config.sample.toml
-./target/release/probation serve --config /etc/probation/config.toml
+probation serve --config /etc/probation/config.toml
 ```
 
-or from the container image:
+Or run it in Docker:
 
 ```sh
 docker build -t probation:mvp .
@@ -46,7 +67,7 @@ docker run -d -p 127.0.0.1:8080:8080 \
   probation:mvp serve --config /etc/probation/config.toml
 ```
 
-Point clients at it:
+Then point your tools at it instead of the public registries:
 
 ```ini
 # .npmrc
@@ -60,60 +81,58 @@ audit=false
 index-url = https://packages.example.org/pypi/simple/
 ```
 
-`config.sample.toml` and `blocklist.sample.json` in this repository are the shapes
-those two files take. **Read [`docs/operations.md`](docs/operations.md) before running
-this for real** — in particular section 3, because `cache_max_bytes` does not bound
-the state database, and section 6, because per-client rate limiting is the reverse
-proxy's job and not this service's.
+`config.sample.toml` and `blocklist.sample.json` show the file formats.
 
-## What it does not do
+It terminates TLS itself: set `tls_cert_path` and `tls_key_path` in the config,
+with no reverse proxy needed. `public_url` must always be `https`, even for
+local testing. See [`docs/operations.md`](docs/operations.md) §6 for the
+quickest way to get a trusted local certificate.
 
-It enforces on delivery, so packages already installed or already in a client's own
-cache are outside its reach, as are alternate indexes, Git and URL dependencies, local
-wheels, and lockfiles pinning upstream URLs directly. It has no UI, no publishing, no
-private-registry federation, no vendor feed adapters, no archive scanning and no
-administrative API. The blocklist is produced by something else; this consumes one
-local JSON file.
+**Before running this for real, read [`docs/operations.md`](docs/operations.md).**
+Two things catch people out: `cache_max_bytes` does not limit the size of its
+database (section 3), and it does not limit how many requests one client can
+send. Put that limit on the reverse proxy in front of it (section 6).
 
-`docs/operations.md` §7 and §12 are the complete lists.
+## What it won't catch
+
+It only checks packages as they are downloaded. So it cannot help with:
+
+- packages already installed, or already in a client's local cache
+- anything fetched from somewhere other than npm or PyPI: other registries, Git
+  URLs, direct downloads, local files
+- a lockfile that pins a direct URL instead of a package name and version
+
+It has no web UI, cannot publish packages, and does not scan files for malware
+itself. It enforces the blocklist you give it and what OSV reports. Something
+else has to produce that blocklist.
+
+Full details: `docs/operations.md`, sections 7 and 12.
 
 ## Building and testing
 
 ```sh
 cargo clippy --all-targets -- -D warnings
-cargo test                                  # offline; no test reaches a public network
-cargo test --test e2e_npm -- --ignored      # drives the real npm client
-cargo test --test e2e_pip -- --ignored      # drives the real pip client
-cargo bench                                 # the SPEC §12 measurements
-cargo bench --bench delivery_rated_load     # ten minutes; the rated-load figure below
+cargo test                                  # no network access needed
+cargo test --test e2e_npm -- --ignored      # runs the real npm client
+cargo test --test e2e_pip -- --ignored      # runs the real pip client
+cargo bench                                 # performance checks
+cargo bench --bench delivery_rated_load     # a slower one, ~10 minutes
 ```
 
-Building needs `cmake`, a C compiler and `perl` in addition to the Rust toolchain
-pinned by `rust-toolchain.toml`: reqwest's default rustls crypto provider is
-`aws-lc-rs`, which builds from C. The e2e tests additionally need `npm`, and `python3`
-with `pip`, `setuptools` and `build`.
+You need `cmake`, a C compiler, and `perl` (one crypto library builds from C),
+plus the Rust version pinned in `rust-toolchain.toml`. The e2e tests also need
+`npm` and `python3` with `pip`, `setuptools`, and `build` installed.
 
-Benchmark results against the specification's acceptance targets — every one of them
-met, with the pre-change baseline kept alongside — are in
-[`docs/operations.md`](docs/operations.md) §10.
-
-**Rated load:** the delivery pipeline sustains **59,288 decided requests/second** with
-zero records lost, measured on the reference hardware named in
-[`docs/operations.md`](docs/operations.md) §8. The default queue budget is sized from a
-stated 200 requests/second reference load, not from that ceiling — §8 explains why and
-states what a default deployment's budget survives and how to compute your own
-tolerance.
+In testing, it handled about **59,000 requests/second** with no dropped
+records. See [`docs/operations.md`](docs/operations.md) §8 and §10 for how that
+was measured and what it means for sizing your own setup.
 
 ## Documents
 
-- [`SPEC.md`](SPEC.md) — the specification this implements.
-- [`docs/operations.md`](docs/operations.md) — running it, capacity, backup, restore,
-  limits and measured numbers.
-- [`docs/plans/package-firewall-mvp/`](docs/plans/package-firewall-mvp/) — the product,
-  architecture, design and slice plan this was built from.
-
-`docs/codebase-overview.md` is the pre-implementation onboarding briefing and is
-stale: it was written before any source existed and still says so. It is not linked
-above for that reason.
+- [`SPEC.md`](SPEC.md): the specification this was built from.
+- [`docs/operations.md`](docs/operations.md): how to run it, its limits, backup
+  and restore, and measured performance.
+- [`docs/plans/`](docs/plans/): the design and planning history, one folder per
+  feature.
 
 Licensed under Apache-2.0; see [`LICENSE`](LICENSE).

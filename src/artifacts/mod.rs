@@ -335,21 +335,6 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The exhaustive match compiles, and the new arm renders a real, non-empty
-    /// reason string rather than the placeholder every other arm already has.
-    #[test]
-    fn deny_reason_maps_blocked_by_osv_in_artifacts_mod() {
-        assert_eq!(
-            deny_reason(DenyReason::BlockedByOsv),
-            "the artifact is blocked by a known OSV malicious-package advisory"
-        );
-    }
-}
-
 /// SPEC §11's rows, from the failure that produced them.
 /// Taken by reference because one transfer's error is shared by every waiter on it
 /// (SPEC §9: "returned consistently to waiters"), and `DownloadError` carries an
@@ -405,5 +390,20 @@ fn storage_error(err: &StoreError) -> ApiError {
         StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
             ApiError::StorageUnusable
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exhaustive match compiles, and the new arm renders a real, non-empty
+    /// reason string rather than the placeholder every other arm already has.
+    #[test]
+    fn deny_reason_maps_blocked_by_osv_in_artifacts_mod() {
+        assert_eq!(
+            deny_reason(DenyReason::BlockedByOsv),
+            "the artifact is blocked by a known OSV malicious-package advisory"
+        );
     }
 }

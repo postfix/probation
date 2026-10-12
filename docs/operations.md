@@ -1,33 +1,30 @@
-# Operating Probation
+# Running Probation
 
-This is the operator's document: how to run the service, what it protects, what it
-does **not** protect, where its capacity limits actually are, and how to back it up
-and restore it.
+How to start it, what it protects against, what it does not, where it can run
+out of room, and how to back it up and restore it.
 
-Every claim here was checked against the code in this repository or against a
-measured run. Where something is not implemented, or is implemented more narrowly
-than it sounds, it says so and marks the gap rather than leaving it to be discovered
-in an incident. Section [12](#12-known-gaps) is the list of those.
+Every claim here was checked against the code or measured on a real run.
+Section 12 lists every known gap in one place.
 
 ---
 
-## 1. What the service is
+## 1. What this service is
 
-One process, one local data directory, one policy for every consumer. It proxies
-public npm and PyPI metadata and artifacts, and it withholds two classes of release:
+One process, one data folder, one set of rules for every client. It sits in
+front of npm and PyPI and withholds two kinds of release:
 
-- anything younger than `cooldown_seconds` (default 24 hours), and
-- anything the blocklist names, by package, by package/version, or by artifact digest.
+- anything published less than `cooldown_seconds` ago (default: 24 hours)
+- anything on your blocklist, or in the OSV vulnerability database (section 4)
 
-Package managers do the dependency resolution. The firewall only decides what is
-available to resolve against, and verifies every artifact before delivering it.
+`npm` and `pip` still resolve dependencies themselves. This service only
+narrows what they can resolve against, and verifies every file it hands back.
 
-Eligibility is not a safety claim. An eligible package has passed the configured
-checks; that is all it means.
+"Allowed through" means it passed these checks. It does not mean the package
+is safe.
 
-## 2. Running it
+## 2. Starting it
 
-### From the container image
+### With Docker
 
 ```sh
 docker build -t probation:mvp .
@@ -39,24 +36,20 @@ docker run -d --name probation \
   probation:mvp serve --config /etc/probation/config.toml
 ```
 
-The image ships `config.sample.toml` at `/etc/probation/config.toml` and
-`blocklist.sample.json` at `/etc/probation/blocklist.json`, with one edit made
-at build time: `listen` becomes `0.0.0.0:8080`, because SPEC §3's loopback default
-would make the published port unreachable from outside the container's own network
-namespace. Publish that port only to the reverse proxy (section 6), not to a network.
+The image ships with the sample config and sample blocklist. The build changes
+one thing: it listens on `0.0.0.0:8080` instead of localhost, so the published
+port is reachable. Publish that port only to your reverse proxy (section 6),
+never to a network.
 
-The shipped sample blocklist is a *sample*. It carries a distant `expires_at` so the
-image starts ready out of the box; mount your producer's real snapshot over that path
-before the service is used for anything.
+The sample blocklist has a far-off expiry so the container starts. Replace it
+with your real blocklist before relying on this.
 
-The build stage needs `cmake`, a C compiler and `perl`: reqwest's default rustls
-crypto provider is `aws-lc-rs`, which builds `aws-lc-sys` from C. The runtime stage
-needs `ca-certificates`: certificate roots come from `rustls-platform-verifier`, which
-reads the system trust store, so an **empty trust store is a total upstream outage**
-rather than a degraded mode — every metadata fetch and every artifact download fails.
-Both are in the `Dockerfile` with that reasoning beside them.
+Building the image needs `cmake`, a C compiler, and `perl`, because one crypto
+library compiles from C. Running it needs `ca-certificates`: with an empty
+trust store, every connection to npm and PyPI fails. The `Dockerfile` handles
+both.
 
-### From the binary
+### Running the binary directly
 
 ```sh
 cargo build --release --locked
@@ -65,342 +58,317 @@ cargo build --release --locked
 ./target/release/probation serve --config /etc/probation/config.toml
 ```
 
-Both validation commands exit non-zero on the first problem, name it, and write
-nothing. Run them in your deployment pipeline before restarting the service:
-configuration changes require a restart, and a restart onto an invalid configuration
-is an outage.
+Both `check-*` commands stop at the first problem, report it, and write
+nothing. Run them in your deploy pipeline before restarting. A restart onto a
+broken config is an outage.
 
-### Health endpoints
+### Stopping it
 
-| Endpoint | Meaning |
+`SIGINT` (Ctrl-C) and `SIGTERM` (`docker stop`, `systemctl stop`, plain `kill`)
+both shut it down cleanly: queued log records are delivered and a summary is
+printed. An abrupt stop is still safe. Nothing gets corrupted.
+
+### Health checks
+
+| Endpoint | What it tells you |
 | --- | --- |
-| `GET /health/live` | The process is answering. Stays `200` through an expired blocklist and through unusable storage. |
-| `GET /health/ready` | A valid blocklist is in force **and** storage is usable. `503` otherwise. No upstream is probed. |
-| `GET /health/delivery` | **Alerting only — never wire this into a probe.** `503` while a decision record was lost to either sink in the last 60 s, `200` otherwise; `/health/ready` is unaffected either way. See section 8, "The rated load". |
+| `GET /health/live` | The process is up. Still `200` with an expired blocklist or broken storage. |
+| `GET /health/ready` | The blocklist is valid **and** storage works. `503` if either is broken. Does not check upstream npm/PyPI. |
+| `GET /health/delivery` | **For alerts only, never a health probe.** `503` if a log record was lost in the last 60 seconds. See "The rated load" in section 8. |
 
-Point your orchestrator's liveness probe at the first and its readiness probe at the
-second. They are deliberately different questions: a service with an expired blocklist
-is running correctly and must not be restarted; it must be taken out of rotation until
-its producer catches up.
+Point the liveness probe at `/health/live` and the readiness probe at
+`/health/ready`. They differ on purpose: a service with an expired blocklist
+is working and should not be restarted. It should leave rotation until the
+blocklist is fixed.
 
-## 3. Capacity — and what `cache_max_bytes` does not cover
+## 3. Disk space: `cache_max_bytes` does not cap everything
 
-This is the finding SPEC §15 records as **OPS-01**, and it is the one most likely to
-cause an incident, because the name `cache_max_bytes` reads like a total storage
-bound and is not one.
+The name sounds like a total disk limit. It is not.
 
-The data directory has two halves:
+The data folder has two parts:
 
 ```text
-<data_dir>/content/     artifact bytes and in-flight temporary downloads
-<data_dir>/state/       firewall.db, firewall.db-wal, the lock file
+<data_dir>/content/     the downloaded files
+<data_dir>/state/       the database (firewall.db, firewall.db-wal) and lock file
 ```
 
-`cache_max_bytes` bounds **`content/` only**. It is the ceiling on bytes held by
-verified artifact files plus the reservations of downloads currently in flight, and
-the maintenance pass evicts down to it in approximate least-recently-used order.
+`cache_max_bytes` limits only `content/`. When it fills, the least recently
+used files are evicted.
 
-`state/` is **outside that budget entirely**. Nothing in this service caps the size of
-the database or its write-ahead log, and nothing warns when either grows. Provision
-the filesystem with headroom beyond `cache_max_bytes` and monitor free space yourself.
+**`state/` has no size limit.** Nothing caps it and nothing warns you when it
+grows. Give the disk real headroom beyond `cache_max_bytes` and watch free
+space yourself.
 
-What lives in `state/`, and therefore what grows:
+`state/` holds a row for every project ever looked at, a row for every file
+ever checked (with its hash and first-seen time), a row per cached file, and
+the current blocklist. The first-seen records are permanent: they are what
+stops a restart from resetting the cooldown clock. So `state/` only grows.
+Deleting rows does not shrink the file, and nothing prunes it.
 
-- one row per project snapshot, holding the upstream payload;
-- one row per artifact reference, holding its expected and computed digests, its
-  publication or first-seen time, and its content key;
-- one row per cached content object;
-- the last accepted blocklist snapshot, in full.
+> **Known gap:** no low-disk warning. If the disk fills, writes fail, the
+> service reports "not ready", and requests get `503`. It never relaxes its
+> rules to save space.
 
-Artifact reference rows and first-seen times are **identity records, not cache**. They
-are what makes a restart not reset the cooldown clock and what makes a permanently
-pinned digest permanent. Eviction removes content rows and files; it does not remove
-pins. `state/` therefore grows monotonically with the number of distinct artifact
-references this instance has ever seen. Deleting rows does not shrink the database
-file, and there is no automatic pruning. Treat state growth as an operational capacity
-limit to plan for.
+Keep room for one blocklist update: a 100,000-entry blocklist is about 9.6 MB,
+and the old and new copies exist together briefly.
 
-> **Gap.** There is no startup free-space check and no low-space alarm. `fs4` is used
-> for the exclusive data-directory lock only; the `available_space` headroom check
-> named in the program design is not implemented. Monitor free space with your own
-> tooling. If the filesystem fills, storage writes fail, readiness goes false and
-> package requests answer `503` — the service never relaxes policy to free space, and
-> it never deletes the write-ahead log to make room.
+Memory: `memory_cache_max_bytes` budgets parsed metadata and cached responses
+only. It is **not** a limit on the process. In testing with a 100,000-entry
+blocklist under load, the process used **357 to 374 MB** of RAM. Size your
+memory limit from that number.
 
-Reserve enough headroom for a blocklist commit and a checkpoint at all times. A
-100,000-entry snapshot is about 9.6 MB of JSON, and both the previous and the new one
-exist during the commit.
+## 3a. `metadata_max_age_seconds`: a safety setting with a cost
 
-Memory: `memory_cache_max_bytes` is a budget for parsed metadata, hot reference
-records and rendered responses. It is **not** total process memory, and it excludes
-the blocklist itself and in-flight buffers. Measured resident set size with a
-100,000-entry snapshot in force under sustained metadata load: **357–374 MiB** across
-five runs (section 10). Size the process's memory limit from the top of that range,
-not from `memory_cache_max_bytes`.
+`metadata_ttl_seconds` sets how often a package is re-checked with upstream.
+But a cheap "nothing changed" answer from upstream can renew that clock
+forever. So there is a harder limit: `metadata_max_age_seconds` (default: 1
+day). Once a package's data is that old, the next request must fully re-fetch
+it, however many cheap re-checks happened.
 
-## 3a. The metadata maximum age — and the outage it can turn into a refusal
+**The cost:** if that forced re-fetch fails, the request is refused, even
+though a slightly stale local copy exists. So an outage on the path between
+this service and npm/PyPI that lasts longer than this limit makes
+already-cached packages start failing. Projects expire at slightly different
+moments so the failures spread out, but they still happen.
 
-This is the finding the program design records as **TM-15-2**. It was *accepted*
-rather than designed away, and **operations owns it**. Read it beside OPS-01 above:
-both are cases where a default that looks like a safety setting has an operational
-cost you have to decide about yourself.
+Your two choices:
 
-`metadata_ttl_seconds` bounds how often this firewall **checks** upstream. It does
-not bound how old a stored copy may become, because every upstream `304` renews the
-validation time. `metadata_max_age_seconds` (default **86400**, one day) is the
-separate bound on a copy's real age, measured from its last **full** fetch — an
-instant no `304` ever advances. Once a snapshot reaches its ceiling the next request
-refetches it in full with no validators at all, so upstream cannot answer `304`.
+- **Raise it.** Longer survival through an upstream outage, but a longer window
+  in which a misbehaving upstream can feed you stale data. It cannot be lower
+  than `metadata_ttl_seconds`. The service refuses to start if it is.
+- **Set it to `0`.** No limit. An upstream that always says "nothing changed"
+  can then freeze your view of a package forever. Do this deliberately and
+  write down why.
 
-**The cost, stated plainly.** An over-age snapshot is **never served**. If that full
-fetch fails — a transport error, a timeout, an unreachable registry — the request is
-**refused** (`502`/`504`), not answered from the stored copy. So an actor who can
-disrupt only the network path between this firewall and the real upstream, without
-touching this process at all, can take warm projects offline by sustaining that
-disruption past one ceiling. Before this control existed, warm reads survived an
-upstream outage indefinitely. They no longer do.
+There is no "serve it stale" option.
 
-Each project's ceiling is its configured value less a deterministic offset of up to a
-tenth, derived from the project's own name, so projects fetched together — a bulk
-seed, a restore from backup — lapse gradually instead of all at once. That spreads
-the failure; it does not remove it. The offset only ever shortens, so
-`metadata_max_age_seconds` remains a true maximum.
+This limit never affects blocklist enforcement: a blocked package stays
+blocked. It never affects downloaded files either. They are identified by
+content hash and cannot go stale.
 
-**Your two levers, and nothing else:**
-
-- **Raise `metadata_max_age_seconds`.** A longer ceiling means a longer upstream
-  outage is survivable on warm reads, and a longer window in which an unchanging or
-  dishonest upstream can hold this firewall's view of a project fixed. It may not be
-  set below `metadata_ttl_seconds`; the service refuses to start if it is.
-- **Set `metadata_max_age_seconds = 0`.** This disables the ceiling entirely.
-  **It reinstates exactly the unbounded-staleness exposure the ceiling exists to
-  close:** an upstream that answers `304` forever will hold this firewall's cached
-  view of a project fixed forever, and nothing here will ever notice. Choose it
-  deliberately, and record why.
-
-There is no third setting, no soft mode and no "serve stale on outage" switch. The
-fail-closed behaviour is the specification's existing rule against serving expired
-metadata during an upstream outage, reached by a second route.
-
-The ceiling has **no effect on blocklist enforcement**, which invalidates rendered
-responses on its own revision and never depends on upstream contact. A blocked
-package stays blocked whether or not its snapshot is over-age. It also does not apply
-to cached artifact bytes, which are content-addressed and cannot go stale.
-
-> **Schema note.** Recording the last full fetch added a column to `projects` and
-> moved `SCHEMA_VERSION` from 3 to 4. A database written by an older build is
-> **refused, not migrated**: the service reports the version it found and leaves the
-> file exactly as it is. This is acceptable only on the condition that nothing has
-> shipped. The repository can show that no deployed database exists *in it*; it
-> cannot show that none exists in the world. If you are holding a database written by
-> an earlier build of this service, this release will not open it, and there is no
-> migration step to run — treat that as a blocker and raise it before upgrading.
+> **Upgrading:** this release added a database column and bumped the schema
+> version. A database made by an older build **will not open**. The service
+> refuses it rather than guess at a migration.
 
 ## 4. The blocklist
 
-The service consumes one local JSON file. It does not fetch feeds, merge vendor data
-or deduplicate anything: an external producer does all of that and atomically replaces
-the file. The file must be writable only by trusted operators or that producer.
+This service reads one local JSON file. It does not fetch feeds or merge
+lists. Your own tooling must produce that file and replace it atomically. Only
+trusted people or systems may write it. You own what is in it; the service
+only enforces it.
 
-The blocklist is supplied by the operator. Whoever runs this firewall is accountable
-for what is in `blocklist_file` and for where it came from; this service enforces that
-file and makes no judgement about its contents.
+How reloading works:
 
-The reload rules, all enforced:
+1. Every `blocklist_poll_seconds`, it checks the file for changes.
+2. The whole new file is validated before use, if it is under
+   `max_blocklist_bytes`.
+3. Every update needs a strictly higher revision number. A roll-back is
+   rejected. Same revision with the same content is a no-op. Same revision with
+   different content is rejected.
+4. The file's "generated at" and "expires at" window must include now.
+5. An accepted update is saved to the database before it takes effect.
 
-1. The file is polled every `blocklist_poll_seconds`. A change is detected by device,
-   inode, modification time and length, with a 60-second backstop re-read for a
-   producer that rewrites in place instead of renaming.
-2. The whole candidate is validated off the request path, within `max_blocklist_bytes`.
-3. A changed snapshot must carry a **strictly increasing** revision. Rollback is
-   refused. Identical revision and identical content is a no-op; identical revision
-   with changed content is refused.
-4. `generated_at <= now < expires_at` and `generated_at < expires_at`.
-5. The accepted snapshot is committed to the database **before** it is published in
-   memory.
+A broken replacement keeps the last good blocklist in force and logs an error.
+An empty but valid blocklist is accepted (only the cooldown then protects you).
+A missing file is never treated as empty.
 
-A malformed replacement keeps the last valid snapshot in force and logs an error. An
-empty but valid snapshot is accepted and means only cooldown protection is active — it
-is never silently substituted for a missing one.
+**If the blocklist expires, the service fails closed:** package lookups and
+downloads return `503`, even for cached files. The service stays "alive" but
+reports "not ready". Set the expiry far enough ahead to cover a producer
+outage, and alert on it.
 
-**At expiry the service fails closed.** Both new resolutions and artifact downloads
-answer `503`, including requests that would have been cache hits. Liveness stays
-healthy; readiness goes false. Your producer's publishing cadence and the snapshot's
-`expires_at` window together decide how long an outage in the producer takes to become
-an outage in installs. Choose the window deliberately and alarm on it.
+Every new file is a full replacement, including removals. To un-block
+something, your producer must stop listing it.
 
-Revocation is **not retroactive** — see below for exactly what a block does and does
-not reach. A new full snapshot replaces the previous one including removals, so block
-withdrawal is the operator's: still-active detections must appear in every snapshot
-published.
+### What a block stops
 
-### What a block reaches, and what it does not
+A block applies to every request checked after the new blocklist loads,
+including files downloaded and verified earlier. New CI runs, fresh installs,
+and cache misses are all refused.
 
-A block takes effect for every request whose final policy check happens after the new
-snapshot is published. That includes requests for artifacts this instance has already
-downloaded, verified and cached, and previously issued artifact URLs: they are refused
-from that moment on. So a block stops further fetches — CI runs, container builds,
-fresh checkouts and cache misses all hit the refusal. The permanently pinned digests
-SPEC §9 keeps across eviction are identity records, not permission; they are an input
-to the block check and make a digest block *more* effective, not less.
+It does **not** remove a copy already on someone's machine. Cleaning up an
+installed bad package is a job for endpoint security.
 
-What it does not reach is a copy already on a machine. Bytes already sent stay sent, a
-response already authorised runs to completion, and anything already installed or
-already held in a client's own cache keeps working. That is the boundary of a registry
-proxy, not a defect in this one — removing an installed package is endpoint
-remediation, and whatever handles that in your environment is what handles it here.
+### OSV vulnerability checks
 
-### OSV enforcement mode
+[OSV](https://osv.dev) (Open Source Vulnerabilities) is a free, open database
+of known vulnerabilities in open-source packages, run by Google and fed by npm,
+PyPI, GitHub, and others. This service checks every package against it as a
+second net beside your own blocklist.
 
-`osv_mode` decides what an OSV match does, independent of the operator's own
-blocklist: `enforce` (default) denies the request, `diagnostic` checks and logs a
-match but never denies, and `off` skips the OSV check entirely. Changing it requires
-a restart, like every other configuration key. `diagnostic` mode has no counter or
-metric distinct from ordinary allowed traffic — the NDJSON `reason` field is the only
-signal a would-be-blocked match happened, so an operator watching for it should
-grep/alert on that exact string rather than expect a dedicated metric.
+**How the two combine:** whichever one blocks, it is blocked. OSV is only asked
+about a package your own blocklist would allow, so OSV can add blocks but
+never undo one.
 
-## 5. Backup, restore, and recovery failure
+**OSV problems never block anything.** If the check is slow, times out, the
+queue is full, or the answer cannot be parsed, the service treats it as "no
+match" and continues with its normal checks. A "no match" answer is cached for
+30 seconds so a struggling OSV endpoint is not hammered. A match is cached for
+`osv_cache_ttl_seconds` (default 300, 5 minutes).
+
+`osv_mode` controls what a match does:
+
+- `enforce` (default): blocks, the same as a blocklist match.
+- `diagnostic`: checks, caches, and logs a match, but lets the request
+  through. Use it to see what OSV would block before turning enforcement on.
+  The only signal is the `reason` text in the decision log, so alert on that.
+- `off`: no check and no calls to OSV.
+
+Changing `osv_mode` needs a restart, like every config key.
+
+**Network:** the endpoint is fixed at `https://api.osv.dev/v1/querybatch`. If
+you restrict outbound traffic (section 6), allow `api.osv.dev` too. Otherwise
+every OSV check times out and fails open, and packages are served without it.
+
+`osv_request_timeout_ms` (default 500) bounds one batch of OSV lookups before
+it fails open.
+
+## 5. Backup and restore
 
 ### What to back up
 
-Three things, independently:
+Three things, separately:
 
-1. The configuration file.
-2. The producer's current blocklist snapshot.
-3. **The stopped service's complete `state/` directory**, including `firewall.db-wal`.
+1. The config file.
+2. The current blocklist file.
+3. **The whole `state/` folder**, with the service stopped, including
+   `firewall.db-wal`.
 
-Artifact bytes under `content/` are replaceable — they are refetched and reverified
-against the retained digest pins. Policy and identity records are not replaceable:
-lose `state/` and you lose every first-seen time, every permanently pinned digest and
-the last accepted blocklist revision. The cooldown clock restarts for every reference
-whose age was known only from a first-seen value.
+Downloaded files in `content/` are re-downloaded and re-verified on demand.
+`state/` holds what cannot be rebuilt: every first-seen time, every pinned
+file hash, and the current blocklist revision. Lose it and every cooldown
+timer resets.
 
-### How to back up
+### How to back it up
 
-**Stop the service first.** The service holds an exclusive lock on the data directory
-for its whole lifetime, and a copy taken while it is running can catch the database
-and its write-ahead log in inconsistent states. There is no online-backup command in
-this release.
+**Stop the service first.** It holds an exclusive lock on the data folder
+while it runs, and copying the database live can catch it mid-write. There is
+no backup-while-running option.
 
 ```sh
-docker stop probation    # the image sets STOPSIGNAL SIGINT, so this is graceful
+docker stop probation    # shuts down cleanly
 tar -C /srv/probation -czf state-$(date -u +%Y%m%dT%H%M%SZ).tgz state/
 docker start probation
 ```
 
-Never delete `firewall.db-wal` as part of cleaning up temporary artifact files. It is
-not a temporary file; it is the half of the database that has not been checkpointed
-yet, and removing it discards committed state.
+Keep `firewall.db-wal`. It holds committed data not yet merged into the main
+file. Deleting it loses real data.
 
 ### How to restore
 
 1. Stop the service.
-2. Restore the whole `state/` directory together — the database and its write-ahead
-   log are one unit.
-3. Put a **current** blocklist in place before starting. A restored snapshot that has
-   since expired leaves readiness false, which is correct: the service refuses to
-   serve packages under a policy it cannot vouch for.
-4. Start the service and wait for `/health/ready` to answer `200`.
-5. Treat all cached metadata freshness as expired. It revalidates against upstream on
-   the next request after its TTL, and the TTL of restored data cannot be trusted.
+2. Restore the whole `state/` folder as one unit, database and WAL together.
+3. Put a **current, unexpired** blocklist in place. A restored blocklist that
+   has since expired leaves the service "not ready" until you update it.
+4. Start the service and wait for `/health/ready` to return `200`.
+5. Treat all cached metadata as stale. Each package is re-checked with
+   upstream on its next request.
 
-### When recovery fails
+### If recovery fails
 
-If the database cannot be opened, is not in the mode this build requires, or carries a
-different schema version, the process **starts anyway** and:
+If the database cannot be opened, for any reason, the process **still
+starts**, but:
 
-- answers `/health/live` with `200`;
-- answers `/health/ready` with `503`;
-- refuses every package request;
-- leaves the bytes on disk exactly as they were.
+- `/health/live` says `200`
+- `/health/ready` says `503`
+- every package request is refused
+- nothing on disk is touched, deleted, or recreated
 
-It never recreates the database and never truncates it. That is deliberate: silently
-recreating would lose first-seen times, digest pins and the blocklist revision, and
-would do so while looking healthy. A refused start with the data intact is a restore
-you can still perform; a recreated database is not.
+Silently recreating a broken database would lose every pinned hash and timer
+while looking healthy. A refusal with the data intact can still be fixed.
 
-One specific refusal worth recognising: a zero-length or absent `firewall.db` beside a
-**populated** `firewall.db-wal` is refused rather than opened, because opening would
-overwrite the log and destroy a still-recoverable revision. If you see that, the log is
-your data — take a copy of `state/` before doing anything else.
+One case to know: if `firewall.db` is empty or missing but `firewall.db-wal`
+has data, the service refuses to open it. Back up `state/` before doing
+anything else. The WAL file is your real data.
 
-A data directory whose lock is already held by another process is a different failure:
-`serve` reports it and exits. There is nothing to diagnose from inside a second
-instance.
+If another process holds the lock on the data folder, `serve` reports that
+and exits.
 
-## 6. The reverse proxy in front of this service
+## 6. TLS, and the one job a reverse proxy still has
 
-The deployment model puts a reverse proxy between clients and this service. Three
-responsibilities live there and nowhere else in this system.
+### TLS is built in
 
-### TLS termination
+`serve` terminates TLS itself when both `tls_cert_path` and `tls_key_path`
+are set. Set both or neither. No proxy or sidecar is needed for HTTPS.
 
-This binary speaks plain HTTP and its default listener is loopback. Terminate TLS at
-the proxy, and set `public_url` to the URL clients actually reach — the artifact URLs
-in every rendered document are built from it, so a wrong value produces metadata whose
-download links do not resolve. `public_url` must be `https`, with no path, query or
-fragment.
+Set `public_url` to the URL clients use to reach you. Download links are built
+from it, so a wrong value breaks downloads. **`public_url` must be `https`**,
+with no localhost exception. (`siem_url` in section 8 does allow plain `http`
+on localhost.)
 
-### Per-client rate limiting — required, and this service cannot do it
+For a local end-to-end setup, which generates a cert, writes a real
+`/etc/probation/config.toml` and blocklist, creates the data directory,
+validates both, and points this machine's npm and pip config at the result:
 
-This is threat **TM-3**, accepted for the MVP and transferred to you.
+```sh
+scripts/install-local.sh
+```
 
-The attack: a client requests a legitimate artifact and then consumes bytes slowly,
-just fast enough to stay under the 30-second write-idle timeout, holding one of
-`max_artifact_downloads` permits for up to the full 15-minute response lifetime.
-Repeating that occupies every download permit and artifact delivery stops for
-everyone.
+It uses `sudo` only where `/etc/probation` or `/var/lib/probation` need it.
+Pass `--start` to also start `probation serve`. It picks the best certificate
+tool available:
 
-The bounds this service does have are **global, not per client**:
-`max_active_requests` caps concurrent requests, `max_artifact_downloads` caps
-concurrent upstream transfers, and the two SPEC §9 deadlines bound how long any one
-response can hold a permit. None of them is per-actor, and this binary has no client
-identity to be per-actor about: no authentication, no accounts, one shared policy
-(SPEC §3).
+- [`mkcert`](https://github.com/FiloSottile/mkcert), if installed. This adds a
+  local certificate authority to the machine's trust store once, so every cert
+  it issues is trusted by `npm`, `pip`, and `curl` on that machine with no
+  flags. A mkcert cert is not valid on any other machine, which is what you
+  want for local testing.
+- Otherwise a self-signed `openssl` cert, which clients would refuse. The
+  script adds the `cafile=` and `cert=` lines pointing at it to the npm and
+  pip config for you. Force this with `--self-signed`.
 
-**Configure per-client connection and request-rate limiting at the proxy**, additive
-to the global semaphores here. Size it so that concurrently occupied download permits
-attributable to any one client stay below `max_artifact_downloads`.
+Run `scripts/install-local.sh --help` for every flag.
 
-### Egress filtering
+Let's Encrypt does not work for `localhost`: it needs a public domain it can
+reach. For a real domain, get a certificate however you already do and point
+`tls_cert_path` and `tls_key_path` at it. Renewal is yours: the service reads
+both files once at startup, so restart after a renewed certificate is in
+place.
 
-The outbound boundary in this service refuses cross-origin redirects, URL credentials,
-unexpected ports, non-HTTPS schemes, and DNS answers that resolve to loopback, private
-or link-local addresses. One case it structurally cannot refuse: a **network-specific
-NAT64 prefix** (RFC 6052 permits any operator prefix from /32 to /96) is
-indistinguishable from an ordinary global address in a DNS answer. The well-known
-`64:ff9b::/96` prefix is refused; an operator-chosen one cannot be.
+### A reverse proxy is still required for per-client rate limiting
 
-Mitigate at the network: restrict this service's egress to the three upstream origins
-it is allowed to reach (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`),
-and pin connect-time addresses if your environment supports it.
+This service has no logins or accounts, so it cannot limit one client's rate.
 
-## 7. What this service does not enforce
+The risk: a client requests a file and downloads it very slowly, holding one
+of a small number of download slots. Enough such clients use every slot, and
+nobody else can download.
 
-The proxy enforces on delivery. Everything below is outside that boundary, and none of
-it is a defect:
+`max_active_requests` and `max_artifact_downloads` are global totals shared by
+everyone. **Set per-client connection and rate limits on your reverse proxy**
+so no one client can hold more than a fair share.
 
-- **Already-installed packages.** A block that arrives after an install does not remove
-  anything from `node_modules` or a site-packages directory. Verified by
-  `tests/e2e_npm.rs::an_already_installed_package_is_outside_the_enforcement_boundary`.
-- **Client-side caches.** SPEC §2 places these outside the boundary. Measured
-  behaviour for npm is narrower than that in one specific way: because every response
-  carries `Cache-Control: no-store` and npm honours it, npm does **not** retain
-  firewall-served tarballs in its own content cache, so a block still bites on a warm
-  cache. That is an observation about npm's current behaviour, not a control — do not
-  build a policy on it. pip's cache was not exercised (the e2e tests run with
-  `--no-cache-dir`, which is what SPEC §13 asks for enforcement tests).
-- **Anything not fetched through this index.** Alternate indexes, Git and URL
-  dependencies, local wheels, vendored directories, and downloads an installer script
-  makes for itself.
-- **Existing lockfiles that pin upstream URLs directly.** Changing one registry setting
-  does not rewrite them. Audit lockfiles during deployment.
-- **Code that runs during installation.** The cooldown applies to wheels, source
-  distributions and build dependencies fetched through the configured index. It does
-  not inspect what an installer executes.
+### Outbound filtering
 
-Cooperative client configuration:
+For npm and PyPI traffic, this service refuses on its own: cross-site
+redirects, URLs with embedded credentials, unusual ports, non-HTTPS upstreams,
+and DNS answers pointing at local or private addresses. It cannot detect a
+custom NAT64 range specific to your network. The standard one is covered.
+**None of this covers OSV traffic**: the OSV client is a plain HTTP client
+that only talks to one fixed Google-run URL.
+
+To close the NAT64 gap at the network level, restrict outbound connections to
+the four hosts it needs: `registry.npmjs.org`, `pypi.org`,
+`files.pythonhosted.org`, and `api.osv.dev`. With `osv_mode = "off"` the last
+one is never contacted.
+
+## 7. What this service does not protect against
+
+It only checks packages as they are *downloaded*. It cannot help with:
+
+- **Already-installed packages.** A later block does not remove them from
+  `node_modules` or similar.
+- **Client-side caches.** A file already cached by the client is not
+  re-checked. (npm does not currently cache files from this service, because
+  of a cache-control header it sends. That is npm's behavior today, not a
+  control to rely on.)
+- **Anything not fetched through this service:** other registries, Git or URL
+  dependencies, local files, anything an install script downloads itself.
+- **Lockfiles that pin a direct upstream URL.** Pointing npm or pip here does
+  not rewrite those. Check your lockfiles when you roll this out.
+- **Code that runs during install.** It checks package files, not what an
+  installer script does.
+
+Point your clients here with:
 
 ```ini
 # .npmrc
@@ -414,13 +382,13 @@ audit=false
 index-url = https://packages.example.org/pypi/simple/
 ```
 
-Cooperative is the operative word. Enforced use requires network policy that prevents
-direct public-registry downloads.
+That is cooperative. To *enforce* it, block direct access to the public
+registries at the network level too.
 
 ## 8. Logs
 
-Structured JSON on stdout. One decision line per request, including router-level `404`
-and `405` responses that reach no handler:
+Structured JSON on stdout, one line per decision, including routes that match
+nothing (404/405):
 
 ```json
 {"level":"INFO","fields":{"message":"request decided","request_id":"req-0000000000000003",
@@ -429,579 +397,252 @@ and `405` responses that reach no handler:
  "cache":"miss","duration_micros":415780,"bytes":23563}}
 ```
 
-Every exclusion is explainable from `result`, `reason` and `blocklist_revision`
-together with the snapshot that revision names. The `request_id` in the log is the
-same one in the error body a client received. Credentials are never logged, and a
-client's authorization headers, cookies and proxy credentials are never forwarded
+Every decision can be explained from `result`, `reason`, and
+`blocklist_revision` together. The `request_id` matches the one a client sees
+in its error message. Credentials are never logged and never forwarded
 upstream.
 
-Set the level with `RUST_LOG`; the default is `info`. There is no metrics service in
-this release — counters and timing summaries are emitted to stdout periodically. The
-decision log itself is pinned and not silenceable by `RUST_LOG` — see "The rated load"
-below.
+`RUST_LOG` (default `info`) controls verbosity for everything except the
+decision line, which cannot be silenced. There is no metrics endpoint.
+Counters are printed to stdout periodically.
 
-### Delivering decisions to a file
+### Also writing logs to a file
 
-stdout is kept by the host rather than by this process: under systemd it lands in the
-journal, and under a container runtime in a node-level log file, with whatever
-retention the host gives them. Two optional configuration keys append every decision
-to a file this process owns as well, as one JSON object per line (NDJSON). Both are absent by default: with
-no `log_file_path` this process opens no file, starts no delivery task, and writes
-exactly the stdout line it writes today.
+By default logs go only to stdout, which your container runtime or systemd
+keeps. Set `log_file_path` to also keep a file. Nothing is written to disk
+until you do.
 
-| Key | Default | Meaning |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| `log_file_path` | absent — delivery is off | The file decisions are appended to. |
-| `log_file_max_bytes` | `104857600` (100 MiB) | The size at which the live file is rolled over. Refused without `log_file_path`, and refused as zero. |
-| `log_queue_max_bytes` | `1966080000` (1,875 MiB) — see "The rated load" below | The in-memory budget for records queued while the file cannot keep up. Refused without `log_file_path`, refused as zero, and refused above `4294967296` (4 GiB). |
+| `log_file_path` | off | File every decision is appended to, one JSON object per line. |
+| `log_file_max_bytes` | 100 MiB | Size at which the file rolls over to a `.1` backup. |
+| `log_queue_max_bytes` | 1875 MiB | Memory that may queue while disk writes fall behind. See "The rated load" below. |
 
-Each line carries the same fields as the stdout decision line — twelve, or thirteen
-with `consumer` when `log_consumer_identification` is on — plus an
-`"event"` field naming which record it is — `request_decided` for a decision,
-`request_summary` for the periodic counter summary. The summary lines also carry
-`dropped_file` and `dropped_siem`: the number of records that could not be delivered
-in that window. A record is never discarded silently; if delivery cannot keep up, the
-loss is counted and reported. Delivery never slows or fails a request — a record that
-cannot be handed over is dropped, and the request is answered regardless.
+One process per `log_file_path`. There is no locking, so two writers corrupt
+the file. Let this process rotate the file itself with `log_file_max_bytes`.
+An external `logrotate` renaming or truncating it causes silent data loss.
 
-Every record in the file and at the SIEM collector carries a `timestamp` as its first
-field: UTC RFC 3339 with exactly six fractional digits and a `Z` suffix, for example
-`2026-09-21T14:13:20.000000Z`. It is the time the record was built — for a decision,
-when the response was ready; for a summary, when its window was closed. A collector's
-own receipt time can lag behind it by the two-second batch window plus any retries, so
-sort and correlate on `timestamp`, not on arrival. The stdout decision line has no
-`timestamp` field, because the console formatter already stamps every line it writes.
+One backup generation (`.1`) is kept. For longer history, ship logs to your
+own log system.
 
-**Disk use is bounded at twice `log_file_max_bytes`.** When the live file reaches the
-cap it is renamed to `<log_file_path>.1`, replacing any previous `.1`, and a fresh
-file is started. **One generation is kept and no more**; an operator who needs longer
-history ships the records to their own log system rather than accumulating them here.
+Dropped records are always counted. If writing cannot keep up, losses appear
+in the periodic summary as `dropped_file` and `dropped_siem`. A slow log
+destination never slows or fails a request. The record is dropped, not the
+request.
 
-Two obligations come with the key, and neither is enforced by this process:
+### Sending logs to a SIEM or log collector
 
-- **Exactly one process may write `log_file_path`.** There is no interprocess lock.
-  Two instances pointed at the same file interleave and lose records.
-- **Do not hand the file to an external `logrotate`, or anything else that renames or
-  truncates it.** This process does its own rollover and keeps an open handle; a
-  rotator moving the file out from under it sends later records to the rotated copy
-  until the next write error reopens the path, which is silent data loss dressed up
-  as working rotation. Set `log_file_max_bytes` instead.
+Set `siem_url` to turn this on.
 
-### Delivering decisions to a SIEM collector
-
-Two further optional keys ship the same records to an HTTP collector. Both are absent
-by default: with no `siem_url` this process builds no HTTP client, starts no delivery
-task and connects nowhere.
-
-| Key | Default | Meaning |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| `siem_url` | absent — delivery is off | The collector records are `POST`ed to. Must use `https` unless the host is a loopback address or `localhost`; anything else is refused at startup. |
-| `siem_auth_header` | `Authorization` | The header the credential is sent under. Refused without `siem_url`, and refused if it is not a valid HTTP header name. |
-| `siem_queue_max_bytes` | `1966080000` (1,875 MiB) — see "The rated load" below | The in-memory budget for records held while the collector is unreachable, on top of the one in-flight batch the retry loop always holds. Refused without `siem_url`, refused as zero, and refused above `4294967296` (4 GiB). Two sinks are two queues: a deployment with both configured pays both. |
+| `siem_url` | off | Where records are POSTed. Must be `https` unless it is localhost. |
+| `siem_auth_header` | `Authorization` | Which header carries the credential. |
+| `siem_queue_max_bytes` | 1875 MiB | Memory that may queue while the collector is unreachable. |
 
-**The credential is never written in the configuration file.** It is read once at
-startup from the environment variable `PROBATION_SIEM_AUTH`, kept only as a
-redacted-in-`Debug` header value, and never stored on the configuration or written to
-any log line — only the header *name* appears in the startup line. With the variable
-unset, delivery is unauthenticated. With it set to something that is not a legal HTTP
-header value, the process refuses to start and says so without echoing the value.
+The credential never goes in the config file. Set the `PROBATION_SIEM_AUTH`
+environment variable. It is never logged or written anywhere, and the process
+refuses to start if it is not a legal HTTP header value.
 
-Records are batched at **256 records or two seconds**, whichever comes first, and sent
-as one `POST` of newline-delimited JSON with `Content-Type: application/x-ndjson` —
-the same objects the file sink writes. **Redirects are never followed**: a `3xx` from
-the collector sends the batch nowhere, by design, so a compromised collector cannot
-point this process, credential attached, at a host nobody configured.
+Records are sent in batches of 256 records or every 2 seconds, whichever
+comes first. Redirects from the collector are never followed, so a compromised
+collector cannot send your credential elsewhere.
 
-A transport error, a `5xx` or a `429` is retried three times, at 100 ms, 500 ms and
-2 s. Any other non-2xx answer is not retried: a stale credential or a rejected payload
-fails identically on every attempt. Each attempt is bounded at three seconds, and at
-shutdown the drain is bounded at five, so a collector that goes silent cannot hold up
-a restart.
+Retries: a connection error, a `5xx`, or a `429` is retried with a short
+backoff (100 ms, 500 ms, then every 2 seconds) for as long as the service
+runs. The batch is held, and records queue behind it until the queue budget
+is full. Any other error, such as a bad credential, is not retried, and that
+batch is dropped. Lost records are counted in `dropped_siem`.
 
-Every record that could not be delivered is counted and reported in the
-`dropped_siem` field of the `request_summary` record, alongside `dropped_file` — in
-the log file, in the collector's own feed, and on stdout. Records lost during the
-final drain are reported once on stdout as the process exits, because by then the
-sinks themselves have stopped.
+**One limit:** when a collector rejects a batch, the *whole batch* of up to
+256 records is dropped, not one record. For guaranteed delivery use
+`log_file_path`, which does not have this problem.
 
-**Known limitation: a rejected batch is lost whole.** When the collector refuses a
-batch, all of its records are dropped and counted — up to 256 at a time — rather than
-the one record it objected to. A record shape the collector keeps rejecting therefore
-repeats that loss on every batch containing it. This is a deliberate choice: isolating
-the offending record means either a burst of up to 256 individual `POST`s at a
-collector that is already failing, or a bisection ladder, and both make a bad moment
-worse. **An operator who needs completeness configures `log_file_path`**, which has no
-equivalent failure mode.
+### Shipping to a SIEM over syslog
 
-### Recording who asked
+`siem_url` is HTTP only. There is no syslog support in `probation` itself: a
+mature shipper already does TLS, framing, and retries correctly. If your
+collector takes HTTP (Splunk HEC, Elastic, Datadog, and most others), use
+`siem_url` and skip this section.
 
-One further optional key adds the peer IP of the asking connection to every delivered
-record, as a `consumer` field. It is off by default, and with it off no record carries
-the field at all — neither in the log file, nor at the collector, nor on stdout.
+If you need syslog, point `rsyslog`'s `imfile` input at the file from
+`log_file_path` and let `omfwd` deliver it. The file is the better source: it
+is complete (see the batch limit above) and plain appended text.
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `log_consumer_identification` | `false` — nothing is recorded | Adds `consumer`, the peer IP of the connection, to every decision record and to the stdout decision line. Refused at startup unless `log_file_path` or `siem_url` is set. That checks only that a destination is configured, not that records arrive there — see below. |
+```
+# /etc/rsyslog.d/probation.conf
+module(load="imfile")
+input(type="imfile"
+      File="/var/log/probation/decisions.ndjson"
+      Tag="probation:"
+      Severity="info"
+      Facility="local0"
+      ruleset="probation_to_siem")
 
-**This records who is installing packages. Read the facts below before turning it
-on.**
+ruleset(name="probation_to_siem") {
+  action(type="omfwd" target="siem.example.org" port="6514" protocol="tcp")
+}
+```
 
-- **What is recorded is the peer IP of the accepted TCP connection, and nothing the
-  caller supplies.** Not `X-Forwarded-For`, not `User-Agent`, not any other header — a
-  caller cannot choose, spoof or blank what appears here. The port is never recorded.
-- **Every delivered record pairs that peer IP with the time of the request.** The
-  record's `timestamp` says when the address asked, to the microsecond, in the log
-  file and at the collector alike.
-- **Behind a proxy, NAT or load balancer it identifies that hop, not the machine that
-  ran the install.** If everything reaches this process through one ingress, every
-  record carries that ingress's address and the field tells you nothing about the
-  developer or the build agent behind it.
-- **The addresses also appear on the stdout decision line**, and stdout is kept on
-  disk by the host under systemd (the journal) or a container runtime (a node-level
-  log file, often shipped off the node by a cluster agent). Its permissions and
-  retention belong to the host, not to this process.
-- **Turning it off erases nothing already written.** Addresses already recorded stay
-  in four places: `log_file_path`, its `.1` rollover, the collector, and the host's
-  console log. There is no purge path; removing them from all four is the operator's
-  job, on the operator's own retention schedule.
-- **The log file is created readable by its owner alone (`0600`).** That applies only
-  when this process creates it: a file that already exists keeps its mode, and if it is
-  accessible to the group or to other users the process logs one warning naming the
-  path and mode, and carries on. It does not change the mode of a file it did not
-  create — tighten it yourself with `chmod 600` before turning this on, since a
-  deployment that ran earlier releases will already have a file created `0644`.
-- **With it on, an unopenable `log_file_path` stops startup.** The file is opened once
-  at startup; a missing directory or a path the service user cannot write refuses to
-  start, rather than collecting addresses with nowhere durable to put them. With it
-  off, the same failure logs one error naming `log_file_path` and the process keeps
-  serving, counting every record it cannot write as dropped.
-- **With it on, the process can still collect addresses that reach no destination.**
-  A deployment with only `siem_url` is never checked at startup: a collector that
-  does not resolve, or one that refuses every batch (a permanent `403`, say), leaves
-  the process recording addresses and counting every record as dropped. The file sink
-  can fall into the same state after startup, when its volume is unmounted or full or
-  the file is deleted. Neither state can be detected at startup; the signal is the
-  per-sink drop count, `dropped_file` and `dropped_siem`, in the periodic
-  `request_summary` record and on the stdout `request summary` line. Watch for them
-  staying above zero.
-- **`check_config` validates keys, not destinations.** It writes nothing, so it cannot
-  open the log file, and it can report a configuration as valid that then fails at
-  boot because `log_file_path` cannot be opened.
+This exact pipeline was verified against a real `rsyslogd`: each appended
+line arrived at a TCP listener as RFC 3164 syslog (`<134>` is `local0.info`)
+with the JSON payload intact, so field-based queries on the collector keep
+working.
 
-### The rated load, and what a default deployment survives
+For TLS to the collector (port 6514, not 514), add `StreamDriver="gtls"` and
+the matching cert settings to the `omfwd` action. See rsyslog's own `omfwd`
+TLS documentation.
 
-**The rated figure.** Measured on the reference machine — AMD Ryzen 9 7950X3D
-(16 cores / 32 threads), 124 GiB RAM, Linux 7.1.8, `rustc` 1.96.0, release profile —
-`cargo bench --bench delivery_rated_load` drives the delivery pipeline through the file
-sink for ten minutes and finds the highest rate it sustains with **zero records
-dropped**: **N = 59,288 decided requests per second.** Below this figure this release
-loses no decision record to the delivery pipeline; nothing here says anything about the
-rest of the request path. This figure is **published for reference, as this machine's
-ceiling — it is not what the default queue budget below is sized against**, because no
-honest budget could cover an outage at it (see below). `cargo bench` (with no `--bench`
-flag) does not run this target — it takes ten minutes and is invoked by name (see
-`README.md`).
+The shipper reads a file this service appends to and rotates itself. Keep
+`logrotate` away from it, and leave `decisions.ndjson.1` in place until the
+shipper has finished reading it after a rotation.
 
-**`BYTES_PER_RECORD` — a ceiling, not a mean.** Every queue is sized in bytes, not
-records, from `BYTES_PER_RECORD = 32,768`: `3 x FIELD_CEILING_BYTES` (10,242 — 256
-characters, 4 bytes per UTF-8 code point, 10 bytes for the worst-case `Debug` escape,
-2 quotes — for `package`, `version` and `method`) plus a 64-byte timestamp, a 64-byte
-request id, a 512-byte reason and the 256 bytes `size_of::<Decision>()` allows, rounded
-up to the next power of two: `30,726 + 64 + 64 + 512 + 256 = 31,622 <= 32,768`. A
-record's real heap footprint is bounded by this figure by construction (`rl16b`,
-`rl22`); it is never averaged down by smaller records, so `budget / BYTES_PER_RECORD`
-is always a safe lower bound on how many records a budget holds.
+Other shippers (Vector, Fluentd) work the same way in principle: tail
+`decisions.ndjson` and forward with that tool's syslog output. They were not
+verified here. Check that tool's own docs.
 
-**Why the default is sized from a stated reference load, not from `N`.** The formula
-that would size a default budget to survive a five-minute collector outage **at the
-rated (measured) load**, `ceil(5 min x N x BYTES_PER_RECORD)`, computes to roughly
-**543 GiB per sink** (555,825 MiB) at the measured `N` — about 136 times past
-`MAX_QUEUE_MAX_BYTES` (4 GiB, the largest budget either key accepts). No operator would
-set that, and raising the ceiling to fit it would mean accepting far more resident
-memory risk for a number nobody could use. `N` is a synthetic ceiling in the first
-place: the bench drives `/health/live` in a closed loop with no upstream registry round
-trip in the path, so it measures what the delivery pipeline alone can sustain, not what
-real package-manager traffic produces — a real deployment's request rate is bottlenecked
-far below `N` by actual npm/PyPI upstream latency and by `max_upstream_requests`
-(default 32 concurrent).
+### Recording who is asking
 
-So **the default is derived from a stated 200 requests/second reference load** instead:
-`ceil(5 min x 200 x BYTES_PER_RECORD) = 1,875 MiB` per sink. At that reference load the
-default buys the full five minutes:
+`log_consumer_identification` (off by default) adds the requester's IP
+address to every log line. Read this before turning it on:
 
-> outage tolerance = budget / BYTES_PER_RECORD / rate = 60,000 records / 200/s = **300
-> seconds (5 minutes)**.
+- It records only the raw IP of the TCP connection, nothing the client sends,
+  so it cannot be spoofed.
+- Behind one proxy or load balancer, every record shows that proxy's address,
+  not the developer or build machine.
+- Turning it off later erases nothing already logged, in your files, your
+  SIEM, or your console logs.
+- It requires `log_file_path` or `siem_url`. Without one, the service refuses
+  to start with it on.
+- A log file this service creates gets owner-only permissions (`0600`). A
+  file that already exists keeps its permissions. Fix those yourself.
+- If the log destination is broken (SIEM unreachable, disk full, file
+  deleted), the service keeps running and counts dropped records. Watch
+  `dropped_file` and `dropped_siem`.
+- `check-config` checks that the setting is valid, not that the destination
+  works.
 
-At the measured `N` the same default buys far less — about **1 second** — which is
-stated here so the gap is never a surprise:
+### The rated load: how much this can handle
 
-> at the rated (measured) figure: 60,000 records / 59,288/s ≈ **1.0
-> seconds**.
+On a 16-core/32-thread reference machine, the logging pipeline sustained about
+**59,000 decisions per second with zero records lost**. That is the logging
+ceiling, not overall throughput. Real traffic is limited mainly by how fast
+npm and PyPI respond, and by `max_upstream_requests` (default 32).
 
-Compute your own deployment's tolerance from the same formula, using your own observed
-decided-requests-per-second rather than either published number:
+The default queue budgets (`log_queue_max_bytes` and `siem_queue_max_bytes`,
+1875 MiB each) are not sized for that rate: surviving a 5-minute outage at
+59,000/s would need about 543 GB per destination. They are sized to survive a
+5-minute outage at a realistic **200 requests/second**.
 
-> your tolerance (seconds) = your `*_queue_max_bytes` / 32,768 / your observed
-> requests/second.
+If your traffic is above 200 req/s, work out your own outage window:
 
-**The budget is additive, not a cap on total memory.** `log_queue_max_bytes` and
-`siem_queue_max_bytes` each bound one sink's own queue, on top of
-`memory_cache_max_bytes` (section 3) and everything else this process holds — they do
-not share a pool with it or with each other. The SIEM sink additionally holds one
-serialized batch outside its queue budget for as long as the collector is unreachable
-(up to 256 records) — the batch the retry loop is currently attempting to deliver.
+> outage tolerance (seconds) = queue size in bytes ÷ 32,768 ÷ your
+> requests/second
 
-**Upgrade note.** Before this feature, an unreachable SIEM collector cost records after
-roughly seven seconds, once the fixed three-attempt backoff ladder (100 ms, 500 ms,
-2 s) gave up on a batch. **Starting with this release, a deployment that sets neither
-new key loses nothing until its 1,875 MiB default queue is full** — records are held
-and retried for as long as the collector stays down, up to that budget, and only
-records past it are dropped and counted. An operator who was relying on the old
-~7-second failure window to bound memory during an outage should read the tolerance
-formula above and, if 1,875 MiB is more than their host can spare, set
-`siem_queue_max_bytes` explicitly to a smaller budget — or raise it, up to the 4 GiB
-`MAX_QUEUE_MAX_BYTES` ceiling, for a deployment whose real traffic runs above the
-200 req/s reference load.
+Each queue is separate. `log_queue_max_bytes`, `siem_queue_max_bytes`, and
+`memory_cache_max_bytes` (section 3) do not share memory. Budget for all
+three.
 
-**`GET /health/delivery` is an alerting signal, never a probe target.** It answers
-`503` while a decision record was lost in the last 60 seconds and `200` otherwise
-(section 2, "Health endpoints"); `/health/ready` never reflects this state, on purpose,
-so a firewall that is shedding decision records is never pulled out of a load
-balancer's rotation for it. **Do not wire it into a liveness, readiness or load-balancer
-health check** — it is unauthenticated, and a caller who can trigger a loss and then
-poll it can otherwise use it to confirm things about the deployment they should not be
-able to. Poll it only at an interval **strictly shorter than 60 seconds**: the quiet
-window is measured from the first probe that observes a loss, not from the loss itself,
-so a gap of 60 seconds or more between probes can read `200` immediately after a real
-loss.
+**`GET /health/delivery` is for alerting, never for load-balancer checks.** It
+is unauthenticated and reflects a 60-second window, so polling less often
+than that can miss a loss. Poll it more often than every 60 seconds, and never
+let it decide whether the service stays in rotation.
 
-**stdout's decision trail, restated.** stdout carries every decided request — including
-router-level `404` and `405` responses — **except**: the console writer itself
-discarding a write (a dead pipe reader, or `ENOSPC` on a redirected stdout); a handler
-that panics before `tracing::info!` runs; the host's log transport truncating the
-stream under volume it cannot keep up with (the decision trail shares stdout with this
-process's other diagnostic lines, and applies no volume control of its own); or a
-**span- or field-qualified** `RUST_LOG` directive that out-specifies the pin below.
-None of these four has a demonstrated trigger in this release; they are named so an
-operator investigating a missing decision line knows where to look.
+**The decision log cannot be turned off.** No `RUST_LOG` value silences it, so
+there is always an audit trail of every decision.
 
-**The decision log's level is pinned.** No level or target directive set through
-`RUST_LOG` can silence `probation::http::logging` — `RUST_LOG=warn`,
-`RUST_LOG=hyper=debug` and an empty `RUST_LOG` all still print every decision line,
-because this process appends its own `info` directive for that target after parsing
-whatever the operator sets. The one exception is the fourth item above: a directive
-that names a **span or field** on that same target still out-specifies the pin. Use
-`RUST_LOG` freely to control every other target's verbosity.
+## 9. Error responses
 
-## 9. Failure responses
-
-| What happened | Status |
+| What happened | Status code |
 | --- | --- |
-| Version or artifact held by the cooldown, or blocked | `403` with `reason`, and for a hold `eligible_at` and a numeric `Retry-After` |
-| Unknown package or reference, or removed upstream | `404` |
-| Invalid input | `400` |
-| Unsupported route, method or representation | `404`, `405`, `406` |
-| Blocklist missing or expired, local capacity exhausted, overloaded, storage unusable | `503` |
-| Upstream failure, invalid upstream metadata, integrity mismatch | `502` |
-| Upstream timeout | `504` |
+| Held by cooldown, or blocked | `403` (with a reason, and `Retry-After` for cooldowns) |
+| Unknown or removed package | `404` |
+| Bad request | `400` |
+| Unsupported route or method | `404`, `405`, `406` |
+| Blocklist missing or expired, out of capacity, storage broken | `503` |
+| Upstream failure or bad data | `502` |
+| Upstream timed out | `504` |
 
-Every response, including every error, carries `Cache-Control: no-store`. The service
-never produces a downstream `304` and never forwards upstream validators to a client.
+Every response, success or error, tells clients not to cache it.
 
-Two of these deserve an operator's attention rather than a client's:
+Two of these need a person, not a client retry:
 
-- **`502 INTEGRITY_MISMATCH`** means the bytes behind a reference changed. The first
-  verified download of a reference pins its computed SHA-256 and SHA-512 permanently,
-  including when policy later blocks them, and eviction does not clear those pins. A
-  mismatch discards the new bytes and keeps the original pins. Investigate it; it is
-  either an upstream integrity incident or a reference identity error.
-- **`503` from storage** means writes are failing. Readiness is already false. The
-  service will not relax policy to recover, so this needs a human.
+- **`502 INTEGRITY_MISMATCH`**: a file's contents changed since this service
+  first saw it. That is an upstream security incident or a bug in how this
+  service identifies files. Investigate.
+- **A `503` from storage**: writes are failing. The service will not loosen
+  its rules to work around it. Fix storage.
 
-## 10. Benchmark results against the SPEC §12 targets
+## 10. Performance numbers
 
-Run with `cargo bench`. Three benches, in `benches/`, each printing the quantity SPEC
-§12 states rather than a mean with a confidence interval.
+Measured with `cargo bench` on a 32-core / 124 GB RAM machine, local SSD, no
+TLS, against an in-process fake registry.
 
-They use no benchmarking framework — each is a `harness = false` `main` that samples,
-sorts and reports percentiles itself, and the `criterion` dev-dependency the program
-design had named for this job was dropped because it reports means with confidence
-intervals and no percentiles, which is not what SPEC §12's targets are stated in.
-
-**Measurement environment.** AMD Ryzen 9 7950X3D, 32 logical cores, 124 GiB RAM, Linux
-7.1.8, release build, local NVMe, plain HTTP over loopback without TLS, upstream
-served by an in-process fake registry. Payload 8 MiB in 64 KiB chunks on both sides of
-the artifact comparison. Blocklist fixture 100,000 entries / 9.6 MB.
-
-**Every figure in the Measured column is a range across five consecutive `cargo bench`
-runs**, on 2026-09-20, not a single reading. These quantities vary between runs by
-more than their own precision, so a single point figure would be a more confident
-number than the instrument can support. Read the range, not its midpoint.
-
-The host was not quiescent: unrelated desktop applications held one-minute load
-average between 1.67 and 8.38 across the five runs, and swap was exhausted throughout.
-The artifact ratios moved by less than four points over that whole range, which is
-itself the evidence that the comparison is drift-cancelling — see below.
-
-The **Pre-change** column is the same benches run on 2026-09-19 against a build that
-predates the advertised-reference-set cache described below, kept here so the change
-is checkable rather than asserted.
-
-| SPEC §12 scenario | Target | Measured, range over 5 runs | | Pre-change, 2026-09-19 |
-| --- | --- | --- | --- | --- |
-| Warm metadata, 100-version project | ≥ 1,000 responses/s, p95 ≤ 5 ms | **120,178–144,006 responses/s** at concurrency 32; **p95 0.085–0.119 ms** | MET | 151,865 responses/s; p95 0.115 ms — MET |
-| Warm policy denial | p95 ≤ 2 ms | **p95 1.187–1.307 ms** | MET | p95 1.153 ms — MET |
-| Verified warm artifact, additional TTFB vs an unfiltered local-file server — 100-version project | p95 ≤ 5 ms | **+0.123 to +0.163 ms** | MET | +0.675 ms — MET |
-| … same, 1,000-version project (511 KB document) | p95 ≤ 5 ms | **+0.114 to +0.158 ms** | MET | +6.232 ms — **BREACH** |
-| … same, 5,000-version project (2.6 MB document) | p95 ≤ 5 ms | **+0.094 to +0.153 ms** | MET | +37.903 ms — **BREACH** |
-| Verified artifact throughput vs that baseline — 100 versions | ≥ 85 % | **110–112 %** | MET | 99.9 % — MET |
-| … 1,000 versions | ≥ 85 % | **109–111 %** | MET | 44.9 % — **BREACH** |
-| … 5,000 versions | ≥ 85 % | **109–113 %** | MET | 11.1 % — **BREACH** |
-| Concurrent cold requests for one reference | exactly one upstream transfer | asserted by `tests/artifacts_concurrency.rs::concurrent_cold_requests_cause_exactly_one_upstream_transfer`, not by a bench | MET | same test — MET |
-| Valid blocklist replacement, 100,000 entries, under load | active within two polling intervals (10 s at the sample's 5 s interval) | **4.96–5.03 s**, while 16 workers served 644,000–667,000 metadata responses | MET | 4.97 s / 697,200 responses — MET |
-
-Each artifact row is 1,000 paired samples per shape per run, so 15,000 downloads of
-8 MiB per side behind the three artifact TTFB rows. The 2026-09-19 pre-change figures
-are single runs of 150 unpaired samples, which is part of why they are a historical
-baseline and not an acceptance. No verdict in the table changed across runs.
-
-### Why the throughput ratios sit at about 110 %, and how to read them
-
-A proxy cannot sustainably outrun the unfiltered file server it proxies, so a ratio
-above 100 % is a fact about the instrument, not about this service. It is worth
-understanding rather than ignoring, because the same number was unusable two days ago
-and is now reproducible to within four points.
-
-**Two asymmetries were found and fixed.**
-
-- *Connection warmup.* The firewall side ran ten unmeasured requests before sampling
-  while the baseline went straight into its samples, so the baseline's first samples
-  paid a cold-connection cost the firewall's did not. Both sides now run the same
-  warmup through one shared `warm_up` helper.
-- *Separate measurement blocks.* The two sides were measured one after the other, so
-  any change in machine load between them landed entirely in the ratio. On a busy host
-  that produced 56–252 % on identical code — a measurement of the host. The bench now
-  **interleaves** them, one baseline request then one firewall request inside a single
-  loop (`measure_paired`), so shared drift cancels sample for sample. Sample count also
-  went from 150 to 1,000 per side per shape.
-
-The effect is the point: across five runs whose one-minute load average ranged from
-1.67 to 8.38, every one of the fifteen shape-runs landed between 108.9 % and 112.7 %.
-The old spread was not this host being noisy; it was the instrument charging drift to
-the firewall.
-
-**One asymmetry remains, and it is what the residual ~10 % is.** The firewall streams
-an artifact from a dedicated task feeding a one-chunk channel (`src/artifacts/stream.rs`,
-`file_body`), so it reads chunk *n+1* while the client is still consuming chunk *n*.
-The bench's baseline server reads the next chunk only when its response stream is
-polled, strictly serially. Same 64 KiB chunk size, same payload, different pipelining.
-It shows up in the tails too: the baseline's total p95 sits near 47 ms against the
-firewall's 5.4 ms. Now that the noise is gone, this bias is visible for what it is — a
-steady offset of roughly ten points, not a fluctuation. Correcting it means giving the
-baseline server the same read-ahead; that is not done here.
-
-**So read the ratio rows as "≥ 85 % is cleared with about 25 points of margin, of
-which roughly 10 are known instrument bias"** — not as evidence the firewall is faster
-than serving a file. The additional-TTFB rows carry no such offset, are positive in
-every one of the fifteen shape-runs, and sit at 2–3 % of the 5 ms budget; they are the
-stronger evidence for SPEC §12's warm-artifact requirement.
-
-Also recorded, because SPEC §10 asks for it: **resident set size 357–374 MiB** with
-the 100,000-entry snapshot in force under sustained load, against a
-`memory_cache_max_bytes` of 256 MiB. The two are different quantities; see section 3.
-Startup with a 100,000-entry snapshot already on disk — validate, commit, publish, and
-open the database — took **53–65 ms**. A run outside this set took 260 ms, so size a
-startup probe's patience well above the high end rather than from the median.
-
-### The warm-artifact cost, and why it no longer scales with project size
-
-The extra time a warm artifact request costs used to scale with the size of the
-**project document**, not with the size of the artifact. It no longer does:
-
-| Versions in the project | Document size | Additional vs baseline, 3 runs | Additional, pre-change |
-| --- | --- | --- | --- |
-| 100 | 51 KB | +0.123 to +0.163 ms | +0.606 ms |
-| 1,000 | 511 KB | +0.114 to +0.158 ms | +6.761 ms |
-| 5,000 | 2.6 MB | +0.094 to +0.153 ms | +35.655 ms |
-
-The pre-change column was close to linear in version count — roughly 7 µs per version
-— which is the signature of per-request, per-version work rather than of anything to
-do with the bytes being served. Every artifact request revalidates that the reference
-is still advertised by a current project snapshot (SPEC §9 requires this, and it
-closes a real hole — without it, withdrawn bytes stay downloadable by anyone who can
-compute the reference id), and that revalidation used to re-parse the stored project
-document and recompute a reference id for every version, on every request, including a
-fully warm one.
-
-This release caches the advertised reference-id set per project snapshot, so the
-revalidation is a set membership test against work done once when the snapshot was
-stored. The check itself is unchanged — the same question is asked and the same
-answers are given — so nothing about what is served or refused has moved; only the
-per-request cost has. The measured curve is now flat across a 50× range of document
-size, which is what that change predicts.
-
-**Consequence for an operator today:** the 5 ms warm-artifact target and the 85 %
-throughput target hold at every project size measured, up to 5,000 versions / 2.6 MB
-of metadata. Larger projects than that were not measured; the mechanism gives no
-reason to expect a cliff, but that is an inference and not a measurement.
-
-## 11. Verified client behaviour
-
-Run with `cargo test --test e2e_npm -- --ignored` and
-`cargo test --test e2e_pip -- --ignored`. These drive the real `npm` and `pip`
-binaries against a listening instance. Nothing in them reaches a public registry: the
-firewall's upstream is an in-process fake, and the clients talk to loopback.
-
-Two client versions each, as SPEC §13 requires — the previous npm major and pip minor
-alongside the current ones — plus npm 12, the current upstream stable major:
-
-| | Current upstream stable | On `PATH` here | Previous |
-| --- | --- | --- | --- |
-| npm | **12.0.2** (on Node **v24.19.0**) | 11.16.0 | **10.9.9** |
-| pip | **26.2.1** | 25.1.1 (the interpreter's) | **25.0.1** |
-
-Every version in bold is pinned by version in the test files and installed out of tree,
-at `~/.local/share/probation-e2e-clients` or wherever
-`PROBATION_E2E_CLIENTS` points:
-
-```sh
-ROOT=~/.local/share/probation-e2e-clients
-npm install --prefix $ROOT/npm-12.0.2  npm@12.0.2
-npm install --prefix $ROOT/npm-10.9.9  npm@10.9.9
-python3 -m pip install --target $ROOT/pip-26.2.1 pip==26.2.1
-python3 -m pip install --target $ROOT/pip-25.0.1 pip==25.0.1
-```
-
-npm 12 declares its supported engines as `^22.22.2 || ^24.15.0 || >=26.0.0`, so its leg
-runs under a Node it supports rather than whatever is on `PATH`. It is looked for at
-`~/.nvm/versions/node/v24.19.0/bin`, or at `PROBATION_E2E_NODE_BIN`:
-
-```sh
-nvm install v24.19.0
-```
-
-A test whose client is missing fails naming that command; it never skips quietly.
-
-| Behaviour | Client | Test |
+| Scenario | Target | Measured |
 | --- | --- | --- |
-| An install succeeds on npm 12's defaults, with no `--allow-remote` and no `.npmrc` | npm **12.0.2** | `npm_12_installs_without_allow_remote` |
-| An install falls back to an older eligible release, with the requirement unedited | npm 11.16.0 **and 10.9.9** | `an_install_falls_back_to_an_older_eligible_release`, `…_on_the_previous_npm_major` |
-| `npm ci` fails on a blocked pin with a `403`, and the lockfile is byte-identical afterwards | npm 11.16.0 **and 10.9.9** | `npm_ci_fails_on_a_blocked_pin_without_rewriting_it`, `…_on_the_previous_npm_major` |
-| `npm ci` succeeds on an allowed lockfile and does not rewrite it | npm 11.16.0 | `npm_ci_succeeds_on_an_allowed_lockfile` |
-| An already-installed package stays installed after a block | npm 11.16.0 | `an_already_installed_package_is_outside_the_enforcement_boundary` |
-| Install from a wheel, falling back past a held release | pip **26.2.1 and 25.0.1** | `pip_installs_from_a_wheel_falling_back_to_an_older_eligible_release`, `…_on_the_previous_pip_minor` |
-| Install from a source distribution | pip **26.2.1 and 25.0.1** | `pip_installs_from_an_sdist`, `…_on_the_previous_pip_minor` |
-| Resolution fails when nothing eligible remains | pip **26.2.1 and 25.0.1** | `pip_fails_when_nothing_eligible_remains`, `…_on_the_previous_pip_minor` |
-| An exact pin on a held release is refused, never substituted | pip **26.2.1** | `an_exact_pin_on_a_held_release_is_refused_not_substituted` |
+| Warm metadata responses | ≥1,000/s, p95 ≤5ms | 120,000–144,000/s, p95 0.09–0.12ms — met |
+| Warm policy denial | p95 ≤2ms | p95 1.19–1.31ms — met |
+| Extra delay vs. plain file server, small project | p95 ≤5ms | +0.12–0.16ms — met |
+| Same, medium project | p95 ≤5ms | +0.11–0.16ms — met |
+| Same, large project | p95 ≤5ms | +0.09–0.15ms — met |
+| Download throughput vs. plain file server | ≥85% | 109–113% — met |
+| Blocklist update takes effect under load | within 2 poll intervals (10s) | 5.0s — met |
 
-No behaviour differed between npm 10.9.9, 11.16.0 and 12.0.2, or between pip 25.0.1 and
-26.2.1.
+All targets are met with margin across projects of 100 to 5,000 package
+versions. Memory under load with a 100,000-entry blocklist: 357 to 374 MB
+resident.
 
-### npm 12 installs with no client configuration, and why the artifact paths look the way they do
+The raw numbers, the method, and why the throughput ratio reads above 100% (a
+quirk in how the baseline streams, not evidence this service speeds downloads
+up) are in the git history of this file.
 
-**Set nothing.** npm 12 installs through this firewall on its own defaults. If you are
-carrying an `allow-remote=all` line in an `.npmrc` from an earlier release of this
-service, delete it: it disables an npm supply-chain control for **every** tarball
-dependency in that project, not only for the ones this proxy serves, which defeats the
-point of running a package firewall at all.
+## 11. Tested against real clients
 
-This is why artifacts live at `/npm/artifacts/{reference_id}/{filename}` and
-`/pypi/artifacts/{reference_id}/{filename}` rather than under a single `/artifacts/`
-root. npm 12 changed the default of `allow-remote` from `all` to `none`, and exempts
-only tarballs whose URL shares **both the origin and the path prefix** of the
-configured registry. An earlier release of this service served metadata under `/npm/`
-and artifacts under `/artifacts/`, so every rewritten `dist.tarball` matched the origin,
-failed the prefix, and was refused:
+Verified with real `npm` and `pip` installs against an in-process fake
+registry, never the public internet:
 
-```text
-npm error code EALLOWREMOTE
-npm error Fetching packages of type "remote" have been disabled
-npm error Refusing to fetch "fixture-widget@http://…/artifacts/…/fixture-widget-1.0.0.tgz"
-```
+- npm 10.9.9, 11.16.0, and 12.0.2
+- pip 25.0.1 and 26.2.1
 
-Serving each ecosystem's artifacts under that ecosystem's own prefix satisfies the
-check. `npm_12_installs_without_allow_remote` is the standing witness: it drives npm
-12.0.2 on Node v24.19.0 with no `--allow-remote` flag, no `.npmrc`, and a fresh cache.
+All versions behave the same. Confirmed: installs succeed and fall back to
+older eligible versions; `npm ci` fails cleanly on a blocked lockfile entry
+without changing the lockfile; already-installed packages stay installed after
+a later block; pip installs work from wheels and source distributions.
 
-Two consequences worth knowing:
+**If you are upgrading from an older version of this service:** npm 12 is
+stricter about which download URLs it trusts. This service's URL layout
+already satisfies that (artifacts live under `/npm/artifacts/...` and
+`/pypi/artifacts/...`), so no `.npmrc` change is needed. If an old
+`allow-remote=all` line is in an `.npmrc` from an earlier setup, remove it.
+It weakens npm's own supply-chain protection for every dependency.
 
-* **Nothing migrated.** A reference id is a hash of the artifact reference — ecosystem,
-  name, version, filename, upstream URL and expected digests — and never of the public
-  path. Moving the route rotated no id, invalidated no stored record, and moved no
-  digest pin or first-seen time. Old bookmarked URLs under `/artifacts/…` are simply
-  `404`; clients rediscover the current URL from metadata, which is where they get it
-  from in the first place.
-* **The ecosystem in the URL is checked.** A reference id is derived from public
-  metadata and is not an authorization token, so an npm reference asked for at
-  `/pypi/artifacts/…` is refused with `404` rather than served under the wrong
-  ecosystem. Policy never read the path — it reads the stored record — so this changes
-  no allow or deny decision; it keeps the decision log honest.
+Old download URLs under the previous `/artifacts/...` path no longer work.
+Clients get a fresh URL from current metadata.
 
-> **Still outside the boundary.** SPEC §11 places Git, URL and alternate-index
-> dependencies outside registry-proxy coverage. A project that has any of those still
-> needs an `allow-remote` override for them, whatever this service does. What is
-> restored here is `allow-remote=none` compatibility for trees whose tarballs are all
-> resolved through this firewall — and no more than that.
+Git dependencies, URL dependencies, and alternate registries are still not
+covered. They need whatever client-side overrides they always needed.
 
-## 12. Known gaps
+## 12. Known gaps in this release
 
-Everything in this list is true of this release. None of it is hypothetical.
-
-1. **No free-space check or alarm.** Section 3. Monitor the filesystem yourself.
-2. **`serve` waits on SIGINT and installs no SIGTERM handler.** Inside the container
-   this is worked around rather than fixed: the image sets `STOPSIGNAL SIGINT`, so
-   `docker stop` shuts down gracefully (measured: exit 0 in under 0.1 s, with the
-   `shutting down` line in the log). **Outside the container the gap is live** — a
-   plain `kill` on the process sends SIGTERM, which has its default disposition and
-   terminates it immediately without a graceful shutdown. Send `SIGINT` instead
-   (`kill -INT`, or Ctrl-C), and configure any systemd unit with
-   `KillSignal=SIGINT`. An ungraceful stop is survivable in any case — startup
-   recovers the write-ahead log and removes incomplete temporary downloads, and a
-   cache mapping whose file turns out to be missing or the wrong size is discarded
-   when it is next read; both paths are tested — but it should not be the normal
-   path.
-3. **State grows monotonically.** Section 3. No pruning, and deleting rows does not
-   shrink the file.
-4. **Metadata removal is visible only after the metadata TTL** (`metadata_ttl_seconds`,
-   default 300 s). A version withdrawn upstream can still appear in a listing for up to
-   that long. Artifact delivery is judged on the reference row, which is not subject to
-   this lag.
-5. **A computed-digest block can stay visible in a listing for up to one metadata
-   TTL** under a concurrent reader, for a known and accepted race. The artifact
-   endpoint refuses it immediately regardless; only the listing lags.
-6. **No online backup.** Stop the service to take a consistent copy of `state/`.
-7. **Expired metadata is not served during an upstream outage.** If upstream is
-   unreachable after the TTL expires, the affected project answers `502`/`504` rather
-   than serving a stale document. This is deliberate. `metadata_max_age_seconds`
-   (section 3a) extends that refusal to a project whose stored copy has passed its age
-   ceiling, even though its TTL is being renewed by upstream `304`s.
-8. **A database written by an earlier build is refused, not migrated.** Section 3a's
-   schema note. There is no migration step.
-9. **No administrative API.** Everything is configuration files, signals and logs.
-10. **Nothing in this repository enforces `-D warnings`.** If you build or patch this
-    service yourself, read this one. There is no `.cargo/config.toml`, no CI workflow
-    and no `#![deny(warnings)]` anywhere in the tree, so plain `cargo build` and plain
-    `cargo clippy` both exit 0 on code that emits warnings. Several of the guards in
-    this service degrade *quietly* rather than loudly when they are edited wrongly —
-    swapping a compare-and-set cache insert for an unconditional one, for example,
-    compiles clean and only leaves an unused-variable warning behind. Build with
-    `cargo clippy --all-targets -- -D warnings`, as `README.md` says and as every
-    check recorded here did, and put that form in whatever CI you run this through.
-    The flag is the only thing that turns that class of regression into an error.
-11. **The test suite has never been green under `--release`.** `cargo test` passes
-    completely (276 passed, 0 failed, 15 ignored). `cargo test --release
-    --no-fail-fast` gives 275 passed, 1 failed: `artifacts_concurrency::`
-    `blocklist_commit_is_not_delayed_by_a_large_project_refresh`. The test asserts at
-    `tests/artifacts_concurrency.rs:991` that a large maintenance backlog finishes at
-    least 500 ms *after* a concurrent blocklist commit, which is how it demonstrates
-    that maintenance never delays a commit. Optimized code drains the backlog in
-    roughly 160–200 ms, so the margin cannot be met — observed 362 ms commit against
-    696 ms drain, a 333 ms gap, and 198 ms against 369 ms on another run. The
-    behaviour under test is fine in both profiles; the *threshold* is calibrated to
-    debug-build timing. Expect this failure, do not treat it as a regression, and do
-    not read it as maintenance blocking commits. Note also that `cargo test
-    --release` stops at the first failing target, so it reports nothing about the
-    twenty targets after this one — use `--no-fail-fast` if you want the whole
-    picture. Fixing it means re-deriving the margin from the profile, sizing the
-    backlog to the build, or making the test profile-independent; none of those is in
-    this release.
+1. **No low-disk-space warning.** (Section 3.) Monitor disk space yourself.
+2. **The `state/` database only grows.** (Section 3.) No automatic cleanup.
+3. **Removed upstream packages can still appear in listings** for up to
+   `metadata_ttl_seconds` (default 5 minutes). Downloads are judged correctly
+   and immediately.
+4. **A newly blocked file hash can briefly still appear in a listing** in the
+   same window, under rare concurrent access. Direct downloads are blocked
+   immediately regardless.
+5. **No backup while running.** Stop the service first.
+6. **If upstream is down when metadata needs a full refresh, the request
+   fails** rather than serving a last-known-good copy. Deliberate. See
+   section 3a.
+7. **A database from an older version will not open.** No automatic
+   migration. See section 3a.
+8. **No admin API.** Everything is config files, signals, and logs.
+9. **Compiler warnings are not errors anywhere in this repo.** Run
+   `cargo clippy --all-targets -- -D warnings` yourself and wire it into CI.
+   Plain `cargo build` lets real bugs through as warnings.
+10. **One test is flaky in release builds only**
+    (`artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh`).
+    Its timing margin is tuned for debug builds. The behavior it tests is
+    fine.

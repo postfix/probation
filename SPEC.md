@@ -5,6 +5,17 @@ Date: 2026-09-19
 Revision: 3 — bounded maximum age for cached project metadata  
 Principles: KISS, YAGNI, fast warm requests, bounded resource use
 
+### Changed after revision 3
+
+Four features were specified later, each in its own `docs/plans/<name>/` folder, and are documented for operators in `docs/operations.md`. Where they contradict this document, they win:
+
+- **OSV vulnerability checks** (`docs/plans/osv-intel/`). §8's "No remote intelligence request is made during an installation" no longer holds: a candidate the blocklist allows is also checked against `https://api.osv.dev/v1/querybatch`, failing open. Config keys `osv_cache_ttl_seconds`, `osv_request_timeout_ms`, `osv_mode`.
+- **Decision log delivery** (`docs/plans/decision-log-delivery/`): optional file and SIEM sinks. Config keys `log_file_path`, `log_file_max_bytes`, `log_queue_max_bytes`, `siem_url`, `siem_auth_header`, `siem_queue_max_bytes`, `log_consumer_identification`.
+- **Rated-load guard** (`docs/plans/rated-load-guard/`): bounded queue budgets for those sinks and `GET /health/delivery`.
+- **Built-in TLS**: `serve` terminates TLS when `tls_cert_path` and `tls_key_path` are both set (§3 already says so). `SIGTERM` is handled like `SIGINT`.
+
+`max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is Apache-2.0.
+
 ## 1. Problem and solution
 
 Developers and CI systems can install a compromised package immediately after publication, before a malware feed identifies it. Blocking only known malicious releases leaves this detection window open. Simply refusing a new download also breaks installations that could have used an older compatible release.
@@ -34,7 +45,7 @@ Automatic fallback occurs during metadata-based resolution. A client that has al
 
 ## 3. Small deployment and implementation
 
-Ship one Rust binary and a container image built from it. Run one process against one local data directory. Use an existing reverse proxy for TLS and deployment access control. The default listener is loopback. All consumers of an instance share one policy.
+Ship one Rust binary and a container image built from it. Run one process against one local data directory. `serve` terminates TLS itself when `tls_cert_path`/`tls_key_path` are both configured; a reverse proxy is still required for per-client rate limiting and is optional for TLS. The default listener is loopback. All consumers of an instance share one policy.
 
 The binary performs four jobs:
 

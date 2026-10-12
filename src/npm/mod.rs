@@ -760,23 +760,6 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The exhaustive match compiles, and the new arm renders a real, non-empty
-    /// reason string rather than the placeholder every other arm already has.
-    /// Mirrors `artifacts::tests::deny_reason_maps_blocked_by_osv_in_artifacts_mod`;
-    /// tests only this one-line match arm, not Slice 2's `osv::evaluate` wiring.
-    #[test]
-    fn deny_reason_maps_blocked_by_osv_in_npm_mod() {
-        assert_eq!(
-            deny_reason(DenyReason::BlockedByOsv),
-            "the version is blocked by a known OSV malicious-package advisory"
-        );
-    }
-}
-
 /// TM-1: an outlier is rejected and logged with its name and reference count, rather
 /// than held in one transaction that would delay every other store operation —
 /// including an urgent blocklist commit.
@@ -799,5 +782,22 @@ fn storage_error(err: StoreError) -> ApiError {
         StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
             ApiError::StorageUnusable
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exhaustive match compiles, and the new arm renders a real, non-empty
+    /// reason string rather than the placeholder every other arm already has.
+    /// Mirrors `artifacts::tests::deny_reason_maps_blocked_by_osv_in_artifacts_mod`;
+    /// tests only this one-line match arm, not Slice 2's `osv::evaluate` wiring.
+    #[test]
+    fn deny_reason_maps_blocked_by_osv_in_npm_mod() {
+        assert_eq!(
+            deny_reason(DenyReason::BlockedByOsv),
+            "the version is blocked by a known OSV malicious-package advisory"
+        );
     }
 }

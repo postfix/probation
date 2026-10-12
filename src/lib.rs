@@ -236,10 +236,30 @@ impl App {
         blocklist_poller::poll_once(&app, &mut watcher).await;
 
         let addr = app.config.listen;
-        let listener = TcpListener::bind(addr)
-            .await
+
+        // Both or neither, enforced at config validation (`config::RawConfig::validate`):
+        // `tls_cert_path`/`tls_key_path` set means `serve` terminates TLS itself,
+        // instead of requiring a reverse proxy in front of it for that one job.
+        let tls = match (&app.config.tls_cert_path, &app.config.tls_key_path) {
+            (Some(cert), Some(key)) => Some(
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+                    .await
+                    .map_err(StartupError::Tls)?,
+            ),
+            _ => None,
+        };
+
+        // A `std::net::TcpListener` either way, so both the plain and the TLS path
+        // bind, report their address, and fail the same way. Non-blocking mode is
+        // set here because both `axum_server::from_tcp_rustls` and
+        // `tokio::net::TcpListener::from_std` require it already set, rather than
+        // setting it themselves.
+        let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|source| StartupError::Bind { addr, source })?;
-        let local_addr = listener.local_addr().map_err(StartupError::Serve)?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(StartupError::Serve)?;
+        let local_addr = std_listener.local_addr().map_err(StartupError::Serve)?;
 
         let shutdown = CancellationToken::new();
         let tasks = tasks::spawn(Arc::clone(&app), shutdown.clone(), watcher, delivery_tasks);
@@ -254,17 +274,47 @@ impl App {
                 // operator has asked for it to be recorded.
                 let consumer_identification = app.config.log_consumer_identification;
                 let router = http::router(app);
-                if consumer_identification {
-                    axum::serve(
-                        listener,
-                        router.into_make_service_with_connect_info::<SocketAddr>(),
-                    )
-                    .with_graceful_shutdown(async move { signal.cancelled().await })
-                    .await
-                } else {
-                    axum::serve(listener, router)
-                        .with_graceful_shutdown(async move { signal.cancelled().await })
-                        .await
+                match tls {
+                    Some(tls_config) => {
+                        // `axum_server::Handle`, not `with_graceful_shutdown`: this
+                        // crate's own shutdown signal is a `Handle` method, not a
+                        // future passed to `serve`.
+                        let handle = axum_server::Handle::new();
+                        tokio::spawn({
+                            let handle = handle.clone();
+                            async move {
+                                signal.cancelled().await;
+                                handle.graceful_shutdown(None);
+                            }
+                        });
+                        let server =
+                            axum_server::from_tcp_rustls(std_listener, tls_config)?.handle(handle);
+                        if consumer_identification {
+                            server
+                                .serve(
+                                    router
+                                        .into_make_service_with_connect_info::<SocketAddr>(),
+                                )
+                                .await
+                        } else {
+                            server.serve(router.into_make_service()).await
+                        }
+                    }
+                    None => {
+                        let listener = TcpListener::from_std(std_listener)?;
+                        if consumer_identification {
+                            axum::serve(
+                                listener,
+                                router.into_make_service_with_connect_info::<SocketAddr>(),
+                            )
+                            .with_graceful_shutdown(async move { signal.cancelled().await })
+                            .await
+                        } else {
+                            axum::serve(listener, router)
+                                .with_graceful_shutdown(async move { signal.cancelled().await })
+                                .await
+                        }
+                    }
                 }
             }
         });
@@ -392,6 +442,9 @@ pub enum StartupError {
         source: std::io::Error,
     },
     Serve(std::io::Error),
+    /// The configured `tls_cert_path`/`tls_key_path` could not be loaded as a TLS
+    /// certificate and key.
+    Tls(std::io::Error),
     /// Decision-log delivery could not be set up. The text is a fixed `&'static str`
     /// on purpose: it is printed by `check_config` (`src/main.rs`) and by the startup
     /// log, and the rejection it most often reports is a malformed `PROBATION_SIEM_AUTH`.
@@ -405,6 +458,7 @@ impl fmt::Display for StartupError {
             StartupError::DataDir(err) => write!(f, "{err}"),
             StartupError::Bind { addr, source } => write!(f, "cannot bind {addr}: {source}"),
             StartupError::Serve(source) => write!(f, "server stopped: {source}"),
+            StartupError::Tls(source) => write!(f, "cannot load TLS certificate/key: {source}"),
             StartupError::Delivery(reason) => write!(f, "{reason}"),
         }
     }
@@ -414,7 +468,9 @@ impl std::error::Error for StartupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StartupError::DataDir(err) => Some(err),
-            StartupError::Bind { source, .. } | StartupError::Serve(source) => Some(source),
+            StartupError::Bind { source, .. }
+            | StartupError::Serve(source)
+            | StartupError::Tls(source) => Some(source),
             StartupError::Delivery(_) => None,
         }
     }
