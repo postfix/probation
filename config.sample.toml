@@ -70,7 +70,7 @@ max_references_per_project = 20000
 # that asked, as a `consumer` field. Off by default, and then no record carries
 # the field. Privacy note: this records who is installing packages. It is the
 # peer address of the accepted TCP connection, never a port and never anything
-# the caller supplies. Behind a proxy, NAT, or load balancer it identifies that
+# the caller supplies. Behind NAT or a load balancer it identifies that
 # hop, not the machine that ran the install (§8 of docs/operations.md).
 # Turning it off later erases nothing already written to the log file, its
 # `.1`, the collector, or the host's console log.
