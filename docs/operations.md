@@ -414,7 +414,10 @@ nothing (404/405):
 ```
 
 Every decision can be explained from `result`, `reason`, and
-`blocklist_revision` together. The `request_id` matches the one a client sees
+`blocklist_revision` together. `blocklist_revision` is the revision the request
+was judged against. `result` is `REFUSED` for a 4xx/5xx the router or HTTP
+layer produced without a policy decision (a malformed path, an unsatisfiable
+range), and those count as errors in the periodic summary. The `request_id` matches the one a client sees
 in its error message. Credentials are never logged and never forwarded
 upstream.
 
