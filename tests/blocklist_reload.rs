@@ -13,12 +13,15 @@ mod common;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use common::{
     TestClock, TestServer, database_path, modified_of, replace_atomically,
     replace_atomically_preserving_mtime, rewrite_in_place, sample_config, set_modified, snapshot,
 };
+use probation::clock::Clock;
 use probation::config::Config;
 
 /// Two polling intervals plus slack: SPEC §12's target for noticing a replaced file.
@@ -117,6 +120,142 @@ async fn malformed_replacement_retains_last_good() {
     // that was accepted expires.
     clock.set_rfc3339("2026-09-18T00:00:00Z");
     assert_eq!(server.status("/health/ready").await, 503);
+
+    // And the poller is still polling after the rejection: the next good file is taken.
+    replace_atomically(&blocklist_file, &snapshot(4, GENERATED, FAR, ""));
+    server
+        .wait_for_status("/health/ready", 200, TWO_INTERVALS)
+        .await;
+
+    server.shutdown().await;
+}
+
+/// The other half of the retry rule: an expired candidate only gets older, so while the
+/// file is unchanged it is read and reported once, not once per interval. Only a
+/// `generated_at` in the future is worth reading again.
+#[tokio::test]
+async fn an_expired_candidate_is_not_retried_while_the_file_is_unchanged() {
+    let captured = common::logs::capture();
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let blocklist_file = blocklist_dir.path().join("blocklist.json");
+    fs::write(&blocklist_file, snapshot(3, GENERATED, FAR, "")).expect("the snapshot is written");
+
+    let server = TestServer::start_in(
+        data_dir.path(),
+        config_for(&blocklist_file),
+        TestClock::at_rfc3339(NOW),
+    )
+    .await;
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    let marker = blocklist_file.display().to_string();
+    let before = captured.lines_mentioning(&marker);
+    replace_atomically(
+        &blocklist_file,
+        &snapshot(4, "2026-09-15T00:00:00Z", "2026-09-16T00:00:00Z", ""),
+    );
+    // Three intervals and a half: a retried rejection would be reported three times.
+    tokio::time::sleep(Duration::from_millis(3_500)).await;
+
+    assert_eq!(
+        captured.lines_containing_all(&[&marker, "expired"]),
+        1,
+        "the expired candidate is reported once"
+    );
+    assert_eq!(
+        captured.lines_mentioning(&marker) - before,
+        1,
+        "and nothing else about the file was reported"
+    );
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    server.shutdown().await;
+}
+
+/// `max_blocklist_bytes` is a ceiling on the read: a file one byte over it is refused
+/// and the snapshot in force stays, and a file exactly at it is accepted.
+#[tokio::test]
+async fn a_blocklist_over_max_bytes_is_refused_and_one_at_it_is_accepted() {
+    const LIMIT: usize = 4_096;
+    let padded = |document: String, len: usize| {
+        let padding = len - document.len();
+        format!("{document}{}", " ".repeat(padding))
+    };
+
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let blocklist_file = blocklist_dir.path().join("blocklist.json");
+    // Expires on the 18th, so the clock can say whether it is still the one in force.
+    fs::write(
+        &blocklist_file,
+        snapshot(3, GENERATED, "2026-09-18T00:00:00Z", ""),
+    )
+    .expect("the snapshot is written");
+    let mut config = config_for(&blocklist_file);
+    config.max_blocklist_bytes = NonZeroU64::new(LIMIT as u64).expect("a non-zero limit");
+
+    let clock = TestClock::at_rfc3339(NOW);
+    let server = TestServer::start_in(data_dir.path(), config, clock.shared()).await;
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    replace_atomically(
+        &blocklist_file,
+        &padded(snapshot(4, GENERATED, FAR, ""), LIMIT + 1),
+    );
+    tokio::time::sleep(TWO_INTERVALS).await;
+    clock.set_rfc3339("2026-09-18T00:00:00Z");
+    assert_eq!(
+        server.status("/health/ready").await,
+        503,
+        "revision 3 is still in force and has now expired: the oversized revision 4 was refused"
+    );
+
+    replace_atomically(
+        &blocklist_file,
+        &padded(snapshot(5, GENERATED, FAR, ""), LIMIT),
+    );
+    server
+        .wait_for_status("/health/ready", 200, TWO_INTERVALS)
+        .await;
+
+    server.shutdown().await;
+}
+
+/// SPEC §10's ordering, with a previous snapshot in force when a later commit fails.
+///
+/// A revision above `i64::MAX` is a valid document that storage cannot represent, so
+/// its commit fails while the database itself is fine. Had it been published anyway,
+/// the later revision 4 would be refused as a rollback and the unstorable revision,
+/// expiring with revision 3, would still be in force. That the instance is ready past
+/// that expiry shows revision 4 was taken, so the failed commit left revision 3 in
+/// force.
+#[tokio::test]
+async fn a_failed_commit_leaves_the_previous_snapshot_in_force() {
+    const EXPIRES: &str = "2026-09-18T00:00:00Z";
+
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let blocklist_file = blocklist_dir.path().join("blocklist.json");
+    fs::write(&blocklist_file, snapshot(3, GENERATED, EXPIRES, "")).expect("the snapshot");
+
+    let clock = TestClock::at_rfc3339(NOW);
+    let server =
+        TestServer::start_in(data_dir.path(), config_for(&blocklist_file), clock.shared()).await;
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    let unstorable = u64::try_from(i64::MAX).expect("i64::MAX fits a u64") + 1;
+    replace_atomically(
+        &blocklist_file,
+        &snapshot(unstorable, GENERATED, EXPIRES, ""),
+    );
+    tokio::time::sleep(TWO_INTERVALS).await;
+
+    replace_atomically(&blocklist_file, &snapshot(4, GENERATED, FAR, ""));
+    clock.set_rfc3339(EXPIRES);
+    server
+        .wait_for_status("/health/ready", 200, TWO_INTERVALS)
+        .await;
 
     server.shutdown().await;
 }
@@ -435,11 +574,9 @@ async fn blocklist_is_committed_before_it_is_published() {
     .await;
 
     tokio::time::sleep(TWO_INTERVALS).await;
-    assert_eq!(
-        broken.status("/health/ready").await,
-        503,
-        "the snapshot validated but could not be committed, so it was never published"
-    );
+    // Not readiness: an unusable store makes it `503` whatever is published, so it
+    // could not tell the two orders apart. The policy error can, and
+    // `a_failed_commit_leaves_the_previous_snapshot_in_force` covers readiness.
     let refusal = broken.get("/npm/left-pad").await;
     assert_eq!(refusal.status().as_u16(), 503);
     let body: serde_json::Value =
@@ -452,4 +589,146 @@ async fn blocklist_is_committed_before_it_is_published() {
     );
 
     broken.shutdown().await;
+}
+
+/// The poller's file I/O runs off the runtime's worker threads. A blocklist read that
+/// blocks — here a FIFO nobody has written yet — must not stall request handling, and
+/// on this single-threaded test runtime a read on the worker would stall all of it.
+#[tokio::test]
+async fn a_blocklist_read_that_blocks_does_not_stall_requests() {
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let blocklist_file = blocklist_dir.path().join("blocklist.json");
+    fs::write(&blocklist_file, snapshot(3, GENERATED, FAR, "")).expect("the snapshot is written");
+    let server = TestServer::start_in(
+        data_dir.path(),
+        config_for(&blocklist_file),
+        TestClock::at_rfc3339(NOW),
+    )
+    .await;
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    // A new inode, so the next pass opens it, and opening a FIFO waits for a writer.
+    let fifo = blocklist_dir.path().join("blocklist.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "the FIFO is made");
+    fs::rename(&fifo, &blocklist_file).expect("the FIFO replaces the file");
+
+    // The probe is a thread of its own: if the read does block this runtime's one
+    // worker, nothing on it runs again until the FIFO is written.
+    let addr = server.local_addr();
+    let file = blocklist_file.clone();
+    let probe = std::thread::spawn(move || {
+        std::thread::sleep(TWO_INTERVALS);
+        let answered = live_answers_within(addr, Duration::from_secs(2));
+        // Released either way, so the pass — and the runtime — can finish.
+        fs::write(&file, snapshot(4, GENERATED, FAR, "")).expect("the FIFO is written");
+        answered
+    });
+    let answered = tokio::task::spawn_blocking(move || probe.join().expect("the probe"))
+        .await
+        .expect("the probe's join");
+    assert!(
+        answered,
+        "/health/live answered while the poller was waiting on the blocklist read"
+    );
+
+    server.shutdown().await;
+}
+
+/// Whether `GET /health/live` is answered `200` within `within`, over a plain socket so
+/// it needs no runtime at all.
+fn live_answers_within(addr: std::net::SocketAddr, within: Duration) -> bool {
+    use std::io::{Read, Write};
+
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, within) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(within));
+    if stream
+        .write_all(b"GET /health/live HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response.starts_with("HTTP/1.1 200")
+}
+
+/// A clock that panics on its first monotonic reading after being armed. Only the
+/// poller and the npm and PyPI metadata routes read the monotonic clock, and the test
+/// below sends neither kind of request while it is armed, so the panic lands in a poll
+/// pass.
+struct PanickingClock {
+    inner: Arc<TestClock>,
+    armed: AtomicBool,
+}
+
+impl Clock for PanickingClock {
+    fn now_utc_micros(&self) -> i64 {
+        self.inner.now_utc_micros()
+    }
+
+    fn now_monotonic(&self) -> Instant {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            // Formatted, so the payload is a `String` as most real panics' are.
+            let at = self.inner.now_monotonic();
+            panic!("an injected panic inside a blocklist poll pass at {at:?}");
+        }
+        self.inner.now_monotonic()
+    }
+}
+
+/// A poll pass that panics must not stop blocklist updates for the life of the
+/// process: the panic is reported, and the next interval polls as before.
+#[tokio::test]
+async fn a_panicking_poll_pass_is_logged_and_polling_continues() {
+    let captured = common::logs::capture();
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let blocklist_file = blocklist_dir.path().join("blocklist.json");
+    fs::write(
+        &blocklist_file,
+        snapshot(3, GENERATED, "2026-09-18T00:00:00Z", ""),
+    )
+    .expect("the snapshot is written");
+
+    let clock = Arc::new(PanickingClock {
+        inner: TestClock::at_rfc3339(NOW),
+        armed: AtomicBool::new(false),
+    });
+    let server = TestServer::start_in(
+        data_dir.path(),
+        config_for(&blocklist_file),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    )
+    .await;
+    assert_eq!(server.status("/health/ready").await, 200);
+
+    clock.armed.store(true, Ordering::SeqCst);
+    common::wait_until("a poll pass reads the clock", TWO_INTERVALS, || {
+        !clock.armed.load(Ordering::SeqCst)
+    })
+    .await;
+
+    // Revision 3 expires on the 18th and revision 4 does not, so past the 18th the
+    // instance is ready only if a pass after the panic accepted revision 4.
+    replace_atomically(&blocklist_file, &snapshot(4, GENERATED, FAR, ""));
+    clock.inner.set_rfc3339("2026-09-18T00:00:00Z");
+    server
+        .wait_for_status("/health/ready", 200, TWO_INTERVALS)
+        .await;
+
+    let marker = blocklist_file.display().to_string();
+    assert_eq!(
+        captured.lines_containing_all(&[&marker, "panicked"]),
+        1,
+        "the panicking pass is reported once, at error, naming the file it was polling"
+    );
+
+    server.shutdown().await;
 }
