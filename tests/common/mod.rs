@@ -1192,11 +1192,9 @@ pub fn snapshot_with(
 /// is a new snapshot in force at an instant they choose, without waiting a polling
 /// interval for it.
 pub fn publish_blocklist(server: &TestServer, document: &str, now_micros: i64) {
-    let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
-        document.as_bytes(),
-        now_micros,
-    )
-    .expect("the test blocklist is valid");
+    let snapshot =
+        probation::policy::BlocklistSnapshot::parse_and_validate(document.as_bytes(), now_micros)
+            .expect("the test blocklist is valid");
     server
         .running()
         .app()
@@ -1270,11 +1268,9 @@ impl Clock for TriggerClock {
                     .clone(),
             )
         {
-            let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
-                document.as_bytes(),
-                now,
-            )
-            .expect("the test blocklist is valid");
+            let snapshot =
+                probation::policy::BlocklistSnapshot::parse_and_validate(document.as_bytes(), now)
+                    .expect("the test blocklist is valid");
             app.publish_blocklist(std::sync::Arc::new(snapshot));
         }
         now
