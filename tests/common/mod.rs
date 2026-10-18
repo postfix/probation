@@ -33,10 +33,17 @@ use url::Url;
 /// `data_dir` is left as the sample's production path on purpose: `TestServer`
 /// replaces it with a directory the test owns, so no test can accidentally take the
 /// lock on, or write to, a real deployment's state.
+///
+/// `blocklist_file` is replaced for the same reason: the sample's
+/// `/etc/probation/blocklist.json` exists on any host `install-local.sh` ran on, and
+/// a test that expects "no blocklist loaded" would then see a real one. This path is
+/// inside the repository and never committed, so it is absent on every host.
 pub fn sample_config() -> Config {
     let mut config = Config::load(Path::new("config.sample.toml"))
         .expect("config.sample.toml is valid configuration");
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.blocklist_file =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/absent-blocklist.json");
     config
 }
 
