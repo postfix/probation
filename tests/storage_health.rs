@@ -250,6 +250,21 @@ fn document() -> String {
     .to_string()
 }
 
+/// Runs one statement against a stopped instance's database, for a row the store
+/// itself would never write.
+async fn write_behind_the_store(data_dir: &std::path::Path, statement: &str) {
+    let database =
+        turso::Builder::new_local(database_path(data_dir).to_str().expect("a UTF-8 path"))
+            .build()
+            .await
+            .expect("the database opens");
+    let connection = database.connect().expect("a connection");
+    connection
+        .execute(statement, ())
+        .await
+        .expect("the row is written");
+}
+
 #[tokio::test]
 async fn package_routes_answer_503_while_storage_is_unhealthy() {
     let data_dir = tempfile::tempdir().expect("a data directory");
@@ -266,26 +281,13 @@ async fn package_routes_answer_503_while_storage_is_unhealthy() {
     .await
     .shutdown()
     .await;
-    {
-        let database = turso::Builder::new_local(
-            database_path(data_dir.path())
-                .to_str()
-                .expect("a UTF-8 path"),
-        )
-        .build()
-        .await
-        .expect("the database opens");
-        let connection = database.connect().expect("a connection");
-        connection
-            .execute(
-                "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
-                 fetched_at_micros, generation, digest_generation) \
-                 VALUES ('pypi', X'FF', X'', 0, 0, 1, 0)",
-                (),
-            )
-            .await
-            .expect("the unreadable row is written");
-    }
+    write_behind_the_store(
+        data_dir.path(),
+        "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+         fetched_at_micros, generation, digest_generation) \
+         VALUES ('pypi', X'FF', X'', 0, 0, 1, 0)",
+    )
+    .await;
 
     let registry = FakeRegistry::new();
     registry.answer(&npm_upstream_path(NAME), FakeAnswer::Body(document()));
@@ -335,4 +337,220 @@ async fn package_routes_answer_503_while_storage_is_unhealthy() {
     );
 
     server.shutdown().await;
+}
+
+/// A data directory whose database already holds `rows`, written behind the store
+/// by an instance that has since stopped.
+async fn data_dir_holding(rows: &str) -> (tempfile::TempDir, probation::config::Config) {
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let config = config_with_open_blocklist(data_dir.path());
+    TestServer::start_in(
+        data_dir.path(),
+        config.clone(),
+        TestClock::at_rfc3339(NOW).shared(),
+    )
+    .await
+    .shutdown()
+    .await;
+    write_behind_the_store(data_dir.path(), rows).await;
+    (data_dir, config)
+}
+
+/// Each path is asked of its own fresh instance, because the first storage failure
+/// takes readiness down and every later package request is refused before it reaches
+/// the store at all.
+async fn assert_storage_unusable(
+    data_dir: &std::path::Path,
+    config: &probation::config::Config,
+    paths: &[&str],
+) {
+    for path in paths {
+        let server = TestServer::start_in_with_registry(
+            data_dir,
+            config.clone(),
+            TestClock::at_rfc3339(NOW).shared(),
+            FakeRegistry::new(),
+        )
+        .await;
+        assert_eq!(
+            server.status("/health/ready").await,
+            200,
+            "{path}: healthy first"
+        );
+        let response = server.get(path).await;
+        assert_eq!(response.status().as_u16(), 503, "{path}");
+        let body: Value = serde_json::from_str(&response.text().await.expect("a body"))
+            .expect("a JSON error body");
+        assert_eq!(body["error"], "STORAGE_UNUSABLE", "{path}: {body}");
+        assert_eq!(server.status("/health/ready").await, 503, "{path}");
+        server.shutdown().await;
+    }
+}
+
+/// SPEC §11: a storage command that fails on a project's own page is `503
+/// STORAGE_UNUSABLE`, in both ecosystems, rather than a `404` that says the project
+/// does not exist or a `502` that blames upstream. The rows carry a negative
+/// generation and a payload that is text rather than bytes, which the store refuses
+/// to read back.
+#[tokio::test]
+async fn an_unreadable_project_row_is_refused_as_storage_unusable() {
+    let (data_dir, config) = data_dir_holding(
+        "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+         fetched_at_micros, generation, digest_generation) \
+         VALUES ('npm', 'corrupt-witness', X'', 0, 0, -1, 0), \
+                ('pypi', 'corrupt-witness', X'', 0, 0, -1, 0), \
+                ('npm', 'text-witness', 'not bytes', 0, 0, 1, 0)",
+    )
+    .await;
+    assert_storage_unusable(
+        data_dir.path(),
+        &config,
+        &[
+            "/npm/corrupt-witness",
+            "/pypi/simple/corrupt-witness/",
+            "/npm/text-witness",
+        ],
+    )
+    .await;
+}
+
+/// The same row for an artifact reference: one naming an ecosystem this build does not
+/// know, one whose advertised digest does not decode, and one with no id at all — which
+/// SQLite allows in a primary key that is not an integer — read back as part of its
+/// project. None is a reference that does not exist, so none is a `404`.
+#[tokio::test]
+async fn an_unreadable_reference_row_is_refused_as_storage_unusable() {
+    let unknown_ecosystem = "11".repeat(32);
+    let undecodable_digest = "22".repeat(32);
+    let (data_dir, config) = data_dir_holding(&format!(
+        "INSERT INTO artifact_references (id, ecosystem, name, version, filename, \
+         upstream_url, expected, first_seen_micros) \
+         VALUES (X'{unknown_ecosystem}', 'cargo', 'w', '1.0.0', 'w-1.0.0.tgz', \
+                 'https://npm.invalid/w/-/w-1.0.0.tgz', '', NULL), \
+                (X'{undecodable_digest}', 'npm', 'w', '1.0.0', 'w-1.0.0.tgz', \
+                 'https://npm.invalid/w/-/w-1.0.0.tgz', 'sha256-zz', NULL), \
+                (NULL, 'npm', 'no-id-witness', '1.0.0', 'no-id-witness-1.0.0.tgz', \
+                 'https://npm.invalid/n/-/n-1.0.0.tgz', '', 1)"
+    ))
+    .await;
+    write_behind_the_store(
+        data_dir.path(),
+        "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+         fetched_at_micros, generation, digest_generation) \
+         VALUES ('npm', 'no-id-witness', X'7B7D', 0, 0, 1, 0)",
+    )
+    .await;
+    assert_storage_unusable(
+        data_dir.path(),
+        &config,
+        &[
+            &format!("/npm/artifacts/{unknown_ecosystem}/w-1.0.0.tgz"),
+            &format!("/npm/artifacts/{undecodable_digest}/w-1.0.0.tgz"),
+            "/npm/no-id-witness",
+        ],
+    )
+    .await;
+}
+
+/// A stored reference names its package, and the name is re-validated rather than
+/// trusted before it is used to build an upstream request. One that no longer parses
+/// — written by another build, or by hand — names nothing this instance can check
+/// membership for, so the reference is not found, and nothing goes upstream for it.
+#[tokio::test]
+async fn a_stored_reference_whose_name_does_not_parse_is_not_found() {
+    let npm_id = "33".repeat(32);
+    let pypi_id = "44".repeat(32);
+    let (data_dir, config) = data_dir_holding(&format!(
+        "INSERT INTO artifact_references (id, ecosystem, name, version, filename, \
+         upstream_url, expected, publication_micros) \
+         VALUES (X'{npm_id}', 'npm', 'Not A Package', '1.0.0', 'w-1.0.0.tgz', \
+                 'https://npm.invalid/w/-/w-1.0.0.tgz', '', 1577836800000000), \
+                (X'{pypi_id}', 'pypi', 'Not_Normalized', '1.0.0', 'w-1.0.0.tar.gz', \
+                 'https://files.invalid/w-1.0.0.tar.gz', '', 1577836800000000)"
+    ))
+    .await;
+    let registry = FakeRegistry::new();
+    let server = TestServer::start_in_with_registry(
+        data_dir.path(),
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        Arc::clone(&registry),
+    )
+    .await;
+
+    for path in [
+        format!("/npm/artifacts/{npm_id}/w-1.0.0.tgz"),
+        format!("/pypi/artifacts/{pypi_id}/w-1.0.0.tar.gz"),
+    ] {
+        let response = server.get(&path).await;
+        assert_eq!(response.status().as_u16(), 404, "{path}");
+        assert_eq!(common::body_error(response).await, "NOT_FOUND", "{path}");
+    }
+    assert!(
+        registry.calls().is_empty(),
+        "nothing went upstream: {:?}",
+        registry.calls()
+    );
+    assert_eq!(
+        server.status("/health/ready").await,
+        200,
+        "and the store is fine"
+    );
+    server.shutdown().await;
+}
+
+/// SPEC §10: a schema row this build cannot read is a recovery failure, reported with
+/// the column it could not read, and the row is left exactly as it was rather than
+/// rewritten into a shape this build likes.
+#[tokio::test]
+async fn an_unreadable_engine_version_is_refused_and_left_untouched() {
+    let dir = tempfile::tempdir().expect("a data directory");
+    {
+        let opened = startup::open_and_recover(dir.path())
+            .await
+            .expect("the data directory opens");
+        opened
+            .connection
+            .expect("a fresh database recovers")
+            .execute(
+                "UPDATE schema_meta SET engine_version = X'00' WHERE id = 1",
+                (),
+            )
+            .await
+            .expect("the engine version is replaced by bytes");
+    }
+
+    let opened = startup::open_and_recover(dir.path())
+        .await
+        .expect("the data directory opens");
+    let refused = opened
+        .connection
+        .expect_err("the schema row cannot be read");
+    assert!(matches!(refused, RecoveryError::Schema(_)), "{refused:?}");
+    assert_eq!(refused.to_string(), "unreadable schema_meta.engine_version");
+    drop(opened.lock);
+
+    let database =
+        turso::Builder::new_local(database_path(dir.path()).to_str().expect("a UTF-8 path"))
+            .build()
+            .await
+            .expect("the database opens");
+    let mut rows = database
+        .connect()
+        .expect("a connection")
+        .query(
+            "SELECT typeof(engine_version) FROM schema_meta WHERE id = 1",
+            (),
+        )
+        .await
+        .expect("the schema row is queried");
+    let row = rows.next().await.expect("a row").expect("the schema row");
+    assert_eq!(
+        row.get_value(0)
+            .expect("a column")
+            .as_text()
+            .map(String::as_str),
+        Some("blob"),
+        "and the row is still the bytes it was"
+    );
 }

@@ -539,14 +539,8 @@ fn queue_budget(
         return Err(invalid(key, format!("has no effect without {sink_key}")));
     }
     let value = nonzero_u64(key, value)?;
-    if value.get() > delivery::MAX_QUEUE_MAX_BYTES {
-        return Err(invalid(
-            key,
-            format!("must not exceed {} bytes", delivery::MAX_QUEUE_MAX_BYTES),
-        ));
-    }
     match delivery::capacity_for(value.get()) {
-        Ok(_) => Ok(value),
+        Ok(_) if value.get() <= delivery::MAX_QUEUE_MAX_BYTES => Ok(value),
         Err(delivery::CapacityError::TooSmall) => Err(invalid(
             key,
             format!(
@@ -554,7 +548,10 @@ fn queue_budget(
                 delivery::BYTES_PER_RECORD
             ),
         )),
-        Err(delivery::CapacityError::TooLarge) => Err(invalid(
+        // Above the operator ceiling, or above what a channel can hold. The ceiling's
+        // quotient is far below the channel's limit on every target, so in practice
+        // it is always the ceiling that refuses; one arm says so for both.
+        Ok(_) | Err(delivery::CapacityError::TooLarge) => Err(invalid(
             key,
             format!("must not exceed {} bytes", delivery::MAX_QUEUE_MAX_BYTES),
         )),

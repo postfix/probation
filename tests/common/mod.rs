@@ -1093,7 +1093,7 @@ pub mod logs {
     /// Installs the capturing subscriber the first time it is called and hands back
     /// the shared buffer. Safe to call from every test in a binary.
     pub fn capture() -> Captured {
-        install(tracing::Level::ERROR)
+        install("error")
     }
 
     /// The same buffer, installed at `WARN`, for the exclusions SPEC §7 and §11 ask
@@ -1103,16 +1103,23 @@ pub mod logs {
     /// cargo gives every test file its own process, so a file that wants `WARN` gets
     /// it without widening what any other file captures.
     pub fn capture_warn() -> Captured {
-        install(tracing::Level::WARN)
+        install("warn")
     }
 
     /// The same buffer at `INFO`, which is where SPEC §11's per-request decision line
     /// and the periodic counter summary are written.
     pub fn capture_info() -> Captured {
-        install(tracing::Level::INFO)
+        install("info")
     }
 
-    fn install(level: tracing::Level) -> Captured {
+    /// The same buffer with this crate's `DEBUG` lines, where an authorized artifact
+    /// response is recorded. Every other crate stays at `INFO`, so the storage
+    /// engine's page-level tracing does not fill the buffer.
+    pub fn capture_debug() -> Captured {
+        install("info,probation=debug")
+    }
+
+    fn install(filter: &str) -> Captured {
         static CAPTURED: OnceLock<Captured> = OnceLock::new();
         CAPTURED
             .get_or_init(|| {
@@ -1123,7 +1130,7 @@ pub mod logs {
                     // name and its value, so an assertion about a structured field
                     // would be matching on terminal colours.
                     .with_ansi(false)
-                    .with_max_level(level)
+                    .with_env_filter(filter)
                     .finish();
                 // A second install would mean two test binaries in one process, which
                 // cargo does not do; ignoring the failure keeps the helper infallible.

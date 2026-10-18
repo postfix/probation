@@ -28,20 +28,20 @@ use url::Url;
 
 use crate::App;
 use crate::concurrency::Resolution;
-use crate::http::error::ApiError;
+use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::policy::{
     BlocklistSnapshot, Candidate, Decision, Digest, Ecosystem, HashAlgorithm, PublicationTime,
 };
 use crate::pypi::filename::{FileIdentity, UnsupportedFilename, file_identity};
 use crate::pypi::render::ListedFile;
+use crate::store;
 use crate::store::cache::{
     AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{
     ArtifactReference, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert,
 };
-use crate::store::{self, StoreError};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, UpstreamError};
 
 pub use name::{InvalidProjectName, ProjectName};
@@ -846,16 +846,6 @@ impl std::fmt::Display for UnusableFile {
             UnusableFile::UrlNotAUrl => f.write_str("`url` is not a URL"),
             UnusableFile::MalformedHash => f.write_str("an advertised hash does not decode"),
             UnusableFile::Identity(reason) => write!(f, "{reason}"),
-        }
-    }
-}
-
-fn storage_error(err: StoreError) -> ApiError {
-    tracing::warn!(error = %err, "a storage command failed; refusing the request");
-    match err {
-        StoreError::Busy => ApiError::Overloaded,
-        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
-            ApiError::StorageUnusable
         }
     }
 }

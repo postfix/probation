@@ -774,6 +774,63 @@ async fn with_reference_cap(cap: u32, document: &str) -> Harness {
     }
 }
 
+/// TM-1 holds for a document already stored, too. A cap lowered between runs is
+/// applied when the stored copy is read back — on the metadata route and on an
+/// artifact request's membership check alike — and nothing is fetched again to get
+/// around it.
+#[tokio::test]
+async fn a_stored_project_over_a_lowered_reference_cap_is_502() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let data_dir = dir.path().join("data");
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(SWARM),
+        FakeAnswer::Body(fixture("npm/oversized-reference-count.json")),
+    );
+    let clock = TestClock::at_rfc3339(NOW);
+    let mut config = config_with_open_blocklist(dir.path());
+    config.max_references_per_project = std::num::NonZeroU32::new(64).expect("a non-zero cap");
+
+    let server = TestServer::start_in_with_registry(
+        &data_dir,
+        config.clone(),
+        clock.shared(),
+        Arc::clone(&registry),
+    )
+    .await;
+    let listed = server.json(&format!("/npm/{SWARM}")).await;
+    let version = listed["versions"]
+        .as_object()
+        .and_then(|versions| versions.keys().next().cloned())
+        .expect("the admitted document lists a version");
+    let artifact = common::artifact_path(&listed, &version);
+    server.shutdown().await;
+
+    config.max_references_per_project = std::num::NonZeroU32::new(24).expect("a non-zero cap");
+    let server = TestServer::start_in_with_registry(
+        &data_dir,
+        config,
+        clock.shared(),
+        Arc::clone(&registry),
+    )
+    .await;
+    for path in [format!("/npm/{SWARM}"), artifact] {
+        let response = server.get(&path).await;
+        assert_eq!(response.status().as_u16(), 502, "{path}");
+        assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+    }
+    assert_eq!(
+        registry
+            .calls()
+            .iter()
+            .filter(|url| url.path() == npm_upstream_path(SWARM))
+            .count(),
+        1,
+        "the stored copy was refused, not refetched"
+    );
+    server.shutdown().await;
+}
+
 /// Gate 3 dependency note 5: `serde_json`'s default recursion limit, which this
 /// crate never lifts, is what makes this a `502` rather than a stack overflow.
 #[tokio::test]
@@ -943,6 +1000,55 @@ async fn a_release_appears_when_its_hold_expires_without_a_refetch() {
         after["dist-tags"]["latest"],
         Value::from("2.0.0"),
         "and latest follows it up"
+    );
+
+    harness.shutdown().await;
+}
+
+/// With two versions held, it is the *earlier* release that bounds the rendered
+/// deadline. Both release inside the five-minute metadata TTL here, so nothing but
+/// that deadline can make the first one appear: no refetch is due.
+#[tokio::test]
+async fn the_earliest_of_several_holds_bounds_the_rendered_deadline() {
+    let document = r#"{
+        "name": "fixture-staggered",
+        "dist-tags": {"latest": "1.0.0"},
+        "versions": {
+            "1.0.0": {"name": "fixture-staggered", "version": "1.0.0",
+                      "dist": {"tarball": "https://npm.invalid/s/-/s-1.0.0.tgz"}},
+            "1.1.0": {"name": "fixture-staggered", "version": "1.1.0",
+                      "dist": {"tarball": "https://npm.invalid/s/-/s-1.1.0.tgz"}},
+            "1.2.0": {"name": "fixture-staggered", "version": "1.2.0",
+                      "dist": {"tarball": "https://npm.invalid/s/-/s-1.2.0.tgz"}}
+        },
+        "time": {
+            "1.0.0": "2026-04-01T00:00:00.000Z",
+            "1.1.0": "2026-04-05T12:01:00.000Z",
+            "1.2.0": "2026-04-05T12:03:00.000Z"
+        }
+    }"#;
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[("fixture-staggered", FakeAnswer::Body(document.to_owned()))],
+    )
+    .await;
+
+    let before = harness.server.json("/npm/fixture-staggered").await;
+    assert!(before["versions"].get("1.1.0").is_none());
+
+    // 12:01:30: 1.1.0 has served its day, 1.2.0 has not.
+    harness.clock.advance_seconds(90);
+    let after = harness.server.json("/npm/fixture-staggered").await;
+    assert!(
+        after["versions"].get("1.1.0").is_some(),
+        "the earlier release appears at its own time: {after}"
+    );
+    assert!(after["versions"].get("1.2.0").is_none());
+    assert_eq!(
+        harness.metadata_calls("fixture-staggered"),
+        1,
+        "and it was the deadline, not a refetch"
     );
 
     harness.shutdown().await;
