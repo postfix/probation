@@ -56,7 +56,9 @@ test-support = []
 [dependencies]
 arc-swap = "1.9.2"
 async-trait = "0.1.92"
-axum = "0.8.9"
+# Every default except `tower-log`: that one routes tracing events to the `log` crate
+# when no tracing subscriber is set, and this binary always sets one.
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
 # Lets `serve` terminate TLS itself when `tls_cert_path`/`tls_key_path` are set,
 # instead of requiring an external reverse proxy for that one job.
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
