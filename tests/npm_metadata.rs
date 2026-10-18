@@ -720,7 +720,7 @@ async fn a_held_version_is_403_with_eligible_at_and_retry_after() {
 /// single storage task and delay every other operation, including a blocklist commit.
 #[tokio::test]
 async fn project_exceeding_reference_cap_is_502_and_logged() {
-    let captured = logs::capture();
+    let captured = logs::capture_warn();
     let document = fixture("npm/oversized-reference-count.json");
 
     let refused = with_reference_cap(24, &document).await;
@@ -2626,5 +2626,356 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
 
     // The storage task stops when the last handle to it goes; this test is holding one.
     drop(app);
+    harness.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Unusable input, refused or excluded, and logged with its reason
+// ---------------------------------------------------------------------------
+
+const UNUSABLE: &str = "fixture-unusable";
+
+/// One version record whose tarball sits on the fake npm origin.
+fn usable_record(name: &str, version: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "version": version,
+        "dist": {"tarball": format!("https://npm.invalid/{name}/-/{name}-{version}.tgz")},
+    })
+}
+
+/// SPEC §11: "Log exclusions that cannot be represented in an ecosystem listing."
+/// A version whose artifact cannot be named is excluded and its reason logged; one
+/// whose `time` is not a string is malformed and denied; one with no `time` at all
+/// waits from its committed first-seen time; a tag that is not a version string is
+/// dropped.
+#[tokio::test]
+async fn unusable_versions_are_excluded_and_logged_with_their_reason() {
+    let captured = logs::capture_warn();
+    let tarball = |file: &str| format!("https://npm.invalid/{UNUSABLE}/-/{file}");
+    let document = serde_json::json!({
+        "name": UNUSABLE,
+        "dist-tags": {"latest": "1.0.0", "weird": 5},
+        "versions": {
+            "1.0.0": usable_record(UNUSABLE, "1.0.0"),
+            "1.0.1": {"version": "1.0.1"},
+            "1.0.2": {"version": "1.0.2", "dist": {}},
+            "1.0.3": {"version": "1.0.3", "dist": {"tarball": "not a url"}},
+            "1.0.4": {"version": "1.0.4", "dist": {"tarball": "https://npm.invalid/"}},
+            "1.0.5": {"version": "1.0.5",
+                      "dist": {"tarball": tarball("x-1.0.5.tgz"), "integrity": "sha512-!!!"}},
+            "1.0.6": usable_record(UNUSABLE, "1.0.6"),
+            "1.0.7": usable_record(UNUSABLE, "1.0.7"),
+        },
+        "time": {
+            "1.0.0": "2020-01-01T00:00:00Z",
+            "1.0.1": "2020-01-01T00:00:00Z",
+            "1.0.6": 5,
+        },
+    });
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[(UNUSABLE, FakeAnswer::Body(document.to_string()))],
+    )
+    .await;
+
+    let listed = harness.server.json(&format!("/npm/{UNUSABLE}")).await;
+    let versions: Vec<&String> = listed["versions"]
+        .as_object()
+        .expect("versions")
+        .keys()
+        .collect();
+    assert_eq!(versions, vec!["1.0.0"], "{listed}");
+    assert_eq!(listed["dist-tags"], serde_json::json!({"latest": "1.0.0"}));
+
+    for reason in [
+        "no `dist` object",
+        "no `dist.tarball`",
+        "`dist.tarball` is not a URL",
+        "`dist.tarball` carries no filename",
+        "the advertised integrity does not decode",
+    ] {
+        assert!(
+            captured.lines_containing_all(&[UNUSABLE, reason]) > 0,
+            "the exclusion is logged with its reason: {reason}"
+        );
+    }
+
+    let malformed = harness.server.get(&format!("/npm/{UNUSABLE}/1.0.6")).await;
+    assert_eq!(malformed.status().as_u16(), 403);
+    assert!(
+        malformed
+            .text()
+            .await
+            .expect("a body")
+            .contains("the upstream publication time is malformed")
+    );
+    let undated = harness.server.get(&format!("/npm/{UNUSABLE}/1.0.7")).await;
+    assert_eq!(undated.status().as_u16(), 403);
+    assert_eq!(common::body_error(undated).await, "HELD");
+
+    harness.shutdown().await;
+}
+
+/// A document whose shape is wrong is a `502`, and the refusal says what was wrong.
+#[tokio::test]
+async fn an_unusable_document_is_502_and_logged_with_its_reason() {
+    let captured = logs::capture_warn();
+    let cases = [
+        (
+            "fixture-array",
+            "[]".to_owned(),
+            "the document is not a JSON object",
+        ),
+        (
+            "fixture-nameless",
+            r#"{"versions": {}}"#.to_owned(),
+            "the document carries no `name`",
+        ),
+        (
+            "fixture-version-list",
+            r#"{"name": "fixture-version-list", "versions": []}"#.to_owned(),
+            "`versions` is not a JSON object",
+        ),
+    ];
+    let answers: Vec<(&str, FakeAnswer)> = cases
+        .iter()
+        .map(|(name, body, _)| (*name, FakeAnswer::Body(body.clone())))
+        .collect();
+    let harness = harness(NOW, ONE_DAY, &answers).await;
+
+    for (name, _, reason) in cases {
+        let response = harness.server.get(&format!("/npm/{name}")).await;
+        assert_eq!(response.status().as_u16(), 502, "{name}");
+        assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+        assert_eq!(
+            captured.lines_containing_all(&[name, reason]),
+            1,
+            "{name}: the refusal is logged with its reason"
+        );
+    }
+
+    harness.shutdown().await;
+}
+
+/// A project upstream has, none of whose versions can be named, has nothing to serve
+/// and nothing to wait for: `404`, not a hold and not an empty document.
+#[tokio::test]
+async fn a_project_with_no_nameable_version_is_404() {
+    const NAMELESS: &str = "fixture-unnameable";
+    let document = serde_json::json!({
+        "name": NAMELESS,
+        "versions": {"1.0.0": {"version": "1.0.0"}},
+    });
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[(NAMELESS, FakeAnswer::Body(document.to_string()))],
+    )
+    .await;
+
+    assert_eq!(
+        harness.server.status(&format!("/npm/{NAMELESS}")).await,
+        404
+    );
+
+    harness.shutdown().await;
+}
+
+/// The refusal names the rule that denied: a whole-package block and a block on a
+/// digest the version advertises each give their own reason.
+#[tokio::test]
+async fn a_package_or_digest_block_is_403_naming_its_rule() {
+    const WHOLE: &str = "fixture-whole-block";
+    const HASHED: &str = "fixture-hash-block";
+    // The hex form of the `sha512-` integrity `HASHED` advertises.
+    const HASHED_SHA512: &str = "865fc1cb0b61011f5b073b804bf24e2a808408ef5f81a1e5d9b71ed82e37aace\
+                                 2bf3db5bc94f6132fd36aa705fe159f9d7ddfe3539b0092b7544196b8a1539e1";
+    let document = |name: &str, integrity: Option<&str>| {
+        let mut record = usable_record(name, "1.0.0");
+        if let Some(integrity) = integrity {
+            record["dist"]["integrity"] = Value::from(integrity);
+        }
+        serde_json::json!({
+            "name": name,
+            "versions": {"1.0.0": record},
+            "time": {"1.0.0": "2020-01-01T00:00:00Z"},
+        })
+        .to_string()
+    };
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[
+            (WHOLE, FakeAnswer::Body(document(WHOLE, None))),
+            (
+                HASHED,
+                FakeAnswer::Body(document(HASHED, Some(RACE_OTHER_SRI))),
+            ),
+        ],
+    )
+    .await;
+    publish_blocklist(
+        &harness.server,
+        &common::snapshot_with(
+            2,
+            "2020-01-01T00:00:00Z",
+            "2099-01-01T00:00:00Z",
+            &format!(r#"{{"ecosystem":"npm","name":"{WHOLE}","version":null,"reason":"malware"}}"#),
+            &format!(r#"{{"algorithm":"sha512","digest":"{HASHED_SHA512}","reason":"malware"}}"#),
+        ),
+        server_now(&harness),
+    );
+
+    for (name, reason) in [
+        (WHOLE, "the package is blocked"),
+        (HASHED, "the artifact digest is blocked"),
+    ] {
+        let response = harness.server.get(&format!("/npm/{name}")).await;
+        assert_eq!(response.status().as_u16(), 403, "{name}");
+        let body: Value =
+            serde_json::from_str(&response.text().await.expect("a body")).expect("JSON");
+        assert_eq!(body["reason"], reason, "{name}: {body}");
+    }
+
+    harness.shutdown().await;
+}
+
+/// SPEC §9: a blocklist that was valid when loaded but has since expired judges
+/// nothing; the request is refused before any project is read.
+#[tokio::test]
+async fn an_expired_blocklist_is_503() {
+    let harness = widget().await;
+    harness.clock.set_rfc3339("2100-01-01T00:00:00Z");
+
+    let response = harness.server.get(&format!("/npm/{WIDGET}")).await;
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(common::body_error(response).await, "POLICY_UNAVAILABLE");
+    assert_eq!(harness.metadata_calls(WIDGET), 0, "nothing was fetched");
+
+    harness.shutdown().await;
+}
+
+/// A stored snapshot still inside its TTL that no longer parses is refused rather
+/// than served or guessed at.
+#[tokio::test]
+async fn a_fresh_stored_payload_that_does_not_parse_is_502() {
+    const ROTTEN: &str = "fixture-rotten";
+    let harness = harness(NOW, ONE_DAY, &[]).await;
+    let now = server_now(&harness);
+    harness
+        .server
+        .running()
+        .app()
+        .store()
+        .commit_project_refresh(ProjectRefresh {
+            ecosystem: Ecosystem::Npm,
+            name: ROTTEN.to_owned(),
+            payload: Arc::from(&b"{\"versions\": this is not a package document"[..]),
+            validators: UpstreamValidators::default(),
+            validated_at_micros: now,
+            fetched_at_micros: now,
+            references: Vec::new(),
+        })
+        .await
+        .expect("the corrupt snapshot is persisted");
+
+    let response = harness.server.get(&format!("/npm/{ROTTEN}")).await;
+    assert_eq!(response.status().as_u16(), 502);
+    assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+    assert_eq!(
+        harness.metadata_calls(ROTTEN),
+        0,
+        "a fresh snapshot is not refetched"
+    );
+
+    harness.shutdown().await;
+}
+
+/// A `304` that repeats no validators leaves the stored ones in place, so the next
+/// revalidation is still conditional on what upstream first sent.
+#[tokio::test]
+async fn a_304_without_validators_keeps_the_stored_ones() {
+    const QUIET: &str = "fixture-quiet";
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[(
+            QUIET,
+            FakeAnswer::Validated {
+                etag: ETAG.to_owned(),
+                body: validated_document().replace(VALIDATED, QUIET),
+            },
+        )],
+    )
+    .await;
+    let path = format!("/npm/{QUIET}");
+    let upstream = npm_upstream_path(QUIET);
+    let first = harness.server.json(&path).await;
+
+    harness.registry.answer(
+        &upstream,
+        FakeAnswer::AlwaysNotModified {
+            etag: None,
+            last_modified: None,
+        },
+    );
+    harness.clock.advance_seconds(metadata_ttl() + 1);
+    assert_eq!(harness.server.json(&path).await, first);
+    harness.clock.advance_seconds(metadata_ttl() + 1);
+    harness.server.json(&path).await;
+
+    let conditional = harness.registry.conditional_calls(&upstream);
+    assert_eq!(conditional.len(), 2);
+    assert_eq!(
+        conditional[1].etag.as_deref(),
+        Some(ETAG),
+        "the stored etag is still what the next revalidation sends"
+    );
+
+    harness.shutdown().await;
+}
+
+/// A route component npm could never have published is a `400`, and the refusal is
+/// logged (at `DEBUG`) with what was wrong with it.
+///
+/// The server runs on this test's single-threaded runtime, so a subscriber installed
+/// for this thread sees its log lines without widening the binary-wide capture.
+#[tokio::test]
+async fn an_invalid_package_name_is_400_and_logged_with_why() {
+    let captured = logs::Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let harness = harness(NOW, ONE_DAY, &[]).await;
+
+    let too_long = "a".repeat(215);
+    for (route, reason) in [
+        ("%40scope%2F", "a package name cannot be empty"),
+        (
+            too_long.as_str(),
+            "a package name is at most 214 characters, this is 215",
+        ),
+        ("%20padded", "cannot begin or end with whitespace"),
+        ("%40scope", "a scoped name is `@scope/name`"),
+        ("a%40b", "holds at most one `/`"),
+        ("_hidden", "cannot begin with `.` or `_`"),
+        ("tilde~", "`~` cannot appear in a package name"),
+    ] {
+        let response = harness.server.get(&format!("/npm/{route}")).await;
+        assert_eq!(response.status().as_u16(), 400, "{route}");
+        assert_eq!(common::body_error(response).await, "INVALID_INPUT");
+        assert_eq!(
+            captured.lines_containing_all(&["refused a package name", reason]),
+            1,
+            "{route}: {}",
+            captured.text()
+        );
+    }
+
     harness.shutdown().await;
 }

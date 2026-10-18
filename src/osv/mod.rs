@@ -134,7 +134,7 @@ impl OsvCache {
 pub struct OsvClient {
     tx: mpsc::Sender<OsvRequest>,
     cache: Arc<OsvCache>,
-    /// The bound `resolve` holds a waiting `check` call to (C12c/C14):
+    /// The bound a waiting `check` call is held to (C12c/C14):
     /// `OSV_BATCH_INTERVAL` plus the figure the batcher wraps its own outbound call
     /// in, so a waiter outlasts the flush it is in unless the batcher is still busy
     /// with an earlier one.
@@ -200,7 +200,7 @@ impl OsvClient {
     /// miss that cannot be resolved, a full or timed-out enqueue (C12a), a batch
     /// failure or length mismatch (C12b/C14), an outbound timeout (C12c) — answers
     /// `false` instead. The batcher caches whatever answer a flush produced (see
-    /// [`OsvCache::put`] for the TTLs); this caches only a lookup that never reached
+    /// `OsvCache::put` for the TTLs); this caches only a lookup that never reached
     /// it.
     pub async fn check(&self, ecosystem: Ecosystem, name: &str, version: &str) -> bool {
         let key = (ecosystem, name.to_owned(), version.to_owned());
@@ -342,24 +342,11 @@ mod tests {
         );
     }
 
-    /// A local server that binds and never answers — mirrors `siem.rs`'s rl7 test.
-    async fn hung_server() -> (Url, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let hold = tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                held.push(stream);
-            }
-        });
-        (url, hold)
-    }
-
-    /// A solitary lookup against a collector that never answers fails open within
-    /// one batch interval plus `request_timeout` (C12c/C14).
+    /// A solitary lookup against a collector that would match but answers too late
+    /// fails open within one batch interval plus `request_timeout` (C12c/C14).
     #[tokio::test]
     async fn check_fails_open_on_batcher_timeout() {
-        let (url, hold) = hung_server().await;
+        let (url, _server, _count) = osv_server(200, true, StdDuration::from_secs(60)).await;
         let request_timeout = StdDuration::from_millis(50);
         let (client, handle, shutdown) = spawn(
             url,
@@ -379,7 +366,6 @@ mod tests {
 
         shutdown.cancel();
         let _ = handle.await;
-        hold.abort();
     }
 
     #[tokio::test]
@@ -393,9 +379,10 @@ mod tests {
             shutdown.clone(),
         );
         assert!(!handle.is_finished(), "the batcher is running");
+        // Without a shutdown signal: dropping the last client is enough to end it.
         drop(client);
-        shutdown.cancel();
         handle.await.expect("the one spawned batcher task joins");
+        drop(shutdown);
     }
 
     // ---------------------------------------------------------------------------
@@ -406,7 +393,7 @@ mod tests {
     /// A `wiremock` server answering every `POST /v1/querybatch` with `status` and,
     /// for a `200`, a fixed matched/unmatched verdict for every query in the batch,
     /// after `delay`. Counts how many requests it received.
-    async fn osv_server(
+    pub(super) async fn osv_server(
         status: u16,
         matched: bool,
         delay: StdDuration,
@@ -697,25 +684,6 @@ mod tests {
     // a client that still answers, and a shutdown that completes.
     // ---------------------------------------------------------------------------
 
-    struct NoopTransport;
-
-    #[async_trait::async_trait]
-    impl crate::upstream::Transport for NoopTransport {
-        async fn fetch_metadata(
-            &self,
-            _req: crate::upstream::MetadataRequest,
-        ) -> Result<crate::upstream::MetadataResponse, crate::upstream::UpstreamError> {
-            Err(crate::upstream::UpstreamError::Status(404))
-        }
-
-        async fn open_artifact(
-            &self,
-            _req: crate::upstream::ArtifactRequest,
-        ) -> Result<crate::upstream::ArtifactBody, crate::upstream::UpstreamError> {
-            Err(crate::upstream::UpstreamError::Status(404))
-        }
-    }
-
     /// The minimum `Config` `App::start` needs to run at all, in a fresh temporary
     /// data directory. Written by hand against `Config::from_toml_str` rather than
     /// borrowed from `tests/common` (a different compilation unit this module
@@ -750,11 +718,12 @@ mod tests {
         crate::App::start(crate::AppDeps {
             config: minimal_config(data_dir),
             clock: std::sync::Arc::new(crate::clock::SystemClock),
-            transport: std::sync::Arc::new(NoopTransport),
+            // These tests make no request, so the production transport never dials.
+            transport: std::sync::Arc::new(crate::upstream::ReqwestTransport::production()),
             // `OriginSet::for_tests` is deliberately not used here:
             // `no_config_key_or_env_var_relaxes_origins` asserts it is named only in
-            // its own defining file. `NoopTransport` never dials out, so the real
-            // production origins are exactly as inert here as a fake set would be.
+            // its own defining file. Nothing dials out, so the real production
+            // origins are exactly as inert here as a fake set would be.
             origins: crate::upstream::OriginSet::production(),
             osv_client: unreachable_client(),
             osv_base_url: None,

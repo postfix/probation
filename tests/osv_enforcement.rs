@@ -162,3 +162,76 @@ async fn an_exact_version_osv_flags_is_403_blocked_with_the_osv_reason() {
 
     server.shutdown().await;
 }
+
+/// A cold project bigger than one OSV batch is still judged within one round trip:
+/// its batches are in flight together, so none of them waits behind another past
+/// the shipped `osv_request_timeout_ms` and fails open.
+#[tokio::test]
+async fn a_project_spanning_several_osv_batches_is_judged_in_one_round_trip() {
+    let versions: Vec<String> = (0..600).map(|patch| format!("1.0.{patch}")).collect();
+    let flagged: Vec<(&str, &str)> = versions
+        .iter()
+        .step_by(2)
+        .map(|version| (PACKAGE, version.as_str()))
+        .collect();
+    let (osv_url, osv) =
+        common::osv_flagging_after(&flagged, std::time::Duration::from_millis(250)).await;
+    let (server, _dir) = server(npm_document(&versions), osv_url).await;
+
+    let document = server.json(&format!("/npm/{PACKAGE}")).await;
+    let named = named_versions(&document);
+    for (_, version) in &flagged {
+        assert!(
+            !named.contains(&(*version).to_owned()),
+            "flagged {version} rendered"
+        );
+    }
+    assert_eq!(document["versions"].as_object().map(|v| v.len()), Some(300));
+    assert_eq!(osv.received_requests().await.expect("recorded").len(), 3);
+
+    server.shutdown().await;
+}
+
+/// An OSV answer that cannot be trusted — too few results, or not JSON — fails the
+/// whole batch open (C12b/C14): every version is still served, and the failure is
+/// logged.
+#[tokio::test]
+async fn an_unusable_osv_answer_fails_open_and_is_logged() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let captured = common::logs::capture_warn();
+    let cases = [
+        (
+            ResponseTemplate::new(200).set_body_json(json!({"results": []})),
+            "OSV answered a different number of results than queries",
+        ),
+        (
+            ResponseTemplate::new(200).set_body_string("not json"),
+            "the response could not be decoded",
+        ),
+    ];
+    for (answer, logged) in cases {
+        let osv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/querybatch"))
+            .respond_with(answer)
+            .mount(&osv)
+            .await;
+        let osv_url = url::Url::parse(&format!("{}/v1/querybatch", osv.uri())).expect("a URL");
+        let versions = ["1.0.0".to_owned(), "1.0.1".to_owned()];
+        let (server, _dir) = server(npm_document(&versions), osv_url).await;
+
+        let document = server.json(&format!("/npm/{PACKAGE}")).await;
+        for version in &versions {
+            assert!(document["versions"].get(version).is_some(), "{document}");
+        }
+        assert!(
+            captured.lines_mentioning(logged) >= 1,
+            "{}",
+            captured.text()
+        );
+
+        server.shutdown().await;
+    }
+}

@@ -1513,6 +1513,14 @@ pub async fn drive_rated_load(
 /// hand `TestServer::start_with_upstream_and_osv`, and the server, whose
 /// `received_requests` is how a test counts OSV round trips.
 pub async fn osv_flagging(flagged: &[(&str, &str)]) -> (Url, wiremock::MockServer) {
+    osv_flagging_after(flagged, Duration::ZERO).await
+}
+
+/// [`osv_flagging`], answering each batch only after `delay`.
+pub async fn osv_flagging_after(
+    flagged: &[(&str, &str)],
+    delay: Duration,
+) -> (Url, wiremock::MockServer) {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1542,7 +1550,9 @@ pub async fn osv_flagging(flagged: &[(&str, &str)]) -> (Url, wiremock::MockServe
                     }
                 })
                 .collect();
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": results}))
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"results": results}))
+                .set_delay(delay)
         })
         .mount(&server)
         .await;
