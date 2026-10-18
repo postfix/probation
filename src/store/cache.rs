@@ -412,8 +412,7 @@ impl<K: Hash + Eq + Clone, V> Shard<K, V> {
             if self.hand >= self.ring.len() {
                 self.hand = 0;
             }
-            let key = self.ring[self.hand].clone();
-            let Some(entry) = self.entries.get(&key) else {
+            let Some(entry) = self.entries.get(&self.ring[self.hand]) else {
                 // Not reachable while ring and entries are kept in step; dropping the
                 // stale key is still the right repair.
                 self.ring.remove(self.hand);
@@ -423,7 +422,12 @@ impl<K: Hash + Eq + Clone, V> Shard<K, V> {
                 self.hand += 1;
                 continue;
             }
-            self.remove(&key);
+            // The victim's position is the hand, so it is removed there rather than
+            // searched for again; the hand then points at the entry after it.
+            let key = self.ring.remove(self.hand);
+            if let Some(entry) = self.entries.remove(&key) {
+                self.used_bytes -= entry.bytes;
+            }
             return true;
         }
         false

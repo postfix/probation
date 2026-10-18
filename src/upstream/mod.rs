@@ -15,10 +15,12 @@ pub mod resolver;
 use std::fmt;
 use std::net::IpAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures_util::{Stream, StreamExt};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 pub use origins::{OriginKind, OriginSet, UrlRejection};
@@ -89,10 +91,21 @@ pub enum UpstreamError {
     Timeout,
     Transport(String),
     Status(u16),
-    TooLarge { limit: u64 },
+    TooLarge {
+        limit: u64,
+    },
     RejectedUrl(UrlRejection),
-    RejectedRedirect { to: Url },
-    RejectedAddress { addr: IpAddr },
+    RejectedRedirect {
+        to: Url,
+    },
+    /// The chain was still on the admitted origin when it reached the hop limit;
+    /// `to` is the hop that was not followed.
+    RedirectLimit {
+        to: Url,
+    },
+    RejectedAddress {
+        addr: IpAddr,
+    },
 }
 
 impl fmt::Display for UpstreamError {
@@ -110,6 +123,9 @@ impl fmt::Display for UpstreamError {
             UpstreamError::RejectedRedirect { to } => {
                 write!(f, "refused to follow a redirect to {to}")
             }
+            UpstreamError::RedirectLimit { to } => {
+                write!(f, "stopped at the redirect limit before following {to}")
+            }
             UpstreamError::RejectedAddress { addr } => {
                 write!(f, "refused to connect to {addr}")
             }
@@ -118,6 +134,58 @@ impl fmt::Display for UpstreamError {
 }
 
 impl std::error::Error for UpstreamError {}
+
+/// SPEC §4's `max_upstream_requests`: at most this many calls open to upstream at
+/// once, across every registry and both kinds of call. A call beyond it waits for a
+/// slot rather than being refused — the requests waiting are already bounded by
+/// `max_active_requests`, and refusing would turn a burst of cold requests into
+/// errors that one more second would have answered.
+///
+/// An artifact call keeps its slot until its body is dropped, because that is how
+/// long it holds a connection to upstream.
+pub struct Limited {
+    inner: Arc<dyn Transport>,
+    slots: Arc<Semaphore>,
+}
+
+impl Limited {
+    pub fn wrap(inner: Arc<dyn Transport>, max_upstream_requests: usize) -> Arc<dyn Transport> {
+        Arc::new(Limited {
+            inner,
+            slots: Arc::new(Semaphore::new(max_upstream_requests)),
+        })
+    }
+
+    async fn slot(&self) -> OwnedSemaphorePermit {
+        Arc::clone(&self.slots)
+            .acquire_owned()
+            .await
+            .expect("the upstream limiter is never closed")
+    }
+}
+
+#[async_trait]
+impl Transport for Limited {
+    async fn fetch_metadata(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<MetadataResponse, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.fetch_metadata(req).await
+    }
+
+    async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
+        let slot = self.slot().await;
+        let body = self.inner.open_artifact(req).await?;
+        Ok(ArtifactBody {
+            declared_length: body.declared_length,
+            stream: Box::pin(body.stream.map(move |chunk| {
+                let _held = &slot;
+                chunk
+            })),
+        })
+    }
+}
 
 /// Wraps `stream` so it fails the moment the running total passes `max_bytes`.
 ///

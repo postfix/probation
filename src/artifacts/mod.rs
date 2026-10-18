@@ -43,7 +43,7 @@ use std::sync::Arc;
 use axum::http::Method;
 
 use crate::App;
-use crate::artifacts::content::PinnedFile;
+use crate::artifacts::content::{ContentError, PinnedFile};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
 use crate::http::error::ApiError;
 use crate::http::logging;
@@ -105,10 +105,6 @@ pub async fn serve_artifact(
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
     ensure_membership(app, &row).await?;
-    match evaluate(app, &snapshot, now, &row, &pinned).await {
-        Decision::Allow => {}
-        other => return Err(decision_error(other, now)),
-    }
 
     let (file, pinned, downloaded) = open_or_download(app, &row, pinned).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
@@ -220,7 +216,11 @@ async fn evaluate(
 /// committed is a `404` rather than something to go and find out about.
 async fn load_reference(app: &App, id: ReferenceId) -> Result<ReferenceRow, ApiError> {
     let caches = app.store().caches();
-    if let Some(row) = caches.references.get(&id) {
+    // The invalidation count is read with the miss, before the query: a download
+    // that drops this entry while the query runs has changed the row this request
+    // is about to read, and the guarded insert below then refuses to put it back.
+    let (seen, cached) = caches.references.get_with_seen(&id);
+    if let Some(row) = cached {
         return Ok((*row).clone());
     }
 
@@ -232,7 +232,7 @@ async fn load_reference(app: &App, id: ReferenceId) -> Result<ReferenceRow, ApiE
         .ok_or(ApiError::NotFound)?;
     caches
         .references
-        .insert(id, Arc::new(row.clone()), approximate_bytes(&row));
+        .insert_if_current(id, Arc::new(row.clone()), approximate_bytes(&row), seen);
     Ok(row)
 }
 
@@ -263,6 +263,12 @@ async fn open_or_download(
                     error = %err,
                     "the cached file is unusable; dropping the mapping and refetching"
                 );
+                // A wrong-sized file is not this key's content. It goes before its
+                // mapping, as an evicted one does, so nothing on disk answers to the
+                // key once the mapping is gone.
+                if matches!(err, ContentError::SizeMismatch { .. }) {
+                    app.content.evict(&key).await;
+                }
                 if let Err(err) = app.store().clear_content_key(key).await {
                     tracing::warn!(error = %err, "the stale content mapping could not be cleared");
                 }

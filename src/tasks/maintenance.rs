@@ -38,6 +38,7 @@ pub async fn run(app: Arc<App>, shutdown: CancellationToken) {
 /// One complete pass. Public because it is also how a test runs maintenance at an
 /// instant of its choosing rather than waiting out [`INTERVAL`].
 pub async fn run_once(app: &App) {
+    probe_storage(app).await;
     write_access_times(app).await;
     evict_to_budget(app, app.config.cache_max_bytes.get()).await;
 
@@ -46,6 +47,23 @@ pub async fn run_once(app: &App) {
     if let Err(err) = app.store().checkpoint().await {
         tracing::debug!(error = %err, "the write-ahead log checkpoint did not run this pass");
     }
+}
+
+/// SPEC §10: readiness is false "until storage is usable again". A storage that
+/// refused a write is retried here, once per pass, so it recovers without waiting
+/// for a request — which an instance out of rotation would never receive.
+async fn probe_storage(app: &App) {
+    if app.store().is_healthy() {
+        return;
+    }
+    if let Err(err) = app.store().probe().await {
+        tracing::warn!(error = %err, "the database still refuses writes");
+    }
+    let content = app.content.probe().await;
+    if let Err(err) = &content {
+        tracing::warn!(error = %err, "the content directory still refuses writes");
+    }
+    app.store().note_content_write(content.is_ok());
 }
 
 /// SPEC §10: "access updates batched off the request path". One write per distinct
@@ -99,7 +117,7 @@ pub async fn evict_to_budget(app: &App, budget: u64) {
             held += 1;
             continue;
         }
-        if let Err(err) = app.store().clear_content_key(key).await {
+        if let Err(err) = app.store().clear_evicted_content(key).await {
             tracing::warn!(
                 content = %key,
                 error = %err,

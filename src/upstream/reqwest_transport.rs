@@ -109,7 +109,12 @@ fn base_builder(origins: &OriginSet) -> ClientBuilder {
 fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
     redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > MAX_REDIRECT_HOPS {
-            return attempt.stop();
+            // An error rather than `stop`, so it reaches the caller as itself: a
+            // `stop` here would look exactly like a refused cross-origin hop.
+            let limit = UpstreamError::RedirectLimit {
+                to: attempt.url().clone(),
+            };
+            return attempt.error(limit);
         }
         let Some(previous) = attempt.previous().last() else {
             return attempt.stop();

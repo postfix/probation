@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncWriteExt;
+use sha2::{Digest as _, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The verified SHA-256 of the bytes. A content key, never a reference id: two
 /// references that turn out to hold the same bytes share one file.
@@ -219,6 +220,23 @@ impl ContentStore {
         removed
     }
 
+    /// One write into each directory a publication writes to, removed again at once.
+    /// The maintenance pass uses it to find out whether a content directory that
+    /// refused a write takes one again, without waiting for a request to try.
+    pub async fn probe(&self) -> Result<(), ContentError> {
+        let temp = self.create_temp(0).await?;
+        drop(temp);
+        let probe = self.root.join(OBJECTS_DIR).join(".probe");
+        tokio::fs::write(&probe, b"")
+            .await
+            .map_err(|source| ContentError::Write {
+                path: probe.clone(),
+                source,
+            })?;
+        let _ = tokio::fs::remove_file(&probe).await;
+        Ok(())
+    }
+
     pub fn temp_dir(&self) -> PathBuf {
         self.root.join(TEMP_DIR)
     }
@@ -269,7 +287,7 @@ impl ContentStore {
                 source,
             })?;
         Ok(TempDownload {
-            path: Some(path),
+            path,
             file: Some(file),
             _reservation: reservation,
         })
@@ -284,7 +302,11 @@ impl ContentStore {
         key: &ContentKey,
     ) -> Result<Published, ContentError> {
         let mut steps = Vec::with_capacity(4);
-        let (path, mut file) = temp.take();
+        // Only the file is taken. The path stays with `temp`, whose `Drop` removes it
+        // on every way out of here: after a rename there is nothing left to remove,
+        // and after a failure at any step the half-published download goes with it.
+        let mut file = temp.take_file();
+        let path = temp.path().to_path_buf();
 
         file.flush().await.map_err(|source| ContentError::Write {
             path: path.clone(),
@@ -301,6 +323,14 @@ impl ContentStore {
                 source,
             })?;
         steps.push(SyncStep::SyncFile);
+        let size = file
+            .metadata()
+            .await
+            .map_err(|source| ContentError::Write {
+                path: path.clone(),
+                source,
+            })?
+            .len();
         drop(file);
 
         let destination = self.path_for(key);
@@ -315,35 +345,32 @@ impl ContentStore {
                 source,
             })?;
 
-        // Another reference already published these exact bytes. Renaming over it
-        // would replace a file other responses may have open, and there is nothing
-        // to gain: the content is addressed by its own digest.
-        if tokio::fs::metadata(&destination).await.is_ok() {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Ok(Published {
-                steps,
-                reused: true,
-            });
+        // Another reference may already have published these exact bytes. Renaming
+        // over them would replace a file other responses may have open, for nothing:
+        // the content is addressed by its own digest. Anything else at the path — a
+        // truncated copy, a crash's leftovers, bytes planted under the right name —
+        // is not this key's content, so it is checked rather than trusted, and the
+        // rename below replaces it.
+        let reused = holds_content(&destination, size, key).await;
+        if !reused {
+            tokio::fs::rename(&path, &destination)
+                .await
+                .map_err(|source| ContentError::Write {
+                    path: destination.clone(),
+                    source,
+                })?;
+            steps.push(SyncStep::Rename);
         }
-
-        tokio::fs::rename(&path, &destination)
-            .await
-            .map_err(|source| ContentError::Write {
-                path: destination.clone(),
-                source,
-            })?;
-        steps.push(SyncStep::Rename);
 
         // Renaming is atomic but the directory entry is not durable until the
         // directory itself is synchronised; without this a crash can leave the file
-        // reachable from a committed mapping and gone from the filesystem.
+        // reachable from a committed mapping and gone from the filesystem. A reused
+        // entry is synchronised too: the publication that placed it may not have
+        // got this far.
         sync_directory(&directory).await?;
         steps.push(SyncStep::SyncDirectory);
 
-        Ok(Published {
-            steps,
-            reused: false,
-        })
+        Ok(Published { steps, reused })
     }
 
     /// Opens an already verified file. SPEC §9: verified cache hits are not rehashed,
@@ -446,6 +473,30 @@ impl Drop for OpenPin {
     }
 }
 
+/// Whether `path` is a regular file of `size` bytes whose SHA-256 is `key` — the only
+/// thing a content-addressed path may hold. Any failure to find out is a no.
+async fn holds_content(path: &Path, size: u64, key: &ContentKey) -> bool {
+    if !tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|meta| meta.is_file() && meta.len() == size)
+    {
+        return false;
+    }
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(_) => return false,
+        }
+    }
+    hasher.finalize().as_slice() == key.as_bytes()
+}
+
 /// `fsync` on a directory needs it opened for reading, which is what makes a rename
 /// durable on Linux.
 async fn sync_directory(directory: &Path) -> Result<(), ContentError> {
@@ -467,7 +518,7 @@ async fn sync_directory(directory: &Path) -> Result<(), ContentError> {
 /// An in-progress download. Dropping it removes the file: a download that fails, is
 /// refused by policy, or is abandoned leaves nothing behind.
 pub struct TempDownload {
-    path: Option<PathBuf>,
+    path: PathBuf,
     file: Option<tokio::fs::File>,
     /// Released with the file, so an abandoned download gives its bytes back to the
     /// budget at the same instant it gives the disk space back.
@@ -476,11 +527,11 @@ pub struct TempDownload {
 
 impl TempDownload {
     pub fn path(&self) -> &Path {
-        self.path.as_deref().unwrap_or(Path::new(""))
+        &self.path
     }
 
     pub async fn write_all(&mut self, chunk: &[u8]) -> Result<(), ContentError> {
-        let path = self.path.clone().unwrap_or_default();
+        let path = self.path.clone();
         match &mut self.file {
             Some(file) => file
                 .write_all(chunk)
@@ -493,23 +544,18 @@ impl TempDownload {
         }
     }
 
-    /// Consumes the handle without letting `Drop` remove the file, because the file
-    /// is about to become the published object.
-    fn take(&mut self) -> (PathBuf, tokio::fs::File) {
-        let path = self.path.take().unwrap_or_default();
-        let file = self
-            .file
+    /// The open file, for the publication to flush and synchronise. The path stays,
+    /// so `Drop` still removes whatever is left at it.
+    fn take_file(&mut self) -> tokio::fs::File {
+        self.file
             .take()
-            .expect("a temporary download is published once");
-        (path, file)
+            .expect("a temporary download is published once")
     }
 }
 
 impl Drop for TempDownload {
     fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -652,13 +698,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary data directory");
         let store = ContentStore::new(dir.path(), 1 << 30);
 
+        // The real digest: reuse is decided by what the existing file hashes to.
+        let shared = ContentKey::from_sha256(Sha256::digest(b"shared bytes").into());
         let mut first = store.create_temp(64).await.expect("a temporary download");
         first.write_all(b"shared bytes").await.expect("the write");
-        store.publish(first, &key(2)).await.expect("the first");
+        store.publish(first, &shared).await.expect("the first");
 
         let mut second = store.create_temp(64).await.expect("a temporary download");
         second.write_all(b"shared bytes").await.expect("the write");
-        let published = store.publish(second, &key(2)).await.expect("the second");
+        let published = store.publish(second, &shared).await.expect("the second");
 
         assert!(published.reused, "the existing file is kept");
         assert!(!published.steps.contains(&SyncStep::Rename));
