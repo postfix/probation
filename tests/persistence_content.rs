@@ -480,11 +480,15 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
         ),
         common::parse_rfc3339(NOW),
     );
+    // While storage is unusable every package response is SPEC §10's 503, the
+    // blocked one included; nothing is served either way.
+    let response = harness.server.get(&path).await;
     assert_eq!(
-        harness.server.status(&path).await,
-        403,
-        "storage pressure is never a reason to stop enforcing a block"
+        response.status().as_u16(),
+        503,
+        "storage pressure is never a reason to serve"
     );
+    assert_eq!(common::body_error(response).await, "STORAGE_UNUSABLE");
 
     probation::tasks::maintenance::run_once(&harness.server.app()).await;
     assert_eq!(
@@ -501,5 +505,10 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
     set_mode(&harness.objects_dir(), 0o700);
     probation::tasks::maintenance::run_once(&harness.server.app()).await;
     assert_eq!(harness.server.status("/health/ready").await, 200);
+    assert_eq!(
+        harness.server.status(&path).await,
+        403,
+        "and the block published under storage pressure is enforced once storage is back"
+    );
     harness.server.shutdown().await;
 }
