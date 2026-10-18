@@ -204,7 +204,8 @@ never undo one.
 queue is full, or the answer cannot be parsed, the service treats it as "no
 match" and continues with its normal checks. A "no match" answer is cached for
 30 seconds so a struggling OSV endpoint is not hammered. A match is cached for
-`osv_cache_ttl_seconds` (default 300, 5 minutes).
+`osv_cache_ttl_seconds` (default 300, 5 minutes). The cache holds at most 65,536
+answers; past that the least recently used is dropped and asked again.
 
 `osv_mode` controls what a match does:
 
@@ -221,7 +222,9 @@ you restrict outbound traffic (section 6), allow `api.osv.dev` too. Otherwise
 every OSV check times out and fails open, and packages are served without it.
 
 `osv_request_timeout_ms` (default 500) bounds one batch of OSV lookups before
-it fails open.
+it fails open. All versions of a package are checked together, up to 256 per
+batch, so a package the service has not seen recently costs about one OSV round
+trip, not one per version.
 
 ## 5. Backup and restore
 

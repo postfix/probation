@@ -6,6 +6,7 @@
 //! `oneshot`, the same fail-open path for every failure kind, so `OsvClient::check`
 //! needs only one failure branch.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -16,7 +17,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use super::{OSV_BATCH_INTERVAL, OSV_BATCH_RECORDS, OsvRequest};
+use super::{OSV_BATCH_INTERVAL, OSV_BATCH_RECORDS, OsvCache, OsvRequest};
 use crate::policy::Ecosystem;
 
 /// OSV's ecosystem spelling, which is not `Ecosystem::as_tag`'s: OSV's schema is
@@ -67,12 +68,14 @@ struct Vuln {
 ///
 /// `request_timeout` bounds each flush's outbound call (C12c) — reused from
 /// `osv_request_timeout_ms` (D4), so there is exactly one knob rather than two that
-/// could drift out of sync with C14's per-waiter reply bound.
+/// could drift out of sync with C14's per-waiter reply bound. Every answer a flush
+/// produces is written into `cache`.
 pub(super) async fn run(
     client: Client,
     url: Url,
     mut rx: mpsc::Receiver<OsvRequest>,
     request_timeout: Duration,
+    cache: Arc<OsvCache>,
     shutdown: CancellationToken,
 ) {
     let mut batch: Vec<OsvRequest> = Vec::new();
@@ -90,13 +93,13 @@ pub(super) async fn run(
                     }
                     batch.push(request);
                     if batch.len() >= OSV_BATCH_RECORDS {
-                        flush(&client, &url, &mut batch, request_timeout).await;
+                        flush(&client, &url, &mut batch, request_timeout, &cache).await;
                     }
                 }
                 None => break,
             },
             () = tokio::time::sleep_until(deadline), if !batch.is_empty() => {
-                flush(&client, &url, &mut batch, request_timeout).await;
+                flush(&client, &url, &mut batch, request_timeout, &cache).await;
             }
             () = shutdown.cancelled() => {
                 // Drains whatever is already queued, and nothing more — the same
@@ -105,11 +108,11 @@ pub(super) async fn run(
                 while let Ok(request) = rx.try_recv() {
                     batch.push(request);
                     if batch.len() >= OSV_BATCH_RECORDS {
-                        flush(&client, &url, &mut batch, request_timeout).await;
+                        flush(&client, &url, &mut batch, request_timeout, &cache).await;
                     }
                 }
                 if !batch.is_empty() {
-                    flush(&client, &url, &mut batch, request_timeout).await;
+                    flush(&client, &url, &mut batch, request_timeout, &cache).await;
                 }
                 break;
             }
@@ -124,7 +127,13 @@ pub(super) async fn run(
 /// indistinguishable to a waiter: each answers `false` to every request in this
 /// flush. `OsvClient::check` therefore never has to special-case which failure it
 /// was — fail-open is fail-open (C14).
-async fn flush(client: &Client, url: &Url, batch: &mut Vec<OsvRequest>, request_timeout: Duration) {
+async fn flush(
+    client: &Client,
+    url: &Url,
+    batch: &mut Vec<OsvRequest>,
+    request_timeout: Duration,
+    cache: &OsvCache,
+) {
     let requests = std::mem::take(batch);
     let mut keys = Vec::with_capacity(requests.len());
     let mut waiters = Vec::with_capacity(requests.len());
@@ -174,10 +183,12 @@ async fn flush(client: &Client, url: &Url, batch: &mut Vec<OsvRequest>, request_
         }
     };
 
-    for (index, waiter) in waiters.into_iter().enumerate() {
+    for (index, (key, waiter)) in keys.into_iter().zip(waiters).enumerate() {
         let matched = matches.as_ref().is_some_and(|matches| matches[index]);
-        // A waiter that has stopped listening (its `check` call was itself cancelled)
-        // is not this loop's problem: nothing here needs the reply to be received.
+        // Cached before the reply, and whether or not anyone receives it: a waiter
+        // that stopped listening (it timed out, or its request was cancelled) must
+        // not cost the next caller another round trip, or lose a match.
+        cache.put(key, matched);
         let _ = waiter.send(matched);
     }
 }
@@ -281,6 +292,7 @@ mod tests {
             url,
             rx,
             Duration::from_secs(5),
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
         ));
 
@@ -322,6 +334,7 @@ mod tests {
             url,
             rx,
             Duration::from_secs(5),
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
         ));
 
@@ -362,21 +375,20 @@ mod tests {
             url,
             rx,
             request_timeout,
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
         ));
 
         let (req, reply) = request("left-pad");
         let started = Instant::now();
         tx.send(req).await.unwrap();
-        // The interval flush fires first (2s default), so nudge a flush directly by
-        // filling to the count cap is unnecessary here: the interval bound itself is
-        // what this test is measuring against, so assert the reply lands within it
-        // plus the request timeout, never hanging on the connection.
+        // The interval flush fires, then the outbound call times out: the reply
+        // lands within the two plus slack, never hanging on the connection.
         let matched = reply.await.unwrap();
         let elapsed = started.elapsed();
         assert!(!matched, "a hung connection fails the batch open");
         assert!(
-            elapsed < OSV_BATCH_INTERVAL + request_timeout + Duration::from_secs(2),
+            elapsed < OSV_BATCH_INTERVAL + request_timeout + Duration::from_millis(500),
             "the flush must not block past its own timeout bound; took {elapsed:?}"
         );
 
@@ -400,6 +412,7 @@ mod tests {
             url,
             rx,
             Duration::from_secs(5),
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
         ));
 
@@ -433,6 +446,7 @@ mod tests {
             url,
             rx,
             Duration::from_secs(5),
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
         ));
 

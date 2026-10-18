@@ -863,6 +863,78 @@ async fn existing_project_with_no_eligible_files_returns_empty_listing() {
     harness.shutdown().await;
 }
 
+/// SPEC §5: "Treat contradictory metadata for the same published filename/version as
+/// an upstream integrity error until fresh consistent metadata is available." Two
+/// entries naming one filename with different URLs or hashes are refused, not both
+/// listed.
+#[tokio::test]
+async fn contradictory_metadata_for_one_filename_is_an_upstream_integrity_error() {
+    let old = "2020-01-01T00:00:00Z";
+    let bard_wheel = "friendly_bard-1.0-py3-none-any.whl";
+    let mut moved = file(bard_wheel, old);
+    moved["url"] = json!(format!("https://files.invalid/packages/ef/01/{bard_wheel}"));
+    let other_wheel = "other_project-1.0-py3-none-any.whl";
+    let mut rehashed = file(other_wheel, old);
+    rehashed["hashes"] = json!({"sha256": "bb".repeat(32)});
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        "",
+        &[
+            (BARD, document(BARD, vec![file(bard_wheel, old), moved])),
+            (
+                OTHER,
+                document(OTHER, vec![file(other_wheel, old), rehashed]),
+            ),
+        ],
+    )
+    .await;
+
+    for project in [BARD, OTHER] {
+        let response = harness
+            .server
+            .get_with_headers(
+                &format!("/pypi/simple/{project}/"),
+                &[("accept", JSON_ACCEPT)],
+            )
+            .await;
+        assert_eq!(response.status().as_u16(), 502, "{project}");
+        assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+    }
+
+    harness.shutdown().await;
+}
+
+/// A cold project's eligible files are checked against OSV together, so the listing
+/// costs about one OSV round trip, not one per file. The harness's OSV endpoint
+/// refuses every connection, so each unresolved check fails open; judged one at a
+/// time, 40 files cost 40 x the shipped `osv_request_timeout_ms` (500ms).
+#[tokio::test]
+async fn a_cold_project_costs_about_one_osv_round_trip_not_one_per_file() {
+    let files = (0..40)
+        .map(|minor| {
+            file(
+                &format!("friendly_bard-1.{minor}-py3-none-any.whl"),
+                "2020-01-01T00:00:00Z",
+            )
+        })
+        .collect();
+    let harness = harness(NOW, ONE_DAY, "", &[(BARD, document(BARD, files))]).await;
+    let timeout = Duration::from_millis(harness.server.app().config.osv_request_timeout_ms.get());
+
+    let started = std::time::Instant::now();
+    let listed = harness.json_filenames(BARD).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(listed.len(), 40);
+    assert!(
+        elapsed < timeout * 4,
+        "a cold 40-file project took {elapsed:?}, more than 4 x the {timeout:?} OSV timeout"
+    );
+
+    harness.shutdown().await;
+}
+
 /// SPEC §7: `/pypi/simple/` is "a valid index of projects already known to this
 /// instance, not a mirror of all PyPI projects".
 #[tokio::test]
@@ -1025,9 +1097,7 @@ async fn concurrent_cold_requests_cause_exactly_one_metadata_refresh() {
     let requests: Vec<_> = (0..6)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(
-                async move { probation::pypi::ensure_fresh_project(&app, BARD).await },
-            )
+            tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
         })
         .collect();
 
@@ -2090,10 +2160,7 @@ async fn ceiling_harness(max_age: u64, projects: &[&str]) -> Harness {
 
 /// The row on disk, read through the store rather than through the memory cache: the
 /// column itself is the subject of these tests, not a copy of it.
-async fn stored_project(
-    harness: &Harness,
-    project: &str,
-) -> probation::store::rows::ProjectRow {
+async fn stored_project(harness: &Harness, project: &str) -> probation::store::rows::ProjectRow {
     harness
         .server
         .running()
@@ -2107,11 +2174,8 @@ async fn stored_project(
 
 /// This project's effective ceiling in whole seconds.
 fn ceiling_seconds(project: &str, max_age: u64) -> i64 {
-    probation::store::effective_max_age_micros(
-        &ProjectKey::new(Ecosystem::PyPi, project),
-        max_age,
-    )
-    .expect("a nonzero maximum age has a ceiling")
+    probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::PyPi, project), max_age)
+        .expect("a nonzero maximum age has a ceiling")
         / 1_000_000
 }
 
@@ -2426,10 +2490,7 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
         }
     }
     assert_eq!(
-        probation::store::effective_max_age_micros(
-            &ProjectKey::new(Ecosystem::PyPi, BARD),
-            0
-        ),
+        probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::PyPi, BARD), 0),
         None,
         "and zero is no ceiling at all rather than a ceiling of zero"
     );

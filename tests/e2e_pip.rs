@@ -598,6 +598,11 @@ async fn an_exact_pin_on_a_held_release_is_refused_not_substituted() {
         "a held exact pin was satisfied: {}",
         String::from_utf8_lossy(&output.stdout)
     );
+    let refusal = stderr(&output);
+    assert!(
+        refusal.contains("No matching distribution found"),
+        "pip reports the resolution failure rather than a transport error: {refusal}"
+    );
     assert!(
         !target.exists() || installed_version_is_absent(&target),
         "no substitute version was installed in place of the held pin"

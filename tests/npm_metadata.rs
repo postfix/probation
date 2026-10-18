@@ -235,6 +235,29 @@ async fn latest_falls_back_to_highest_eligible_stable_at_or_below_target() {
     harness.shutdown().await;
 }
 
+/// A cold project's eligible versions are checked against OSV together, so the
+/// request costs about one OSV round trip, not one per version. The harness's OSV
+/// endpoint refuses every connection, so each unresolved check fails open; judged one
+/// at a time, the fixture's ~100 OSV-eligible versions cost ~100 x the shipped
+/// `osv_request_timeout_ms` (500ms).
+#[tokio::test]
+async fn a_cold_project_costs_about_one_osv_round_trip_not_one_per_version() {
+    let harness = widget().await;
+    let timeout = Duration::from_millis(harness.server.app().config.osv_request_timeout_ms.get());
+
+    let started = std::time::Instant::now();
+    let status = harness.server.status(&format!("/npm/{WIDGET}")).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(status, 200);
+    assert!(
+        elapsed < timeout * 4,
+        "a cold 100-version project took {elapsed:?}, more than 4 x the {timeout:?} OSV timeout"
+    );
+
+    harness.shutdown().await;
+}
+
 #[tokio::test]
 async fn eligible_tags_including_a_prerelease_are_preserved_unchanged() {
     let harness = widget().await;
@@ -763,6 +786,28 @@ async fn deeply_nested_upstream_document_is_502() {
     harness.shutdown().await;
 }
 
+/// Policy judges the name the client asked for, so a document upstream answered
+/// under that name but which calls itself something else is refused, not served.
+#[tokio::test]
+async fn a_document_naming_another_package_is_502() {
+    const IMPOSTOR: &str = "fixture-impostor";
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        &[(
+            IMPOSTOR,
+            FakeAnswer::Body(fixture("npm/representative-100-versions.json")),
+        )],
+    )
+    .await;
+
+    let response = harness.server.get(&format!("/npm/{IMPOSTOR}")).await;
+    assert_eq!(response.status().as_u16(), 502);
+    assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+
+    harness.shutdown().await;
+}
+
 /// TM-4: a confirmed-absent name is remembered, so a client asking for thousands of
 /// names that do not exist cannot turn into thousands of upstream requests.
 #[tokio::test]
@@ -1021,9 +1066,7 @@ async fn concurrent_cold_requests_cause_exactly_one_metadata_refresh() {
     let requests: Vec<_> = (0..6)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(
-                async move { probation::npm::ensure_fresh_project(&app, WIDGET).await },
-            )
+            tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
         })
         .collect();
 
@@ -1719,7 +1762,7 @@ async fn a_304_with_unexpected_validators_is_still_a_revalidation() {
             SURPRISING,
             FakeAnswer::Validated {
                 etag: ETAG.to_owned(),
-                body: validated_document(),
+                body: validated_document().replace(VALIDATED, SURPRISING),
             },
         )],
     )
@@ -2035,10 +2078,7 @@ async fn ceiling_harness(max_age: u64, names: &[&str]) -> Harness {
 
 /// The row on disk, read through the store rather than through the memory cache: the
 /// column itself is the subject of these tests, not a copy of it.
-async fn stored_project(
-    harness: &Harness,
-    name: &str,
-) -> probation::store::rows::ProjectRow {
+async fn stored_project(harness: &Harness, name: &str) -> probation::store::rows::ProjectRow {
     harness
         .server
         .running()
@@ -2052,11 +2092,8 @@ async fn stored_project(
 
 /// This project's effective ceiling in whole seconds.
 fn ceiling_seconds(name: &str, max_age: u64) -> i64 {
-    probation::store::effective_max_age_micros(
-        &ProjectKey::new(Ecosystem::Npm, name),
-        max_age,
-    )
-    .expect("a nonzero maximum age has a ceiling")
+    probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::Npm, name), max_age)
+        .expect("a nonzero maximum age has a ceiling")
         / 1_000_000
 }
 
@@ -2364,10 +2401,7 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
         }
     }
     assert_eq!(
-        probation::store::effective_max_age_micros(
-            &ProjectKey::new(Ecosystem::Npm, VALIDATED),
-            0
-        ),
+        probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::Npm, VALIDATED), 0),
         None,
         "and zero is no ceiling at all rather than a ceiling of zero"
     );
