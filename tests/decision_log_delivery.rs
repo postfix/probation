@@ -127,13 +127,6 @@ async fn record_osv_diagnostic_match_sets_the_reason_without_changing_result() {
     let mut config = config_with_open_blocklist(dir.path());
     config.log_file_path = Some(log_path.clone());
     config.osv_mode = probation::osv::OsvMode::Diagnostic;
-    // A solitary lookup — nothing else fills the batch — only flushes on
-    // `OSV_BATCH_INTERVAL` (2s), which is longer than the sample config's default
-    // `osv_request_timeout_ms` (500ms); without widening it here, `check` always
-    // fails open before the batcher ever flushes, and the real match this test needs
-    // is never observed. See `tests/e2e_npm.rs`'s identical widening for the same
-    // reason.
-    config.osv_request_timeout_ms = NonZeroU64::new(4_000).expect("4000 is non-zero");
 
     let registry = FakeRegistry::new();
     registry.answer(
