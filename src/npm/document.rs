@@ -228,14 +228,7 @@ impl fmt::Display for DocumentError {
     }
 }
 
-impl std::error::Error for DocumentError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            DocumentError::Json(err) => Some(err),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for DocumentError {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UnusableVersion {

@@ -292,9 +292,9 @@ async fn resolve(
 
     let files = parse_stored(app, name, &cached.row.payload)?;
 
-    let mut decisions = Vec::with_capacity(files.len());
-    let mut next_release: Option<i64> = None;
-    for file in &files {
+    // Every file is judged at once, so a cold project's OSV checks share one batch
+    // rather than paying one OSV round trip per file.
+    let decisions = futures_util::future::join_all(files.iter().map(|file| async {
         let candidate = Candidate {
             ecosystem: Ecosystem::PyPi,
             name: name.as_str(),
@@ -310,21 +310,23 @@ async fn resolve(
             // an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&file.id),
         };
-        let decision = crate::osv::evaluate(
+        crate::osv::evaluate(
             &app.osv,
             Some(snapshot),
             now,
             app.config.cooldown_seconds,
             &candidate,
         )
-        .await;
-        if let Decision::Hold { eligible_at_micros } = decision {
-            next_release = Some(
-                next_release.map_or(eligible_at_micros, |held: i64| held.min(eligible_at_micros)),
-            );
-        }
-        decisions.push(decision);
-    }
+        .await
+    }))
+    .await;
+    let next_release = decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Hold { eligible_at_micros } => Some(*eligible_at_micros),
+            _ => None,
+        })
+        .min();
 
     // SPEC §10: the earliest of upstream metadata TTL, blocklist expiry, and the next
     // held file's eligibility time, so a released file appears without a scheduler.
@@ -735,6 +737,24 @@ fn parse_files(
                     "excluding a file whose identity cannot be established"
                 );
             }
+        }
+    }
+
+    // SPEC §5: contradictory metadata for one published filename is an upstream
+    // integrity error until fresh consistent metadata is available.
+    let mut seen = HashMap::new();
+    for file in &files {
+        let claim = (&file.reference.upstream_url, &file.hashes);
+        if seen
+            .insert(file.reference.filename.as_str(), claim)
+            .is_some_and(|earlier| earlier != claim)
+        {
+            tracing::warn!(
+                project = %name,
+                filename = %file.reference.filename,
+                "refusing a document that advertises one filename with contradictory metadata"
+            );
+            return Err(ApiError::UpstreamInvalid);
         }
     }
     Ok(files)

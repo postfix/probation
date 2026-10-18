@@ -1506,3 +1506,56 @@ pub async fn drive_rated_load(
         achieved: (offered - u64::from(WORKERS)) as f64 / elapsed.as_secs_f64(),
     }
 }
+
+/// A `wiremock` server standing in for `https://api.osv.dev`: it answers
+/// `POST /v1/querybatch` with a `MAL-*` vuln for every query whose `(name, version)`
+/// is in `flagged`, and no vuln for anything else. Returns the `querybatch` URL to
+/// hand `TestServer::start_with_upstream_and_osv`, and the server, whose
+/// `received_requests` is how a test counts OSV round trips.
+pub async fn osv_flagging(flagged: &[(&str, &str)]) -> (Url, wiremock::MockServer) {
+    osv_flagging_after(flagged, Duration::ZERO).await
+}
+
+/// [`osv_flagging`], answering each batch only after `delay`.
+pub async fn osv_flagging_after(
+    flagged: &[(&str, &str)],
+    delay: Duration,
+) -> (Url, wiremock::MockServer) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let flagged: Vec<(String, String)> = flagged
+        .iter()
+        .map(|(name, version)| ((*name).to_owned(), (*version).to_owned()))
+        .collect();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/querybatch"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("a JSON batch body");
+            let results: Vec<serde_json::Value> = body["queries"]
+                .as_array()
+                .expect("a queries array")
+                .iter()
+                .map(|query| {
+                    let hit = flagged.iter().any(|(name, version)| {
+                        query["package"]["name"] == name.as_str()
+                            && query["version"] == version.as_str()
+                    });
+                    if hit {
+                        serde_json::json!({"vulns": [{"id": "MAL-2026-1234"}]})
+                    } else {
+                        serde_json::json!({"vulns": []})
+                    }
+                })
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"results": results}))
+                .set_delay(delay)
+        })
+        .mount(&server)
+        .await;
+    let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).expect("the mock's own URL");
+    (url, server)
+}

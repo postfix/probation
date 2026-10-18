@@ -284,11 +284,9 @@ async fn resolve(
         .entries(app.config.max_references_per_project.get())
         .map_err(|err| reference_cap_error(name, err))?;
 
-    let mut decisions = Vec::with_capacity(entries.len());
-    let mut eligible = BTreeSet::new();
-    let mut next_release: Option<i64> = None;
-
-    for entry in &entries {
+    // Every version is judged at once, so a cold project's OSV checks share one
+    // batch rather than paying one OSV round trip per version.
+    let decisions = futures_util::future::join_all(entries.iter().map(|entry| async {
         let candidate = Candidate {
             ecosystem: Ecosystem::Npm,
             name: name.as_str(),
@@ -302,16 +300,21 @@ async fn resolve(
             // reader putting an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&entry.id),
         };
-        let decision = crate::osv::evaluate(
+        crate::osv::evaluate(
             &app.osv,
             Some(snapshot),
             now,
             app.config.cooldown_seconds,
             &candidate,
         )
-        .await;
+        .await
+    }))
+    .await;
 
-        match decision {
+    let mut eligible = BTreeSet::new();
+    let mut next_release: Option<i64> = None;
+    for (entry, decision) in entries.iter().zip(&decisions) {
+        match *decision {
             Decision::Allow => {
                 eligible.insert(entry.version().to_owned());
             }
@@ -323,7 +326,6 @@ async fn resolve(
             }
             Decision::Deny(_) | Decision::Unavailable => {}
         }
-        decisions.push(decision);
     }
 
     let tags = tags::resolve(&document.dist_tags, &eligible);
@@ -582,6 +584,12 @@ async fn refresh(
         tracing::warn!(package = %name, error = %err, "the upstream document is unusable");
         ApiError::UpstreamInvalid
     })?;
+    // Policy judges the requested name, so a document for another package would be
+    // judged and served under a name it does not carry.
+    if document.name != name.as_str() {
+        tracing::warn!(package = %name, upstream_name = %document.name, "the upstream document names another package");
+        return Err(ApiError::UpstreamInvalid);
+    }
     let entries = document
         .entries(app.config.max_references_per_project.get())
         .map_err(|err| reference_cap_error(name, err))?;
