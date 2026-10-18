@@ -22,6 +22,9 @@ use common::{
     publish_blocklist, snapshot_with,
 };
 use probation::store::rows::ReferenceId;
+use probation::upstream::{
+    ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, Transport, UpstreamError,
+};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -621,4 +624,169 @@ async fn a_warm_artifact_request_does_not_reparse_the_project_document() {
          was parsed from"
     );
     harness.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// The size cap, and a policy that lapses
+// ---------------------------------------------------------------------------
+
+fn capped_config(dir: &std::path::Path, max_artifact_bytes: u64) -> probation::config::Config {
+    let mut config = config_with_open_blocklist(dir);
+    config.max_artifact_bytes =
+        std::num::NonZeroU64::new(max_artifact_bytes).expect("a nonzero cap");
+    config
+}
+
+/// A declared length over `max_artifact_bytes` is refused before a byte is stored.
+#[tokio::test]
+async fn a_declared_length_over_the_cap_is_refused_before_anything_is_stored() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(document(strong_integrity())),
+    );
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, FILENAME),
+        FakeAnswer::Body(body()),
+    );
+    let server = TestServer::start_with_upstream(
+        capped_config(dir.path(), 16),
+        TestClock::at_rfc3339(NOW).shared(),
+        registry,
+        common::fake_origins(),
+    )
+    .await;
+    let document = server.json(&format!("/npm/{WIDGET}")).await;
+
+    let refused = server.get(&artifact_path(&document, VERSION)).await;
+    assert_eq!(refused.status().as_u16(), 502);
+    assert_eq!(common::body_error(refused).await, "UPSTREAM_INVALID");
+    server.shutdown().await;
+}
+
+/// A transport that declares no length and enforces no cap of its own, so the
+/// download's own count is the only thing between it and the disk.
+struct Uncapped(Arc<FakeRegistry>);
+
+#[async_trait::async_trait]
+impl Transport for Uncapped {
+    async fn fetch_metadata(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<MetadataResponse, UpstreamError> {
+        self.0.fetch_metadata(req).await
+    }
+
+    async fn open_artifact(&self, _req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
+        let chunks = (0..4).map(|_| Ok(bytes::Bytes::from_static(b"eight by")));
+        Ok(ArtifactBody {
+            declared_length: None,
+            stream: Box::pin(futures_util::stream::iter(chunks)),
+        })
+    }
+}
+
+/// SPEC §10: "Reject an artifact exceeding its size cap even when `Content-Length`
+/// is missing" — counted by the download itself, on the chunk that crosses it.
+#[tokio::test]
+async fn an_undeclared_body_over_the_cap_is_cut_off_by_the_count() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(document(no_advertised_digest())),
+    );
+    let server = TestServer::start_with_upstream(
+        capped_config(dir.path(), 20),
+        TestClock::at_rfc3339(NOW).shared(),
+        Arc::new(Uncapped(registry)),
+        common::fake_origins(),
+    )
+    .await;
+    let document = server.json(&format!("/npm/{WIDGET}")).await;
+
+    let refused = server.get(&artifact_path(&document, VERSION)).await;
+    assert_eq!(refused.status().as_u16(), 502);
+    assert_eq!(common::body_error(refused).await, "UPSTREAM_INVALID");
+    server.shutdown().await;
+}
+
+/// A blocklist that expires an hour after [`NOW`].
+fn expiring_blocklist() -> String {
+    snapshot_with(2, "2026-04-05T00:00:00Z", "2026-04-06T13:00:00Z", "", "")
+}
+
+/// PERF-01: an expired policy is a locally conclusive answer, given before the
+/// reference is even looked at.
+#[tokio::test]
+async fn an_expired_policy_refuses_an_artifact_request() {
+    let harness = harness(strong_integrity(), FakeAnswer::Body(body())).await;
+    let path = harness.artifact_path().await;
+    publish_blocklist(
+        &harness.server,
+        &expiring_blocklist(),
+        common::parse_rfc3339(NOW),
+    );
+    harness.clock.advance_seconds(7_200);
+
+    let refused = harness.server.get(&path).await;
+    assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(common::body_error(refused).await, "POLICY_UNAVAILABLE");
+    assert_eq!(harness.artifact_calls(), 0, "and upstream was never asked");
+    harness.shutdown().await;
+}
+
+/// The policy re-check after a download sees a policy that lapsed while the bytes
+/// were arriving, and they are not published or served.
+#[tokio::test]
+async fn a_policy_that_lapses_during_the_download_refuses_the_bytes() {
+    let gate = Gate::new();
+    let harness = harness(
+        strong_integrity(),
+        FakeAnswer::Gated {
+            head: body()[..10].to_owned(),
+            tail: body()[10..].to_owned(),
+            gate: Arc::clone(&gate),
+        },
+    )
+    .await;
+    let path = harness.artifact_path().await;
+
+    let url = harness.server.url(&path);
+    let request = tokio::spawn(async move {
+        let response = common::downstream_client()
+            .get(url)
+            .send()
+            .await
+            .expect("the request completes");
+        (
+            response.status().as_u16(),
+            common::body_error(response).await,
+        )
+    });
+    gate.wait_until_reached().await;
+    publish_blocklist(
+        &harness.server,
+        &expiring_blocklist(),
+        common::parse_rfc3339(NOW),
+    );
+    harness.clock.advance_seconds(7_200);
+    gate.release();
+
+    let (status, error) = request.await.expect("the request task");
+    assert_eq!((status, error.as_str()), (503, "POLICY_UNAVAILABLE"));
+    assert!(harness.content_files().is_empty(), "nothing was published");
+    assert_eq!(harness.temp_files(), 0);
+    harness.shutdown().await;
+}
+
+/// A reference id that is not one says what it should have been.
+#[test]
+fn an_invalid_reference_id_says_what_one_is() {
+    let refused = ReferenceId::parse_hex("not hex").expect_err("not a reference id");
+    assert_eq!(
+        refused.to_string(),
+        "a reference id is 64 hexadecimal characters"
+    );
 }

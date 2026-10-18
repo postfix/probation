@@ -989,11 +989,8 @@ async fn refresh_in(
     let generation_column = i64::try_from(generation.0).map_err(|_| {
         StoreError::Corrupt(format!("generation {} cannot be stored", generation.0))
     })?;
-    let digest_generation_column = i64::try_from(digest_generation).map_err(|_| {
-        StoreError::Corrupt(format!(
-            "digest generation {digest_generation} cannot be stored"
-        ))
-    })?;
+    // Read back from an `INTEGER` column and never incremented here, so it fits.
+    let digest_generation_column = digest_generation.cast_signed();
 
     transaction
         .execute(
@@ -1582,5 +1579,195 @@ mod tests {
             drop(store);
             task.await.expect("the store stops");
         }
+    }
+
+    async fn fresh(dir: &std::path::Path) -> (StoreHandle, JoinHandle<()>) {
+        let opened = startup::open_and_recover(dir)
+            .await
+            .expect("the data directory");
+        spawn(
+            opened.connection.expect("a fresh database"),
+            opened.lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        )
+    }
+
+    /// The read side of the same rule: a stored record that does not decode is
+    /// reported, not reconstructed.
+    #[tokio::test]
+    async fn a_damaged_record_is_reported_when_it_is_read() {
+        for corruption in [
+            "UPDATE artifact_references SET upstream_url = 'not a url'",
+            "UPDATE artifact_references SET expected = 'garbage'",
+            "UPDATE artifact_references SET expected = 'md5-00'",
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary data directory");
+            let (store, task) = damaged(dir.path(), corruption).await;
+            let read = store.get_reference(upsert().id).await;
+            assert!(
+                matches!(read, Err(StoreError::Corrupt(_))),
+                "a reference read over `{corruption}` is refused: {read:?}"
+            );
+            drop(store);
+            task.await.expect("the store stops");
+        }
+
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+        store
+            .commit_blocklist(snapshot(3))
+            .await
+            .expect("a blocklist");
+        drop(store);
+        task.await.expect("the store stops");
+        let (store, task) = damaged(dir.path(), "UPDATE blocklist SET revision = -1").await;
+        let read = store.load_blocklist().await;
+        assert!(
+            matches!(&read, Err(StoreError::Corrupt(reason)) if reason.contains("negative")),
+            "{read:?}"
+        );
+        drop(store);
+        task.await.expect("the store stops");
+    }
+
+    /// Values this build cannot write are refused before anything is written, and a
+    /// pin for a reference that was never committed is not invented.
+    #[tokio::test]
+    async fn what_cannot_be_stored_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = damaged(
+            dir.path(),
+            "UPDATE projects SET generation = 9223372036854775807",
+        )
+        .await;
+        let refused = store.commit_project_refresh(refresh()).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Corrupt(reason)) if reason.contains("cannot be stored")),
+            "{refused:?}"
+        );
+
+        let unknown = ReferenceId::from_bytes([9; 32]);
+        let refused = store
+            .pin_computed_digests(unknown, [1; 32], [2; 64], 1)
+            .await;
+        assert!(
+            matches!(refused, Err(StoreError::Corrupt(_))),
+            "{refused:?}"
+        );
+
+        let refused = store.commit_blocklist(snapshot(u64::MAX)).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Corrupt(reason)) if reason.contains("revision")),
+            "{refused:?}"
+        );
+        drop(store);
+        task.await.expect("the store stops");
+    }
+
+    /// What every store failure says, and which ones carry the engine's own error.
+    #[tokio::test]
+    async fn store_errors_say_what_failed() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+        let mut bad = refresh();
+        bad.references[0].reference.filename.clear();
+        let failed = store
+            .commit_project_refresh(bad)
+            .await
+            .expect_err("the CHECK refuses an empty filename");
+        assert!(
+            failed.to_string().starts_with("database error: "),
+            "{failed}"
+        );
+        assert!(std::error::Error::source(&failed).is_some());
+        drop(store);
+        task.await.expect("the store stops");
+
+        for (err, text) in [
+            (StoreError::Busy, "the storage queue is full"),
+            (StoreError::Closed, "the storage task has stopped"),
+            (
+                StoreError::Corrupt("x".to_owned()),
+                "the store is unusable: x",
+            ),
+        ] {
+            assert_eq!(err.to_string(), text);
+            assert!(std::error::Error::source(&err).is_none());
+        }
+    }
+
+    /// A store that never opened answers every command with its reason, on either
+    /// queue, and is never healthy.
+    #[tokio::test]
+    async fn an_unusable_store_refuses_both_queues() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let lock = crate::store::lock::acquire(dir.path()).expect("the lock");
+        let store = StoreHandle::unusable(
+            "it never opened",
+            lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        );
+        assert!(!store.is_healthy());
+        assert!(matches!(
+            store.load_blocklist().await,
+            Err(StoreError::Corrupt(_))
+        ));
+        assert!(matches!(
+            store.eviction_plan().await,
+            Err(StoreError::Corrupt(_))
+        ));
+        store.touch_content(vec![(ContentKey::from_sha256([1; 32]), 1)]);
+        store.touch_content(Vec::new());
+        assert_eq!(
+            store.commands_issued(),
+            3,
+            "an empty batch of access times is not a command"
+        );
+    }
+
+    /// SPEC §10: "reject overload instead of allowing unbounded waiters". With the
+    /// store inside one long transaction, a burst beyond the queue depth is refused
+    /// with `Busy` on the critical queue and dropped on the maintenance one — and the
+    /// store answers again once the transaction ends.
+    #[tokio::test]
+    async fn a_full_queue_is_refused_not_waited_on() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+
+        let mut large = refresh();
+        large.references = (0..5_000)
+            .map(|index| {
+                let mut upsert = upsert();
+                upsert.reference.version = format!("1.0.{index}");
+                upsert.id = ReferenceId::compute(&upsert.reference);
+                upsert
+            })
+            .collect();
+        let busy = tokio::spawn({
+            let store = store.clone();
+            async move { store.commit_project_refresh(large).await }
+        });
+        tokio::task::yield_now().await;
+
+        for _ in 0..(QUEUE_DEPTH * 2) {
+            store.touch_content(vec![(ContentKey::from_sha256([1; 32]), 1)]);
+        }
+        let burst = futures_util::future::join_all(
+            (0..QUEUE_DEPTH * 2).map(|_| store.get_reference(upsert().id)),
+        )
+        .await;
+        assert!(
+            burst
+                .iter()
+                .any(|answer| matches!(answer, Err(StoreError::Busy))),
+            "some of the burst was refused rather than queued"
+        );
+
+        busy.await
+            .expect("the refresh task")
+            .expect("the long transaction commits");
+        assert!(store.get_reference(upsert().id).await.is_ok());
+        drop(store);
+        task.await.expect("the store stops");
     }
 }

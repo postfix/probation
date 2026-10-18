@@ -275,6 +275,15 @@ mod tests {
             ),
             "a database this build does not understand is refused: {refused:?}"
         );
+        let refused = refused.expect_err("the refusal");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the database carries schema version 999, this build understands \
+                 {SCHEMA_VERSION}; it is left untouched"
+            )
+        );
+        assert!(std::error::Error::source(&refused).is_none());
 
         let mut rows = connection
             .query("SELECT schema_version FROM schema_meta WHERE id = 1", ())
@@ -345,6 +354,45 @@ mod tests {
             plan.iter().any(|step| step.contains("USING INDEX")),
             "the clear is a scan: {plan:?}"
         );
+    }
+
+    /// A table this build's DDL cannot build on is the engine's error, passed on.
+    #[tokio::test]
+    async fn a_schema_that_will_not_build_is_the_engines_error() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut connection = open(&dir.path().join("firewall.db")).await;
+        connection
+            .execute(
+                "CREATE TABLE artifact_references (id BLOB PRIMARY KEY, ecosystem TEXT, name TEXT)",
+                (),
+            )
+            .await
+            .expect("a table without the column the index needs");
+
+        let refused = ensure(&mut connection).await.expect_err("the DDL fails");
+        assert!(matches!(refused, SchemaError::Database(_)), "{refused:?}");
+        assert!(!refused.to_string().is_empty());
+        assert!(std::error::Error::source(&refused).is_some());
+    }
+
+    /// A schema row that does not hold what this build wrote is named, not guessed.
+    #[tokio::test]
+    async fn an_unreadable_schema_row_is_named() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut connection = open(&dir.path().join("firewall.db")).await;
+        for statement in [
+            "CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, \
+             engine_version TEXT NOT NULL)",
+            "INSERT INTO schema_meta (id, schema_version, engine_version) VALUES (1, 'five', 'x')",
+        ] {
+            connection.execute(statement, ()).await.expect("the damage");
+        }
+
+        let refused = ensure(&mut connection)
+            .await
+            .expect_err("the row is unreadable");
+        assert_eq!(refused.to_string(), "unreadable schema_meta.schema_version");
+        assert!(std::error::Error::source(&refused).is_none());
     }
 
     /// A different engine release is a note to record, not an outage: the pinned

@@ -491,6 +491,126 @@ async fn publication_once_started_completes() {
     harness.shutdown().await;
 }
 
+/// The other half of FLOW-01's latch. A waiter that leaves after the bytes are
+/// verified but before the publication begins cancels it: the transfer refuses to
+/// start publishing, and nothing is left behind.
+///
+/// The transfer is held at exactly that point by the last thing it asks before the
+/// latch — OSV — answering slowly. The reference is committed directly rather than
+/// through a listing, so no listing has already asked OSV about it.
+#[tokio::test]
+async fn a_waiter_leaving_before_publication_begins_cancels_it() {
+    let osv = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+        .mount(&osv)
+        .await;
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, &filename(V1)),
+        FakeAnswer::Body("verified".to_owned()),
+    );
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    // Long enough that the lookup is still waiting when the batch it joined is sent:
+    // OSV batches on an interval longer than the shipped timeout.
+    config.osv_request_timeout_ms = std::num::NonZeroU64::new(10_000).expect("a timeout");
+    let server = TestServer::start_with_upstream_and_osv(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        registry,
+        common::fake_origins(),
+        reqwest::Client::new(),
+        Url::parse(&osv.uri()).expect("the OSV server's URL"),
+    )
+    .await;
+    let app = server.app();
+
+    let reference = ArtifactReference {
+        ecosystem: Ecosystem::Npm,
+        name: WIDGET.to_owned(),
+        version: V1.to_owned(),
+        filename: filename(V1),
+        upstream_url: Url::parse(&npm_tarball_url(WIDGET, &filename(V1))).expect("a URL"),
+        expected: Vec::new(),
+    };
+    let id = ReferenceId::compute(&reference);
+    let now = common::parse_rfc3339(NOW);
+    app.store()
+        .commit_project_refresh(ProjectRefresh {
+            ecosystem: Ecosystem::Npm,
+            name: WIDGET.to_owned(),
+            payload: Arc::from(b"{}".as_slice()),
+            validators: UpstreamValidators::default(),
+            validated_at_micros: now,
+            fetched_at_micros: now,
+            references: vec![ReferenceUpsert {
+                id,
+                reference,
+                publication_micros: Some(common::parse_rfc3339(PUBLISHED)),
+                first_seen_micros: None,
+            }],
+        })
+        .await
+        .expect("the reference is committed");
+    let row = app
+        .store()
+        .get_reference(id)
+        .await
+        .expect("the query")
+        .expect("the row");
+
+    let waiter = {
+        let app = Arc::clone(&app);
+        tokio::spawn(async move { download::fetch(&app, &row).await.map(|done| done.size) })
+    };
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while osv
+        .received_requests()
+        .await
+        .expect("the recorded requests")
+        .is_empty()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the transfer never asked OSV"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    waiter.abort();
+
+    // The temporary download's reservation goes when the transfer ends, whichever
+    // way it ends.
+    wait_until("the transfer has ended", PATIENCE, || {
+        app.content.reserved_bytes() == 0
+    })
+    .await;
+    let objects = app.config.data_dir.join("content").join("objects");
+    let published = std::fs::read_dir(&objects)
+        .map(|fan_out| {
+            fan_out
+                .flatten()
+                .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+                .map(|entries| entries.count())
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    assert_eq!(published, 0, "a cancelled transfer publishes nothing");
+    assert!(
+        app.store()
+            .get_reference(id)
+            .await
+            .expect("the query")
+            .expect("the row")
+            .content_key
+            .is_none(),
+        "and commits no mapping"
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
+
 /// A transfer task that dies without answering must not take the reference with it.
 ///
 /// `run` owns the only `watch::Sender` for the slot, and every waiter holds the slot

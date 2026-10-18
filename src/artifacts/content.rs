@@ -162,30 +162,18 @@ impl ContentStore {
     /// mean the content store tracking every publication and eviction itself, and the
     /// database already records exactly that.
     fn reserve(&self, bytes: u64) -> Result<Reservation, ContentError> {
-        let mut held = self.reserved.load(Ordering::Acquire);
-        loop {
-            let wanted = held.saturating_add(bytes);
-            if wanted > self.capacity {
-                return Err(ContentError::NoCapacity {
-                    wanted: bytes,
-                    capacity: self.capacity,
-                });
-            }
-            match self.reserved.compare_exchange_weak(
-                held,
-                wanted,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Ok(Reservation {
-                        reserved: Arc::clone(&self.reserved),
-                        bytes,
-                    });
-                }
-                Err(current) => held = current,
-            }
-        }
+        self.reserved
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                Some(held.saturating_add(bytes)).filter(|wanted| *wanted <= self.capacity)
+            })
+            .map_err(|_| ContentError::NoCapacity {
+                wanted: bytes,
+                capacity: self.capacity,
+            })?;
+        Ok(Reservation {
+            reserved: Arc::clone(&self.reserved),
+            bytes,
+        })
     }
 
     /// Removes one key's bytes, unless a response has it open.
@@ -289,6 +277,7 @@ impl ContentStore {
         Ok(TempDownload {
             path,
             file: Some(file),
+            written: 0,
             _reservation: reservation,
         })
     }
@@ -323,15 +312,8 @@ impl ContentStore {
                 source,
             })?;
         steps.push(SyncStep::SyncFile);
-        let size = file
-            .metadata()
-            .await
-            .map_err(|source| ContentError::Write {
-                path: path.clone(),
-                source,
-            })?
-            .len();
         drop(file);
+        let size = temp.written;
 
         let destination = self.path_for(key);
         let directory = destination
@@ -461,14 +443,13 @@ struct OpenPin {
 impl Drop for OpenPin {
     fn drop(&mut self) {
         let mut open = self.open.lock().expect("the open-file table");
-        match open.pins.get_mut(&self.key) {
-            Some(count) if *count > 1 => *count -= 1,
+        if let Some(count) = open.pins.get_mut(&self.key) {
+            *count -= 1;
             // The last holder removes the entry rather than leaving a zero behind, so
             // the table is the size of what is open and not of what has ever been.
-            Some(_) => {
+            if *count == 0 {
                 open.pins.remove(&self.key);
             }
-            None => {}
         }
     }
 }
@@ -500,19 +481,11 @@ async fn holds_content(path: &Path, size: u64, key: &ContentKey) -> bool {
 /// `fsync` on a directory needs it opened for reading, which is what makes a rename
 /// durable on Linux.
 async fn sync_directory(directory: &Path) -> Result<(), ContentError> {
-    let handle = tokio::fs::File::open(directory)
-        .await
-        .map_err(|source| ContentError::Write {
-            path: directory.to_path_buf(),
-            source,
-        })?;
-    handle
-        .sync_all()
-        .await
-        .map_err(|source| ContentError::Write {
-            path: directory.to_path_buf(),
-            source,
-        })
+    let synced = async { tokio::fs::File::open(directory).await?.sync_all().await };
+    synced.await.map_err(|source| ContentError::Write {
+        path: directory.to_path_buf(),
+        source,
+    })
 }
 
 /// An in-progress download. Dropping it removes the file: a download that fails, is
@@ -520,6 +493,9 @@ async fn sync_directory(directory: &Path) -> Result<(), ContentError> {
 pub struct TempDownload {
     path: PathBuf,
     file: Option<tokio::fs::File>,
+    /// What `write_all` has written, which is the size the publication checks an
+    /// existing object against.
+    written: u64,
     /// Released with the file, so an abandoned download gives its bytes back to the
     /// budget at the same instant it gives the disk space back.
     _reservation: Reservation,
@@ -531,17 +507,19 @@ impl TempDownload {
     }
 
     pub async fn write_all(&mut self, chunk: &[u8]) -> Result<(), ContentError> {
-        let path = self.path.clone();
-        match &mut self.file {
-            Some(file) => file
-                .write_all(chunk)
-                .await
-                .map_err(|source| ContentError::Write { path, source }),
-            None => Err(ContentError::Write {
-                path,
-                source: io::Error::other("the temporary download was already published"),
-            }),
-        }
+        // `publish` consumes the download, so nothing can write to it afterwards.
+        let file = self
+            .file
+            .as_mut()
+            .expect("a temporary download is written before it is published");
+        file.write_all(chunk)
+            .await
+            .map_err(|source| ContentError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.written += chunk.len() as u64;
+        Ok(())
     }
 
     /// The open file, for the publication to flush and synchronise. The path stays,

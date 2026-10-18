@@ -302,4 +302,57 @@ mod tests {
              which is what lets the poller publish only after committing"
         );
     }
+
+    /// Recovery reports a refused schema as itself, with the schema error under it,
+    /// and an unreadable database file with the engine's error under it.
+    #[tokio::test]
+    async fn a_refused_database_says_why() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let opened = open_and_recover(dir.path())
+            .await
+            .expect("the data directory opens");
+        let connection = opened.connection.expect("a fresh database recovers");
+        connection
+            .execute(
+                "UPDATE schema_meta SET schema_version = 999 WHERE id = 1",
+                (),
+            )
+            .await
+            .expect("the schema row is aged by hand");
+        drop(connection);
+        drop(opened.lock);
+
+        let opened = open_and_recover(dir.path())
+            .await
+            .expect("the data directory opens");
+        let refused = opened.connection.expect_err("the schema is refused");
+        assert!(matches!(refused, RecoveryError::Schema(_)));
+        assert!(
+            refused.to_string().contains("schema version 999"),
+            "{refused}"
+        );
+        assert!(std::error::Error::source(&refused).is_some());
+        drop(opened.lock);
+
+        let garbage = tempfile::tempdir().expect("a second data directory");
+        std::fs::create_dir_all(garbage.path().join(STATE_DIR)).expect("a state directory");
+        std::fs::write(
+            garbage.path().join(STATE_DIR).join(DATABASE_FILE),
+            vec![0x5a; 8192],
+        )
+        .expect("a file that is not a database");
+        let opened = open_and_recover(garbage.path())
+            .await
+            .expect("the data directory opens");
+        let refused = opened.connection.expect_err("the file is not a database");
+        assert!(std::error::Error::source(&refused).is_some(), "{refused}");
+
+        let pragma = RecoveryError::Pragma {
+            pragma: "journal_mode",
+            expected: "wal".to_owned(),
+            found: "delete".to_owned(),
+        };
+        assert_eq!(pragma.to_string(), "journal_mode is delete, not wal");
+        assert!(std::error::Error::source(&pragma).is_none());
+    }
 }

@@ -11,6 +11,7 @@
 
 mod common;
 
+use std::error::Error as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use common::{TestServer, config_with_open_blocklist};
 use probation::policy::Ecosystem;
 use probation::store::cache::MemoryCaches;
 use probation::store::rows::{ArtifactReference, ProjectRefresh, ReferenceId, ReferenceUpsert};
+use probation::store::startup::{RecoveryError, StartupError};
 use probation::store::{StoreHandle, startup};
 use probation::upstream::UpstreamValidators;
 use url::Url;
@@ -161,4 +163,64 @@ fn the_store_answers_without_the_runtime_that_started_it() {
         matches!(answered, Ok(Ok(None))),
         "the store answered on its own thread: {answered:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Startup refusals, and what each one says
+// ---------------------------------------------------------------------------
+
+/// A data directory that cannot be created, or whose lock file cannot be opened,
+/// leaves nothing to run; the error names the path an operator has to fix.
+#[tokio::test]
+async fn an_unusable_data_directory_is_refused_with_its_path() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let file = dir.path().join("not-a-directory");
+    std::fs::write(&file, b"").expect("a file where the data directory goes");
+    let refused = startup::open_and_recover(&file)
+        .await
+        .err()
+        .expect("no data directory");
+    assert!(matches!(refused, StartupError::Directory { .. }));
+    assert!(
+        refused.to_string().starts_with("cannot create "),
+        "{refused}"
+    );
+    assert!(refused.source().is_some());
+
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(data_dir.join("lock")).expect("a directory where the lock goes");
+    let refused = startup::open_and_recover(&data_dir)
+        .await
+        .err()
+        .expect("no lock");
+    assert!(matches!(refused, StartupError::Lock(_)));
+    assert!(
+        refused
+            .to_string()
+            .starts_with("cannot open the lock file "),
+        "{refused}"
+    );
+    let lock_error = refused.source().expect("the lock error");
+    assert!(lock_error.source().is_some(), "and the io error under it");
+}
+
+/// A database path that is not UTF-8 cannot be handed to the engine; the process
+/// starts unready and says why.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_data_directory_whose_path_is_not_utf8_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let data_dir = dir.path().join(std::ffi::OsStr::from_bytes(b"data-\xff"));
+    let opened = startup::open_and_recover(&data_dir)
+        .await
+        .expect("the directory and lock are fine");
+    let refused = opened.connection.expect_err("the database is not opened");
+    assert!(matches!(refused, RecoveryError::Path(_)));
+    assert!(
+        refused.to_string().contains("is not valid UTF-8"),
+        "{refused}"
+    );
+    assert!(refused.source().is_none());
 }

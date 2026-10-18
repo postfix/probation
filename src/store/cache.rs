@@ -501,6 +501,25 @@ mod tests {
         assert_eq!(shard.used_bytes, 1, "byte accounting follows the reclaim");
     }
 
+    /// Removing an entry the hand has already passed leaves the hand on the entry it
+    /// was about to look at, so a sweep neither skips one nor looks at one twice.
+    #[test]
+    fn a_removal_behind_the_hand_keeps_the_hand_on_its_entry() {
+        let mut shard = shard();
+        assert!(
+            !shard.reclaim_one(),
+            "an empty shard has nothing to reclaim"
+        );
+        put(&mut shard, "first");
+        put(&mut shard, "second");
+        put(&mut shard, "third");
+        shard.hand = 2;
+
+        shard.remove(&"first");
+        assert_eq!(shard.ring[shard.hand], "third");
+        assert_eq!(shard.used_bytes, 2);
+    }
+
     /// The budget is the point: a cache that grows without bound is not bounded work.
     #[test]
     fn a_shard_never_exceeds_its_budget() {

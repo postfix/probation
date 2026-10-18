@@ -486,10 +486,12 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
         "storage pressure is never a reason to stop enforcing a block"
     );
 
+    probation::tasks::maintenance::run_once(&harness.server.app()).await;
     assert_eq!(
         harness.server.status("/health/ready").await,
         503,
-        "and it stays false while the content directory still refuses writes"
+        "and it stays false while the content directory still refuses writes, \
+         maintenance pass or not"
     );
 
     // "Until storage is usable again": once it is, the next maintenance pass finds

@@ -20,15 +20,8 @@ const LOCK_FILE: &str = "lock";
 /// instance that has already opened it.
 #[derive(Debug)]
 pub struct DataDirLock {
-    path: PathBuf,
     // Held for its `Drop`: closing the descriptor releases the `flock`.
     _file: File,
-}
-
-impl DataDirLock {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 /// Takes the exclusive lock on `data_dir`, which must already exist.
@@ -64,7 +57,7 @@ pub fn acquire(data_dir: &Path) -> Result<DataDirLock, LockError> {
         },
     })?;
 
-    Ok(DataDirLock { path, _file: file })
+    Ok(DataDirLock { _file: file })
 }
 
 #[derive(Debug)]
