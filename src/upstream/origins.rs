@@ -107,6 +107,15 @@ impl OriginSet {
         }
     }
 
+    /// The same origins with both gates closed again: `https` only, and a DNS answer
+    /// in a private range refused, exactly as [`OriginSet::production`] has them.
+    /// One-way — nothing can open a gate this closes — so a test can point the
+    /// production rules at a name it controls, such as `localhost`.
+    pub fn refusing_private_addresses(mut self) -> OriginSet {
+        self.allow_private_addresses = false;
+        self
+    }
+
     pub fn origin(&self, kind: OriginKind) -> &Url {
         match kind {
             OriginKind::NpmMetadata => &self.npm_metadata,

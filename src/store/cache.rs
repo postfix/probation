@@ -412,8 +412,7 @@ impl<K: Hash + Eq + Clone, V> Shard<K, V> {
             if self.hand >= self.ring.len() {
                 self.hand = 0;
             }
-            let key = self.ring[self.hand].clone();
-            let Some(entry) = self.entries.get(&key) else {
+            let Some(entry) = self.entries.get(&self.ring[self.hand]) else {
                 // Not reachable while ring and entries are kept in step; dropping the
                 // stale key is still the right repair.
                 self.ring.remove(self.hand);
@@ -423,7 +422,12 @@ impl<K: Hash + Eq + Clone, V> Shard<K, V> {
                 self.hand += 1;
                 continue;
             }
-            self.remove(&key);
+            // The victim's position is the hand, so it is removed there rather than
+            // searched for again; the hand then points at the entry after it.
+            let key = self.ring.remove(self.hand);
+            if let Some(entry) = self.entries.remove(&key) {
+                self.used_bytes -= entry.bytes;
+            }
             return true;
         }
         false
@@ -495,6 +499,25 @@ mod tests {
         );
         assert!(!shard.entries.contains_key("third"));
         assert_eq!(shard.used_bytes, 1, "byte accounting follows the reclaim");
+    }
+
+    /// Removing an entry the hand has already passed leaves the hand on the entry it
+    /// was about to look at, so a sweep neither skips one nor looks at one twice.
+    #[test]
+    fn a_removal_behind_the_hand_keeps_the_hand_on_its_entry() {
+        let mut shard = shard();
+        assert!(
+            !shard.reclaim_one(),
+            "an empty shard has nothing to reclaim"
+        );
+        put(&mut shard, "first");
+        put(&mut shard, "second");
+        put(&mut shard, "third");
+        shard.hand = 2;
+
+        shard.remove(&"first");
+        assert_eq!(shard.ring[shard.hand], "third");
+        assert_eq!(shard.used_bytes, 2);
     }
 
     /// The budget is the point: a cache that grows without bound is not bounded work.

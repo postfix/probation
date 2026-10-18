@@ -27,7 +27,10 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use futures_util::StreamExt;
 
 use common::{
     FakeAnswer, FakeRegistry, Gate, SlowReader, TestClock, TestServer, artifact_path, body_bytes,
@@ -41,7 +44,10 @@ use probation::policy::{BlocklistSnapshot, Ecosystem};
 use probation::store::rows::{
     ArtifactReference, ProjectRefresh, ReferenceId, ReferenceRow, ReferenceUpsert,
 };
-use probation::upstream::UpstreamValidators;
+use probation::upstream::{
+    ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, Transport, UpstreamError,
+    UpstreamValidators,
+};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use url::Url;
@@ -388,10 +394,9 @@ async fn last_waiter_cancels_download_and_removes_temp_file() {
         app.content.reserved_bytes() == 0
     })
     .await;
-    assert_eq!(
-        app.downloads.waiting_on(&id),
-        0,
-        "and nothing is left waiting on it"
+    assert!(
+        !app.downloads.in_flight(&id),
+        "and nothing is left in flight for it"
     );
 
     // Whatever the parked transport does now, nothing is published for it.
@@ -440,11 +445,12 @@ async fn publication_once_started_completes() {
     gate.release();
 
     // Past this point cancellation is refused, so the abort below cannot undo it.
+    // Only `publishing` ends this wait: the publication awaits the filesystem and
+    // the store several times, and this task runs in between each, so it sees the
+    // latch taken. Ending it on "the file is there" as well would let a transfer
+    // that never took the latch pass.
     let deadline = std::time::Instant::now() + PATIENCE;
-    loop {
-        if app.downloads.publishing(&id) || harness.content_files() == 1 {
-            break;
-        }
+    while !app.downloads.publishing(&id) {
         assert!(
             std::time::Instant::now() < deadline,
             "the transfer never reached its publication"
@@ -485,6 +491,126 @@ async fn publication_once_started_completes() {
     harness.shutdown().await;
 }
 
+/// The other half of FLOW-01's latch. A waiter that leaves after the bytes are
+/// verified but before the publication begins cancels it: the transfer refuses to
+/// start publishing, and nothing is left behind.
+///
+/// The transfer is held at exactly that point by the last thing it asks before the
+/// latch — OSV — answering slowly. The reference is committed directly rather than
+/// through a listing, so no listing has already asked OSV about it.
+#[tokio::test]
+async fn a_waiter_leaving_before_publication_begins_cancels_it() {
+    let osv = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+        .mount(&osv)
+        .await;
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, &filename(V1)),
+        FakeAnswer::Body("verified".to_owned()),
+    );
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    // Long enough that the lookup is still waiting when the batch it joined is sent:
+    // OSV batches on an interval longer than the shipped timeout.
+    config.osv_request_timeout_ms = std::num::NonZeroU64::new(10_000).expect("a timeout");
+    let server = TestServer::start_with_upstream_and_osv(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        registry,
+        common::fake_origins(),
+        reqwest::Client::new(),
+        Url::parse(&osv.uri()).expect("the OSV server's URL"),
+    )
+    .await;
+    let app = server.app();
+
+    let reference = ArtifactReference {
+        ecosystem: Ecosystem::Npm,
+        name: WIDGET.to_owned(),
+        version: V1.to_owned(),
+        filename: filename(V1),
+        upstream_url: Url::parse(&npm_tarball_url(WIDGET, &filename(V1))).expect("a URL"),
+        expected: Vec::new(),
+    };
+    let id = ReferenceId::compute(&reference);
+    let now = common::parse_rfc3339(NOW);
+    app.store()
+        .commit_project_refresh(ProjectRefresh {
+            ecosystem: Ecosystem::Npm,
+            name: WIDGET.to_owned(),
+            payload: Arc::from(b"{}".as_slice()),
+            validators: UpstreamValidators::default(),
+            validated_at_micros: now,
+            fetched_at_micros: now,
+            references: vec![ReferenceUpsert {
+                id,
+                reference,
+                publication_micros: Some(common::parse_rfc3339(PUBLISHED)),
+                first_seen_micros: None,
+            }],
+        })
+        .await
+        .expect("the reference is committed");
+    let row = app
+        .store()
+        .get_reference(id)
+        .await
+        .expect("the query")
+        .expect("the row");
+
+    let waiter = {
+        let app = Arc::clone(&app);
+        tokio::spawn(async move { download::fetch(&app, &row).await.map(|done| done.size) })
+    };
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while osv
+        .received_requests()
+        .await
+        .expect("the recorded requests")
+        .is_empty()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the transfer never asked OSV"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    waiter.abort();
+
+    // The temporary download's reservation goes when the transfer ends, whichever
+    // way it ends.
+    wait_until("the transfer has ended", PATIENCE, || {
+        app.content.reserved_bytes() == 0
+    })
+    .await;
+    let objects = app.config.data_dir.join("content").join("objects");
+    let published = std::fs::read_dir(&objects)
+        .map(|fan_out| {
+            fan_out
+                .flatten()
+                .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+                .map(|entries| entries.count())
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    assert_eq!(published, 0, "a cancelled transfer publishes nothing");
+    assert!(
+        app.store()
+            .get_reference(id)
+            .await
+            .expect("the query")
+            .expect("the row")
+            .content_key
+            .is_none(),
+        "and commits no mapping"
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
+
 /// A transfer task that dies without answering must not take the reference with it.
 ///
 /// `run` owns the only `watch::Sender` for the slot, and every waiter holds the slot
@@ -518,7 +644,7 @@ async fn a_panic_in_the_transfer_task_does_not_wedge_the_reference() {
     wait_until(
         "the dead slot is gone from the in-flight table",
         PATIENCE,
-        || app.downloads.waiting_on(&id) == 0,
+        || !app.downloads.in_flight(&id),
     )
     .await;
     assert!(
@@ -854,6 +980,196 @@ async fn overload_is_refused_not_queued() {
     .await;
     assert_eq!(harness.server.get(&path).await.status().as_u16(), 200);
     // The storage task stops when the last handle to it goes; this test is holding one.
+    drop(app);
+    harness.shutdown().await;
+}
+
+/// A transport that counts how many upstream calls are in flight at once. An
+/// artifact call counts until its body is dropped, because that is how long it
+/// holds a connection to upstream.
+struct InFlight {
+    registry: Arc<FakeRegistry>,
+    now: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+struct Counted(Arc<AtomicUsize>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl InFlight {
+    fn enter(&self) -> Counted {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        Counted(Arc::clone(&self.now))
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for InFlight {
+    async fn fetch_metadata(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<MetadataResponse, UpstreamError> {
+        let _counted = self.enter();
+        self.registry.fetch_metadata(req).await
+    }
+
+    async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
+        let counted = self.enter();
+        let body = self.registry.open_artifact(req).await?;
+        Ok(ArtifactBody {
+            declared_length: body.declared_length,
+            stream: Box::pin(body.stream.map(move |chunk| {
+                let _ = &counted;
+                chunk
+            })),
+        })
+    }
+}
+
+/// SPEC §4's `max_upstream_requests` bounds how many requests are open to upstream
+/// at once. With a bound of one and one transfer parked mid-body, a second cold
+/// request for a different reference waits for it rather than opening a second
+/// connection beside it.
+#[tokio::test]
+async fn max_upstream_requests_bounds_calls_in_flight() {
+    let gate = Gate::new();
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(document(&[V1, V2])),
+    );
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, &filename(V1)),
+        gated(&gate),
+    );
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, &filename(V2)),
+        FakeAnswer::Body("second".to_owned()),
+    );
+    let transport = Arc::new(InFlight {
+        registry: Arc::clone(&registry),
+        now: Arc::default(),
+        peak: Arc::default(),
+    });
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    config.max_upstream_requests = std::num::NonZeroU32::new(1).expect("one at a time");
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        Arc::clone(&transport) as Arc<dyn Transport>,
+        common::fake_origins(),
+    )
+    .await;
+    let document = server.json(&format!("/npm/{WIDGET}")).await;
+    let (first, second) = (artifact_path(&document, V1), artifact_path(&document, V2));
+    let second_id =
+        ReferenceId::parse_hex(second.split('/').nth(3).expect("an id")).expect("hexadecimal");
+    let second_calls = || {
+        let path = npm_artifact_upstream_path(WIDGET, &filename(V2));
+        registry
+            .calls()
+            .iter()
+            .filter(|url| url.path() == path)
+            .count()
+    };
+
+    let client = common::downstream_client();
+    let get = |path: &str| {
+        let (client, url) = (client.clone(), server.url(path));
+        tokio::spawn(async move {
+            let response = client.get(url).send().await.expect("the request completes");
+            response.status().as_u16()
+        })
+    };
+    let holding = get(&first);
+    gate.wait_until_reached().await;
+    let waiting = get(&second);
+
+    let app = server.app();
+    wait_until("the second transfer has started", PATIENCE, || {
+        app.downloads.waiting_on(&second_id) == 1
+    })
+    .await;
+    // A bound on something that must not happen: long enough for an unbounded
+    // transport to have made the call many times over.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        second_calls(),
+        0,
+        "the second transfer did not reach upstream while the first held the only slot"
+    );
+
+    gate.release();
+    assert_eq!(holding.await.expect("the first request"), 200);
+    assert_eq!(waiting.await.expect("the second request"), 200);
+    assert_eq!(second_calls(), 1, "and reached it once the slot was free");
+    assert_eq!(
+        transport.peak.load(Ordering::SeqCst),
+        1,
+        "never more than one upstream call open at once"
+    );
+
+    drop(app);
+    server.shutdown().await;
+}
+
+/// SPEC §9: "Bound active downloads globally." The front door has room; the one
+/// download permit does not. A cold request for a second reference while the first
+/// transfer holds that permit is refused there, rather than queued behind it.
+#[tokio::test]
+async fn a_cold_request_beyond_max_artifact_downloads_is_refused_not_queued() {
+    let gate = Gate::new();
+    let harness = harness_with(
+        vec![
+            (V1, gated(&gate)),
+            (V2, FakeAnswer::Body("second".to_owned())),
+        ],
+        |config| {
+            config.max_artifact_downloads = std::num::NonZeroU32::new(1).expect("one transfer");
+        },
+    )
+    .await;
+    let first = harness.artifact_path(V1).await;
+    let second = harness.artifact_path(V2).await;
+    let app = harness.server.app();
+
+    let url = harness.server.url(&first);
+    let client = common::downstream_client();
+    let holding = tokio::spawn(async move {
+        let response = client.get(url).send().await.expect("the request completes");
+        response.status().as_u16()
+    });
+    gate.wait_until_reached().await;
+    assert_eq!(app.limits.download_available(), 0, "the one permit is held");
+    assert!(
+        app.limits.active_available() > 0,
+        "and the front door is not what refuses below"
+    );
+
+    let refused = harness.server.get(&second).await;
+    assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(common::body_error(refused).await, "OVERLOADED");
+    assert_eq!(
+        harness.artifact_calls(V2),
+        0,
+        "refused before it reached upstream"
+    );
+
+    gate.release();
+    assert_eq!(holding.await.expect("the held request"), 200);
+    wait_until("the permit comes back", PATIENCE, || {
+        app.limits.download_available() == 1
+    })
+    .await;
+    assert_eq!(harness.server.get(&second).await.status().as_u16(), 200);
     drop(app);
     harness.shutdown().await;
 }

@@ -16,6 +16,7 @@
 //!   the record to keep.
 
 use turso::Connection;
+use turso::transaction::Transaction;
 
 use std::fmt;
 
@@ -23,7 +24,7 @@ use std::fmt;
 /// written by a different version is refused rather than migrated: there is no
 /// deployed database to migrate (SPEC §10), and the first release that needs one
 /// will add a real migration step here.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The `turso` release this build was compiled against, recorded so a diagnosis can
 /// tell which engine wrote the file. Kept in step with `Cargo.toml` by
@@ -33,7 +34,8 @@ pub const TURSO_CRATE_VERSION: &str = "0.7.2";
 /// Slice 3 persisted the schema row and the last accepted blocklist; slice 5 added
 /// the project snapshot and the artifact reference; slice 7 adds the permanent
 /// digest pins (SPEC §15, STATE-01) and the content table of SPEC §10; slice 15 adds
-/// `projects.fetched_at_micros`.
+/// `projects.fetched_at_micros`; version 5 indexes `artifact_references.content_key`,
+/// which every evicted object's mapping is cleared by.
 ///
 /// `fetched_at_micros` is the last FULL fetch, which is the only age SPEC rev 3
 /// §10's maximum-age ceiling reads. It is a column of its own rather than a reuse of
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS artifact_references (
 );
 CREATE INDEX IF NOT EXISTS artifact_references_by_project
     ON artifact_references (ecosystem, name);
+CREATE INDEX IF NOT EXISTS artifact_references_by_content
+    ON artifact_references (content_key);
 CREATE TABLE IF NOT EXISTS content (
     key BLOB PRIMARY KEY,
     sha512 BLOB NOT NULL,
@@ -105,18 +109,16 @@ CREATE TABLE IF NOT EXISTS content (
 /// Everything happens in one transaction, so a crash here leaves either the schema
 /// this build expects or nothing at all — never half of it.
 pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
-    let transaction = connection
-        .transaction()
-        .await
-        .map_err(SchemaError::Database)?;
+    let transaction = connection.transaction().await?;
+    let result = ensure_in(&transaction).await;
+    super::settle(transaction, result).await
+}
 
+async fn ensure_in(transaction: &Transaction<'_>) -> Result<(), SchemaError> {
     // `execute_batch` is not available on a transaction, so the statements are
     // issued one at a time inside it.
     for statement in DDL.split_inclusive(';').filter(|s| !s.trim().is_empty()) {
-        transaction
-            .execute(statement, ())
-            .await
-            .map_err(SchemaError::Database)?;
+        transaction.execute(statement, ()).await?;
     }
 
     let mut rows = transaction
@@ -124,10 +126,9 @@ pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
             "SELECT schema_version, engine_version FROM schema_meta WHERE id = 1",
             (),
         )
-        .await
-        .map_err(SchemaError::Database)?;
+        .await?;
 
-    let recorded = match rows.next().await.map_err(SchemaError::Database)? {
+    let recorded = match rows.next().await? {
         Some(row) => {
             let version = row
                 .get_value(0)
@@ -147,7 +148,7 @@ pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
 
     match recorded {
         // A database this build did not write. Refuse, and change nothing: the
-        // transaction is rolled back on the way out.
+        // transaction, tables and all, is rolled back on the way out.
         Some((version, _)) if version != SCHEMA_VERSION => {
             return Err(SchemaError::Mismatch {
                 found: version,
@@ -165,8 +166,7 @@ pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
                     "UPDATE schema_meta SET engine_version = ?1 WHERE id = 1",
                     (TURSO_CRATE_VERSION,),
                 )
-                .await
-                .map_err(SchemaError::Database)?;
+                .await?;
         }
         Some(_) => {}
         None => {
@@ -175,12 +175,10 @@ pub async fn ensure(connection: &mut Connection) -> Result<(), SchemaError> {
                     "INSERT INTO schema_meta (id, schema_version, engine_version) VALUES (1, ?1, ?2)",
                     (SCHEMA_VERSION, TURSO_CRATE_VERSION),
                 )
-                .await
-                .map_err(SchemaError::Database)?;
+                .await?;
         }
     }
-
-    transaction.commit().await.map_err(SchemaError::Database)
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -195,6 +193,12 @@ pub enum SchemaError {
     },
     /// The schema row exists but a column does not hold what this build wrote.
     Corrupt(String),
+}
+
+impl From<turso::Error> for SchemaError {
+    fn from(err: turso::Error) -> SchemaError {
+        SchemaError::Database(err)
+    }
 }
 
 impl fmt::Display for SchemaError {
@@ -240,23 +244,25 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("firewall.db");
 
+        // A database another schema wrote: two of this build's tables, and none of
+        // the rest. Refusing it must leave it exactly so — not with this build's
+        // tables added beside the rows it was refused for.
         let mut connection = open(&path).await;
-        ensure(&mut connection).await.expect("the first open");
-        connection
-            .execute(
-                "INSERT INTO blocklist (id, revision, generated_at_micros, expires_at_micros, snapshot) \
-                 VALUES (1, 42, 1, 2, ?1)",
-                (vec![7u8, 8, 9],),
-            )
-            .await
-            .expect("a row that must survive the refusal");
-        connection
-            .execute(
-                "UPDATE schema_meta SET schema_version = 999 WHERE id = 1",
-                (),
-            )
-            .await
-            .expect("the schema row is aged by hand");
+        for statement in [
+            "CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, \
+             engine_version TEXT NOT NULL)",
+            "INSERT INTO schema_meta (id, schema_version, engine_version) VALUES (1, 999, 'x')",
+            "CREATE TABLE blocklist (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, \
+             generated_at_micros INTEGER NOT NULL, expires_at_micros INTEGER NOT NULL, \
+             snapshot BLOB NOT NULL)",
+            "INSERT INTO blocklist (id, revision, generated_at_micros, expires_at_micros, snapshot) \
+             VALUES (1, 42, 1, 2, x'070809')",
+        ] {
+            connection
+                .execute(statement, ())
+                .await
+                .expect("the other schema's database");
+        }
 
         let refused = ensure(&mut connection).await;
         assert!(
@@ -269,6 +275,15 @@ mod tests {
             ),
             "a database this build does not understand is refused: {refused:?}"
         );
+        let refused = refused.expect_err("the refusal");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the database carries schema version 999, this build understands \
+                 {SCHEMA_VERSION}; it is left untouched"
+            )
+        );
+        assert!(std::error::Error::source(&refused).is_none());
 
         let mut rows = connection
             .query("SELECT schema_version FROM schema_meta WHERE id = 1", ())
@@ -291,6 +306,93 @@ mod tests {
             Some(42),
             "and the records the refusal exists to protect are untouched"
         );
+
+        let mut rows = connection
+            .query("SELECT name FROM sqlite_schema ORDER BY name", ())
+            .await
+            .expect("the schema listing");
+        let mut tables = Vec::new();
+        while let Some(row) = rows.next().await.expect("a row") {
+            tables.push(row.get_value(0).expect("a name").as_text().cloned());
+        }
+        assert_eq!(
+            tables,
+            vec![Some("blocklist".to_owned()), Some("schema_meta".to_owned())],
+            "and nothing this build would have created was"
+        );
+    }
+
+    /// Eviction clears one content key's mappings per evicted object, so that
+    /// statement must find its rows through an index rather than by reading every
+    /// reference this instance has ever seen.
+    #[tokio::test]
+    async fn clearing_a_content_key_is_an_index_lookup() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut connection = open(&dir.path().join("firewall.db")).await;
+        ensure(&mut connection).await.expect("the schema");
+
+        let mut rows = connection
+            .query(
+                &format!(
+                    "EXPLAIN QUERY PLAN {}",
+                    crate::store::CLEAR_REFERENCE_CONTENT
+                ),
+                (vec![0u8; 32],),
+            )
+            .await
+            .expect("the plan");
+        let mut plan = Vec::new();
+        while let Some(row) = rows.next().await.expect("a plan row") {
+            plan.push(
+                row.get_value(3)
+                    .ok()
+                    .and_then(|value| value.as_text().cloned())
+                    .unwrap_or_default(),
+            );
+        }
+        assert!(
+            plan.iter().any(|step| step.contains("USING INDEX")),
+            "the clear is a scan: {plan:?}"
+        );
+    }
+
+    /// A table this build's DDL cannot build on is the engine's error, passed on.
+    #[tokio::test]
+    async fn a_schema_that_will_not_build_is_the_engines_error() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut connection = open(&dir.path().join("firewall.db")).await;
+        connection
+            .execute(
+                "CREATE TABLE artifact_references (id BLOB PRIMARY KEY, ecosystem TEXT, name TEXT)",
+                (),
+            )
+            .await
+            .expect("a table without the column the index needs");
+
+        let refused = ensure(&mut connection).await.expect_err("the DDL fails");
+        assert!(matches!(refused, SchemaError::Database(_)), "{refused:?}");
+        assert!(!refused.to_string().is_empty());
+        assert!(std::error::Error::source(&refused).is_some());
+    }
+
+    /// A schema row that does not hold what this build wrote is named, not guessed.
+    #[tokio::test]
+    async fn an_unreadable_schema_row_is_named() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut connection = open(&dir.path().join("firewall.db")).await;
+        for statement in [
+            "CREATE TABLE schema_meta (id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, \
+             engine_version TEXT NOT NULL)",
+            "INSERT INTO schema_meta (id, schema_version, engine_version) VALUES (1, 'five', 'x')",
+        ] {
+            connection.execute(statement, ()).await.expect("the damage");
+        }
+
+        let refused = ensure(&mut connection)
+            .await
+            .expect_err("the row is unreadable");
+        assert_eq!(refused.to_string(), "unreadable schema_meta.schema_version");
+        assert!(std::error::Error::source(&refused).is_none());
     }
 
     /// A different engine release is a note to record, not an outage: the pinned

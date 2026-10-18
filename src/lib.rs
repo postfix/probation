@@ -221,9 +221,14 @@ impl App {
         delivery_tasks.push(osv_task);
 
         let app = Arc::new(App {
+            // SPEC §4's `max_upstream_requests`, around whichever transport was
+            // injected. Ahead of `config`, which the next field moves.
+            transport: upstream::Limited::wrap(
+                deps.transport,
+                deps.config.max_upstream_requests.get() as usize,
+            ),
             config: deps.config,
             clock: deps.clock,
-            transport: deps.transport,
             origins: deps.origins,
             policy: ArcSwapOption::empty(),
             store,

@@ -26,6 +26,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use turso::Connection;
+use turso::transaction::{DropBehavior, Transaction};
 
 use crate::artifacts::content::ContentKey;
 use crate::policy::{BlocklistSnapshot, Digest, Ecosystem, HashAlgorithm};
@@ -33,7 +34,8 @@ use crate::store::cache::{MemoryCaches, ProjectKey};
 use crate::store::lock::DataDirLock;
 use crate::store::rows::{
     BlocklistRow, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceRow,
-    ReferenceUpsert, encode_digests,
+    ReferenceUpsert, digest, encode_digests, integer, optional_digest, optional_integer,
+    optional_unsigned, text, unsigned,
 };
 
 /// How many commands may wait on each queue before the store refuses more. SPEC
@@ -113,6 +115,13 @@ const DELETE_CONTENT: &str = "DELETE FROM content WHERE key = ?1";
 const SELECT_CONTENT_BY_ACCESS: &str =
     "SELECT key, size FROM content ORDER BY accessed_micros ASC, key ASC";
 
+/// A row written and deleted again in one transaction: a real commit, through the
+/// log and its `fsync`, that leaves every record as it was. Rewriting a value with
+/// itself is not one — the engine commits it without writing a frame.
+const PROBE_INSERT: &str = "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+     fetched_at_micros, generation, digest_generation) VALUES ('probe', '', x'', 0, 0, 0, 0)";
+const PROBE_DELETE: &str = "DELETE FROM projects WHERE ecosystem = 'probe'";
+
 /// SPEC §10: "access updates batched off the request path".
 const TOUCH_CONTENT: &str = "UPDATE content SET accessed_micros = ?2 WHERE key = ?1";
 
@@ -190,8 +199,11 @@ pub struct StoreHandle {
     /// counter summary reads the same number.
     issued: Arc<AtomicU64>,
     /// What [`StoreHandle::is_healthy`] answers with, and therefore half of what
-    /// `/health/ready` answers with.
+    /// `/health/ready` answers with. Written by the store task only.
     healthy: Arc<AtomicBool>,
+    /// The content directory's half of the same answer: false from a refused content
+    /// write until one succeeds again ([`StoreHandle::note_content_write`]).
+    content_healthy: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -290,6 +302,10 @@ enum StoreCommand {
     Checkpoint {
         reply: oneshot::Sender<StoreResult<()>>,
     },
+    /// See [`StoreHandle::probe`].
+    Probe {
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
 }
 
 impl StoreHandle {
@@ -308,6 +324,7 @@ impl StoreHandle {
             caches,
             issued: Arc::new(AtomicU64::new(0)),
             healthy: Arc::new(AtomicBool::new(false)),
+            content_healthy: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -466,6 +483,14 @@ impl StoreHandle {
             .await
     }
 
+    /// [`StoreHandle::clear_content_key`] for an object the maintenance pass evicted,
+    /// on the maintenance queue: a pass that evicts a thousand objects must not put a
+    /// thousand commands ahead of a blocklist commit (SPEC §10).
+    pub async fn clear_evicted_content(&self, key: ContentKey) -> StoreResult<()> {
+        self.maintenance(|reply| StoreCommand::ClearContentKey { key, reply })
+            .await
+    }
+
     /// SPEC §9: "If a computed digest reveals a block not visible in upstream
     /// metadata, invalidate that project's filtered metadata."
     pub async fn bump_digest_generation(
@@ -518,27 +543,36 @@ impl StoreHandle {
 
     /// Whether storage is usable right now. False when the database never opened,
     /// and false from the moment a command fails with a database or corruption
-    /// error until one succeeds again — SPEC §10: "Storage write failures make
-    /// readiness false […] until storage is usable again."
+    /// error until a *write* succeeds again — SPEC §10: "Storage write failures make
+    /// readiness false […] until storage is usable again." A read that succeeds is
+    /// not evidence that the next commit will.
+    ///
+    /// The store task records each outcome as it executes the command, so the flag
+    /// follows the order commands ran in rather than the order their callers woke.
     pub fn is_healthy(&self) -> bool {
         match &self.channels {
-            Channels::Live { .. } => self.healthy.load(Ordering::Relaxed),
+            Channels::Live { .. } => {
+                self.healthy.load(Ordering::Relaxed) && self.content_healthy.load(Ordering::Relaxed)
+            }
             Channels::Unusable { .. } => false,
         }
     }
 
-    /// One place both queues record what a command did to storage health, so a new
-    /// command cannot forget to.
-    fn observe<T>(&self, result: StoreResult<T>) -> StoreResult<T> {
-        match &result {
-            Ok(_) => self.healthy.store(true, Ordering::Relaxed),
-            Err(StoreError::Database(_) | StoreError::Corrupt(_)) => {
-                self.healthy.store(false, Ordering::Relaxed)
-            }
-            // A full queue or a stopped task is not damage to the database.
-            Err(StoreError::Busy | StoreError::Closed) => {}
-        }
-        result
+    /// What a write to the content directory showed. SPEC §10 makes a storage write
+    /// failure a readiness failure, and the artifact bytes are storage as much as the
+    /// database is: a refused write turns readiness false, and only a write that
+    /// succeeds turns it back.
+    pub fn note_content_write(&self, succeeded: bool) {
+        self.content_healthy.store(succeeded, Ordering::Relaxed);
+    }
+
+    /// A write that changes nothing, for the maintenance pass to find out whether a
+    /// database that refused a write takes one again. Without it an instance that a
+    /// readiness probe took out of rotation would receive no request whose write
+    /// could ever bring it back.
+    pub async fn probe(&self) -> StoreResult<()> {
+        self.maintenance(|reply| StoreCommand::Probe { reply })
+            .await
     }
 
     async fn critical<T>(
@@ -546,11 +580,10 @@ impl StoreHandle {
         command: impl FnOnce(oneshot::Sender<StoreResult<T>>) -> StoreCommand,
     ) -> StoreResult<T> {
         self.issued.fetch_add(1, Ordering::Relaxed);
-        let result = match &self.channels {
+        match &self.channels {
             Channels::Live { critical, .. } => send(critical, command).await,
             Channels::Unusable { reason, .. } => Err(StoreError::Corrupt(reason.to_string())),
-        };
-        self.observe(result)
+        }
     }
 
     async fn maintenance<T>(
@@ -558,11 +591,10 @@ impl StoreHandle {
         command: impl FnOnce(oneshot::Sender<StoreResult<T>>) -> StoreCommand,
     ) -> StoreResult<T> {
         self.issued.fetch_add(1, Ordering::Relaxed);
-        let result = match &self.channels {
+        match &self.channels {
             Channels::Live { maintenance, .. } => send(maintenance, command).await,
             Channels::Unusable { reason, .. } => Err(StoreError::Corrupt(reason.to_string())),
-        };
-        self.observe(result)
+        }
     }
 }
 
@@ -584,8 +616,15 @@ async fn send<T>(
 /// connection; the join handle lets a clean shutdown wait for the task to finish
 /// whatever it was doing.
 ///
+/// The task runs on an OS thread of its own, on a single-threaded runtime of its
+/// own. The engine's file I/O blocks inside `poll` — `synchronous=FULL` is an
+/// `fsync` per commit — so on a worker of the serving runtime every commit would
+/// stall whatever else that worker had to do. The queues are unchanged: callers
+/// still send a command and await a reply.
+///
 /// The task owns the data-directory lock as well as the connection, so the lock is
-/// released after the connection is closed rather than before it.
+/// released after the connection is closed rather than before it, and the join
+/// handle completes only after both.
 pub fn spawn(
     connection: Connection,
     lock: DataDirLock,
@@ -593,8 +632,31 @@ pub fn spawn(
 ) -> (StoreHandle, JoinHandle<()>) {
     let (critical_tx, critical_rx) = mpsc::channel(QUEUE_DEPTH);
     let (maintenance_tx, maintenance_rx) = mpsc::channel(QUEUE_DEPTH);
+    let healthy = Arc::new(AtomicBool::new(true));
 
-    let task = tokio::spawn(run(connection, lock, critical_rx, maintenance_rx));
+    let (stopped_tx, stopped_rx) = oneshot::channel::<()>();
+    let task_health = Arc::clone(&healthy);
+    std::thread::Builder::new()
+        .name("probation-store".to_owned())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("the storage runtime builds");
+            runtime.block_on(run(
+                connection,
+                lock,
+                critical_rx,
+                maintenance_rx,
+                task_health,
+            ));
+            let _ = stopped_tx.send(());
+        })
+        .expect("the storage thread starts");
+    // A panic on the storage thread drops the sender, which ends this as well.
+    let task = tokio::spawn(async move {
+        let _ = stopped_rx.await;
+    });
 
     (
         StoreHandle {
@@ -604,7 +666,8 @@ pub fn spawn(
             },
             caches,
             issued: Arc::new(AtomicU64::new(0)),
-            healthy: Arc::new(AtomicBool::new(true)),
+            healthy,
+            content_healthy: Arc::new(AtomicBool::new(true)),
         },
         task,
     )
@@ -615,6 +678,7 @@ async fn run(
     lock: DataDirLock,
     mut critical: mpsc::Receiver<StoreCommand>,
     mut maintenance: mpsc::Receiver<StoreCommand>,
+    healthy: Arc<AtomicBool>,
 ) {
     loop {
         let command = tokio::select! {
@@ -627,7 +691,7 @@ async fn run(
             else => break,
         };
 
-        execute(&mut connection, command).await;
+        execute(&mut connection, command, &healthy).await;
     }
 
     // Explicit, and in this order: the connection closes, and only then is the data
@@ -636,43 +700,51 @@ async fn run(
     drop(lock);
 }
 
-async fn execute(connection: &mut Connection, command: StoreCommand) {
+/// Runs one command and records what it showed about storage health before the
+/// caller hears the answer.
+async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &AtomicBool) {
     match command {
         StoreCommand::CommitBlocklist { snapshot, reply } => {
-            let _ = reply.send(commit_blocklist(connection, &snapshot).await);
+            let result = commit_blocklist(connection, &snapshot).await;
+            answer(healthy, WRITE, reply, result);
         }
         StoreCommand::LoadBlocklist { reply } => {
-            let _ = reply.send(load_blocklist(connection).await);
+            answer(healthy, READ, reply, load_blocklist(connection).await);
         }
         StoreCommand::GetProject {
             ecosystem,
             name,
             reply,
         } => {
-            let _ = reply.send(get_project(connection, ecosystem, &name).await);
+            let result = get_project(connection, ecosystem, &name).await;
+            answer(healthy, READ, reply, result);
         }
         StoreCommand::CommitProjectRefresh { refresh, reply } => {
-            let _ = reply.send(commit_project_refresh(connection, &refresh).await);
+            let result = commit_project_refresh(connection, &refresh).await;
+            answer(healthy, WRITE, reply, result);
         }
         StoreCommand::GetReference { id, reply } => {
-            let _ = reply.send(get_reference(connection, id).await);
+            answer(healthy, READ, reply, get_reference(connection, id).await);
         }
         StoreCommand::ListProjectFirstSeen {
             ecosystem,
             name,
             reply,
         } => {
-            let _ = reply.send(list_project_first_seen(connection, ecosystem, &name).await);
+            let result = list_project_first_seen(connection, ecosystem, &name).await;
+            answer(healthy, READ, reply, result);
         }
         StoreCommand::ListKnownProjects { ecosystem, reply } => {
-            let _ = reply.send(list_known_projects(connection, ecosystem).await);
+            let result = list_known_projects(connection, ecosystem).await;
+            answer(healthy, READ, reply, result);
         }
         StoreCommand::ListProjectPins {
             ecosystem,
             name,
             reply,
         } => {
-            let _ = reply.send(list_project_pins(connection, ecosystem, &name).await);
+            let result = list_project_pins(connection, ecosystem, &name).await;
+            answer(healthy, READ, reply, result);
         }
         StoreCommand::PinComputedDigests {
             id,
@@ -681,7 +753,10 @@ async fn execute(connection: &mut Connection, command: StoreCommand) {
             size,
             reply,
         } => {
-            let _ = reply.send(pin_computed_digests(connection, id, sha256, sha512, size).await);
+            let result = pin_computed_digests(connection, id, sha256, sha512, size).await;
+            // Only an established pin wrote anything; a match or a conflict read.
+            let wrote = matches!(result, Ok(PinOutcome::Established));
+            answer(healthy, wrote, reply, result);
         }
         StoreCommand::PublishContent {
             key,
@@ -691,30 +766,65 @@ async fn execute(connection: &mut Connection, command: StoreCommand) {
             now_micros,
             reply,
         } => {
-            let _ =
-                reply.send(publish_content(connection, key, sha512, size, id, now_micros).await);
+            let result = publish_content(connection, key, sha512, size, id, now_micros).await;
+            answer(healthy, WRITE, reply, result);
         }
         StoreCommand::ClearContentKey { key, reply } => {
-            let _ = reply.send(clear_content_key(connection, key).await);
+            let result = clear_content_key(connection, key).await;
+            answer(healthy, WRITE, reply, result);
         }
         StoreCommand::BumpDigestGeneration {
             ecosystem,
             name,
             reply,
         } => {
-            let _ = reply.send(bump_digest_generation(connection, ecosystem, &name).await);
+            let result = bump_digest_generation(connection, ecosystem, &name).await;
+            answer(healthy, WRITE, reply, result);
         }
         StoreCommand::TouchContent { keys } => {
-            if let Err(err) = touch_content(connection, &keys).await {
+            let result = touch_content(connection, &keys).await;
+            record(healthy, WRITE, &result);
+            if let Err(err) = result {
                 tracing::debug!(error = %err, "a batch of access times could not be written");
             }
         }
         StoreCommand::EvictionPlan { reply } => {
-            let _ = reply.send(eviction_plan(connection).await);
+            answer(healthy, READ, reply, eviction_plan(connection).await);
         }
         StoreCommand::Checkpoint { reply } => {
-            let _ = reply.send(checkpoint(connection).await);
+            answer(healthy, READ, reply, checkpoint(connection).await);
         }
+        StoreCommand::Probe { reply } => {
+            answer(healthy, WRITE, reply, probe(connection).await);
+        }
+    }
+}
+
+const WRITE: bool = true;
+const READ: bool = false;
+
+fn answer<T>(
+    healthy: &AtomicBool,
+    wrote: bool,
+    reply: oneshot::Sender<StoreResult<T>>,
+    result: StoreResult<T>,
+) {
+    record(healthy, wrote, &result);
+    let _ = reply.send(result);
+}
+
+/// What one executed command showed about storage health. Any database or
+/// corruption error marks it unhealthy; only a write that succeeded marks it healthy
+/// again.
+fn record<T>(healthy: &AtomicBool, wrote: bool, result: &StoreResult<T>) {
+    match result {
+        Ok(_) if wrote => healthy.store(true, Ordering::Relaxed),
+        Ok(_) => {}
+        Err(StoreError::Database(_) | StoreError::Corrupt(_)) => {
+            healthy.store(false, Ordering::Relaxed);
+        }
+        // Neither is produced by a command the task executed.
+        Err(StoreError::Busy | StoreError::Closed) => {}
     }
 }
 
@@ -755,23 +865,8 @@ async fn list_project_first_seen(
         .await?;
     let mut first_seen = HashMap::new();
     while let Some(row) = rows.next().await? {
-        let id = row
-            .get_value(0)
-            .ok()
-            .and_then(|value| value.as_blob().cloned())
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
-            .ok_or_else(|| {
-                StoreError::Corrupt("artifact_references.id is not 32 bytes".to_owned())
-            })?;
-        let micros = row
-            .get_value(1)
-            .ok()
-            .and_then(|value| value.as_integer().copied())
-            .ok_or_else(|| {
-                StoreError::Corrupt(
-                    "artifact_references.first_seen_micros is not an integer".to_owned(),
-                )
-            })?;
+        let id = digest(&row, 0, "artifact_references.id")?;
+        let micros = integer(&row, 1, "artifact_references.first_seen_micros")?;
         first_seen.insert(ReferenceId::from_bytes(id), micros);
     }
     Ok(first_seen)
@@ -787,32 +882,17 @@ async fn list_project_pins(
         .await?;
     let mut pins = HashMap::new();
     while let Some(row) = rows.next().await? {
-        let blob = |index: usize| {
-            row.get_value(index)
-                .ok()
-                .and_then(|value| value.as_blob().cloned())
-        };
-        let id = blob(0)
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
-            .ok_or_else(|| {
-                StoreError::Corrupt("artifact_references.id is not 32 bytes".to_owned())
-            })?;
-
-        let mut digests = Vec::with_capacity(2);
-        for (index, algorithm) in [(1, HashAlgorithm::Sha256), (2, HashAlgorithm::Sha512)] {
-            if let Some(bytes) = blob(index) {
-                if bytes.len() != algorithm.digest_len() {
-                    return Err(StoreError::Corrupt(format!(
-                        "a pinned {algorithm} digest is {} bytes",
-                        bytes.len()
-                    )));
-                }
-                digests.push(Digest {
-                    algorithm,
-                    bytes: bytes.into_boxed_slice(),
-                });
-            }
-        }
+        let id = digest(&row, 0, "artifact_references.id")?;
+        let sha256 = optional_digest::<32>(&row, 1, "artifact_references.pinned_sha256")?;
+        let sha512 = optional_digest::<64>(&row, 2, "artifact_references.pinned_sha512")?;
+        let digests = [
+            sha256.map(|bytes| (HashAlgorithm::Sha256, Box::from(bytes.as_slice()))),
+            sha512.map(|bytes| (HashAlgorithm::Sha512, Box::from(bytes.as_slice()))),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(algorithm, bytes)| Digest { algorithm, bytes })
+        .collect();
         pins.insert(ReferenceId::from_bytes(id), digests);
     }
     Ok(pins)
@@ -827,14 +907,35 @@ async fn list_known_projects(
         .await?;
     let mut names = Vec::new();
     while let Some(row) = rows.next().await? {
-        let name = row
-            .get_value(0)
-            .ok()
-            .and_then(|value| value.as_text().cloned())
-            .ok_or_else(|| StoreError::Corrupt("projects.name is not text".to_owned()))?;
-        names.push(name);
+        names.push(text(&row, 0, "projects.name")?);
     }
     Ok(names)
+}
+
+/// Ends a transaction the way its body ended: committed on `Ok`, rolled back on
+/// `Err`. Explicitly, both ways, so a failed command never leaves its transaction
+/// open for the engine to roll back at the start of the next, unrelated command —
+/// which would then be the one to fail if that rollback did.
+async fn settle<T, E: From<turso::Error>>(
+    mut transaction: Transaction<'_>,
+    result: Result<T, E>,
+) -> Result<T, E> {
+    // Whichever way this goes, nothing is left for the next command to finish.
+    transaction.set_drop_behavior(DropBehavior::Ignore);
+    let result = match result {
+        Ok(value) => transaction
+            .execute("COMMIT", ())
+            .await
+            .map(|_| value)
+            .map_err(E::from),
+        Err(err) => Err(err),
+    };
+    if result.is_err() {
+        // Fails only when the engine already ended the transaction itself, which
+        // leaves nothing to undo.
+        let _ = transaction.rollback().await;
+    }
+    result
 }
 
 /// What a committed refresh hands back: the generation the caller may now publish,
@@ -853,47 +954,43 @@ pub struct CommittedProject {
 ///
 /// Nothing here overwrites an existing first-seen value: SPEC §5 requires that a
 /// restart must not reset it, and a refresh is a restart's daytime equivalent. An
-/// error anywhere drops the transaction, which rolls it back, and no generation is
-/// returned — so the caller has nothing to publish.
+/// error anywhere rolls the transaction back and no generation is returned — so the
+/// caller has nothing to publish. A stored value that does not decode is such an
+/// error: a generation read as zero would hand out a generation already used.
 async fn commit_project_refresh(
     connection: &mut Connection,
     refresh: &ProjectRefresh,
 ) -> StoreResult<CommittedProject> {
     let transaction = connection.transaction().await?;
+    let result = refresh_in(&transaction, refresh).await;
+    settle(transaction, result).await
+}
 
-    let mut generation = Generation(1);
-    let mut digest_generation = 0u64;
-    {
+async fn refresh_in(
+    transaction: &Transaction<'_>,
+    refresh: &ProjectRefresh,
+) -> StoreResult<CommittedProject> {
+    let (generation, digest_generation) = {
         let mut rows = transaction
             .query(
                 SELECT_PROJECT_GENERATIONS,
                 (refresh.ecosystem.as_tag(), refresh.name.as_str()),
             )
             .await?;
-        if let Some(row) = rows.next().await? {
-            let previous = row
-                .get_value(0)
-                .ok()
-                .and_then(|value| value.as_integer().copied())
-                .unwrap_or(0);
-            generation = Generation(u64::try_from(previous).unwrap_or(0).saturating_add(1));
-            digest_generation = row
-                .get_value(1)
-                .ok()
-                .and_then(|value| value.as_integer().copied())
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or(0);
+        match rows.next().await? {
+            Some(row) => (
+                Generation(unsigned(&row, 0, "projects.generation")?.saturating_add(1)),
+                unsigned(&row, 1, "projects.digest_generation")?,
+            ),
+            None => (Generation(1), 0),
         }
-    }
+    };
 
     let generation_column = i64::try_from(generation.0).map_err(|_| {
         StoreError::Corrupt(format!("generation {} cannot be stored", generation.0))
     })?;
-    let digest_generation_column = i64::try_from(digest_generation).map_err(|_| {
-        StoreError::Corrupt(format!(
-            "digest generation {digest_generation} cannot be stored"
-        ))
-    })?;
+    // Read back from an `INTEGER` column and never incremented here, so it fits.
+    let digest_generation_column = digest_generation.cast_signed();
 
     transaction
         .execute(
@@ -914,7 +1011,7 @@ async fn commit_project_refresh(
 
     let mut committed_first_seen = HashMap::new();
     for upsert in &refresh.references {
-        let carried = carried_forward(&transaction, upsert).await?;
+        let carried = carried_forward(transaction, upsert).await?;
         transaction
             .execute(
                 REPLACE_REFERENCE,
@@ -928,10 +1025,10 @@ async fn commit_project_refresh(
                     encode_digests(&upsert.reference.expected),
                     upsert.publication_micros,
                     carried.first_seen_micros,
-                    carried.pinned_sha256,
-                    carried.pinned_sha512,
+                    carried.pinned_sha256.map(|bytes| bytes.to_vec()),
+                    carried.pinned_sha512.map(|bytes| bytes.to_vec()),
                     carried.pinned_size,
-                    carried.content_key,
+                    carried.content_key.map(|bytes| bytes.to_vec()),
                 ),
             )
             .await?;
@@ -940,7 +1037,6 @@ async fn commit_project_refresh(
         }
     }
 
-    transaction.commit().await?;
     Ok(CommittedProject {
         generation,
         digest_generation,
@@ -959,14 +1055,14 @@ async fn commit_project_refresh(
 #[derive(Default)]
 struct Carried {
     first_seen_micros: Option<i64>,
-    pinned_sha256: Option<Vec<u8>>,
-    pinned_sha512: Option<Vec<u8>>,
+    pinned_sha256: Option<[u8; 32]>,
+    pinned_sha512: Option<[u8; 64]>,
     pinned_size: Option<i64>,
-    content_key: Option<Vec<u8>>,
+    content_key: Option<[u8; 32]>,
 }
 
 async fn carried_forward(
-    transaction: &turso::transaction::Transaction<'_>,
+    transaction: &Transaction<'_>,
     upsert: &ReferenceUpsert,
 ) -> StoreResult<Carried> {
     let mut rows = transaction
@@ -979,23 +1075,17 @@ async fn carried_forward(
         });
     };
 
-    let integer = |index: usize| {
-        row.get_value(index)
-            .ok()
-            .and_then(|value| value.as_integer().copied())
-    };
-    let blob = |index: usize| {
-        row.get_value(index)
-            .ok()
-            .and_then(|value| value.as_blob().cloned())
-    };
-
+    // Strict, every one: a damaged first-seen time read as absent would be replaced
+    // by this refresh's `now`, and a damaged pin carried forward would be written
+    // back as though it were one.
     Ok(Carried {
-        first_seen_micros: integer(0).or(upsert.first_seen_micros),
-        pinned_sha256: blob(1),
-        pinned_sha512: blob(2),
-        pinned_size: integer(3),
-        content_key: blob(4),
+        first_seen_micros: optional_integer(&row, 0, "artifact_references.first_seen_micros")?
+            .or(upsert.first_seen_micros),
+        pinned_sha256: optional_digest(&row, 1, "artifact_references.pinned_sha256")?,
+        pinned_sha512: optional_digest(&row, 2, "artifact_references.pinned_sha512")?,
+        pinned_size: optional_unsigned(&row, 3, "artifact_references.pinned_size")?
+            .map(|size| size as i64),
+        content_key: optional_digest(&row, 4, "artifact_references.content_key")?,
     })
 }
 
@@ -1012,42 +1102,36 @@ async fn pin_computed_digests(
     size: u64,
 ) -> StoreResult<PinOutcome> {
     let transaction = connection.transaction().await?;
+    let result = pin_in(&transaction, id, sha256, sha512, size).await;
+    settle(transaction, result).await
+}
 
-    let established = {
-        let mut rows = transaction
-            .query(SELECT_REFERENCE_PINS, (id.as_bytes().to_vec(),))
-            .await?;
-        match rows.next().await? {
-            Some(row) => {
-                let pinned_sha256 = row
-                    .get_value(0)
-                    .ok()
-                    .and_then(|value| value.as_blob().cloned());
-                let pinned_sha512 = row
-                    .get_value(1)
-                    .ok()
-                    .and_then(|value| value.as_blob().cloned());
-                let pinned_size = row
-                    .get_value(2)
-                    .ok()
-                    .and_then(|value| value.as_integer().copied());
-                pinned_sha256.map(|first| (first, pinned_sha512, pinned_size))
-            }
-            None => {
-                return Err(StoreError::Corrupt(format!(
-                    "no artifact reference {} to pin digests on",
-                    id.to_hex()
-                )));
-            }
-        }
+async fn pin_in(
+    transaction: &Transaction<'_>,
+    id: ReferenceId,
+    sha256: [u8; 32],
+    sha512: [u8; 64],
+    size: u64,
+) -> StoreResult<PinOutcome> {
+    let mut rows = transaction
+        .query(SELECT_REFERENCE_PINS, (id.as_bytes().to_vec(),))
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Err(StoreError::Corrupt(format!(
+            "no artifact reference {} to pin digests on",
+            id.to_hex()
+        )));
     };
+    let pinned_sha256 = optional_digest::<32>(&row, 0, "artifact_references.pinned_sha256")?;
+    let pinned_sha512 = optional_digest::<64>(&row, 1, "artifact_references.pinned_sha512")?;
+    let pinned_size = optional_unsigned(&row, 2, "artifact_references.pinned_size")?;
+    drop(rows);
 
-    if let Some((pinned_sha256, pinned_sha512, pinned_size)) = established {
-        // A pin is permanent. Nothing below writes; the transaction is dropped and
-        // rolled back either way.
-        let matches = pinned_sha256.as_slice() == sha256.as_slice()
-            && pinned_sha512.is_none_or(|stored| stored.as_slice() == sha512.as_slice())
-            && pinned_size.is_none_or(|stored| u64::try_from(stored).is_ok_and(|s| s == size));
+    if let Some(pinned_sha256) = pinned_sha256 {
+        // A pin is permanent. Nothing is written either way.
+        let matches = pinned_sha256 == sha256
+            && pinned_sha512.is_none_or(|stored| stored == sha512)
+            && pinned_size.is_none_or(|stored| stored == size);
         return Ok(if matches {
             PinOutcome::MatchedExisting
         } else {
@@ -1068,7 +1152,6 @@ async fn pin_computed_digests(
             ),
         )
         .await?;
-    transaction.commit().await?;
     Ok(PinOutcome::Established)
 }
 
@@ -1086,37 +1169,41 @@ async fn publish_content(
         .map_err(|_| StoreError::Corrupt(format!("a size of {size} cannot be stored")))?;
 
     let transaction = connection.transaction().await?;
-    transaction
-        .execute(
-            UPSERT_CONTENT,
-            (
-                key.as_bytes().to_vec(),
-                sha512.to_vec(),
-                size_column,
-                now_micros,
-            ),
-        )
-        .await?;
-    transaction
-        .execute(
-            UPDATE_REFERENCE_CONTENT,
-            (key.as_bytes().to_vec(), id.as_bytes().to_vec()),
-        )
-        .await?;
-    transaction.commit().await?;
-    Ok(())
+    let result = async {
+        transaction
+            .execute(
+                UPSERT_CONTENT,
+                (
+                    key.as_bytes().to_vec(),
+                    sha512.to_vec(),
+                    size_column,
+                    now_micros,
+                ),
+            )
+            .await?;
+        transaction
+            .execute(
+                UPDATE_REFERENCE_CONTENT,
+                (key.as_bytes().to_vec(), id.as_bytes().to_vec()),
+            )
+            .await
+    }
+    .await;
+    settle(transaction, result.map(drop).map_err(StoreError::from)).await
 }
 
 async fn clear_content_key(connection: &mut Connection, key: ContentKey) -> StoreResult<()> {
     let transaction = connection.transaction().await?;
-    transaction
-        .execute(CLEAR_REFERENCE_CONTENT, (key.as_bytes().to_vec(),))
-        .await?;
-    transaction
-        .execute(DELETE_CONTENT, (key.as_bytes().to_vec(),))
-        .await?;
-    transaction.commit().await?;
-    Ok(())
+    let result = async {
+        transaction
+            .execute(CLEAR_REFERENCE_CONTENT, (key.as_bytes().to_vec(),))
+            .await?;
+        transaction
+            .execute(DELETE_CONTENT, (key.as_bytes().to_vec(),))
+            .await
+    }
+    .await;
+    settle(transaction, result.map(drop).map_err(StoreError::from)).await
 }
 
 async fn bump_digest_generation(
@@ -1142,7 +1229,7 @@ async fn commit_blocklist(
     })?;
 
     let transaction = connection.transaction().await?;
-    transaction
+    let result = transaction
         .execute(
             UPSERT_BLOCKLIST,
             (
@@ -1152,9 +1239,8 @@ async fn commit_blocklist(
                 snapshot.raw.to_vec(),
             ),
         )
-        .await?;
-    transaction.commit().await?;
-    Ok(())
+        .await;
+    settle(transaction, result.map(drop).map_err(StoreError::from)).await
 }
 
 async fn load_blocklist(connection: &mut Connection) -> StoreResult<Option<BlocklistRow>> {
@@ -1165,15 +1251,28 @@ async fn load_blocklist(connection: &mut Connection) -> StoreResult<Option<Block
     }
 }
 
+async fn probe(connection: &mut Connection) -> StoreResult<()> {
+    let transaction = connection.transaction().await?;
+    let result = async {
+        transaction.execute(PROBE_INSERT, ()).await?;
+        transaction.execute(PROBE_DELETE, ()).await
+    }
+    .await;
+    settle(transaction, result.map(drop).map_err(StoreError::from)).await
+}
+
 async fn touch_content(connection: &mut Connection, keys: &[(ContentKey, i64)]) -> StoreResult<()> {
     let transaction = connection.transaction().await?;
-    for (key, micros) in keys {
-        transaction
-            .execute(TOUCH_CONTENT, (key.as_bytes().to_vec(), *micros))
-            .await?;
+    let result = async {
+        for (key, micros) in keys {
+            transaction
+                .execute(TOUCH_CONTENT, (key.as_bytes().to_vec(), *micros))
+                .await?;
+        }
+        Ok::<(), StoreError>(())
     }
-    transaction.commit().await?;
-    Ok(())
+    .await;
+    settle(transaction, result).await
 }
 
 /// What the cache holds right now: every object in approximate least-recently-used
@@ -1189,18 +1288,8 @@ async fn eviction_plan(connection: &mut Connection) -> StoreResult<EvictionPlan>
     let mut rows = connection.query(SELECT_CONTENT_BY_ACCESS, ()).await?;
     let mut plan = EvictionPlan::default();
     while let Some(row) = rows.next().await? {
-        let key = row
-            .get_value(0)
-            .ok()
-            .and_then(|value| value.as_blob().cloned())
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
-            .ok_or_else(|| StoreError::Corrupt("content.key is not 32 bytes".to_owned()))?;
-        let size = row
-            .get_value(1)
-            .ok()
-            .and_then(|value| value.as_integer().copied())
-            .and_then(|size| u64::try_from(size).ok())
-            .ok_or_else(|| StoreError::Corrupt("content.size is not a size".to_owned()))?;
+        let key = digest(&row, 0, "content.key")?;
+        let size = unsigned(&row, 1, "content.size")?;
         plan.total_bytes = plan.total_bytes.saturating_add(size);
         plan.oldest_first.push((ContentKey::from_sha256(key), size));
     }
@@ -1209,14 +1298,13 @@ async fn eviction_plan(connection: &mut Connection) -> StoreResult<EvictionPlan>
 
 async fn checkpoint(connection: &mut Connection) -> StoreResult<()> {
     // The pinned engine's supported API: `PRAGMA wal_checkpoint` answers
-    // (busy, log, checkpointed). A busy checkpoint is not an error — it means a
-    // reader held the log and the next pass will take it.
+    // (busy, log, checkpointed). A busy log is reported as `Busy` rather than as a
+    // success, so a pass that moved nothing says so; the next pass retries.
     let mut rows = connection.query("PRAGMA wal_checkpoint", ()).await?;
     if let Some(row) = rows.next().await?
-        && let Ok(busy) = row.get_value(0)
-        && busy.as_integer().copied() != Some(0)
+        && integer(&row, 0, "wal_checkpoint.busy")? != 0
     {
-        tracing::debug!("the write-ahead log was busy; the checkpoint will be retried");
+        return Err(StoreError::Busy);
     }
     Ok(())
 }
@@ -1233,7 +1321,8 @@ pub enum PinOutcome {
 
 #[derive(Debug)]
 pub enum StoreError {
-    /// The queue is full. SPEC §11 maps this to `503`.
+    /// The queue is full, or — for a checkpoint only — the log was in use. SPEC §11
+    /// maps this to `503`.
     Busy,
     /// The storage task is gone.
     Closed,
@@ -1351,7 +1440,334 @@ mod tests {
             "one row, replaced in place, and the checkpoint did not lose it"
         );
 
+        // Read back through the same connection, the row is there whether or not
+        // the checkpoint moved anything. The database file alone, without its log,
+        // has it only if the checkpoint really did.
+        let without_log = tempfile::tempdir().expect("a second data directory");
+        std::fs::create_dir_all(without_log.path().join("state")).expect("a state directory");
+        std::fs::copy(
+            dir.path().join("state").join("firewall.db"),
+            without_log.path().join("state").join("firewall.db"),
+        )
+        .expect("the database file alone");
         drop(store);
         task.await.expect("the storage task stops with its queues");
+
+        let opened = startup::open_and_recover(without_log.path())
+            .await
+            .expect("the copy opens");
+        let (copy, task) = spawn(
+            opened.connection.expect("the copy recovers"),
+            opened.lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        );
+        let row = copy
+            .load_blocklist()
+            .await
+            .expect("a query")
+            .expect("the checkpoint wrote the commit into the database file");
+        assert_eq!(row.revision, 4);
+        drop(copy);
+        task.await.expect("the copy's storage task stops");
+    }
+
+    fn upsert() -> ReferenceUpsert {
+        let reference = crate::store::rows::ArtifactReference {
+            ecosystem: Ecosystem::Npm,
+            name: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+            filename: "widget-1.0.0.tgz".to_owned(),
+            upstream_url: url::Url::parse("https://npm.invalid/widget/-/widget-1.0.0.tgz")
+                .expect("a test URL"),
+            expected: Vec::new(),
+        };
+        ReferenceUpsert {
+            id: ReferenceId::compute(&reference),
+            reference,
+            publication_micros: None,
+            first_seen_micros: Some(1_000),
+        }
+    }
+
+    fn refresh() -> ProjectRefresh {
+        ProjectRefresh {
+            ecosystem: Ecosystem::Npm,
+            name: "widget".to_owned(),
+            payload: Arc::from(b"{}".as_slice()),
+            validators: crate::upstream::UpstreamValidators::default(),
+            validated_at_micros: 1,
+            fetched_at_micros: 1,
+            references: vec![upsert()],
+        }
+    }
+
+    /// A store over a database holding one committed, pinned reference, damaged by
+    /// `corruption` while no store had it open.
+    async fn damaged(dir: &std::path::Path, corruption: &str) -> (StoreHandle, JoinHandle<()>) {
+        let opened = startup::open_and_recover(dir)
+            .await
+            .expect("the data directory");
+        let (store, task) = spawn(
+            opened.connection.expect("a fresh database"),
+            opened.lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        );
+        store
+            .commit_project_refresh(refresh())
+            .await
+            .expect("the seed");
+        store
+            .pin_computed_digests(upsert().id, [1; 32], [2; 64], 10)
+            .await
+            .expect("the pins");
+        drop(store);
+        task.await.expect("the first store stops");
+
+        let opened = startup::open_and_recover(dir)
+            .await
+            .expect("the data directory");
+        let connection = opened.connection.expect("the database reopens");
+        connection
+            .execute(corruption, ())
+            .await
+            .expect("the damage");
+        spawn(
+            connection,
+            opened.lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        )
+    }
+
+    /// A column that does not hold what this build wrote is corruption, and it is
+    /// reported — never decoded as zero or as absent, which would silently reset a
+    /// generation, re-grant a first-seen time, or let a pin compare equal.
+    #[tokio::test]
+    async fn a_damaged_column_is_reported_rather_than_reset() {
+        let refreshes = [
+            "UPDATE projects SET generation = 'seven'",
+            "UPDATE projects SET digest_generation = -1",
+            "UPDATE artifact_references SET first_seen_micros = 'yesterday'",
+            "UPDATE artifact_references SET pinned_sha256 = x'0102'",
+            "UPDATE artifact_references SET pinned_size = 'ten'",
+            "UPDATE artifact_references SET content_key = 'not a key'",
+        ];
+        for corruption in refreshes {
+            let dir = tempfile::tempdir().expect("a temporary data directory");
+            let (store, task) = damaged(dir.path(), corruption).await;
+            let outcome = store.commit_project_refresh(refresh()).await;
+            assert!(
+                matches!(outcome, Err(StoreError::Corrupt(_))),
+                "a refresh over `{corruption}` is refused: {outcome:?}"
+            );
+            drop(store);
+            task.await.expect("the store stops");
+        }
+
+        for corruption in [
+            "UPDATE artifact_references SET pinned_size = 'ten'",
+            "UPDATE artifact_references SET pinned_sha512 = x'0102'",
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary data directory");
+            let (store, task) = damaged(dir.path(), corruption).await;
+            let outcome = store
+                .pin_computed_digests(upsert().id, [1; 32], [2; 64], 10)
+                .await;
+            assert!(
+                matches!(outcome, Err(StoreError::Corrupt(_))),
+                "a pin check over `{corruption}` is refused: {outcome:?}"
+            );
+            drop(store);
+            task.await.expect("the store stops");
+        }
+    }
+
+    async fn fresh(dir: &std::path::Path) -> (StoreHandle, JoinHandle<()>) {
+        let opened = startup::open_and_recover(dir)
+            .await
+            .expect("the data directory");
+        spawn(
+            opened.connection.expect("a fresh database"),
+            opened.lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        )
+    }
+
+    /// The read side of the same rule: a stored record that does not decode is
+    /// reported, not reconstructed.
+    #[tokio::test]
+    async fn a_damaged_record_is_reported_when_it_is_read() {
+        for corruption in [
+            "UPDATE artifact_references SET upstream_url = 'not a url'",
+            "UPDATE artifact_references SET expected = 'garbage'",
+            "UPDATE artifact_references SET expected = 'md5-00'",
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary data directory");
+            let (store, task) = damaged(dir.path(), corruption).await;
+            let read = store.get_reference(upsert().id).await;
+            assert!(
+                matches!(read, Err(StoreError::Corrupt(_))),
+                "a reference read over `{corruption}` is refused: {read:?}"
+            );
+            drop(store);
+            task.await.expect("the store stops");
+        }
+
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+        store
+            .commit_blocklist(snapshot(3))
+            .await
+            .expect("a blocklist");
+        drop(store);
+        task.await.expect("the store stops");
+        let (store, task) = damaged(dir.path(), "UPDATE blocklist SET revision = -1").await;
+        let read = store.load_blocklist().await;
+        assert!(
+            matches!(&read, Err(StoreError::Corrupt(reason)) if reason.contains("negative")),
+            "{read:?}"
+        );
+        drop(store);
+        task.await.expect("the store stops");
+    }
+
+    /// Values this build cannot write are refused before anything is written, and a
+    /// pin for a reference that was never committed is not invented.
+    #[tokio::test]
+    async fn what_cannot_be_stored_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = damaged(
+            dir.path(),
+            "UPDATE projects SET generation = 9223372036854775807",
+        )
+        .await;
+        let refused = store.commit_project_refresh(refresh()).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Corrupt(reason)) if reason.contains("cannot be stored")),
+            "{refused:?}"
+        );
+
+        let unknown = ReferenceId::from_bytes([9; 32]);
+        let refused = store
+            .pin_computed_digests(unknown, [1; 32], [2; 64], 1)
+            .await;
+        assert!(
+            matches!(refused, Err(StoreError::Corrupt(_))),
+            "{refused:?}"
+        );
+
+        let refused = store.commit_blocklist(snapshot(u64::MAX)).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Corrupt(reason)) if reason.contains("revision")),
+            "{refused:?}"
+        );
+        drop(store);
+        task.await.expect("the store stops");
+    }
+
+    /// What every store failure says, and which ones carry the engine's own error.
+    #[tokio::test]
+    async fn store_errors_say_what_failed() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+        let mut bad = refresh();
+        bad.references[0].reference.filename.clear();
+        let failed = store
+            .commit_project_refresh(bad)
+            .await
+            .expect_err("the CHECK refuses an empty filename");
+        assert!(
+            failed.to_string().starts_with("database error: "),
+            "{failed}"
+        );
+        assert!(std::error::Error::source(&failed).is_some());
+        drop(store);
+        task.await.expect("the store stops");
+
+        for (err, text) in [
+            (StoreError::Busy, "the storage queue is full"),
+            (StoreError::Closed, "the storage task has stopped"),
+            (
+                StoreError::Corrupt("x".to_owned()),
+                "the store is unusable: x",
+            ),
+        ] {
+            assert_eq!(err.to_string(), text);
+            assert!(std::error::Error::source(&err).is_none());
+        }
+    }
+
+    /// A store that never opened answers every command with its reason, on either
+    /// queue, and is never healthy.
+    #[tokio::test]
+    async fn an_unusable_store_refuses_both_queues() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let lock = crate::store::lock::acquire(dir.path()).expect("the lock");
+        let store = StoreHandle::unusable(
+            "it never opened",
+            lock,
+            Arc::new(MemoryCaches::new(1 << 20)),
+        );
+        assert!(!store.is_healthy());
+        assert!(matches!(
+            store.load_blocklist().await,
+            Err(StoreError::Corrupt(_))
+        ));
+        assert!(matches!(
+            store.eviction_plan().await,
+            Err(StoreError::Corrupt(_))
+        ));
+        store.touch_content(vec![(ContentKey::from_sha256([1; 32]), 1)]);
+        store.touch_content(Vec::new());
+        assert_eq!(
+            store.commands_issued(),
+            3,
+            "an empty batch of access times is not a command"
+        );
+    }
+
+    /// SPEC §10: "reject overload instead of allowing unbounded waiters". With the
+    /// store inside one long transaction, a burst beyond the queue depth is refused
+    /// with `Busy` on the critical queue and dropped on the maintenance one — and the
+    /// store answers again once the transaction ends.
+    #[tokio::test]
+    async fn a_full_queue_is_refused_not_waited_on() {
+        let dir = tempfile::tempdir().expect("a temporary data directory");
+        let (store, task) = fresh(dir.path()).await;
+
+        let mut large = refresh();
+        large.references = (0..5_000)
+            .map(|index| {
+                let mut upsert = upsert();
+                upsert.reference.version = format!("1.0.{index}");
+                upsert.id = ReferenceId::compute(&upsert.reference);
+                upsert
+            })
+            .collect();
+        let busy = tokio::spawn({
+            let store = store.clone();
+            async move { store.commit_project_refresh(large).await }
+        });
+        tokio::task::yield_now().await;
+
+        for _ in 0..(QUEUE_DEPTH * 2) {
+            store.touch_content(vec![(ContentKey::from_sha256([1; 32]), 1)]);
+        }
+        let burst = futures_util::future::join_all(
+            (0..QUEUE_DEPTH * 2).map(|_| store.get_reference(upsert().id)),
+        )
+        .await;
+        assert!(
+            burst
+                .iter()
+                .any(|answer| matches!(answer, Err(StoreError::Busy))),
+            "some of the burst was refused rather than queued"
+        );
+
+        busy.await
+            .expect("the refresh task")
+            .expect("the long transaction commits");
+        assert!(store.get_reference(upsert().id).await.is_ok());
+        drop(store);
+        task.await.expect("the store stops");
     }
 }

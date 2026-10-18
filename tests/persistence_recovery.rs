@@ -187,6 +187,11 @@ async fn failed_recovery_keeps_readiness_false_and_never_recreates() {
     assert_eq!(server.status("/health/ready").await, 503);
     assert_eq!(server.status("/npm/left-pad").await, 503);
 
+    // And a maintenance pass, which probes a storage that is not healthy, cannot
+    // talk itself into readiness over a database that never opened.
+    probation::tasks::maintenance::run_once(&server.app()).await;
+    assert_eq!(server.status("/health/ready").await, 503);
+
     server.shutdown().await;
 
     assert_eq!(
@@ -360,6 +365,11 @@ async fn a_second_instance_cannot_take_the_data_directory_lock() {
         message.contains("lock"),
         "the refusal names the lock so an operator can act on it: {message}"
     );
+    // The chain ends at the lock: nothing under it failed, it is simply held.
+    let held = std::error::Error::source(&err)
+        .and_then(std::error::Error::source)
+        .expect("the lock refusal under the startup error");
+    assert!(held.source().is_none(), "{held}");
 
     server.shutdown().await;
 

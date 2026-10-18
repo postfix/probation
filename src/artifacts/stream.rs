@@ -452,5 +452,23 @@ mod tests {
             parse_range(Some("bytes=0-0"), 0),
             RangeRequest::Unsatisfiable
         );
+        assert_eq!(
+            parse_range(Some("bytes=-0"), 10),
+            RangeRequest::Unsatisfiable,
+            "the final zero bytes are no bytes at all"
+        );
+    }
+
+    /// A malformed range is not an error: RFC 9110 lets a server ignore a `Range` it
+    /// does not understand, and the complete verified body is a correct answer.
+    #[test]
+    fn a_malformed_range_is_ignored() {
+        for header in ["bytes=5", "bytes=-", "bytes=-x", "bytes=x-", "bytes=1-x"] {
+            assert_eq!(
+                parse_range(Some(header), 10),
+                RangeRequest::Whole,
+                "{header}"
+            );
+        }
     }
 }

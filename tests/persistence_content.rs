@@ -5,9 +5,9 @@
 //! commit its database mapping", and "A crash must never make a temporary file
 //! downloadable", and "Storage write failures […] never relax policy to free space."
 //!
-//! The order is read off the publication itself: `ContentStore::publish` records each
-//! step as the syscall behind it returns, so `file_sync_order_holds` is asserting on
-//! what happened rather than on what a comment says happens.
+//! The order is read off the publication itself, and each synchronisation is then
+//! made to fail: a publication that skipped one would report success where
+//! `file_sync_order_holds` requires it to fail.
 
 mod common;
 
@@ -60,6 +60,7 @@ fn document() -> String {
 
 struct Harness {
     server: TestServer,
+    registry: Arc<FakeRegistry>,
     data_dir: PathBuf,
 }
 
@@ -87,6 +88,11 @@ impl Harness {
 
     fn temp_dir(&self) -> PathBuf {
         self.data_dir.join("content").join("tmp")
+    }
+
+    /// Where the verified body lives once it is cached: its own SHA-256, fanned out.
+    fn body_object(&self) -> PathBuf {
+        self.objects_dir().join(&BODY_SHA256[..2]).join(BODY_SHA256)
     }
 
     fn object_count(&self) -> usize {
@@ -127,6 +133,7 @@ async fn start(data_dir: &Path, config: Config) -> Harness {
 
     Harness {
         server,
+        registry,
         data_dir: data_dir.to_path_buf(),
     }
 }
@@ -172,6 +179,13 @@ async fn file_sync_order_holds() {
         body().as_bytes()
     );
 
+    // The step list above is the publication describing itself. These two make the
+    // synchronisations observable from outside: each one is made to fail, and the
+    // publication has to fail with it. A publication that skipped either call would
+    // report success here.
+    assert_publication_fails_when_the_file_cannot_be_synchronised().await;
+    assert_publication_fails_when_the_directory_cannot_be_synchronised().await;
+
     // The other half, end to end: when the publication cannot complete, no mapping
     // is committed — which is only true if the commit comes after it.
     let data = tempfile::tempdir().expect("a temporary data directory");
@@ -194,9 +208,82 @@ async fn file_sync_order_holds() {
         row.content_key, None,
         "and commits no mapping to bytes that never became durable"
     );
+    assert_eq!(
+        harness.temp_count(),
+        0,
+        "and a publication that failed part way leaves no temporary file behind"
+    );
 
     set_mode(&harness.objects_dir(), 0o700);
     harness.server.shutdown().await;
+}
+
+fn entries(directory: &Path) -> usize {
+    std::fs::read_dir(directory).map_or(0, |entries| entries.count())
+}
+
+/// `fsync` on a character device is `EINVAL`, so a download whose temporary name is a
+/// link to `/dev/null` takes every write and then cannot be synchronised. The name is
+/// the first one a fresh store hands out; the link is the fault, planted where the
+/// download is about to be written.
+#[cfg(target_os = "linux")]
+async fn assert_publication_fails_when_the_file_cannot_be_synchronised() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = ContentStore::new(dir.path(), 1 << 30);
+    let first_temp = store
+        .temp_dir()
+        .join(format!("{}-0.part", std::process::id()));
+    std::os::unix::fs::symlink("/dev/null", &first_temp).expect("the fault is planted");
+
+    let key = ContentKey::from_sha256([7u8; 32]);
+    let mut temp = store.create_temp(1024).await.expect("a temporary download");
+    assert_eq!(
+        temp.path(),
+        first_temp,
+        "the download is written through the fault"
+    );
+    temp.write_all(body().as_bytes()).await.expect("the write");
+
+    assert!(
+        store.publish(temp, &key).await.is_err(),
+        "a file that cannot be synchronised is never published"
+    );
+    assert!(
+        !store.path_for(&key).exists(),
+        "and nothing was renamed into place"
+    );
+    assert_eq!(entries(&store.temp_dir()), 0, "and nothing is left in tmp/");
+    assert_eq!(store.reserved_bytes(), 0);
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn assert_publication_fails_when_the_file_cannot_be_synchronised() {}
+
+/// A fan-out directory that can be written and searched but not read: the rename
+/// into it succeeds, and opening it to synchronise the new entry does not.
+async fn assert_publication_fails_when_the_directory_cannot_be_synchronised() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = ContentStore::new(dir.path(), 1 << 30);
+    let key = ContentKey::from_sha256([8u8; 32]);
+    let fan_out = store
+        .path_for(&key)
+        .parent()
+        .expect("a fan-out directory")
+        .to_path_buf();
+    std::fs::create_dir_all(&fan_out).expect("the fan-out directory");
+    set_mode(&fan_out, 0o300);
+
+    let mut temp = store.create_temp(1024).await.expect("a temporary download");
+    temp.write_all(body().as_bytes()).await.expect("the write");
+    let published = store.publish(temp, &key).await;
+
+    set_mode(&fan_out, 0o700);
+    assert!(
+        published.is_err(),
+        "a rename whose directory entry cannot be made durable is not a publication"
+    );
+    assert_eq!(entries(&store.temp_dir()), 0, "and nothing is left in tmp/");
+    assert_eq!(store.reserved_bytes(), 0);
 }
 
 /// The state a crash between the rename and the commit leaves behind: bytes in the
@@ -204,11 +291,10 @@ async fn file_sync_order_holds() {
 /// in `tmp/`.
 ///
 /// Neither may be served. The temporary file is removed at startup, and the request
-/// re-downloads and re-verifies rather than finding anything to reuse — so the bytes
-/// the client receives are the verified ones and not the ones the crash left.
-///
-/// Reclaiming the orphaned object itself belongs to slice 8's eviction pass; what
-/// matters here is that it is unreachable.
+/// re-downloads and re-verifies; the orphan sits at the very path the verified bytes
+/// are published to, does not hash to that path's key, and is replaced rather than
+/// reused — so the bytes the client receives are the verified ones and not the ones
+/// the crash left.
 #[tokio::test]
 async fn crash_between_rename_and_commit_leaves_no_downloadable_temp_file() {
     let data = tempfile::tempdir().expect("a temporary data directory");
@@ -223,11 +309,12 @@ async fn crash_between_rename_and_commit_leaves_no_downloadable_temp_file() {
     first.server.shutdown().await;
 
     // The crash state, written by hand: a half-finished download in `tmp/`, and an
-    // object whose mapping was never committed.
+    // object whose mapping was never committed — at the very path the verified body
+    // will be published to, which is the only place it could ever be served from.
     let hostile = "hostile bytes a crash left behind\n";
     let stale_temp = temp_dir.join("1234-0.part");
     std::fs::write(&stale_temp, hostile).expect("the crashed download is left behind");
-    let orphan = objects.join("ab").join("ab".repeat(32));
+    let orphan = objects.join(&BODY_SHA256[..2]).join(BODY_SHA256);
     std::fs::create_dir_all(orphan.parent().expect("a fan-out directory")).expect("the directory");
     std::fs::write(&orphan, hostile).expect("the orphaned object is left behind");
 
@@ -260,6 +347,74 @@ async fn crash_between_rename_and_commit_leaves_no_downloadable_temp_file() {
         "and it left no temporary file of its own"
     );
     second.server.shutdown().await;
+}
+
+/// SPEC §9: "Detect missing files and size mismatches and discard their cache
+/// mappings." Discarding has to lead somewhere: the next request re-downloads,
+/// re-verifies, and serves the verified bytes, rather than re-committing the mapping
+/// to the same wrong file and refusing every request for the reference from then on.
+#[tokio::test]
+async fn a_cached_object_of_the_wrong_size_is_replaced_not_wedged() {
+    let data = tempfile::tempdir().expect("a temporary data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a temporary directory");
+    let harness = start(
+        &data.path().join("data"),
+        config_with_open_blocklist(blocklist_dir.path()),
+    )
+    .await;
+    let path = harness.artifact_path().await;
+    assert_eq!(harness.server.get(&path).await.status().as_u16(), 200);
+
+    let mut object = std::fs::OpenOptions::new()
+        .append(true)
+        .open(harness.body_object())
+        .expect("the cached object");
+    std::io::Write::write_all(&mut object, b"!").expect("one byte appended");
+    drop(object);
+
+    for attempt in [
+        "the request that finds the mismatch",
+        "and the one after it",
+    ] {
+        let response = harness.server.get(&path).await;
+        assert_eq!(response.status().as_u16(), 200, "{attempt}");
+        assert_eq!(
+            response.text().await.expect("a body"),
+            body(),
+            "{attempt} serves the verified bytes"
+        );
+    }
+    harness.server.shutdown().await;
+}
+
+/// The wrong-sized file goes with its mapping, so nothing on disk still answers to
+/// the key — even when the re-download that would replace it cannot happen.
+#[tokio::test]
+async fn a_cached_object_of_the_wrong_size_is_removed_with_its_mapping() {
+    let data = tempfile::tempdir().expect("a temporary data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a temporary directory");
+    let harness = start(
+        &data.path().join("data"),
+        config_with_open_blocklist(blocklist_dir.path()),
+    )
+    .await;
+    let path = harness.artifact_path().await;
+    assert_eq!(harness.server.get(&path).await.status().as_u16(), 200);
+
+    std::fs::write(harness.body_object(), "short").expect("the object is truncated");
+    harness.registry.go_offline();
+
+    assert_eq!(
+        harness.server.status(&path).await,
+        502,
+        "upstream cannot supply the bytes again, and the wrong ones are not served"
+    );
+    assert!(
+        !harness.body_object().exists(),
+        "the file that no longer matched its mapping is gone"
+    );
+    assert_eq!(harness.reference(&path).await.content_key, None);
+    harness.server.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +451,11 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
         "a cold request that cannot be stored is refused"
     );
     assert_eq!(common::body_error(response).await, "CAPACITY_EXHAUSTED");
+    assert_eq!(
+        harness.server.status("/health/ready").await,
+        503,
+        "SPEC §10: a storage write failure makes readiness false"
+    );
 
     let row = harness.reference(&path).await;
     assert_eq!(row.content_key, None);
@@ -326,7 +486,20 @@ async fn disk_full_is_a_503_not_a_policy_relaxation() {
         "storage pressure is never a reason to stop enforcing a block"
     );
 
+    probation::tasks::maintenance::run_once(&harness.server.app()).await;
+    assert_eq!(
+        harness.server.status("/health/ready").await,
+        503,
+        "and it stays false while the content directory still refuses writes, \
+         maintenance pass or not"
+    );
+
+    // "Until storage is usable again": once it is, the next maintenance pass finds
+    // out without waiting for a request — a readiness probe that has taken this
+    // instance out of rotation would otherwise leave it out for good.
     set_mode(&harness.temp_dir(), 0o700);
     set_mode(&harness.objects_dir(), 0o700);
+    probation::tasks::maintenance::run_once(&harness.server.app()).await;
+    assert_eq!(harness.server.status("/health/ready").await, 200);
     harness.server.shutdown().await;
 }

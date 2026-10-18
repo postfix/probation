@@ -119,6 +119,17 @@ Deleting rows does not shrink the file, and nothing prunes it.
 > service reports "not ready", and requests get `503`. It never relaxes its
 > rules to save space.
 
+"Not ready" covers both halves of the data folder: a failed write to the
+database or to `content/` turns `/health/ready` to `503`. Successful reads do
+not turn it back; only a successful write does. While it is not ready, the
+background maintenance pass (every 30 seconds) tries one small write to each,
+so readiness returns on its own within about 30 seconds of space being freed —
+it does not wait for traffic, which a load balancer would no longer send.
+
+A cached file found with the wrong size is deleted and downloaded again on the
+next request. A file already sitting where a download is about to be stored is
+kept only if its SHA-256 matches; anything else there is replaced.
+
 Keep room for one blocklist update: a 100,000-entry blocklist is about 9.6 MB,
 and the old and new copies exist together briefly.
 
@@ -156,9 +167,10 @@ This limit never affects blocklist enforcement: a blocked package stays
 blocked. It never affects downloaded files either. They are identified by
 content hash and cannot go stale.
 
-> **Upgrading:** this release added a database column and bumped the schema
-> version. A database made by an older build **will not open**. The service
-> refuses it rather than guess at a migration.
+> **Upgrading:** this release bumped the database schema version to 5 (it
+> indexes the cached-file mapping, so evicting files stays fast on a large
+> cache). A database made by an older build, including v0.1.0's version 4,
+> **will not open**. The service refuses it rather than guess at a migration.
 
 ## 4. The blocklist
 
