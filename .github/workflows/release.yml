@@ -5,8 +5,10 @@ on:
     tags:
       - "v*.*.*"
 
+# Every job that compiles runs dependency build scripts and proc-macros, so none of
+# them gets a write token. Only `release`, which compiles nothing, may write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,7 +17,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
   codeql:
@@ -25,12 +30,14 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@b31ef66637df4fc5b5e4a89d0cc94f8eeb46a04d # v3.39.0
         with:
           languages: rust
       - run: cargo build --locked
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@b31ef66637df4fc5b5e4a89d0cc94f8eeb46a04d # v3.39.0
 
   build:
     needs: codeql
@@ -47,7 +54,9 @@ jobs:
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --bin probation --target ${{ matrix.target }}
       - name: Package
@@ -58,17 +67,40 @@ jobs:
           cp "target/${{ matrix.target }}/release/probation" README.md LICENSE "$pkg/"
           tar czf "$pkg.tar.gz" "$pkg"
           shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          files: |
+          name: probation-${{ matrix.target }}
+          path: |
             probation-*.tar.gz
             probation-*.tar.gz.sha256
 
-  publish:
+  release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - run: cargo publish --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: probation-*
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes probation-*.tar.gz probation-*.tar.gz.sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    # Give this environment required reviewers in the repository settings, so a
+    # pushed tag alone cannot publish to crates.io.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The verification build runs every dependency's build script; it runs here,
+      # before the registry token is in the environment.
+      - run: cargo package --locked
+      - run: cargo publish --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
