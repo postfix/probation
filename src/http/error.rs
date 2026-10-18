@@ -21,6 +21,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::http::logging;
+use crate::store::StoreError;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ApiError {
@@ -230,6 +231,19 @@ impl From<PathRejection> for ApiError {
     fn from(rejection: PathRejection) -> ApiError {
         tracing::debug!(error = %rejection, "refused a route component");
         ApiError::InvalidInput("a route component is not valid")
+    }
+}
+
+/// A storage command that failed, as SPEC §11 answers it: a full queue is overload,
+/// and anything else means no state change can be committed. The source error goes
+/// to the log, never to the client.
+pub(crate) fn storage_error(err: &StoreError) -> ApiError {
+    tracing::warn!(error = %err, "a storage command failed; refusing the request");
+    match err {
+        StoreError::Busy => ApiError::Overloaded,
+        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
+            ApiError::StorageUnusable
+        }
     }
 }
 

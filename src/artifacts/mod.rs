@@ -45,10 +45,9 @@ use axum::http::Method;
 use crate::App;
 use crate::artifacts::content::{ContentError, PinnedFile};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
-use crate::http::error::ApiError;
+use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::policy::{BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
-use crate::store::StoreError;
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::{npm, osv, pypi};
 
@@ -384,19 +383,10 @@ fn download_error(err: &DownloadError, now: i64) -> ApiError {
     }
 }
 
-fn storage_error(err: &StoreError) -> ApiError {
-    tracing::warn!(error = %err, "a storage command failed; refusing the request");
-    match err {
-        StoreError::Busy => ApiError::Overloaded,
-        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
-            ApiError::StorageUnusable
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::StoreError;
 
     /// The exhaustive match compiles, and the new arm renders a real, non-empty
     /// reason string rather than the placeholder every other arm already has.

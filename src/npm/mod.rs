@@ -24,17 +24,17 @@ use serde_json::Value;
 
 use crate::App;
 use crate::concurrency::Resolution;
-use crate::http::error::ApiError;
+use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::npm::document::{PackageDocument, VersionEntry};
 use crate::policy::{
     BlocklistSnapshot, Candidate, Decision, DenyReason, Ecosystem, PublicationTime,
 };
+use crate::store;
 use crate::store::cache::{
     AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert};
-use crate::store::{self, StoreError};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, UpstreamError};
 
 pub use name::{InvalidPackageName, PackageName};
@@ -387,7 +387,7 @@ async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProj
         .store()
         .get_project(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(storage_error)?;
+        .map_err(|err| storage_error(&err))?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -395,12 +395,12 @@ async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProj
         .store()
         .list_project_first_seen(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(storage_error)?;
+        .map_err(|err| storage_error(&err))?;
     let pins = app
         .store()
         .list_project_pins(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(storage_error)?;
+        .map_err(|err| storage_error(&err))?;
     Ok(Some(CachedProject {
         row,
         first_seen,
@@ -615,7 +615,7 @@ async fn refresh(
         .store()
         .list_project_pins(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(storage_error)?;
+        .map_err(|err| storage_error(&err))?;
 
     let committed = app
         .store()
@@ -629,7 +629,7 @@ async fn refresh(
             references,
         })
         .await
-        .map_err(storage_error)?;
+        .map_err(|err| storage_error(&err))?;
 
     Ok(Arc::new(CachedProject {
         row: ProjectRow {
@@ -781,16 +781,6 @@ fn reference_cap_error(name: &PackageName, err: document::DocumentError) -> ApiE
         );
     }
     ApiError::UpstreamInvalid
-}
-
-fn storage_error(err: StoreError) -> ApiError {
-    tracing::warn!(error = %err, "a storage command failed; refusing the request");
-    match err {
-        StoreError::Busy => ApiError::Overloaded,
-        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
-            ApiError::StorageUnusable
-        }
-    }
 }
 
 #[cfg(test)]

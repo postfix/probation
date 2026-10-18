@@ -250,6 +250,21 @@ fn document() -> String {
     .to_string()
 }
 
+/// Runs one statement against a stopped instance's database, for a row the store
+/// itself would never write.
+async fn write_behind_the_store(data_dir: &std::path::Path, statement: &str) {
+    let database =
+        turso::Builder::new_local(database_path(data_dir).to_str().expect("a UTF-8 path"))
+            .build()
+            .await
+            .expect("the database opens");
+    let connection = database.connect().expect("a connection");
+    connection
+        .execute(statement, ())
+        .await
+        .expect("the row is written");
+}
+
 #[tokio::test]
 async fn package_routes_answer_503_while_storage_is_unhealthy() {
     let data_dir = tempfile::tempdir().expect("a data directory");
@@ -266,26 +281,13 @@ async fn package_routes_answer_503_while_storage_is_unhealthy() {
     .await
     .shutdown()
     .await;
-    {
-        let database = turso::Builder::new_local(
-            database_path(data_dir.path())
-                .to_str()
-                .expect("a UTF-8 path"),
-        )
-        .build()
-        .await
-        .expect("the database opens");
-        let connection = database.connect().expect("a connection");
-        connection
-            .execute(
-                "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
-                 fetched_at_micros, generation, digest_generation) \
-                 VALUES ('pypi', X'FF', X'', 0, 0, 1, 0)",
-                (),
-            )
-            .await
-            .expect("the unreadable row is written");
-    }
+    write_behind_the_store(
+        data_dir.path(),
+        "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+         fetched_at_micros, generation, digest_generation) \
+         VALUES ('pypi', X'FF', X'', 0, 0, 1, 0)",
+    )
+    .await;
 
     let registry = FakeRegistry::new();
     registry.answer(&npm_upstream_path(NAME), FakeAnswer::Body(document()));
@@ -335,4 +337,52 @@ async fn package_routes_answer_503_while_storage_is_unhealthy() {
     );
 
     server.shutdown().await;
+}
+
+/// SPEC §11: a storage command that fails on a project's own page is `503
+/// STORAGE_UNUSABLE`, in both ecosystems, rather than a `404` that says the project
+/// does not exist or a `502` that blames upstream. Each project's row carries a
+/// negative generation, which the store refuses to read back as corrupt.
+#[tokio::test]
+async fn an_unreadable_project_row_is_refused_as_storage_unusable() {
+    let data_dir = tempfile::tempdir().expect("a data directory");
+    let blocklist_dir = tempfile::tempdir().expect("a blocklist directory");
+    let config = config_with_open_blocklist(blocklist_dir.path());
+    TestServer::start_in(
+        data_dir.path(),
+        config.clone(),
+        TestClock::at_rfc3339(NOW).shared(),
+    )
+    .await
+    .shutdown()
+    .await;
+    write_behind_the_store(
+        data_dir.path(),
+        "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, \
+         fetched_at_micros, generation, digest_generation) \
+         VALUES ('npm', 'corrupt-witness', X'', 0, 0, -1, 0), \
+                ('pypi', 'corrupt-witness', X'', 0, 0, -1, 0)",
+    )
+    .await;
+
+    for path in ["/npm/corrupt-witness", "/pypi/simple/corrupt-witness/"] {
+        let server = TestServer::start_in_with_registry(
+            data_dir.path(),
+            config.clone(),
+            TestClock::at_rfc3339(NOW).shared(),
+            FakeRegistry::new(),
+        )
+        .await;
+        assert_eq!(
+            server.status("/health/ready").await,
+            200,
+            "{path}: healthy first"
+        );
+        let response = server.get(path).await;
+        assert_eq!(response.status().as_u16(), 503, "{path}");
+        let body: Value = serde_json::from_str(&response.text().await.expect("a body"))
+            .expect("a JSON error body");
+        assert_eq!(body["error"], "STORAGE_UNUSABLE", "{path}: {body}");
+        server.shutdown().await;
+    }
 }
