@@ -790,3 +790,41 @@ fn an_invalid_reference_id_says_what_one_is() {
         "a reference id is 64 hexadecimal characters"
     );
 }
+
+/// The line that records an authorization says which blocklist revision let the
+/// bytes out and how many bytes the response carries — the range's length for a
+/// `206`, not the file's. It is written at `DEBUG`. Every test in this binary shares
+/// the capture, so this one publishes a revision no other test uses and selects its
+/// lines by it.
+#[tokio::test]
+async fn an_authorized_response_is_logged_with_its_revision_and_length() {
+    let captured = common::logs::capture_debug();
+    let harness = harness(strong_integrity(), FakeAnswer::Body(body())).await;
+    publish_blocklist(
+        &harness.server,
+        &blocklist(731, "", ""),
+        common::parse_rfc3339(NOW),
+    );
+    let path = harness.artifact_path().await;
+
+    assert_eq!(harness.server.status(&path).await, 200);
+    let ranged = harness
+        .server
+        .get_with_headers(&path, &[("range", "bytes=0-3")])
+        .await;
+    assert_eq!(ranged.status().as_u16(), 206);
+
+    let authorized = |bytes: usize| {
+        captured
+            .text()
+            .lines()
+            .filter(|line| {
+                line.contains("authorized an artifact response blocklist_revision=Some(731)")
+                    && line.ends_with(&format!(" bytes={bytes}"))
+            })
+            .count()
+    };
+    assert_eq!(authorized(body().len()), 1, "the whole body");
+    assert_eq!(authorized(4), 1, "the four bytes of `bytes=0-3`");
+    harness.shutdown().await;
+}

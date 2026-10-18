@@ -32,6 +32,7 @@ const INVALID_CONFIGS: &[(&str, &str)] = &[
     ("missing_key.toml", "missing key `data_dir`"),
     ("syntax.toml", "invalid TOML"),
     ("listen_not_an_address.toml", "invalid `listen`"),
+    ("public_url_not_a_url.toml", "invalid `public_url`"),
     ("public_url_not_https.toml", "invalid `public_url`"),
     ("public_url_with_path.toml", "invalid `public_url`"),
     ("public_url_with_query.toml", "invalid `public_url`"),

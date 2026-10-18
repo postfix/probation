@@ -148,7 +148,7 @@ pub async fn index(app: &App, representation: &Representation) -> Result<Rendere
         .store()
         .list_known_projects(Ecosystem::PyPi)
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
 
     let (body, content_type) = match representation {
         Representation::PypiJson => (render::index_json(&projects), render::JSON_CONTENT_TYPE),
@@ -381,7 +381,7 @@ async fn load_project(app: &App, name: &ProjectName) -> Result<Option<CachedProj
         .store()
         .get_project(Ecosystem::PyPi, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -389,12 +389,12 @@ async fn load_project(app: &App, name: &ProjectName) -> Result<Option<CachedProj
         .store()
         .list_project_first_seen(Ecosystem::PyPi, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     let pins = app
         .store()
         .list_project_pins(Ecosystem::PyPi, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     Ok(Some(CachedProject {
         row,
         first_seen,
@@ -574,7 +574,7 @@ async fn refresh(
         .store()
         .list_project_pins(Ecosystem::PyPi, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
 
     let committed = app
         .store()
@@ -588,7 +588,7 @@ async fn refresh(
             references,
         })
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
 
     Ok(Arc::new(CachedProject {
         row: ProjectRow {

@@ -227,7 +227,7 @@ async fn load_reference(app: &App, id: ReferenceId) -> Result<ReferenceRow, ApiE
         .store()
         .get_reference(id)
         .await
-        .map_err(|err| storage_error(&err))?
+        .map_err(storage_error)?
         .ok_or(ApiError::NotFound)?;
     caches
         .references

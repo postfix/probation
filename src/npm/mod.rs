@@ -387,7 +387,7 @@ async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProj
         .store()
         .get_project(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -395,12 +395,12 @@ async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProj
         .store()
         .list_project_first_seen(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     let pins = app
         .store()
         .list_project_pins(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
     Ok(Some(CachedProject {
         row,
         first_seen,
@@ -615,7 +615,7 @@ async fn refresh(
         .store()
         .list_project_pins(Ecosystem::Npm, name.as_str())
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
 
     let committed = app
         .store()
@@ -629,7 +629,7 @@ async fn refresh(
             references,
         })
         .await
-        .map_err(|err| storage_error(&err))?;
+        .map_err(storage_error)?;
 
     Ok(Arc::new(CachedProject {
         row: ProjectRow {

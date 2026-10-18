@@ -14,6 +14,8 @@
 //! `Display` output reaches a client — those go to the log, where the operator who
 //! needs them can see them and the client cannot.
 
+use std::borrow::Borrow;
+
 use axum::Json;
 use axum::extract::rejection::PathRejection;
 use axum::http::{HeaderValue, StatusCode, header};
@@ -237,7 +239,11 @@ impl From<PathRejection> for ApiError {
 /// A storage command that failed, as SPEC §11 answers it: a full queue is overload,
 /// and anything else means no state change can be committed. The source error goes
 /// to the log, never to the client.
-pub(crate) fn storage_error(err: &StoreError) -> ApiError {
+///
+/// Owned or borrowed, so a call site passes it straight to `map_err` rather than
+/// through a closure.
+pub(crate) fn storage_error(err: impl Borrow<StoreError>) -> ApiError {
+    let err = err.borrow();
     tracing::warn!(error = %err, "a storage command failed; refusing the request");
     match err {
         StoreError::Busy => ApiError::Overloaded,

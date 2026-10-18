@@ -365,3 +365,36 @@ async fn a_wrong_size_and_a_full_budget_say_what_they_refused() {
     );
     assert!(full.source().is_none());
 }
+
+/// A verified file that shrinks while a response holds it ends that response at the
+/// bytes that are really there. The body is never padded out to the length the
+/// mapping promised.
+#[tokio::test]
+async fn a_file_that_shrinks_under_an_open_response_ends_its_body_early() {
+    use axum::response::IntoResponse as _;
+    use probation::artifacts::stream::{ArtifactResponse, Authorized};
+    use probation::policy::Decision;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = ContentStore::new(dir.path(), 1 << 20);
+    let bytes = b"the whole verified artifact";
+    let key = published(&store, bytes).await;
+    let file = store
+        .open_verified(&key, bytes.len() as u64)
+        .await
+        .expect("the verified file is held");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(store.path_for(&key))
+        .expect("the object opens for writing")
+        .set_len(9)
+        .expect("the object is cut short");
+
+    let auth = Authorized::from_decision(Decision::Allow, Some(1)).expect("a witness");
+    let response =
+        ArtifactResponse::with_body(auth, file, None, bytes.len() as u64).into_response();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body ends rather than failing");
+    assert_eq!(&body[..], &bytes[..9]);
+}

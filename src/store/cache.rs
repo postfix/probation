@@ -520,6 +520,21 @@ mod tests {
         assert_eq!(shard.used_bytes, 2);
     }
 
+    /// Removing the entry the hand is on leaves the hand on the one after it, which
+    /// is the entry the sweep would have looked at next anyway — not back on one it
+    /// has already passed.
+    #[test]
+    fn a_removal_at_the_hand_leaves_it_on_the_next_entry() {
+        let mut shard = shard();
+        put(&mut shard, "first");
+        put(&mut shard, "second");
+        put(&mut shard, "third");
+        shard.hand = 1;
+
+        shard.remove(&"second");
+        assert_eq!(shard.ring[shard.hand], "third");
+    }
+
     /// The budget is the point: a cache that grows without bound is not bounded work.
     #[test]
     fn a_shard_never_exceeds_its_budget() {

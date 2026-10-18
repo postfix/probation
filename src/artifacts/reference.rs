@@ -148,10 +148,22 @@ mod tests {
         let mut forwards = reference();
         forwards.expected = vec![sha512.clone(), sha1.clone()];
         let mut backwards = reference();
-        backwards.expected = vec![sha1, sha512];
+        backwards.expected = vec![sha1, sha512.clone()];
         assert_eq!(
             ReferenceId::compute(&forwards),
             ReferenceId::compute(&backwards)
+        );
+
+        // Two digests of one algorithm are ordered by their bytes, so their arrival
+        // order does not matter either.
+        let other_sha512 =
+            Digest::parse_hex(HashAlgorithm::Sha512, &"ef".repeat(64)).expect("a digest");
+        forwards.expected = vec![sha512.clone(), other_sha512.clone()];
+        backwards.expected = vec![other_sha512, sha512];
+        assert_eq!(
+            ReferenceId::compute(&forwards),
+            ReferenceId::compute(&backwards),
+            "two digests of one algorithm, in either order"
         );
 
         let mut changed = reference();
