@@ -1559,3 +1559,14 @@ pub async fn osv_flagging_after(
     let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).expect("the mock's own URL");
     (url, server)
 }
+
+impl TestServer {
+    /// [`TestServer::shutdown`] with a drain deadline of the test's choosing, so a
+    /// witness for the deadline does not wait out the shipped thirty seconds.
+    pub async fn shutdown_within(self, drain: Duration) {
+        self.running
+            .shutdown_within(drain)
+            .await
+            .expect("a clean shutdown");
+    }
+}

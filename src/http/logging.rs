@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::HttpBody;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::header;
+use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -108,6 +108,9 @@ struct RequestContext {
     /// real OSV check would have matched. Read only by `decide`'s reason derivation
     /// — never changes `result`.
     osv_diagnostic_match: AtomicBool,
+    /// The revision of the last blocklist snapshot this request loaded to judge with.
+    /// `None` for a request that never consulted policy.
+    blocklist_revision: Mutex<Option<u64>>,
 }
 
 /// The codes [`RequestContext::ecosystem`] holds. Zero is "nothing recorded".
@@ -145,10 +148,22 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
 
+/// Records the revision of the blocklist snapshot this request is being judged
+/// against, so the decision line names that one rather than whichever is in force
+/// when the line is written. Called by `App::blocklist`, the one place a snapshot is
+/// loaded, and ignored outside a request.
+pub fn record_blocklist_revision(revision: u64) {
+    // Nothing panics while the lock is held, so a poisoned one is not worth a branch.
+    let _ = CONTEXT.try_with(|context| {
+        if let Ok(mut judged) = context.blocklist_revision.lock() {
+            *judged = Some(revision);
+        }
+    });
+}
+
 /// The reason substituted for the default `"the request was served"` when
 /// `osv_mode: diagnostic` would have denied the request (C17c).
-pub(crate) const OSV_DIAGNOSTIC_REASON: &str =
-    "the request would be blocked by a known OSV malicious-package advisory (diagnostic mode: not enforced)";
+pub(crate) const OSV_DIAGNOSTIC_REASON: &str = "the request would be blocked by a known OSV malicious-package advisory (diagnostic mode: not enforced)";
 
 /// Records that this request's OSV-blind decision would have been overturned by a
 /// real OSV match, under `osv_mode: diagnostic` (D5/D7). Called only from
@@ -189,23 +204,36 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         cache: AtomicU8::new(CacheStatus::Unattempted.code()),
         ecosystem: AtomicU8::new(0),
         osv_diagnostic_match: AtomicBool::new(false),
+        blocklist_revision: Mutex::new(None),
     });
     let response = CONTEXT.scope(Arc::clone(&context), next.run(request)).await;
 
     let status = response.status();
     // A streamed artifact body has no exact size hint, but it does declare its length,
-    // and that is the case where "bytes served" matters most.
-    let bytes = response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok())
-        .or_else(|| response.body().size_hint().exact())
-        .unwrap_or(0);
+    // and that is the case where "bytes served" matters most. A `HEAD` serves no body,
+    // whatever length it declares.
+    //
+    // ponytail: declared length, not counted bytes — a stream aborted part way still
+    // logs its full length. Counting needs the line deferred until the body ends.
+    let bytes = if method == Method::HEAD {
+        0
+    } else {
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .or_else(|| response.body().size_hint().exact())
+            .unwrap_or(0)
+    };
     let elapsed = started.elapsed();
     let error = response.extensions().get::<ApiError>().copied();
+    let refused = error.is_some() || status.is_client_error() || status.is_server_error();
     let (result, reason) = match error {
         Some(error) => (error.error_code(), error.reason()),
+        // A refusal no `ApiError` describes — SPEC §9's `416`, say — is still not a
+        // request that was served.
+        None if refused => ("REFUSED", format!("the request was refused with {status}")),
         None => {
             if context.osv_diagnostic_match.load(Ordering::Relaxed) {
                 ("ALLOWED", OSV_DIAGNOSTIC_REASON.to_owned())
@@ -214,6 +242,12 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
             }
         }
     };
+
+    let judged_revision = context
+        .blocklist_revision
+        .lock()
+        .ok()
+        .and_then(|judged| *judged);
 
     // A handler that read a record knows better than the path does.
     let ecosystem = match context.ecosystem.load(Ordering::Relaxed) {
@@ -234,7 +268,9 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         reason,
         status.as_u16(),
         result,
-        app.blocklist_revision().unwrap_or(0),
+        judged_revision
+            .or_else(|| app.blocklist_revision())
+            .unwrap_or(0),
         CacheStatus::from_code(context.cache.load(Ordering::Relaxed)).as_str(),
         elapsed.as_micros() as u64,
         bytes,
@@ -262,13 +298,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
 
     app.delivery.offer(Record::RequestDecided(decision));
 
-    summarise(
-        elapsed,
-        bytes,
-        error.is_some(),
-        &app.delivery,
-        app.clock.as_ref(),
-    );
+    summarise(elapsed, bytes, refused, &app.delivery, app.clock.as_ref());
     response
 }
 
@@ -673,17 +703,19 @@ mod tests {
         // No `CONTEXT.scope` is active here, mirroring `record_cache`'s own
         // outside-a-request tolerance: this must not panic.
         record_osv_diagnostic_match();
+        record_blocklist_revision(7);
+        // And there is no request to identify, so each caller gets an ID of its own.
+        assert_ne!(request_id(), request_id());
     }
 
     #[test]
     fn a_long_component_is_bounded() {
         let long = "a".repeat(4096);
         let target = Target::of(&format!("/npm/{long}"));
-        let package = target.package.expect("a package component");
+        let length = target.package.expect("a package component").len();
         assert!(
-            package.len() <= MAX_LOGGED_TARGET + 2,
-            "a route component is bounded before it reaches a log line, got {} characters",
-            package.len()
+            length <= MAX_LOGGED_TARGET + 2,
+            "a route component is bounded before it reaches a log line, got {length} characters"
         );
     }
 }

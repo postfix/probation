@@ -12,6 +12,8 @@ data_dir = "/var/lib/probation"
 # package request.
 blocklist_file = "/etc/probation/blocklist.json"
 
+# How long a release is withheld after publication. 0 turns off the age rule
+# only; blocks still apply. At most 315360000 (ten years).
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
 # How old a cached project snapshot may get since its last FULL fetch, however

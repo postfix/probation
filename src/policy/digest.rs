@@ -128,9 +128,9 @@ impl fmt::Display for Digest {
 }
 
 /// Strict standard-alphabet base64. Returns `None` for anything that is not exactly
-/// one canonical encoding: an unknown character, data after padding, more than two
-/// padding characters, a trailing partial character, or non-zero bits left over from
-/// a truncated final group. Strictness matters because two spellings decoding to the
+/// one canonical encoding: an unknown character, data after padding, padding other
+/// than the count the final group needs (none missing, none extra), a trailing
+/// partial character, or non-zero bits left over from a truncated final group. Strictness matters because two spellings decoding to the
 /// same bytes would let one of them miss a blocked digest.
 fn decode_base64(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
@@ -164,7 +164,15 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
         }
     }
 
-    if padding > 2 || bits >= 6 || accumulator != 0 {
+    // A final group of two characters carries 4 spare bits and needs `==`, one of
+    // three carries 2 and needs `=`; a whole group needs none.
+    let required = match bits {
+        0 => 0,
+        4 => 2,
+        2 => 1,
+        _ => return None,
+    };
+    if padding != required || accumulator != 0 {
         return None;
     }
     Some(out)

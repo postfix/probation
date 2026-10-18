@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, header};
 use axum::response::{IntoResponse, Response};
@@ -21,7 +22,7 @@ pub async fn serve_npm(
     state: State<Arc<App>>,
     method: Method,
     headers: HeaderMap,
-    path: Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     serve(Ecosystem::Npm, state, method, headers, path).await
 }
@@ -30,7 +31,7 @@ pub async fn serve_pypi(
     state: State<Arc<App>>,
     method: Method,
     headers: HeaderMap,
-    path: Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     serve(Ecosystem::PyPi, state, method, headers, path).await
 }
@@ -40,12 +41,12 @@ async fn serve(
     State(app): State<Arc<App>>,
     method: Method,
     headers: HeaderMap,
-    Path((reference_id, filename)): Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    // SPEC §10: "reject overload instead of allowing unbounded waiters or tasks."
+    let Path((reference_id, filename)) = path?;
     // The permit is handed to the response below, so it is held for as long as bytes
     // are still going out and not merely until this function returns.
-    let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    let permit = super::admit(&app)?;
 
     // A reference id is 64 hexadecimal characters and nothing else. SPEC §9: it is a
     // lookup key, so an unparseable one is invalid input rather than a miss.

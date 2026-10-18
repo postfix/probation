@@ -104,7 +104,7 @@ max_active_requests = 1024
 
 Public upstreams are fixed in this release: `https://registry.npmjs.org` and `https://pypi.org`. PyPI artifact downloads use `https://files.pythonhosted.org`. The public URL has no query, fragment, or path prefix. Configuration changes require a restart; blocklist changes do not.
 
-Reject invalid configuration, including an artifact limit larger than the total cache budget. Durations are nonnegative integers; zero cooldown explicitly disables only the age rule. Zero polling intervals and zero capacity limits are invalid. A nonzero `metadata_max_age_seconds` below `metadata_ttl_seconds` is invalid, because a ceiling beneath the revalidation interval would expire every copy before it could be revalidated; zero explicitly disables the ceiling and restores unbounded revalidation.
+Reject invalid configuration, including an artifact limit larger than the total cache budget, a public URL or collector URL carrying a username or password, and a cooldown above ten years (315360000 seconds), past which an eligibility deadline cannot be represented. Durations are nonnegative integers; zero cooldown explicitly disables only the age rule. Zero polling intervals and zero capacity limits are invalid. A nonzero `metadata_max_age_seconds` below `metadata_ttl_seconds` is invalid, because a ceiling beneath the revalidation interval would expire every copy before it could be revalidated; zero explicitly disables the ceiling and restores unbounded revalidation.
 
 ```text
 probation serve --config /etc/probation/config.toml
@@ -214,6 +214,8 @@ The service consumes one local JSON snapshot. An external producer merges threat
   ]
 }
 ```
+
+A PyPI record's `name` is normalized by the §7 rule when the snapshot is loaded, so `Evil_Pkg` blocks the project requested as `evil-pkg`; npm names are matched exactly as written.
 
 Hashes identify the exact downloaded archive bytes, not a manifest, extracted file, or decompressed tar stream. Accept SHA-256 and SHA-512 with exact-length hexadecimal digests; normalize their case. Reject unsupported algorithms and malformed records. npm SRI base64 is decoded to the same digest bytes before comparison.
 
@@ -354,7 +356,7 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | `GET /health/live` | Process liveness. |
 | `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. |
 
-`{package}` denotes npm's validated logical package name, including scoped names; implement explicit routes rather than a catch-all proxy. Reject request methods outside the supported set.
+`{package}` denotes npm's validated logical package name, including scoped names; implement explicit routes rather than a catch-all proxy. Reject request methods outside the supported set, including `HEAD` on every route not listed with it.
 
 | Failure | HTTP response |
 | --- | --- |

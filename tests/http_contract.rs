@@ -22,7 +22,6 @@ use common::{
     fake_origins, logs, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
     publish_blocklist, pypi_upstream_path, raw_header, raw_status, sample_config, snapshot,
 };
-use probation::http::error::ApiError;
 use probation::upstream::{Transport, UpstreamError};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -378,6 +377,80 @@ async fn invalid_input_is_400() {
     harness.shutdown().await;
 }
 
+/// A refusal that carries no error body — SPEC §9's `416` — is still a refusal, and
+/// the decision line must not call it served.
+#[tokio::test]
+async fn a_refusal_without_an_error_body_is_not_logged_as_allowed() {
+    let captured = logs::capture_info();
+    let harness = harness(&[
+        (&npm_upstream_path(WIDGET), FakeAnswer::Body(document())),
+        (
+            &npm_artifact_upstream_path(WIDGET, FILENAME),
+            FakeAnswer::Body("the artifact bytes".to_owned()),
+        ),
+    ])
+    .await;
+    let artifact = harness.artifact_path().await;
+
+    let response = harness
+        .server
+        .get_with_headers(&artifact, &[("range", "bytes=99999-")])
+        .await;
+    assert_eq!(response.status().as_u16(), 416);
+
+    // Every `416` in this binary is the same refusal, so none may read as served.
+    assert!(
+        captured.lines_containing_all(&["request decided", "status=416", "result=\"REFUSED\""])
+            >= 1,
+        "Captured:\n{}",
+        captured.text()
+    );
+    assert_eq!(
+        captured.lines_containing_all(&["request decided", "status=416", "result=\"ALLOWED\""]),
+        0,
+        "Captured:\n{}",
+        captured.text()
+    );
+
+    harness.shutdown().await;
+}
+
+/// A path component that does not percent-decode to UTF-8 is refused by the router's
+/// own extractor before a handler sees it. It is still SPEC §11's `400` row: a JSON
+/// body with a `request_id`, and a decision line that says it was refused.
+#[tokio::test]
+async fn a_path_that_is_not_utf8_is_invalid_input_through_the_error_table() {
+    let captured = logs::capture_info();
+    let harness = widget().await;
+
+    for path in [
+        "/npm/%FF",
+        "/npm/%FF/1.0.0",
+        "/pypi/simple/%FF/",
+        "/pypi/simple/%FF",
+        "/npm/artifacts/%FF/f.tgz",
+        "/pypi/artifacts/aa/%FF",
+    ] {
+        let raw = harness.server.raw_get(path, &[]).await;
+        assert_eq!(raw_status(&raw), 400, "{path}: {raw}");
+        let value: Value = serde_json::from_slice(common::body_bytes(raw.as_bytes()))
+            .unwrap_or_else(|err| panic!("{path} answered a body that is not JSON: {err}: {raw}"));
+        assert_error_body(&value, "INVALID_INPUT");
+        assert_eq!(
+            captured.lines_containing_all(&[
+                "request decided",
+                &request_id_of(&value),
+                "result=\"INVALID_INPUT\"",
+            ]),
+            1,
+            "{path} is logged as refused. Captured:\n{}",
+            captured.text()
+        );
+    }
+
+    harness.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Row 4: unsupported route/method/representation -> 404, 405 or 406
 // ---------------------------------------------------------------------------
@@ -405,8 +478,9 @@ async fn unsupported_route_405_and_406() {
     assert_error_body(&refused, "METHOD_NOT_ALLOWED");
     assert_decided(&captured, &request_id_of(&refused), 405);
 
-    // A method `reqwest` will not send, written straight onto the socket.
-    for method in ["PUT", "DELETE", "PATCH", "TRACE", "PROPFIND"] {
+    // A method `reqwest` will not send, written straight onto the socket. SPEC §11
+    // lists `HEAD` on the artifact routes only, so every other route refuses it.
+    for method in ["HEAD", "PUT", "DELETE", "PATCH", "TRACE", "PROPFIND"] {
         let addr = harness.server.local_addr();
         let response = harness
             .server
@@ -418,6 +492,31 @@ async fn unsupported_route_405_and_406() {
             raw_status(&response),
             405,
             "{method} is outside the supported set: {response}"
+        );
+    }
+    for path in [
+        "/health/ready".to_owned(),
+        "/health/delivery".to_owned(),
+        "/npm/-/ping".to_owned(),
+        format!("/npm/{WIDGET}"),
+        format!("/npm/{WIDGET}/{ELIGIBLE}"),
+        "/pypi/simple/".to_owned(),
+        "/pypi/simple/widget/".to_owned(),
+        "/pypi/simple/widget".to_owned(),
+    ] {
+        let response = harness.server.head(&path).await;
+        assert_eq!(
+            response.status().as_u16(),
+            405,
+            "HEAD {path} is outside the supported set"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("allow")
+                .and_then(|value| value.to_str().ok()),
+            Some("GET"),
+            "HEAD {path}: the Allow header names only what the route supports"
         );
     }
 
@@ -508,23 +607,9 @@ async fn policy_unavailable_capacity_and_overload_are_503() {
     assert_error_body(&body(response).await, "OVERLOADED");
     drop(held);
 
-    // The remaining two conditions of this row reach HTTP through the same table.
-    // Their production is witnessed where the code that produces them lives —
-    // `disk_full_is_a_503_not_a_policy_relaxation` in `persistence_content.rs` and
-    // the storage-failure path in `store` — so what is asserted here is the row.
-    assert_eq!(ApiError::CapacityExhausted.status().as_u16(), 503);
-    assert_eq!(ApiError::StorageUnusable.status().as_u16(), 503);
-    assert_eq!(ApiError::InternalFailure.status().as_u16(), 503);
-    assert_eq!(
-        ApiError::CapacityExhausted.error_code(),
-        "CAPACITY_EXHAUSTED"
-    );
-    assert_eq!(ApiError::StorageUnusable.error_code(), "STORAGE_UNUSABLE");
-    assert_eq!(
-        ApiError::InternalFailure.error_code(),
-        "INTERNAL_FAILURE",
-        "an instance-local failure is not reported as capacity: nothing was full"
-    );
+    // The remaining two conditions of this row are witnessed through HTTP where the
+    // code that produces them lives: `disk_full_is_a_503_not_a_policy_relaxation` in
+    // `persistence_content.rs`, and `storage_health.rs`.
 
     harness.shutdown().await;
 }
@@ -885,7 +970,8 @@ async fn one_decision_line_per_request_carries_the_request_id() {
 
     let response = harness.server.get(&format!("/npm/{WIDGET}/{HELD}")).await;
     assert_eq!(response.status().as_u16(), 403);
-    let held = body(response).await;
+    let text = response.text().await.expect("a body");
+    let held: Value = serde_json::from_str(&text).expect("a JSON error body");
     let request_id = request_id_of(&held);
 
     assert_eq!(
@@ -906,11 +992,12 @@ async fn one_decision_line_per_request_carries_the_request_id() {
         &format!("version=\"\\\"{HELD}\\\"\""),
         "status=403",
         "result=\"HELD\"",
-        "reason=",
-        "blocklist_revision=",
-        "cache=",
+        "reason=the release has not completed its cooldown period ",
+        "blocklist_revision=1 ",
+        // Cold: this harness has served nothing before.
+        "cache=\"miss\"",
         "duration_micros=",
-        "bytes=",
+        &format!("bytes={}", text.len()),
     ] {
         assert!(
             line.contains(field),
@@ -937,6 +1024,94 @@ async fn one_decision_line_per_request_carries_the_request_id() {
         captured.lines_containing_all(&["request decided", &unknown]),
         1,
         "an unknown route never reaches a handler, and still has exactly one line"
+    );
+
+    harness.shutdown().await;
+}
+
+/// `bytes` is what was served, and a `HEAD` serves no body however long the
+/// artifact it describes.
+#[tokio::test]
+async fn a_head_request_logs_no_bytes_served() {
+    let captured = logs::capture_info();
+    let harness = harness(&[
+        (&npm_upstream_path(WIDGET), FakeAnswer::Body(document())),
+        (
+            &npm_artifact_upstream_path(WIDGET, FILENAME),
+            FakeAnswer::Body("the artifact bytes".to_owned()),
+        ),
+    ])
+    .await;
+    let artifact = harness.artifact_path().await;
+    let response = harness.server.head(&artifact).await;
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok()),
+        Some("18"),
+        "HEAD still describes the artifact"
+    );
+
+    let head = ["request decided", "method=\"HEAD\"", "status=200"];
+    assert!(
+        captured.lines_containing_all(&[&head[..], &["bytes=0"]].concat()) >= 1,
+        "Captured:\n{}",
+        captured.text()
+    );
+    assert_eq!(
+        captured.lines_containing_all(&[&head[..], &["bytes=18"]].concat()),
+        0,
+        "Captured:\n{}",
+        captured.text()
+    );
+
+    harness.shutdown().await;
+}
+
+/// The decision line names the blocklist revision the request was judged against,
+/// not whichever one is in force by the time the line is written.
+#[tokio::test]
+async fn the_decision_line_logs_the_revision_the_request_was_judged_against() {
+    const NAME: &str = "revision-witness";
+    let captured = logs::capture_info();
+    let gate = common::Gate::new();
+    let harness = harness(&[(
+        &npm_upstream_path(NAME),
+        FakeAnswer::GatedMetadata {
+            body: document().replace(WIDGET, NAME),
+            gate: Arc::clone(&gate),
+        },
+    )])
+    .await;
+
+    let url = harness.server.url(&format!("/npm/{NAME}"));
+    let request = tokio::spawn(async move {
+        common::downstream_client()
+            .get(url)
+            .send()
+            .await
+            .expect("the request completes")
+            .status()
+            .as_u16()
+    });
+    gate.wait_until_reached().await;
+    // Judged against revision 1; revision 2 lands while upstream is still answering.
+    publish_blocklist(
+        &harness.server,
+        &snapshot(2, "2020-01-01T00:00:00Z", "2099-01-01T00:00:00Z", ""),
+        common::parse_rfc3339(NOW),
+    );
+    gate.release();
+    assert_eq!(request.await.expect("the request task"), 200);
+
+    let package = format!("package=\"\\\"{NAME}\\\"\"");
+    assert_eq!(
+        captured.lines_containing_all(&["request decided", &package, "blocklist_revision=1"]),
+        1,
+        "Captured:\n{}",
+        captured.text()
     );
 
     harness.shutdown().await;
@@ -1126,40 +1301,57 @@ async fn the_artifact_decision_line_logs_the_ecosystem_of_the_reference_row() {
 
 /// SPEC §11: "Emit counts and timing summaries periodically to stdout; no separate
 /// metrics service is required for the MVP."
+///
+/// Every shutdown in this binary writes a summary too, so the line is selected by
+/// what only this test's request can have put in it: a window of exactly one request
+/// whose byte count is this test's own document.
 #[tokio::test]
 async fn the_periodic_counter_summary_is_emitted() {
+    const NAME: &str = "summary-witness-with-a-name-of-its-own";
     let captured = logs::capture_info();
-    let harness = widget().await;
+    let harness = harness(&[(
+        &npm_upstream_path(NAME),
+        FakeAnswer::Body(document().replace(WIDGET, NAME)),
+    )])
+    .await;
+    let path = format!("/npm/{NAME}");
+    let served = harness.server.json(&path).await.to_string().len();
 
-    // A witness for a periodic emission cannot wait a minute for it.
+    // A witness for a periodic emission cannot wait a minute for it. A request from
+    // another test can share a window, so a few attempts are allowed.
     probation::http::logging::set_summary_window(Duration::ZERO);
-
-    let before = captured.lines_mentioning("request summary");
-    harness.server.get("/health/live").await;
-    harness.server.get("/health/live").await;
-    let after = captured.lines_mentioning("request summary");
+    let needle = [
+        "request summary",
+        "requests=1 ",
+        "errors=0 ",
+        &format!("bytes={served} "),
+    ];
+    let mut found = false;
+    for _ in 0..20 {
+        let response = harness.server.get(&path).await;
+        assert_eq!(response.status().as_u16(), 200);
+        if captured.lines_containing_all(&needle) >= 1 {
+            found = true;
+            break;
+        }
+    }
+    probation::http::logging::set_summary_window(Duration::from_secs(60));
     assert!(
-        after > before,
-        "the window closed and nothing summarised it: {before} lines before, {after} after"
+        found,
+        "no window summarised this test's request. Captured:\n{}",
+        captured.text()
     );
 
     let summary = captured
         .text()
         .lines()
-        .rev()
-        .find(|line| line.contains("request summary"))
-        .expect("a summary line")
+        .find(|line| needle.iter().all(|part| line.contains(part)))
+        .expect("the summary line")
         .to_owned();
-    for field in [
-        "requests=",
-        "errors=",
-        "bytes=",
-        "mean_duration_micros=",
-        "window_micros=",
-    ] {
+    for field in ["mean_duration_micros=", "window_micros="] {
         assert!(
             summary.contains(field),
-            "a summary carries counts and timings; {field} is missing: {summary}"
+            "a summary carries timings; {field} is missing: {summary}"
         );
     }
 
