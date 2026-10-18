@@ -169,8 +169,11 @@ How reloading works:
 5. An accepted update is saved to the database before it takes effect.
 
 A broken replacement keeps the last good blocklist in force and logs an error.
-An empty but valid blocklist is accepted (only the cooldown then protects you).
-A missing file is never treated as empty.
+A file larger than `max_blocklist_bytes` is refused the same way, and is read
+no further than that limit. An empty but valid blocklist is accepted (only the
+cooldown then protects you). A missing file is never treated as empty. A
+reload check that fails unexpectedly (a bug) is logged at error, and the next
+interval checks again; it never stops reloading.
 
 **If the blocklist expires, the service fails closed:** package lookups and
 downloads return `503`, even for cached files. The service stays "alive" but
@@ -425,10 +428,25 @@ An external `logrotate` renaming or truncating it causes silent data loss.
 One backup generation (`.1`) is kept. For longer history, ship logs to your
 own log system.
 
+`log_file_max_bytes` is a hard ceiling. If the rollover rename fails (a
+single bind-mounted file, a directory the service cannot write to, or a
+directory sitting at the `.1` path), the file is not extended: new records are
+dropped and counted, with one warning, until a rename succeeds. A record too
+large to fit in an empty file is dropped and counted too.
+
 Dropped records are always counted. If writing cannot keep up, losses appear
-in the periodic summary as `dropped_file` and `dropped_siem`. A slow log
-destination never slows or fails a request. The record is dropped, not the
-request.
+in the periodic summary as `dropped_file` and `dropped_siem`. The summary has
+its own room in each queue, so the record that reports a loss is not lost to
+the same full queue. A slow log destination never slows or fails a request.
+The record is dropped, not the request.
+
+What the file promises: every record is written whole or not at all (a write
+that fails partway, such as on a full disk, is cut back off), and each record
+is handed to the kernel as soon as it is written, so it survives the process
+crashing or being killed. It is not `fsync`ed. A host crash or power loss can
+lose the records of the last few seconds that the kernel had not yet written
+out. Syncing every record would cap the rate at the disk's sync rate, far
+below the rated load, and the queue would then drop records instead.
 
 ### Sending logs to a SIEM or log collector
 
@@ -454,9 +472,19 @@ runs. The batch is held, and records queue behind it until the queue budget
 is full. Any other error, such as a bad credential, is not retried, and that
 batch is dropped. Lost records are counted in `dropped_siem`.
 
+Delivery is **at least once**. A collector that stores a batch but answers
+after the 3-second request timeout gets the same batch again on the retry, so
+deduplicate on `request_id` if duplicates matter to you. Only a timed-out or
+failed attempt is retried; a batch the collector acknowledged is never sent
+again.
+
+The service logs only the scheme, host and port of `siem_url`, never its path
+or query, so a token placed in the URL stays out of the console.
+
 **One limit:** when a collector rejects a batch, the *whole batch* of up to
-256 records is dropped, not one record. For guaranteed delivery use
-`log_file_path`, which does not have this problem.
+256 records is dropped, not one record. The file from `log_file_path` does not
+have this problem: one bad record never costs its neighbours, and each record
+is written at most once (see what the file promises, above).
 
 ### Shipping to a SIEM over syslog
 

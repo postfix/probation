@@ -121,8 +121,8 @@ async fn record_osv_diagnostic_match_sets_the_reason_without_changing_result() {
         })))
         .mount(&osv_server)
         .await;
-    let osv_url = Url::parse(&format!("{}/v1/querybatch", osv_server.uri()))
-        .expect("a valid OSV mock URL");
+    let osv_url =
+        Url::parse(&format!("{}/v1/querybatch", osv_server.uri())).expect("a valid OSV mock URL");
 
     let mut config = config_with_open_blocklist(dir.path());
     config.log_file_path = Some(log_path.clone());
@@ -231,6 +231,75 @@ async fn tp2_file_bounded_at_twice_cap() {
         "and the pair is bounded at twice it: {live} + {previous} bytes against {}",
         2 * CAP
     );
+
+    // Rolled over only when the next record would not fit, never early: the record
+    // that opened the live generation is the one that did not fit in the previous.
+    let trigger = std::fs::read_to_string(&path)
+        .expect("the live file")
+        .lines()
+        .next()
+        .map_or(0, |line| line.len() as u64 + 1);
+    assert!(
+        previous + trigger >= CAP,
+        "the rolled generation was full: {previous} bytes, and the next record was \
+         {trigger}, against {CAP}"
+    );
+}
+
+/// A rollover that cannot happen — here a directory sits where `.1` would go — does
+/// not lift the ceiling: the live file stops growing, the records it cannot take are
+/// counted, and the operator is told once rather than once per record.
+#[tokio::test]
+async fn a_failing_rollover_keeps_the_ceiling_and_warns_once() {
+    const CAP: u64 = 4_096;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+    std::fs::create_dir(rollover_of(&path)).expect("a directory where `.1` would go");
+
+    let mut config = sample_config();
+    config.log_file_path = Some(path.clone());
+    config.log_file_max_bytes = NonZeroU64::new(CAP).expect("a non-zero cap");
+
+    let captured = stdout::Lines::default();
+    let console = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(captured.clone())
+            .with_max_level(tracing::Level::WARN)
+            .finish(),
+    );
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    let app = server.app();
+    for _ in 0..80 {
+        server.get(PACKAGE).await;
+    }
+    let written = || {
+        std::fs::read_to_string(&path).map_or(0, |text| text.matches("request_decided").count())
+            as u64
+    };
+    common::wait_until(
+        "every decision is either in the file or counted",
+        Duration::from_secs(5),
+        || written() + app.delivery_lost_total() == 80,
+    )
+    .await;
+    drop(app);
+    server.shutdown().await;
+    drop(console);
+
+    let live = size_of(&path);
+    assert!(
+        live < CAP,
+        "the live file stays under the cap: {live} bytes"
+    );
+    let text = captured.text();
+    let warnings = levelled(&text, "WARN")
+        .filter(|line| line.to_string().contains("could not be rolled over"))
+        .count();
+    assert_eq!(
+        warnings, 1,
+        "one warning for the whole run of failures:\n{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +359,17 @@ async fn tp2b_restart_does_not_overshoot_cap() {
     assert!(
         previous < CAP,
         "and so does the generation rolled away: {previous} bytes against {CAP}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rolled).expect("the rolled generation"),
+        previous_run,
+        "what was rolled away is exactly the file the restart found"
+    );
+    assert_eq!(
+        delivered(&path).len(),
+        2,
+        "and the decision and the shutdown summary share the fresh file: one rollover, \
+         not one per record"
     );
 }
 
@@ -662,6 +742,38 @@ async fn tp17_log_file_mode_is_0600() {
         warnings, 1,
         "exactly one warning names the path and its mode:\n{text}"
     );
+
+    // (e) And once is once per run, not once per open: a shared file the sink reopens
+    // after every failed write is still reported a single time. `/dev/full` is
+    // world-writable and refuses every write.
+    let captured = stdout::Lines::default();
+    let console = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(captured.clone())
+            .with_max_level(tracing::Level::WARN)
+            .finish(),
+    );
+    let mut config = sample_config();
+    config.log_file_path = Some(PathBuf::from("/dev/full"));
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    for _ in 0..3 {
+        server.get(PACKAGE).await;
+    }
+    server.shutdown().await;
+    drop(console);
+
+    let text = captured.text();
+    let shared = levelled(&text, "WARN")
+        .filter(|line| {
+            line.to_string()
+                .contains("accessible to users other than its owner")
+        })
+        .count();
+    assert_eq!(
+        shared, 1,
+        "a file reopened four times is reported once:\n{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -852,6 +964,89 @@ async fn tp7_drop_is_counted_and_read_back_from_file() {
 }
 
 // ---------------------------------------------------------------------------
+// The summary that carries the drop counts is not itself dropped by a full queue
+// ---------------------------------------------------------------------------
+
+/// The decisions a stalled file sink sheds are counted, and the summary that says so
+/// reaches the file even though the queue was full when it was offered — otherwise the
+/// one record that reports a loss is lost with it.
+///
+/// The log file is a FIFO, so the sink's open blocks until this test reads it: the sink
+/// is stalled on its first record, the one-record queue fills behind it, and every
+/// later record is shed, with `dropped_file` the only trace of them.
+#[tokio::test]
+async fn summary_reaches_the_file_when_the_queue_is_full() {
+    const REQUESTS: u64 = 20;
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("decisions.ndjson");
+    let made = std::process::Command::new("mkfifo")
+        .args(["-m", "600"])
+        .arg(&path)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "the FIFO is made");
+
+    let mut config = sample_config();
+    config.log_file_path = Some(path.clone());
+    config.log_queue_max_bytes = NonZeroU64::new(32 * 1024).expect("one record's budget");
+
+    let captured = stdout::Lines::default();
+    let console = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(captured.clone())
+            .with_max_level(tracing::Level::INFO)
+            .finish(),
+    );
+    // The startup probe opens the file once, and opening a FIFO waits for a reader.
+    let probe_reader = {
+        let path = path.clone();
+        std::thread::spawn(move || drop(std::fs::File::open(path)))
+    };
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    probe_reader.join().expect("the probe's reader");
+
+    for _ in 0..REQUESTS {
+        server.get(PACKAGE).await;
+    }
+    let shutdown = tokio::spawn(server.shutdown());
+    // The console line is emitted in the same synchronous step that offers the record,
+    // so once it is seen the summary has been offered to the full queue.
+    common::wait_until(
+        "the shutdown summary is offered",
+        Duration::from_secs(10),
+        || captured.text().contains("request summary"),
+    )
+    .await;
+    let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(path));
+    shutdown.await.expect("the shutdown task");
+    drop(console);
+    let text = read.await.expect("the reader").expect("the FIFO is read");
+
+    let records: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object a line"))
+        .collect();
+    let decided = records
+        .iter()
+        .filter(|record| record["event"] == "request_decided")
+        .count() as u64;
+    let summary = records
+        .iter()
+        .find(|record| record["event"] == "request_summary")
+        .unwrap_or_else(|| panic!("the summary reached the file: {text}"));
+    assert!(
+        decided < REQUESTS,
+        "the premise: the stalled sink shed records"
+    );
+    assert_eq!(
+        summary["dropped_file"].as_u64(),
+        Some(REQUESTS - decided),
+        "and the summary counts exactly the decisions that are missing: {summary}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TP-8: what a collector actually receives, with and without a credential
 // ---------------------------------------------------------------------------
 
@@ -892,15 +1087,24 @@ async fn tp8_batch_shape_and_optional_credential() {
             body.ends_with('\n'),
             "every record is terminated, so two batches concatenate cleanly: {body:?}"
         );
-        let lines: Vec<&str> = body.lines().collect();
-        assert!(
-            lines.len() >= 4,
-            "the three decisions and the closing summary are all in it: {body:?}"
+        let events: Vec<String> = body
+            .lines()
+            .map(|line| {
+                let record: Value = serde_json::from_str(line)
+                    .unwrap_or_else(|err| panic!("every line is one JSON object: {err}: {line}"));
+                record["event"].as_str().unwrap_or_default().to_owned()
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "request_decided",
+                "request_decided",
+                "request_decided",
+                "request_summary"
+            ],
+            "the three decisions and then the closing summary, each once: {body:?}"
         );
-        for line in &lines {
-            serde_json::from_str::<Value>(line)
-                .unwrap_or_else(|err| panic!("every line is one JSON object: {err}: {line}"));
-        }
 
         assert_eq!(
             request
@@ -1056,6 +1260,55 @@ async fn tp11a_credential_absent_from_runtime_output() {
 }
 
 // ---------------------------------------------------------------------------
+// A token in the collector URL's path or query never reaches the console
+// ---------------------------------------------------------------------------
+
+/// Collectors such as Splunk HEC and Datadog take a token in the URL itself. The
+/// console says which collector — scheme, host and port — and nothing after that,
+/// neither at startup nor when a send fails, which is the error whose text reqwest
+/// builds from the whole URL.
+#[tokio::test]
+async fn siem_url_path_and_query_never_reach_stdout() {
+    const PATH_SECRET: &str = "url-path-secret-7f3a";
+    const QUERY_SECRET: &str = "url-query-secret-91c2";
+
+    let captured = stdout::capture();
+    let _env = AuthEnv::set(None).await;
+    // A port nothing listens on, so every attempt fails at once with a connection error.
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .expect("a free loopback port")
+        .port();
+    let mut config = sample_config();
+    config.siem_url = Some(
+        Url::parse(&format!(
+            "http://127.0.0.1:{port}/ingest/{PATH_SECRET}?token={QUERY_SECRET}"
+        ))
+        .expect("a collector URL"),
+    );
+
+    let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
+    server.get(PACKAGE).await;
+    // Past the two-second batch timer, so the batch is sent and the failure logged.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    server.shutdown().await;
+
+    let text = captured.text();
+    let failure = "could not be sent to the SIEM collector";
+    assert!(
+        text.lines()
+            .any(|line| line.contains(failure) && line.contains(&format!("127.0.0.1:{port}"))),
+        "the premise: a send failed, and its line names the collector's host:\n{text}"
+    );
+    for secret in [PATH_SECRET, QUERY_SECRET] {
+        assert!(
+            !text.contains(secret),
+            "`{secret}` from the collector URL reached the console:\n{text}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TP-11b: nor the startup rejection, which is the path with no header to redact
 // ---------------------------------------------------------------------------
 
@@ -1113,6 +1366,9 @@ async fn tp11b_credential_absent_from_startup_rejection() {
 // TP-15: a wedged collector cannot hold up a restart
 // ---------------------------------------------------------------------------
 
+/// The batch is already in flight when shutdown begins: the batch timer has fired and
+/// the sink is waiting on a collector that never answers, outside any drain deadline.
+/// Only the client's own per-attempt timeout ends that wait, which is what this bounds.
 #[tokio::test]
 async fn tp15_shutdown_bounded_against_wedged_collector() {
     let _env = AuthEnv::set(None).await;
@@ -1121,11 +1377,9 @@ async fn tp15_shutdown_bounded_against_wedged_collector() {
 
     let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
     server.get(PACKAGE).await;
+    // Past the two-second batch timer, so the attempt has started before the drain.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
 
-    // Straight into shutdown, so the sink is idle in its select when the drain fires
-    // and the whole cost of the silent collector is paid inside the deadline the
-    // caller imposes. Without that deadline and the client's own timeout this hangs
-    // forever, which is why the bound below is the assertion.
     let started = std::time::Instant::now();
     tokio::time::timeout(Duration::from_secs(20), server.shutdown())
         .await
@@ -1134,8 +1388,8 @@ async fn tp15_shutdown_bounded_against_wedged_collector() {
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(10),
-        "shutdown is bounded by the five-second drain deadline rather than by the \
-         collector: it took {elapsed:?}"
+        "shutdown is bounded by the client's timeout and the drain deadline rather \
+         than by the collector: it took {elapsed:?}"
     );
 }
 
@@ -1143,8 +1397,14 @@ async fn tp15_shutdown_bounded_against_wedged_collector() {
 // TP-15b: what the drain deadline cuts off is still counted
 // ---------------------------------------------------------------------------
 
+/// Far more records than the drain can send to a silent collector in five seconds:
+/// each batch of 256 costs a three-second attempt, so the deadline, not the queue
+/// running dry, is what ends the drain. Every record is lost and every one is counted —
+/// the held batch, the batch the deadline cuts off in flight, and the records still
+/// queued behind it.
 #[tokio::test]
 async fn tp15b_drain_cutoff_records_are_counted() {
+    const REQUESTS: u64 = 2_000;
     let _env = AuthEnv::set(None).await;
     let mut config = sample_config();
     config.siem_url = Some(silent_collector().await);
@@ -1168,19 +1428,25 @@ async fn tp15b_drain_cutoff_records_are_counted() {
     );
 
     let server = TestServer::start_with(config, Arc::new(SystemClock)).await;
-    // One record, still on the sink's channel: the drain fires well before the
-    // two-second batch timer, so the deadline cuts `send` off in flight rather than
-    // before it starts.
-    server.get(PACKAGE).await;
-    server.shutdown().await;
+    for _ in 0..REQUESTS {
+        server.get(PACKAGE).await;
+    }
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(60), server.shutdown())
+        .await
+        .expect("HANG: shutdown did not return against a silent collector");
+    let elapsed = started.elapsed();
     drop(console);
 
-    let text = captured.text();
     assert!(
-        drain_tail_dropped_siem(&text) >= 1,
-        "the one record the silent collector never took must be counted somewhere; \
-         the drain tail reported {}:\n{text}",
-        drain_tail_dropped_siem(&text)
+        elapsed < Duration::from_secs(15),
+        "the drain deadline ends the drain, not the queue running dry: it took {elapsed:?}"
+    );
+    let text = captured.text();
+    assert_eq!(
+        drain_tail_dropped_siem(&text),
+        REQUESTS + 1,
+        "every decision and the shutdown summary is counted as lost:\n{text}"
     );
 }
 
@@ -1959,8 +2225,9 @@ async fn prompt_503_collector() -> (Url, Arc<std::sync::Mutex<Vec<std::time::Ins
     )
 }
 
-/// Distinct decided `request_id`s in the bodies a wiremock collector was sent.
-async fn decided_ids_received(collector: &MockServer) -> BTreeSet<String> {
+/// Every decided `request_id` in the bodies a wiremock collector was sent, in arrival
+/// order and with any duplicates kept.
+async fn decided_ids_received(collector: &MockServer) -> Vec<String> {
     collector
         .received_requests()
         .await
@@ -2013,18 +2280,24 @@ async fn rl10_siem_holds_its_queue_while_the_collector_is_unreachable() {
             .mount(&collector)
             .await;
 
-        let mut got = 0;
         for _ in 0..40 {
-            got = decided_ids_received(&collector).await.len();
-            if got >= 40 {
+            if decided_ids_received(&collector).await.len() >= 40 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         server.shutdown().await;
+        let ids = decided_ids_received(&collector).await;
+        let distinct: BTreeSet<&String> = ids.iter().collect();
         assert_eq!(
-            got, 40,
+            distinct.len(),
+            40,
             "every record offered during the outage is delivered on recovery"
+        );
+        assert_eq!(
+            ids.len(),
+            40,
+            "and each exactly once: a collector that answers promptly gets no duplicates"
         );
     })
     .await

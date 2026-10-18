@@ -13,13 +13,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode};
-use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use super::Record;
 use super::counters::SinkCounters;
+use super::{Queue, Record};
 
 /// How many records one `POST` carries at most.
 const BATCH_RECORDS: usize = 256;
@@ -49,7 +48,7 @@ pub(super) async fn run(
     client: Client,
     url: Url,
     auth: Option<(HeaderName, HeaderValue)>,
-    mut rx: mpsc::Receiver<Record>,
+    mut queue: Queue,
     drain: CancellationToken,
     counters: Arc<SinkCounters>,
 ) {
@@ -61,7 +60,7 @@ pub(super) async fn run(
 
     loop {
         tokio::select! {
-            received = rx.recv() => match received {
+            received = queue.recv() => match received {
                 Some(record) => {
                     if batch.is_empty() {
                         deadline = Instant::now() + BATCH_INTERVAL;
@@ -81,7 +80,7 @@ pub(super) async fn run(
                 // the file sink: the last `App` is dropped only after this task has
                 // been joined, so waiting on sender closure would deadlock.
                 let _ = tokio::time::timeout(DRAIN_DEADLINE, async {
-                    while let Ok(record) = rx.try_recv() {
+                    while let Some(record) = queue.try_recv() {
                         batch.push(record);
                         if batch.len() >= BATCH_RECORDS {
                             send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
@@ -95,7 +94,7 @@ pub(super) async fn run(
 
                 // What the deadline cut short: the batch still in hand, and anything
                 // left on the queue behind it. Counted rather than lost quietly.
-                let lost = (batch.len() + rx.len()) as u64;
+                let lost = (batch.len() + queue.len()) as u64;
                 if lost != 0 {
                     counters.lose(lost);
                 }
@@ -121,18 +120,21 @@ async fn send(
     counters: &SinkCounters,
     drain: &CancellationToken,
 ) {
-    let count = batch.len() as u64;
+    // Only what made it into the body: a record that would not serialize is counted
+    // here, once, and not again with the batch.
+    let mut count = 0;
     let mut body = String::new();
     for record in batch.drain(..) {
         if let Ok(line) = serde_json::to_string(&record) {
             body.push_str(&line);
             body.push('\n');
+            count += 1;
         } else {
             counters.lose(1);
         }
     }
     // From here the records exist nowhere else: they are off the queue and out of
-    // `batch`, so the caller's own `batch.len() + rx.len()` can no longer see them and
+    // `batch`, so the caller's own `batch.len() + queue.len()` can no longer see them and
     // this guard is the only thing that can still count them. It matters because this
     // whole future is awaited inside the drain deadline's `timeout`, and a future cut
     // off at an await point is dropped rather than resumed — `Drop` runs, so
@@ -170,8 +172,11 @@ async fn send(
                 status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
             }
             Err(err) => {
+                // reqwest's error text carries the whole URL, and a collector token can
+                // sit in its path or query. The origin says which collector.
                 tracing::warn!(
-                    error = %err,
+                    collector = %url.origin().ascii_serialization(),
+                    error = %err.without_url(),
                     "a batch of decision records could not be sent to the SIEM collector"
                 );
                 true
@@ -236,8 +241,6 @@ mod tests {
     /// deadline site, so a window of 300 needs both.
     #[tokio::test]
     async fn rl7_siem_drain_deadline_and_unsent_count_in_the_window() {
-        use crate::delivery::Summary;
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let hold = tokio::spawn(async move {
@@ -248,24 +251,22 @@ mod tests {
         });
 
         let total = BATCH_RECORDS + 44;
-        let (tx, rx) = mpsc::channel(total);
+        let (sink, queue) = crate::delivery::channel(total);
         for _ in 0..total {
-            tx.try_send(Record::RequestSummary(Summary {
-                timestamp: String::new(),
-                requests: 0,
-                errors: 0,
-                bytes: 0,
-                mean_duration_micros: 0,
-                window_micros: 0,
-                dropped_file: 0,
-                dropped_siem: 0,
-            }))
-            .unwrap();
+            sink.push(crate::delivery::tests::decision());
         }
         let drain = CancellationToken::new();
         drain.cancel();
         let counters = Arc::new(SinkCounters::new());
-        run(Client::new(), url, None, rx, drain, Arc::clone(&counters)).await;
+        run(
+            Client::new(),
+            url,
+            None,
+            queue,
+            drain,
+            Arc::clone(&counters),
+        )
+        .await;
         hold.abort();
 
         assert_eq!(counters.take_window(), total as u64);

@@ -28,7 +28,6 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use url::Url;
 
 use crate::StartupError;
 use crate::config::Config;
@@ -210,18 +209,77 @@ pub(crate) struct Drops {
     pub siem: u64,
 }
 
-/// One destination: the sending half of its queue and the counter both sides
+/// How many summaries a sink holds beside its decision queue. One is offered per
+/// summary window, so this is minutes of them.
+const SUMMARY_SLOTS: usize = 4;
+
+/// One destination: the sending halves of its queue and the counter both sides
 /// increment.
 struct Sink {
-    tx: mpsc::Sender<Record>,
+    records: mpsc::Sender<Record>,
+    /// The summary has slots of its own. It carries the drop counts, so sharing the
+    /// decisions' queue would shed it in exactly the backlog it exists to report.
+    summaries: mpsc::Sender<Record>,
     counters: Arc<SinkCounters>,
 }
 
 impl Sink {
     fn push(&self, record: Record) {
-        if self.tx.try_send(record).is_err() {
+        let queue = match record {
+            Record::RequestDecided(_) => &self.records,
+            Record::RequestSummary(_) => &self.summaries,
+        };
+        if queue.try_send(record).is_err() {
             self.counters.lose(1);
         }
+    }
+}
+
+/// A sink holding up to `capacity` decisions, and the receiving side its task reads.
+fn channel(capacity: usize) -> (Sink, Queue) {
+    let (records, records_rx) = mpsc::channel(capacity);
+    let (summaries, summaries_rx) = mpsc::channel(SUMMARY_SLOTS);
+    let sink = Sink {
+        records,
+        summaries,
+        counters: Arc::new(SinkCounters::new()),
+    };
+    let queue = Queue {
+        records: records_rx,
+        summaries: summaries_rx,
+    };
+    (sink, queue)
+}
+
+/// What a sink task reads: its decisions and its summaries, as one queue.
+struct Queue {
+    records: mpsc::Receiver<Record>,
+    summaries: mpsc::Receiver<Record>,
+}
+
+impl Queue {
+    /// The next record, decisions first, so a summary still follows the decisions
+    /// queued before it. `None` once both halves are closed and empty.
+    async fn recv(&mut self) -> Option<Record> {
+        tokio::select! {
+            biased;
+            Some(record) = self.records.recv() => Some(record),
+            Some(summary) = self.summaries.recv() => Some(summary),
+            else => None,
+        }
+    }
+
+    /// The next record already queued, decisions first, without waiting.
+    fn try_recv(&mut self) -> Option<Record> {
+        self.records
+            .try_recv()
+            .or_else(|_| self.summaries.try_recv())
+            .ok()
+    }
+
+    /// How many records are queued, of both kinds.
+    fn len(&self) -> usize {
+        self.records.len() + self.summaries.len()
     }
 }
 
@@ -362,18 +420,16 @@ pub(crate) fn build(
     }
 
     let file = config.log_file_path.as_ref().map(|path| {
-        let (tx, rx) = mpsc::channel(
-            capacity_for(config.log_queue_max_bytes.get()).expect("config validated"),
-        );
-        let counters = Arc::new(SinkCounters::new());
+        let (sink, queue) =
+            channel(capacity_for(config.log_queue_max_bytes.get()).expect("config validated"));
         tasks.push(tokio::spawn(file::run(
             path.clone(),
             config.log_file_max_bytes,
-            rx,
+            queue,
             drain.clone(),
-            Arc::clone(&counters),
+            Arc::clone(&sink.counters),
         )));
-        Sink { tx, counters }
+        sink
     });
 
     // The header *name* of the credential, and only when one was actually configured.
@@ -400,19 +456,17 @@ pub(crate) fn build(
                     StartupError::Delivery("the SIEM delivery client could not be built")
                 })?;
 
-            let (tx, rx) = mpsc::channel(
-                capacity_for(config.siem_queue_max_bytes.get()).expect("config validated"),
-            );
-            let counters = Arc::new(SinkCounters::new());
+            let (sink, queue) =
+                channel(capacity_for(config.siem_queue_max_bytes.get()).expect("config validated"));
             tasks.push(tokio::spawn(siem::run(
                 client,
                 url.clone(),
                 auth,
-                rx,
+                queue,
                 drain.clone(),
-                Arc::clone(&counters),
+                Arc::clone(&sink.counters),
             )));
-            Some(Sink { tx, counters })
+            Some(sink)
         }
         None => None,
     };
@@ -421,7 +475,9 @@ pub(crate) fn build(
         tracing::info!(
             log_file = ?config.log_file_path,
             log_file_max_bytes = config.log_file_max_bytes.get(),
-            siem_url = config.siem_url.as_ref().map(Url::as_str),
+            // Scheme, host and port only: collectors such as Splunk HEC take a token in
+            // the path or query, and this line goes to the console.
+            siem_url = config.siem_url.as_ref().map(|url| url.origin().ascii_serialization()),
             siem_auth_header = siem_auth_header.as_deref(),
             "decision records are delivered off this process"
         );
@@ -537,36 +593,38 @@ mod tests {
         }
     }
 
-    fn summary() -> Record {
-        Record::RequestSummary(Summary {
+    pub(super) fn decision() -> Record {
+        Record::RequestDecided(Decision {
             timestamp: String::new(),
-            requests: 0,
-            errors: 0,
+            request_id: String::new(),
+            method: String::new(),
+            ecosystem: "npm",
+            package: String::new(),
+            version: String::new(),
+            status: 503,
+            result: "POLICY_UNAVAILABLE",
+            reason: String::new(),
+            blocklist_revision: 0,
+            cache: "unattempted",
+            duration_micros: 0,
             bytes: 0,
-            mean_duration_micros: 0,
-            window_micros: 0,
-            dropped_file: 0,
-            dropped_siem: 0,
+            consumer: None,
         })
     }
 
-    /// A file sink whose queue holds one record and is never read.
-    fn full_file_sink() -> (Sinks, mpsc::Receiver<Record>) {
-        let (tx, rx) = mpsc::channel(1);
-        let sink = Sink {
-            tx,
-            counters: Arc::new(SinkCounters::new()),
-        };
-        (Sinks::new(Some(sink), None), rx)
+    /// A file sink whose queue holds one decision and is never read.
+    fn full_file_sink() -> (Sinks, Queue) {
+        let (sink, queue) = channel(1);
+        (Sinks::new(Some(sink), None), queue)
     }
 
     /// rl7, the queue-full site: a record the full queue refuses is counted.
     #[test]
     fn rl7_queue_full_counts_in_the_window() {
-        let (sinks, _rx) = full_file_sink();
-        sinks.offer(summary());
+        let (sinks, _queue) = full_file_sink();
+        sinks.offer(decision());
         assert_eq!(sinks.drops().file, 0, "the first record fits");
-        sinks.offer(summary());
+        sinks.offer(decision());
         assert_eq!(sinks.drops().file, 1);
     }
 
@@ -574,12 +632,12 @@ mod tests {
     /// losses, while the total keeps both.
     #[test]
     fn rl8_the_second_window_reports_only_its_own_losses() {
-        let (sinks, _rx) = full_file_sink();
+        let (sinks, _queue) = full_file_sink();
         for _ in 0..4 {
-            sinks.offer(summary()); // one queued, three lost
+            sinks.offer(decision()); // one queued, three lost
         }
         assert_eq!(sinks.drops().file, 3);
-        sinks.offer(summary());
+        sinks.offer(decision());
         assert_eq!(sinks.drops().file, 1, "not 4: the first window was reset");
         assert_eq!(sinks.drops().file, 0);
         assert_eq!(sinks.lost_total(), 4);
