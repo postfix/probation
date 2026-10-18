@@ -23,6 +23,18 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup component add llvm-tools
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-llvm-cov
+      - run: cargo llvm-cov --locked --summary-only --fail-under-lines 98
+
   # The real-client tests are `#[ignore]` because they spawn npm and pip. They pin
   # their clients (tests/e2e_npm.rs, tests/e2e_pip.rs, docs/operations.md §11); this
   # job installs exactly those pins so the matrix they claim is the one that ran.
