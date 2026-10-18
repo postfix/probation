@@ -272,6 +272,41 @@ mod tests {
         assert_eq!(counters.take_window(), total as u64);
     }
 
+    /// The sink stops once every sender is gone, and a drain with nothing queued
+    /// sends nothing and counts nothing. The URL is never contacted.
+    #[tokio::test]
+    async fn run_returns_on_a_closed_queue_and_on_an_empty_drain() {
+        let url = Url::parse("http://127.0.0.1:9/").unwrap();
+        let counters = Arc::new(SinkCounters::new());
+
+        let (sink, queue) = crate::delivery::channel(1);
+        drop(sink);
+        let open = CancellationToken::new();
+        run(
+            Client::new(),
+            url.clone(),
+            None,
+            queue,
+            open,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        let (_sink, queue) = crate::delivery::channel(1);
+        let drain = CancellationToken::new();
+        drain.cancel();
+        run(
+            Client::new(),
+            url,
+            None,
+            queue,
+            drain,
+            Arc::clone(&counters),
+        )
+        .await;
+        assert_eq!(counters.total(), 0);
+    }
+
     /// rl7, the `Unsent::drop` site on its own: an undelivered batch is counted whole,
     /// and a delivered one is not.
     #[test]

@@ -1308,6 +1308,44 @@ async fn siem_url_path_and_query_never_reach_stdout() {
     }
 }
 
+/// A credential that is not even UTF-8 is refused at startup like any other unusable
+/// one, rather than sent as nothing.
+#[tokio::test]
+async fn a_non_utf8_credential_refuses_to_start() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let _env = AuthEnv::set(None).await;
+    // SAFETY: as in `AuthEnv::set`: the lock it holds makes this the only writer.
+    unsafe {
+        std::env::set_var(
+            "PROBATION_SIEM_AUTH",
+            std::ffi::OsStr::from_bytes(b"Bearer \xff"),
+        )
+    };
+    let data_dir = tempfile::tempdir().expect("a temporary data directory");
+    let mut config = sample_config();
+    config.data_dir = data_dir.path().to_path_buf();
+    config.siem_url = Some(Url::parse("https://siem.example.org/ingest").expect("a collector URL"));
+
+    let (transport, origins) = fake_upstream();
+    let started = App::start(AppDeps {
+        config,
+        clock: Arc::new(SystemClock),
+        transport,
+        origins,
+        osv_client: probation::osv::unreachable_client(),
+        osv_base_url: None,
+    })
+    .await;
+    let Err(err) = started else {
+        panic!("a non-UTF-8 credential refuses to start");
+    };
+    assert!(
+        err.to_string().contains("PROBATION_SIEM_AUTH"),
+        "an operator is told which variable to fix: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // TP-11b: nor the startup rejection, which is the path with no header to redact
 // ---------------------------------------------------------------------------

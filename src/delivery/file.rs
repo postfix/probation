@@ -451,6 +451,9 @@ mod tests {
                 "--test-threads=1",
             ])
             .env(PARTIAL_WRITE_PATH, &path)
+            // A coverage build writes a profile at exit, and under this limit it would
+            // be truncated into one `llvm-profdata` refuses to merge.
+            .env("LLVM_PROFILE_FILE", "/dev/null")
             // Piped, never inherited: the limit applies to every regular file the
             // child writes, and this process's stdout may be one.
             .output()
@@ -484,6 +487,22 @@ mod tests {
         let mut writer = Writer::new(PathBuf::from(path), NonZeroU64::MAX);
         writer.append(padded(1, 400), &counters).await;
         assert_eq!(counters.total(), 1, "the failed write is counted");
+    }
+
+    /// The sink stops once every sender is gone, without a drain.
+    #[tokio::test]
+    async fn run_returns_when_its_queue_closes() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let (sink, queue) = channel(1);
+        drop(sink);
+        run(
+            dir.path().join("d.ndjson"),
+            NonZeroU64::MAX,
+            queue,
+            CancellationToken::new(),
+            Arc::new(SinkCounters::new()),
+        )
+        .await;
     }
 
     /// rl7, the unopenable site.
