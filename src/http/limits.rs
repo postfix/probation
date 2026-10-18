@@ -72,10 +72,6 @@ impl Limits {
         Arc::clone(&self.downloads).try_acquire_owned().ok()
     }
 
-    pub fn download_available(&self) -> usize {
-        self.downloads.available_permits()
-    }
-
     pub fn write_idle(&self) -> Duration {
         Duration::from_millis(self.write_idle_millis.load(Ordering::Relaxed))
     }

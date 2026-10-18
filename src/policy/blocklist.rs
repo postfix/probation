@@ -141,10 +141,17 @@ impl BlocklistSnapshot {
                 ));
             }
 
+            // SPEC §7: a PyPI project is judged under its PEP 503 name, so an entry
+            // spelled `Evil_Pkg` must land where `evil-pkg` is looked up. npm names
+            // are identifiers and are kept exactly as written.
+            let name = match ecosystem {
+                Ecosystem::Npm => record.name.clone(),
+                Ecosystem::PyPi => crate::pypi::name::normalize(&record.name),
+            };
             entry_count += 1;
             match &record.version {
                 None => {
-                    packages[ecosystem.index()].insert(record.name.clone());
+                    packages[ecosystem.index()].insert(name);
                 }
                 Some(version) => {
                     if version.is_empty() || version.trim() != version {
@@ -155,7 +162,7 @@ impl BlocklistSnapshot {
                         ));
                     }
                     versions[ecosystem.index()]
-                        .entry(record.name.clone())
+                        .entry(name)
                         .or_default()
                         .push(BlockedVersion {
                             raw: version.clone(),
@@ -691,6 +698,33 @@ mod tests {
              not applied with the field ignored"
         );
 
+        for version in ["\"\"", "\" 1.0\""] {
+            let padded = parse(&document(
+                1,
+                &format!(r#"{{"ecosystem":"npm","name":"bad","version":{version},"reason":"x"}}"#),
+                "",
+            ));
+            assert!(
+                matches!(
+                    padded,
+                    Err(BlocklistError::MalformedRecord { index: 0, .. })
+                ),
+                "an empty or padded version is malformed: {padded:?}"
+            );
+        }
+        let no_reason = parse(&document(
+            1,
+            "",
+            &format!(r#"{{"algorithm":"sha256","digest":"{HELLO_SHA256_HEX}","reason":""}}"#),
+        ));
+        assert!(
+            matches!(
+                no_reason,
+                Err(BlocklistError::MalformedRecord { index: 0, .. })
+            ),
+            "a digest with no reason is malformed: {no_reason:?}"
+        );
+
         let missing_field = parse(&document(1, r#"{"ecosystem":"npm","name":"bad"}"#, ""));
         assert!(matches!(missing_field, Err(BlocklistError::Syntax(_))));
 
@@ -804,6 +838,10 @@ mod tests {
         );
         assert!(matches!(
             window("not a timestamp", "2099-01-01T00:00:00Z"),
+            Err(BlocklistError::Window { .. })
+        ));
+        assert!(matches!(
+            window("2020-01-01T00:00:00Z", "not a timestamp"),
             Err(BlocklistError::Window { .. })
         ));
 

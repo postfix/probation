@@ -23,9 +23,9 @@ pub mod upstream;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -109,8 +109,15 @@ impl App {
     /// The blocklist currently in force, whether or not it is still valid. Callers
     /// that judge a package go through `policy::evaluate`, which checks the window
     /// against the same `now` it decides with.
+    ///
+    /// Inside a request it also records the revision handed out, so the decision line
+    /// names the snapshot the request was judged against.
     pub fn blocklist(&self) -> Option<Arc<BlocklistSnapshot>> {
-        self.policy.load_full()
+        let snapshot = self.policy.load_full();
+        if let Some(snapshot) = &snapshot {
+            http::logging::record_blocklist_revision(snapshot.revision);
+        }
+        snapshot
     }
 
     /// Makes `snapshot` the one in force for every request that loads it from here
@@ -251,9 +258,8 @@ impl App {
 
         // A `std::net::TcpListener` either way, so both the plain and the TLS path
         // bind, report their address, and fail the same way. Non-blocking mode is
-        // set here because both `axum_server::from_tcp_rustls` and
-        // `tokio::net::TcpListener::from_std` require it already set, rather than
-        // setting it themselves.
+        // set here because `axum_server::from_tcp` and `from_tcp_rustls` require it
+        // already set, rather than setting it themselves.
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|source| StartupError::Bind { addr, source })?;
         std_listener
@@ -264,9 +270,13 @@ impl App {
         let shutdown = CancellationToken::new();
         let tasks = tasks::spawn(Arc::clone(&app), shutdown.clone(), watcher, delivery_tasks);
 
-        let signal = shutdown.clone();
+        // `axum_server` on both paths, because its `Handle` is the one shutdown that
+        // takes a deadline: past it, the connections still open are closed rather
+        // than waited for. `axum::serve`'s graceful shutdown waits indefinitely.
+        let handle = axum_server::Handle::new();
         let server = tokio::spawn({
             let app = Arc::clone(&app);
+            let handle = handle.clone();
             async move {
                 // `into_make_service_with_connect_info` changes the service type, so
                 // each arm owns its whole expression rather than assigning to one
@@ -276,43 +286,24 @@ impl App {
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {
-                        // `axum_server::Handle`, not `with_graceful_shutdown`: this
-                        // crate's own shutdown signal is a `Handle` method, not a
-                        // future passed to `serve`.
-                        let handle = axum_server::Handle::new();
-                        tokio::spawn({
-                            let handle = handle.clone();
-                            async move {
-                                signal.cancelled().await;
-                                handle.graceful_shutdown(None);
-                            }
-                        });
                         let server =
                             axum_server::from_tcp_rustls(std_listener, tls_config)?.handle(handle);
                         if consumer_identification {
                             server
-                                .serve(
-                                    router
-                                        .into_make_service_with_connect_info::<SocketAddr>(),
-                                )
+                                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await
                         } else {
                             server.serve(router.into_make_service()).await
                         }
                     }
                     None => {
-                        let listener = TcpListener::from_std(std_listener)?;
+                        let server = axum_server::from_tcp(std_listener)?.handle(handle);
                         if consumer_identification {
-                            axum::serve(
-                                listener,
-                                router.into_make_service_with_connect_info::<SocketAddr>(),
-                            )
-                            .with_graceful_shutdown(async move { signal.cancelled().await })
-                            .await
-                        } else {
-                            axum::serve(listener, router)
-                                .with_graceful_shutdown(async move { signal.cancelled().await })
+                            server
+                                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await
+                        } else {
+                            server.serve(router.into_make_service()).await
                         }
                     }
                 }
@@ -323,12 +314,33 @@ impl App {
             local_addr,
             app,
             shutdown,
+            handle,
             drain,
             server,
             tasks,
             store_task,
         })
     }
+}
+
+/// The delivery checks `serve` makes before it accepts a request, for `check-config`
+/// (SPEC §4: the two commands cannot diverge). Chiefly a malformed
+/// `PROBATION_SIEM_AUTH`, which only `delivery::build` reads.
+///
+/// Writes nothing: the log file is left out because opening it is what creates it,
+/// and the SIEM task spawned here sends nothing — its queue is closed and drained
+/// before a record could reach it.
+pub async fn check_delivery(config: &Config) -> Result<(), StartupError> {
+    let mut config = config.clone();
+    config.log_file_path = None;
+    let drain = CancellationToken::new();
+    let (sinks, tasks) = delivery::build(&config, drain.clone())?;
+    drop(sinks);
+    drain.cancel();
+    for task in tasks {
+        let _ = task.await;
+    }
+    Ok(())
 }
 
 /// Publishes the last accepted snapshot when it is still valid (SPEC §8: "Persist
@@ -371,11 +383,19 @@ async fn restore_blocklist(app: &App) {
     }
 }
 
+/// How long shutdown waits for in-flight requests before it closes their
+/// connections. A service manager's stop timeout must be longer than this
+/// (`docs/operations.md`).
+pub const SHUTDOWN_DRAIN: Duration = Duration::from_secs(30);
+
 /// A started server.
 pub struct Running {
     pub local_addr: SocketAddr,
     app: Arc<App>,
     shutdown: CancellationToken,
+    /// Stops the HTTP server, with the drain deadline [`Running::shutdown_within`]
+    /// is given.
+    handle: axum_server::Handle<SocketAddr>,
     /// Cancelled only after the HTTP server has joined, so a sink still delivers the
     /// records of the requests that were in flight when shutdown began.
     drain: CancellationToken,
@@ -407,7 +427,13 @@ impl Running {
     /// `App` is dropped so the storage queues close, and the storage task finishes
     /// its current command before it closes the connection and releases the lock.
     pub async fn shutdown(self) -> Result<(), StartupError> {
+        self.shutdown_within(SHUTDOWN_DRAIN).await
+    }
+
+    /// [`Running::shutdown`], with the drain deadline chosen by the caller.
+    pub async fn shutdown_within(self, drain: Duration) -> Result<(), StartupError> {
         self.shutdown.cancel();
+        self.handle.graceful_shutdown(Some(drain));
         let served = match self.server.await {
             Ok(result) => result.map_err(StartupError::Serve),
             // The task is only ever cancelled by the runtime shutting down, which

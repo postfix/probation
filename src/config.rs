@@ -98,6 +98,11 @@ const DEFAULT_MAX_REFERENCES_PER_PROJECT: u32 = 20_000;
 /// the unbounded staleness the ceiling exists to close.
 const DEFAULT_METADATA_MAX_AGE_SECONDS: u64 = 86_400;
 
+/// Ten years. A longer cooldown is not a stricter policy but a deadline past what an
+/// `eligible_at` can carry: a hold would saturate to the end of time and lose the
+/// date SPEC §11 promises the client.
+const MAX_COOLDOWN_SECONDS: u64 = 10 * 365 * 86_400;
+
 /// What a decision log file costs when the operator names one and says nothing about
 /// its size: 100 MiB live, so 200 MiB including the one rollover generation.
 const DEFAULT_LOG_FILE_MAX_BYTES: NonZeroU64 = NonZeroU64::new(100 * 1024 * 1024).unwrap();
@@ -240,6 +245,14 @@ impl RawConfig {
                 "must use the https scheme".to_owned(),
             ));
         }
+        // The base of every rewritten artifact URL, so a credential here would be
+        // handed to every client.
+        if has_userinfo(&public_url) {
+            return Err(invalid(
+                "public_url",
+                "must not carry a username or password".to_owned(),
+            ));
+        }
         if public_url.query().is_some() || public_url.fragment().is_some() {
             return Err(invalid(
                 "public_url",
@@ -260,6 +273,13 @@ impl RawConfig {
             return Err(invalid(
                 "blocklist_file",
                 "must be an absolute path".to_owned(),
+            ));
+        }
+
+        if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
+            return Err(invalid(
+                "cooldown_seconds",
+                format!("must not exceed {MAX_COOLDOWN_SECONDS} (ten years)"),
             ));
         }
 
@@ -318,6 +338,14 @@ impl RawConfig {
             Some(text) => {
                 let url = Url::parse(text)
                     .map_err(|_| invalid("siem_url", "must be a valid URL".to_owned()))?;
+                // The credential belongs in `PROBATION_SIEM_AUTH`, which is kept off
+                // this struct; one embedded here would be printed with it.
+                if has_userinfo(&url) {
+                    return Err(invalid(
+                        "siem_url",
+                        "must not carry a username or password; use PROBATION_SIEM_AUTH".to_owned(),
+                    ));
+                }
                 // The credential and every decision record travel this URL. Plaintext
                 // is allowed only where the traffic cannot leave the machine.
                 if url.scheme() != "https" && !is_loopback(&url) {
@@ -451,6 +479,10 @@ impl RawConfig {
             tls_key_path: self.tls_key_path,
         })
     }
+}
+
+fn has_userinfo(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
 }
 
 /// Whether `url`'s host is this machine. `localhost` counts by name as well as by

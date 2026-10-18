@@ -1506,3 +1506,14 @@ pub async fn drive_rated_load(
         achieved: (offered - u64::from(WORKERS)) as f64 / elapsed.as_secs_f64(),
     }
 }
+
+impl TestServer {
+    /// [`TestServer::shutdown`] with a drain deadline of the test's choosing, so a
+    /// witness for the deadline does not wait out the shipped thirty seconds.
+    pub async fn shutdown_within(self, drain: Duration) {
+        self.running
+            .shutdown_within(drain)
+            .await
+            .expect("a clean shutdown");
+    }
+}

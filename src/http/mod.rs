@@ -11,10 +11,12 @@ pub mod pypi_routes;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderValue, header};
-use axum::middleware;
-use axum::response::Response;
+use axum::extract::Request;
+use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::App;
 use crate::http::error::ApiError;
@@ -42,8 +44,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/health/ready", get(health::ready))
         .route("/health/delivery", get(health::delivery))
         .route("/npm/-/ping", get(npm_routes::ping))
-        .route("/npm/-", get(unsupported_npm_api))
-        .route("/npm/-/{*rest}", get(unsupported_npm_api))
+        .route("/npm/-", get(unknown_route))
+        .route("/npm/-/{*rest}", get(unknown_route))
         .route("/npm/{package}", get(npm_routes::package))
         .route(
             "/npm/{package}/{version_or_tag}",
@@ -55,6 +57,9 @@ pub fn router(app: Arc<App>) -> Router {
             "/pypi/simple/{project}",
             get(pypi_routes::project_without_slash),
         )
+        // Only the routes above: the artifact routes below serve `HEAD` as SPEC §11
+        // lists it.
+        .route_layer(middleware::from_fn(get_only))
         .route(
             "/npm/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_npm).head(artifact_routes::serve_npm),
@@ -75,6 +80,26 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+/// What every package route asks before it does any work: a request permit
+/// (SPEC §10: "reject overload instead of allowing unbounded waiters or tasks"), and
+/// usable storage — SPEC §10: "Storage write failures make readiness false and deny
+/// package responses with `503` until storage is usable again." Checked here rather
+/// than left to the first storage command, because a warm response issues none.
+///
+/// With no valid policy in force the handler's own `POLICY_UNAVAILABLE` answers
+/// instead: SPEC §5 puts that check first, and it is the more fundamental refusal.
+fn admit(app: &App) -> Result<OwnedSemaphorePermit, ApiError> {
+    let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    if !app.store().is_healthy()
+        && app
+            .blocklist()
+            .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()))
+    {
+        return Err(ApiError::StorageUnusable);
+    }
+    Ok(permit)
+}
+
 async fn unknown_route() -> ApiError {
     ApiError::NotFound
 }
@@ -85,10 +110,21 @@ async fn unsupported_method() -> ApiError {
     ApiError::MethodNotAllowed
 }
 
-/// npm's `-` namespace, minus the one operation SPEC §11 lists. Refused here rather
-/// than read as a package name.
-async fn unsupported_npm_api() -> ApiError {
-    ApiError::NotFound
+/// SPEC §11 lists `GET` alone on every route but the artifact ones. Axum answers
+/// `HEAD` with any `GET` handler, so it is refused here, and every `405` from these
+/// routes names `GET` alone rather than axum's `GET,HEAD`.
+async fn get_only(request: Request, next: Next) -> Response {
+    let mut response = if request.method() == Method::HEAD {
+        ApiError::MethodNotAllowed.into_response()
+    } else {
+        next.run(request).await
+    };
+    if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET"));
+    }
+    response
 }
 
 /// SPEC §11: every response, including errors, carries `Cache-Control: no-store`.

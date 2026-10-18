@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -12,14 +13,33 @@ use crate::http::error::ApiError;
 use crate::pypi::{self, ProjectName};
 use crate::store::cache::Representation;
 
-/// The two media types this server actually produces, beside their legacy aliases.
-const JSON_MEDIA: &str = "application/vnd.pypi.simple.v1+json";
-const HTML_MEDIA: &str = "application/vnd.pypi.simple.v1+html";
+/// Each representation's served media type, then the alias that also asks for it.
+const JSON_TYPES: [&str; 2] = [pypi::render::JSON_CONTENT_TYPE, "application/json"];
+const HTML_TYPES: [&str; 2] = ["text/html", "application/vnd.pypi.simple.v1+html"];
+
+/// How specifically `range` names a representation: its served type, its alias, a
+/// `type/*` covering either, `*/*`, or not at all (zero).
+fn specificity(range: &str, types: &[&str; 2]) -> u8 {
+    if range == types[0] {
+        4
+    } else if range == types[1] {
+        3
+    } else if range == "*/*" {
+        1
+    } else if let Some(kind) = range.strip_suffix("/*")
+        && types
+            .iter()
+            .any(|media| media.split('/').next() == Some(kind))
+    {
+        2
+    } else {
+        0
+    }
+}
 
 /// `GET /pypi/simple/`.
 pub async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, ApiError> {
-    // SPEC §10: "reject overload instead of allowing unbounded waiters or tasks."
-    let _permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    let _permit = super::admit(&app)?;
     let rendered = pypi::index(&app, &negotiate(&headers)?).await?;
     Ok(respond(rendered))
 }
@@ -32,9 +52,10 @@ pub async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Re
 pub async fn project(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Path(project): Path<String>,
+    path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    let _permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    let Path(project) = path?;
+    let _permit = super::admit(&app)?;
     let name = parse_name(&project)?;
     // Negotiated before the redirect, so a client that accepts nothing this server
     // produces is told so once rather than sent to a second URL to be refused there.
@@ -48,7 +69,10 @@ pub async fn project(
 
 /// `GET /pypi/simple/{project}` — SPEC §7's "required canonical trailing-slash
 /// redirects", answered locally rather than by forwarding the client upstream.
-pub async fn project_without_slash(Path(project): Path<String>) -> Result<Response, ApiError> {
+pub async fn project_without_slash(
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let Path(project) = path?;
     Ok(canonical_redirect(&parse_name(&project)?))
 }
 
@@ -96,30 +120,35 @@ fn negotiate(headers: &HeaderMap) -> Result<Representation, ApiError> {
         return Ok(Representation::PypiHtml);
     };
 
-    let (mut json, mut html) = (-1.0f32, -1.0f32);
+    // RFC 9110 §12.5.1: the most specific range that matches a representation sets
+    // its quality, so `text/html;q=0` refuses HTML however broad a `*/*` beside it.
+    let (mut json, mut html) = ((0u8, 0.0f32), (0u8, 0.0f32));
     for entry in accept.split(',') {
         let mut parts = entry.split(';');
         let media = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
         let quality = parts
             .filter_map(|parameter| {
-                parameter
-                    .trim()
-                    .strip_prefix("q=")
-                    .and_then(|value| value.parse::<f32>().ok())
+                let (name, value) = parameter.split_once('=')?;
+                name.trim()
+                    .eq_ignore_ascii_case("q")
+                    .then(|| value.trim().parse::<f32>().ok())
+                    .flatten()
             })
             .next()
             .unwrap_or(1.0);
 
-        match media.as_str() {
-            JSON_MEDIA | "application/json" => json = json.max(quality),
-            HTML_MEDIA | "text/html" => html = html.max(quality),
-            "*/*" | "application/*" => {
-                json = json.max(quality);
-                html = html.max(quality);
+        for (best, types) in [(&mut json, &JSON_TYPES), (&mut html, &HTML_TYPES)] {
+            let specificity = specificity(&media, types);
+            if specificity > best.0 {
+                *best = (specificity, quality);
+            } else if specificity != 0 && specificity == best.0 {
+                // Two ranges equally specific: the stricter one, so a repeated
+                // `q=0` is never outvoted.
+                best.1 = best.1.min(quality);
             }
-            _ => {}
         }
     }
+    let (json, html) = (json.1, html.1);
 
     // `q=0` means "not acceptable", so a representation that only ever scored zero is
     // as unacceptable as one that was never named at all.

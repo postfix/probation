@@ -60,20 +60,30 @@ cargo build --release --locked
 
 Both `check-*` commands stop at the first problem, report it, and write
 nothing. Run them in your deploy pipeline before restarting. A restart onto a
-broken config is an outage.
+broken config is an outage. Run `check-config` with the same environment as
+`serve`: with `siem_url` set it also refuses a `PROBATION_SIEM_AUTH` that
+`serve` would refuse.
 
 ### Stopping it
 
 `SIGINT` (Ctrl-C) and `SIGTERM` (`docker stop`, `systemctl stop`, plain `kill`)
 both shut it down cleanly: queued log records are delivered and a summary is
-printed. An abrupt stop is still safe. Nothing gets corrupted.
+printed. A signal that arrives while the service is still starting is acted on
+as soon as startup finishes. An abrupt stop is still safe. Nothing gets
+corrupted.
+
+Requests already in progress get 30 seconds to finish; after that their
+connections are closed and shutdown continues. Give the service manager more
+than that before it kills the process, so the log drain still runs: with
+systemd, `TimeoutStopSec=45`; with Docker, `docker stop -t 45` (the default is
+10 seconds).
 
 ### Health checks
 
 | Endpoint | What it tells you |
 | --- | --- |
 | `GET /health/live` | The process is up. Still `200` with an expired blocklist or broken storage. |
-| `GET /health/ready` | The blocklist is valid **and** storage works. `503` if either is broken. Does not check upstream npm/PyPI. |
+| `GET /health/ready` | The blocklist is valid **and** storage works. `503` if either is broken. Does not check upstream npm/PyPI. While storage is broken, package and download requests also answer `503 STORAGE_UNUSABLE`, even ones that could be served from memory. |
 | `GET /health/delivery` | **For alerts only, never a health probe.** `503` if a log record was lost in the last 60 seconds. See "The rated load" in section 8. |
 
 Point the liveness probe at `/health/live` and the readiness probe at

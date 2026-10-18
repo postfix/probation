@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
@@ -34,10 +35,10 @@ pub async fn ping() -> Response {
 pub async fn package(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Path(package): Path<String>,
+    path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    // SPEC §10: "reject overload instead of allowing unbounded waiters or tasks."
-    let _permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    let Path(package) = path?;
+    let _permit = super::admit(&app)?;
     let name = parse_name(&package)?;
     let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
     Ok(respond(rendered))
@@ -53,9 +54,10 @@ pub async fn package(
 pub async fn package_version(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Path((package, version_or_tag)): Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    let _permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
+    let Path((package, version_or_tag)) = path?;
+    let _permit = super::admit(&app)?;
     if package.starts_with('@') && !package.contains('/') {
         let name = parse_name(&format!("{package}/{version_or_tag}"))?;
         let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
