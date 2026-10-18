@@ -333,7 +333,20 @@ scripts/install-local.sh
 ```
 
 It uses `sudo` only where `/etc/probation` or `/var/lib/probation` need it.
-Pass `--start` to also start `probation serve`. It picks the best certificate
+Pass `--start` to also start `probation serve`.
+
+When it needs `sudo`, the service runs as a dedicated `probation` system
+account. `/etc/probation` (config, blocklist, TLS key) is owned by root and only
+readable by that account, and `/var/lib/probation` belongs to it alone. Neither
+the service nor your login user can change policy or the verified cache, so a
+package's install script running as you cannot either. Your blocklist producer
+must write `/etc/probation/blocklist.json` as root. When the directories are
+ones you can create yourself (`--etc-dir`/`--data-dir` under your home), it is a
+personal install and everything runs as you.
+
+**Upgrading from an earlier install:** it gave both directories to your login
+user. Re-run the script with `sudo`, or fix ownership by hand, to get the
+separation above. It picks the best certificate
 tool available:
 
 - [`mkcert`](https://github.com/FiloSottile/mkcert), if installed. This adds a
@@ -695,10 +708,7 @@ covered. They need whatever client-side overrides they always needed.
 7. **A database from an older version will not open.** No automatic
    migration. See section 3a.
 8. **No admin API.** Everything is config files, signals, and logs.
-9. **Compiler warnings are not errors anywhere in this repo.** Run
-   `cargo clippy --all-targets -- -D warnings` yourself and wire it into CI.
-   Plain `cargo build` lets real bugs through as warnings.
-10. **One test is flaky in release builds only**
+9. **One test is flaky in release builds only**
     (`artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh`).
     Its timing margin is tuned for debug builds. The behavior it tests is
     fine.
