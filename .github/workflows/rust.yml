@@ -61,5 +61,7 @@ jobs:
           for v in 25.0.1 26.2.1; do
             python3 -m pip install --target "$PROBATION_E2E_CLIENTS/pip-$v" "pip==$v"
           done
+          # The pip tests build their fixture packages with `python -m build --no-isolation`.
+          python3 -m pip install build==1.2.2 setuptools==78.1.1
           echo "PROBATION_E2E_NODE_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
       - run: cargo test --locked --test e2e_npm --test e2e_pip -- --ignored
