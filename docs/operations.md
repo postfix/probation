@@ -346,9 +346,10 @@ backup from step 1, and start it.
 
 **If you installed v0.1.0 with `scripts/install-local.sh`:** that version ran
 the service as your login user. To move to the dedicated `probation` account
-(section 6), do steps 1–3 above, then re-run `sudo scripts/install-local.sh`
-with the same options you used before (`--etc-dir`, `--data-dir`, `--host`, …). Two things
-to know first:
+(section 6), do steps 1–3 above, then re-run
+`sudo scripts/install-local.sh --start` with the same options you used before
+(`--etc-dir`, `--data-dir`, `--host`, …). Without `--start` it installs the
+service but leaves it stopped. Two things to know first:
 
 - It **replaces `config.toml` and `blocklist.json`** with the samples. Copy
   yours back afterwards (as root, since the folder then belongs to root) and
@@ -357,8 +358,17 @@ to know first:
   `/usr/local/bin/probation`. That is why step 3 has to come first: otherwise
   the service keeps running the old release.
 
-Check that the service account is in use with
-`ps -o user= -p "$(pgrep -x probation)"`, which should print `probation`.
+Then check it:
+
+```sh
+ps -o user= -C probation                 # probation
+curl --cacert /etc/probation/tls/localhost.pem https://localhost:8443/health/ready
+sudo journalctl --namespace=probation -u probation | grep 'upgrading the database schema'
+```
+
+The installer gives the service its own journal namespace, so a plain
+`journalctl -u probation` shows none of its lines. The `--cacert` is needed
+only with the self-signed certificate; with `mkcert` drop it.
 
 ## 6. TLS, and the one job a reverse proxy still has
 
