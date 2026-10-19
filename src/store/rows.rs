@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use turso::Row;
+use turso::{Row, Value};
 use url::Url;
 
 use crate::artifacts::content::ContentKey;
@@ -164,10 +164,7 @@ impl ReferenceRow {
 
     /// Columns in the order `SELECT_REFERENCE` asks for them.
     pub(crate) fn from_row(row: &Row) -> Result<ReferenceRow, StoreError> {
-        let id = blob(row, 0, "artifact_references.id")?;
-        let id: [u8; 32] = id.as_ref().try_into().map_err(|_| {
-            StoreError::Corrupt("artifact_references.id is not 32 bytes".to_owned())
-        })?;
+        let id = digest(row, 0, "artifact_references.id")?;
 
         let ecosystem = text(row, 1, "artifact_references.ecosystem")?;
         let ecosystem = Ecosystem::from_tag(&ecosystem)
@@ -187,19 +184,11 @@ impl ReferenceRow {
                 upstream_url,
                 expected: decode_digests(&text(row, 6, "artifact_references.expected")?)?,
             },
-            publication_micros: optional_integer(row, 7),
-            first_seen_micros: optional_integer(row, 8),
+            publication_micros: optional_integer(row, 7, "artifact_references.publication_micros")?,
+            first_seen_micros: optional_integer(row, 8, "artifact_references.first_seen_micros")?,
             pinned_sha256: optional_digest(row, 9, "artifact_references.pinned_sha256")?,
             pinned_sha512: optional_digest(row, 10, "artifact_references.pinned_sha512")?,
-            pinned_size: optional_integer(row, 11)
-                .map(|size| {
-                    u64::try_from(size).map_err(|_| {
-                        StoreError::Corrupt(format!(
-                            "artifact_references.pinned_size is negative: {size}"
-                        ))
-                    })
-                })
-                .transpose()?,
+            pinned_size: optional_unsigned(row, 11, "artifact_references.pinned_size")?,
             content_key: optional_digest::<32>(row, 12, "artifact_references.content_key")?
                 .map(ContentKey::from_sha256),
         })
@@ -207,22 +196,30 @@ impl ReferenceRow {
 }
 
 /// A fixed-length digest column that may be absent. A present column of the wrong
-/// length is corruption, never something to pad or truncate into shape.
-fn optional_digest<const N: usize>(
+/// length or type is corruption, never something to pad, truncate or ignore into
+/// shape.
+pub(crate) fn optional_digest<const N: usize>(
     row: &Row,
     index: usize,
     column: &'static str,
 ) -> Result<Option<[u8; N]>, StoreError> {
-    let Some(bytes) = row
-        .get_value(index)
-        .ok()
-        .and_then(|value| value.as_blob().cloned())
-    else {
-        return Ok(None);
-    };
-    <[u8; N]>::try_from(bytes.as_slice())
-        .map(Some)
-        .map_err(|_| StoreError::Corrupt(format!("{column} is not {N} bytes")))
+    match row.get_value(index) {
+        Ok(Value::Null) => Ok(None),
+        Ok(Value::Blob(bytes)) => <[u8; N]>::try_from(bytes.as_slice())
+            .map(Some)
+            .map_err(|_| StoreError::Corrupt(format!("{column} is not {N} bytes"))),
+        _ => Err(StoreError::Corrupt(format!("{column} is not a blob"))),
+    }
+}
+
+/// [`optional_digest`] for a column that must be present.
+pub(crate) fn digest<const N: usize>(
+    row: &Row,
+    index: usize,
+    column: &'static str,
+) -> Result<[u8; N], StoreError> {
+    optional_digest(row, index, column)?
+        .ok_or_else(|| StoreError::Corrupt(format!("{column} is missing")))
 }
 
 /// One project's whole refresh: the snapshot, every reference it advertises, and the
@@ -276,23 +273,43 @@ pub(crate) fn decode_digests(text: &str) -> Result<Vec<Digest>, StoreError> {
         .collect()
 }
 
-fn integer(row: &Row, index: usize, column: &'static str) -> Result<i64, StoreError> {
-    optional_integer(row, index)
+pub(crate) fn integer(row: &Row, index: usize, column: &'static str) -> Result<i64, StoreError> {
+    optional_integer(row, index, column)?
         .ok_or_else(|| StoreError::Corrupt(format!("{column} is not an integer")))
 }
 
-fn optional_integer(row: &Row, index: usize) -> Option<i64> {
-    row.get_value(index)
-        .ok()
-        .and_then(|value| value.as_integer().copied())
+/// `NULL` is absent; anything else that is not an integer is corruption.
+pub(crate) fn optional_integer(
+    row: &Row,
+    index: usize,
+    column: &'static str,
+) -> Result<Option<i64>, StoreError> {
+    match row.get_value(index) {
+        Ok(Value::Null) => Ok(None),
+        Ok(Value::Integer(value)) => Ok(Some(value)),
+        _ => Err(StoreError::Corrupt(format!("{column} is not an integer"))),
+    }
 }
 
-fn unsigned(row: &Row, index: usize, column: &'static str) -> Result<u64, StoreError> {
-    let value = integer(row, index, column)?;
-    u64::try_from(value).map_err(|_| StoreError::Corrupt(format!("{column} is negative: {value}")))
+pub(crate) fn unsigned(row: &Row, index: usize, column: &'static str) -> Result<u64, StoreError> {
+    optional_unsigned(row, index, column)?
+        .ok_or_else(|| StoreError::Corrupt(format!("{column} is not an integer")))
 }
 
-fn text(row: &Row, index: usize, column: &'static str) -> Result<String, StoreError> {
+pub(crate) fn optional_unsigned(
+    row: &Row,
+    index: usize,
+    column: &'static str,
+) -> Result<Option<u64>, StoreError> {
+    optional_integer(row, index, column)?
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| StoreError::Corrupt(format!("{column} is negative: {value}")))
+        })
+        .transpose()
+}
+
+pub(crate) fn text(row: &Row, index: usize, column: &'static str) -> Result<String, StoreError> {
     optional_text(row, index).ok_or_else(|| StoreError::Corrupt(format!("{column} is not text")))
 }
 

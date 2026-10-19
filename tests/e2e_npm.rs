@@ -441,19 +441,6 @@ impl Harness {
         config.blocklist_file = blocklist_file.clone();
         config.cooldown_seconds = COOLDOWN_SECONDS;
         config.osv_mode = mode;
-        if osv_base_url.is_some() {
-            // The sample config's `osv_request_timeout_ms` (500ms) is shorter than
-            // `OSV_BATCH_INTERVAL` (2s): a solitary lookup — nothing else fills the
-            // batch — only ever flushes on that interval, so `resolve`'s own
-            // `request_timeout` bound (C12c) fires and fails the check open first.
-            // A real single-package `npm install` never fills a batch either, so
-            // this is the production default's actual behaviour, not a test-only
-            // quirk — see the finding this test's own comment reports. Widening the
-            // timeout here is what lets this test observe the round trip complete
-            // instead of always exercising the fail-open path.
-            config.osv_request_timeout_ms =
-                std::num::NonZeroU64::new(4_000).expect("4000 is non-zero");
-        }
 
         let server = match osv_base_url {
             Some(url) => {
@@ -928,43 +915,6 @@ async fn an_already_installed_package_is_outside_the_enforcement_boundary() {
 // the blocklist-only tests above.
 // ---------------------------------------------------------------------------
 
-/// A `wiremock` server standing in for `https://api.osv.dev`: it answers
-/// `POST /v1/querybatch` with a `MAL-*` vuln for every query matching `(name,
-/// version)`, and no vuln for anything else — the same shape `osv::batcher`'s own
-/// unit tests use, just reached through the real HTTP server this time instead of
-/// called in-process.
-async fn osv_flags(name: &str, version: &str) -> (Url, wiremock::MockServer) {
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let server = MockServer::start().await;
-    let flagged_name = name.to_owned();
-    let flagged_version = version.to_owned();
-    Mock::given(method("POST"))
-        .and(path("/v1/querybatch"))
-        .respond_with(move |request: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&request.body).expect("a JSON batch body");
-            let queries = body["queries"].as_array().expect("a queries array");
-            let results: Vec<Value> = queries
-                .iter()
-                .map(|query| {
-                    let matches = query["package"]["name"] == flagged_name
-                        && query["version"] == flagged_version;
-                    if matches {
-                        json!({"vulns": [{"id": "MAL-2026-1234"}]})
-                    } else {
-                        json!({"vulns": []})
-                    }
-                })
-                .collect();
-            ResponseTemplate::new(200).set_body_json(json!({"results": results}))
-        })
-        .mount(&server)
-        .await;
-    let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).expect("the mock's own URL");
-    (url, server)
-}
-
 /// SPEC C1/C4: OSV is an OR-only signal — a package the producer's own snapshot
 /// never mentions is still refused once OSV's malicious-packages feed lists it. The
 /// producer's blocklist here is empty (`""`); OSV alone is what blocks the install.
@@ -972,7 +922,7 @@ async fn osv_flags(name: &str, version: &str) -> (Url, wiremock::MockServer) {
 #[ignore = "spawns the real npm client"]
 async fn npm_install_is_refused_on_an_osv_malicious_package_match() {
     let workspace = tempfile::tempdir().expect("a client workspace");
-    let (osv_url, _osv_server) = osv_flags(WIDGET, OLD).await;
+    let (osv_url, _osv_server) = common::osv_flagging(&[(WIDGET, OLD)]).await;
 
     let harness = Harness::start_for_with_osv(
         current_npm(),
@@ -1013,7 +963,7 @@ async fn npm_install_is_refused_on_an_osv_malicious_package_match() {
 #[ignore = "spawns the real npm client"]
 async fn npm_install_succeeds_when_osv_does_not_flag_the_resolved_version() {
     let workspace = tempfile::tempdir().expect("a client workspace");
-    let (osv_url, _osv_server) = osv_flags(WIDGET, YOUNG).await;
+    let (osv_url, _osv_server) = common::osv_flagging(&[(WIDGET, YOUNG)]).await;
 
     let harness =
         Harness::start_for_with_osv(current_npm(), "", (reqwest::Client::new(), osv_url)).await;
@@ -1040,7 +990,7 @@ async fn npm_install_succeeds_when_osv_does_not_flag_the_resolved_version() {
 #[ignore = "spawns the real npm client"]
 async fn npm_install_succeeds_but_consults_osv_in_diagnostic_mode() {
     let workspace = tempfile::tempdir().expect("a client workspace");
-    let (osv_url, osv_server) = osv_flags(WIDGET, OLD).await;
+    let (osv_url, osv_server) = common::osv_flagging(&[(WIDGET, OLD)]).await;
 
     let harness = Harness::start_for_with_osv_mode(
         current_npm(),
@@ -1076,7 +1026,7 @@ async fn npm_install_succeeds_but_consults_osv_in_diagnostic_mode() {
 #[ignore = "spawns the real npm client"]
 async fn npm_install_succeeds_without_contacting_osv_when_off() {
     let workspace = tempfile::tempdir().expect("a client workspace");
-    let (osv_url, osv_server) = osv_flags(WIDGET, OLD).await;
+    let (osv_url, osv_server) = common::osv_flagging(&[(WIDGET, OLD)]).await;
 
     let harness = Harness::start_for_with_osv_mode(
         current_npm(),

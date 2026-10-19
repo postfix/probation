@@ -242,3 +242,98 @@ async fn expiry_stops_delivery_including_warm_hits() {
 
     harness.server.shutdown().await;
 }
+
+/// SPEC §7: a PyPI entry is matched under its PEP 503 name, so a producer that
+/// writes `Evil_Pkg` blocks the project pip asks for as `evil-pkg`.
+#[tokio::test]
+async fn a_pypi_block_spelled_unnormalised_hides_the_projects_files() {
+    const PROJECT: &str = "evil-pkg";
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let blocklist_file = dir.path().join("blocklist.json");
+    std::fs::write(
+        &blocklist_file,
+        blocklist(
+            FOREVER,
+            r#"{"ecosystem":"pypi","name":"Evil_Pkg","version":"1.0","reason":"malware"}"#,
+            "",
+        ),
+    )
+    .expect("the blocklist is written");
+    let mut config = sample_config();
+    config.blocklist_file = blocklist_file;
+    config.cooldown_seconds = ONE_DAY;
+
+    let file = |filename: &str| {
+        serde_json::json!({
+            "filename": filename,
+            "url": format!("https://files.invalid/packages/ab/cd/{filename}"),
+            "hashes": {"sha256": "aa".repeat(32)},
+            "upload-time": "2020-01-01T00:00:00Z",
+        })
+    };
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &common::pypi_upstream_path(PROJECT),
+        FakeAnswer::Body(
+            serde_json::json!({
+                "meta": {"api-version": "1.1"},
+                "name": PROJECT,
+                "versions": [],
+                "files": [file("evil_pkg-1.0.tar.gz"), file("evil_pkg-2.0.tar.gz")],
+            })
+            .to_string(),
+        ),
+    );
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        registry as Arc<dyn probation::upstream::Transport>,
+        fake_origins(),
+    )
+    .await;
+
+    let body = server
+        .get_with_headers(
+            &format!("/pypi/simple/{PROJECT}/"),
+            &[("accept", "application/vnd.pypi.simple.v1+json")],
+        )
+        .await
+        .text()
+        .await
+        .expect("a body");
+    let listing: Value = serde_json::from_str(&body).expect("a JSON listing");
+    let filenames: Vec<&str> = listing["files"]
+        .as_array()
+        .expect("files is an array")
+        .iter()
+        .map(|file| file["filename"].as_str().expect("a filename"))
+        .collect();
+    assert_eq!(filenames, vec!["evil_pkg-2.0.tar.gz"]);
+
+    server.shutdown().await;
+}
+
+/// One digest, one SRI spelling: the padding a payload needs is part of it, so a
+/// missing or an extra `=` is malformed upstream integrity rather than a second
+/// spelling of the same bytes.
+#[test]
+fn an_sri_entry_with_non_canonical_padding_is_refused() {
+    const CANONICAL: &str = "sha256-qNluRQ2G+9oG/QJagz5Buu7G6KX3R9h6j0M2sML1nhc=";
+    assert_eq!(CANONICAL, SHA256_INTEGRITY);
+    Digest::parse_sri_entry(CANONICAL).expect("the canonical spelling");
+    let sha512 = Digest::parse_sri_entry(SHA512_INTEGRITY).expect("two padding characters");
+
+    for spelling in [
+        CANONICAL.trim_end_matches('=').to_owned(),
+        format!("{CANONICAL}="),
+        SHA512_INTEGRITY.trim_end_matches('=').to_owned(),
+        format!("{}=", SHA512_INTEGRITY.trim_end_matches('=')),
+        format!("{SHA512_INTEGRITY}="),
+    ] {
+        assert!(
+            Digest::parse_sri_entry(&spelling).is_err(),
+            "{spelling} is not the canonical spelling of its digest"
+        );
+    }
+    assert_eq!(sha512.bytes.len(), 64);
+}

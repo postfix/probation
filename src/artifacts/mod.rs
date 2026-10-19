@@ -43,12 +43,11 @@ use std::sync::Arc;
 use axum::http::Method;
 
 use crate::App;
-use crate::artifacts::content::PinnedFile;
+use crate::artifacts::content::{ContentError, PinnedFile};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
-use crate::http::error::ApiError;
+use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::policy::{BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
-use crate::store::StoreError;
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::{npm, osv, pypi};
 
@@ -105,10 +104,6 @@ pub async fn serve_artifact(
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
     ensure_membership(app, &row).await?;
-    match evaluate(app, &snapshot, now, &row, &pinned).await {
-        Decision::Allow => {}
-        other => return Err(decision_error(other, now)),
-    }
 
     let (file, pinned, downloaded) = open_or_download(app, &row, pinned).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
@@ -220,7 +215,11 @@ async fn evaluate(
 /// committed is a `404` rather than something to go and find out about.
 async fn load_reference(app: &App, id: ReferenceId) -> Result<ReferenceRow, ApiError> {
     let caches = app.store().caches();
-    if let Some(row) = caches.references.get(&id) {
+    // The invalidation count is read with the miss, before the query: a download
+    // that drops this entry while the query runs has changed the row this request
+    // is about to read, and the guarded insert below then refuses to put it back.
+    let (seen, cached) = caches.references.get_with_seen(&id);
+    if let Some(row) = cached {
         return Ok((*row).clone());
     }
 
@@ -228,11 +227,11 @@ async fn load_reference(app: &App, id: ReferenceId) -> Result<ReferenceRow, ApiE
         .store()
         .get_reference(id)
         .await
-        .map_err(|err| storage_error(&err))?
+        .map_err(storage_error)?
         .ok_or(ApiError::NotFound)?;
     caches
         .references
-        .insert(id, Arc::new(row.clone()), approximate_bytes(&row));
+        .insert_if_current(id, Arc::new(row.clone()), approximate_bytes(&row), seen);
     Ok(row)
 }
 
@@ -263,6 +262,12 @@ async fn open_or_download(
                     error = %err,
                     "the cached file is unusable; dropping the mapping and refetching"
                 );
+                // A wrong-sized file is not this key's content. It goes before its
+                // mapping, as an evicted one does, so nothing on disk answers to the
+                // key once the mapping is gone.
+                if matches!(err, ContentError::SizeMismatch { .. }) {
+                    app.content.evict(&key).await;
+                }
                 if let Err(err) = app.store().clear_content_key(key).await {
                     tracing::warn!(error = %err, "the stale content mapping could not be cleared");
                 }
@@ -341,19 +346,19 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
 /// `io::Error` and a `turso::Error`, neither of which clones.
 fn download_error(err: &DownloadError, now: i64) -> ApiError {
     match err {
-        DownloadError::Refused(decision) => {
+        DownloadError::Refused(_) => {
             tracing::info!(error = %err, "policy refused verified artifact bytes");
-            return decision_error(*decision, now);
         }
+        // SPEC §10: "never relax policy to free space".
         DownloadError::Capacity(_) => {
-            // SPEC §10: "never relax policy to free space".
             tracing::error!(error = %err, "local storage could not take the artifact");
-            return ApiError::CapacityExhausted;
         }
         _ => tracing::warn!(error = %err, "an artifact download failed"),
     }
 
     match err {
+        DownloadError::Refused(decision) => decision_error(*decision, now),
+        DownloadError::Capacity(_) => ApiError::CapacityExhausted,
         DownloadError::Upstream(crate::upstream::UpstreamError::Timeout) => {
             ApiError::UpstreamTimeout
         }
@@ -375,27 +380,13 @@ fn download_error(err: &DownloadError, now: i64) -> ApiError {
         // blame upstream for a fault that is ours. What did change is the reason: this
         // is no longer reported as `OVERLOADED`, because nothing was at capacity.
         DownloadError::Aborted => ApiError::InternalFailure,
-        // Both handled above.
-        DownloadError::Capacity(_) => ApiError::CapacityExhausted,
-        DownloadError::Refused(_) => ApiError::Blocked {
-            reason: "the artifact is blocked",
-        },
-    }
-}
-
-fn storage_error(err: &StoreError) -> ApiError {
-    tracing::warn!(error = %err, "a storage command failed; refusing the request");
-    match err {
-        StoreError::Busy => ApiError::Overloaded,
-        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
-            ApiError::StorageUnusable
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::StoreError;
 
     /// The exhaustive match compiles, and the new arm renders a real, non-empty
     /// reason string rather than the placeholder every other arm already has.
@@ -405,5 +396,140 @@ mod tests {
             deny_reason(DenyReason::BlockedByOsv),
             "the artifact is blocked by a known OSV malicious-package advisory"
         );
+    }
+
+    /// SPEC §11's rows for a refused decision: a hold carries its deadline, a
+    /// denial its reason, and no policy in force is `503`.
+    #[test]
+    fn every_decision_maps_to_its_row() {
+        assert_eq!(
+            decision_error(
+                Decision::Hold {
+                    eligible_at_micros: 3_000_000
+                },
+                1_000_000
+            ),
+            ApiError::held(3_000_000, 1_000_000)
+        );
+        assert_eq!(
+            decision_error(Decision::Unavailable, 0),
+            ApiError::PolicyUnavailable
+        );
+        assert!(matches!(
+            decision_error(Decision::Allow, 0),
+            ApiError::Blocked { .. }
+        ));
+        for reason in [
+            DenyReason::BlockedPackage,
+            DenyReason::BlockedVersion,
+            DenyReason::BlockedDigest,
+            DenyReason::MalformedTimestamp,
+            DenyReason::FutureTimestamp,
+            DenyReason::NoTimestamp,
+        ] {
+            assert_eq!(
+                decision_error(Decision::Deny(reason), 0),
+                ApiError::Blocked {
+                    reason: deny_reason(reason)
+                }
+            );
+            assert!(!deny_reason(reason).is_empty());
+        }
+    }
+
+    /// SPEC §11's rows for a failed transfer, one per way it can fail — and each
+    /// failure says what it was.
+    #[test]
+    fn every_download_failure_maps_to_its_row() {
+        use crate::artifacts::content::ContentError;
+        use crate::policy::HashAlgorithm;
+        use crate::upstream::UpstreamError;
+
+        let digest = |byte| Digest {
+            algorithm: HashAlgorithm::Sha256,
+            bytes: vec![byte; 32].into_boxed_slice(),
+        };
+        let rows = [
+            (
+                DownloadError::Upstream(UpstreamError::Timeout),
+                ApiError::UpstreamTimeout,
+                "timed out",
+            ),
+            (
+                DownloadError::Upstream(UpstreamError::Status(500)),
+                ApiError::UpstreamFailure,
+                "upstream answered 500",
+            ),
+            (
+                DownloadError::IntegrityMismatch {
+                    expected: digest(1),
+                    computed: digest(2),
+                },
+                ApiError::IntegrityMismatch,
+                "but upstream advertised",
+            ),
+            (
+                DownloadError::PinConflict,
+                ApiError::IntegrityMismatch,
+                "permanently pinned",
+            ),
+            (
+                DownloadError::SizeMismatch {
+                    declared: 2,
+                    actual: 1,
+                },
+                ApiError::IntegrityMismatch,
+                "declared 2 bytes and delivered 1",
+            ),
+            (
+                DownloadError::TooLarge { limit: 9 },
+                ApiError::UpstreamInvalid,
+                "exceeds the 9-byte cap",
+            ),
+            (
+                DownloadError::Capacity(ContentError::NoCapacity {
+                    wanted: 2,
+                    capacity: 1,
+                }),
+                ApiError::CapacityExhausted,
+                "cannot reserve 2 bytes",
+            ),
+            (
+                DownloadError::Refused(Decision::Deny(DenyReason::BlockedDigest)),
+                ApiError::Blocked {
+                    reason: deny_reason(DenyReason::BlockedDigest),
+                },
+                "policy refused the verified bytes",
+            ),
+            (
+                DownloadError::Storage(StoreError::Busy),
+                ApiError::Overloaded,
+                "the storage queue is full",
+            ),
+            (
+                DownloadError::Storage(StoreError::Corrupt("x".to_owned())),
+                ApiError::StorageUnusable,
+                "the store is unusable",
+            ),
+            (
+                DownloadError::Overloaded,
+                ApiError::Overloaded,
+                "no artifact download permit",
+            ),
+            (
+                DownloadError::Cancelled,
+                ApiError::Overloaded,
+                "the last waiter left",
+            ),
+            (
+                DownloadError::Aborted,
+                ApiError::InternalFailure,
+                "ended without completing",
+            ),
+        ];
+        for (failure, row, text) in rows {
+            assert_eq!(download_error(&failure, 0), row, "{failure}");
+            assert!(failure.to_string().contains(text), "{failure}");
+        }
     }
 }

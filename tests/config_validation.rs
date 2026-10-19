@@ -32,6 +32,7 @@ const INVALID_CONFIGS: &[(&str, &str)] = &[
     ("missing_key.toml", "missing key `data_dir`"),
     ("syntax.toml", "invalid TOML"),
     ("listen_not_an_address.toml", "invalid `listen`"),
+    ("public_url_not_a_url.toml", "invalid `public_url`"),
     ("public_url_not_https.toml", "invalid `public_url`"),
     ("public_url_with_path.toml", "invalid `public_url`"),
     ("public_url_with_query.toml", "invalid `public_url`"),
@@ -973,4 +974,194 @@ fn rl4_budget_without_its_sink_is_refused() {
     ]))
     .expect("a budget alongside its collector is valid");
     assert_eq!(config.siem_queue_max_bytes.get(), 1_048_576);
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes: bounds and URL credentials
+// ---------------------------------------------------------------------------
+
+/// The shipped sample with its `key = …` line replaced, so these cannot drift from
+/// the file an operator copies.
+fn sample_replacing(key: &str, line: &str) -> String {
+    let text = fs::read_to_string("config.sample.toml").expect("the sample is readable");
+    let prefix = format!("{key} =");
+    let replaced: Vec<&str> = text
+        .lines()
+        .map(|current| {
+            if current.starts_with(&prefix) {
+                line
+            } else {
+                current
+            }
+        })
+        .collect();
+    assert!(replaced.contains(&line), "the sample states `{key}`");
+    replaced.join("\n")
+}
+
+/// A cooldown past what a deadline can represent would saturate every hold to the
+/// end of time and drop its `eligible_at`. Ten years is the ceiling.
+#[test]
+fn a_cooldown_above_ten_years_is_rejected() {
+    const TEN_YEARS: u64 = 10 * 365 * 86_400;
+    let config = Config::from_toml_str(&sample_replacing(
+        "cooldown_seconds",
+        &format!("cooldown_seconds = {TEN_YEARS}"),
+    ))
+    .expect("ten years is the largest accepted cooldown");
+    assert_eq!(config.cooldown_seconds, TEN_YEARS);
+
+    for value in [TEN_YEARS + 1, i64::MAX as u64] {
+        let err = Config::from_toml_str(&sample_replacing(
+            "cooldown_seconds",
+            &format!("cooldown_seconds = {value}"),
+        ))
+        .expect_err("a cooldown above ten years is refused");
+        assert!(
+            matches!(
+                &err,
+                ConfigError::Invalid {
+                    key: "cooldown_seconds",
+                    ..
+                }
+            ),
+            "{value}: the refusal names the key an operator can fix, got `{err}`"
+        );
+    }
+}
+
+/// `check-config` refuses what `serve` would refuse: a `PROBATION_SIEM_AUTH` that is
+/// not a header value stops startup, so it must stop the check too — without the
+/// value being repeated.
+#[test]
+fn check_config_refuses_a_siem_credential_serve_would_refuse() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        sample_with(&["siem_url = \"https://siem.example.org/ingest\""]),
+    )
+    .expect("the configuration is written");
+    let check = |credential: &str| {
+        Command::new(BINARY)
+            .args(["check-config", path.to_str().expect("a UTF-8 path")])
+            .env("PROBATION_SIEM_AUTH", credential)
+            .output()
+            .expect("the binary runs")
+    };
+
+    let refused = check("Bearer secret\nInjected: 1");
+    assert!(
+        !refused.status.success(),
+        "a malformed credential is refused"
+    );
+    let stderr = stderr_of(&refused);
+    assert!(stderr.contains("PROBATION_SIEM_AUTH"), "{stderr}");
+    assert!(
+        !stderr.contains("secret"),
+        "the value is not repeated: {stderr}"
+    );
+
+    let accepted = check("Bearer secret");
+    assert!(accepted.status.success(), "{}", stderr_of(&accepted));
+}
+
+/// `public_url` is the base of every rewritten artifact URL and `siem_url` carries
+/// every decision record, so neither may embed a credential.
+#[test]
+fn a_url_carrying_userinfo_is_rejected() {
+    for (key, line) in [
+        (
+            "public_url",
+            sample_replacing(
+                "public_url",
+                "public_url = \"https://user:secret@packages.example.org\"",
+            ),
+        ),
+        (
+            "public_url",
+            sample_replacing(
+                "public_url",
+                "public_url = \"https://user@packages.example.org\"",
+            ),
+        ),
+        (
+            "siem_url",
+            sample_with(&["siem_url = \"https://user:secret@siem.example.org/ingest\""]),
+        ),
+        (
+            "siem_url",
+            sample_with(&["siem_url = \"https://:secret@siem.example.org/ingest\""]),
+        ),
+    ] {
+        let err = Config::from_toml_str(&line).expect_err("userinfo is refused");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key: refused, .. } if *refused == key),
+            "the refusal names `{key}`, got `{err}`"
+        );
+        assert!(
+            !err.to_string().contains("secret"),
+            "and does not repeat the credential, got `{err}`"
+        );
+    }
+}
+
+/// A certificate with no key, or a key with no certificate, cannot start TLS.
+#[test]
+fn tls_keys_come_in_pairs() {
+    for (line, key) in [
+        (
+            "tls_cert_path = \"/etc/probation/tls/cert.pem\"",
+            "tls_cert_path",
+        ),
+        (
+            "tls_key_path = \"/etc/probation/tls/key.pem\"",
+            "tls_key_path",
+        ),
+    ] {
+        let err = Config::from_toml_str(&sample_with(&[line])).expect_err("half a pair");
+        assert!(
+            matches!(&err, ConfigError::Invalid { key: refused, .. } if *refused == key),
+            "the refusal names `{key}`, got `{err}`"
+        );
+    }
+}
+
+/// Plaintext to the collector only where the traffic cannot leave the machine: an
+/// IPv6 loopback counts, and a URL with no host at all does not.
+#[test]
+fn siem_url_loopback_covers_ipv6_and_refuses_a_hostless_url() {
+    let config = Config::from_toml_str(&sample_with(&["siem_url = \"http://[::1]:8088/ingest\""]))
+        .expect("IPv6 loopback is this machine");
+    assert!(config.siem_url.is_some());
+    let err = Config::from_toml_str(&sample_with(&["siem_url = \"unix:/run/collector.sock\""]))
+        .expect_err("a URL with no host is not loopback");
+    assert!(matches!(
+        err,
+        ConfigError::Invalid {
+            key: "siem_url",
+            ..
+        }
+    ));
+}
+
+/// A refusal that wraps another error keeps it as its source, so a caller can walk
+/// the chain; one that is this crate's own judgement has none.
+#[test]
+fn a_config_error_keeps_its_source() {
+    use std::error::Error as _;
+
+    let read =
+        Config::load(Path::new("tests/fixtures/config/not-here.toml")).expect_err("an absent file");
+    assert!(read.source().is_some(), "{read}");
+    let syntax = Config::from_toml_str("not = [toml").expect_err("not TOML");
+    assert!(syntax.source().is_some(), "{syntax}");
+    for judged in [
+        Config::from_toml_str(&sample_with(&["cooldown_second = 1"])),
+        Config::from_toml_str("listen = \"127.0.0.1:8080\""),
+        Config::from_toml_str(&sample_replacing("listen", "listen = \"nowhere\"")),
+    ] {
+        let err = judged.expect_err("refused");
+        assert!(err.source().is_none(), "{err}");
+    }
 }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 13fbdadfbeb6dca3184b77cacd2d1ce88e63a34ada740c99663366e8886c1efc # shrinks to (header, entries) = ("application/vnd.pypi.simple.v1+html, text/html;q=0", [("application/vnd.pypi.simple.v1+html", false), ("text/html", true)])

@@ -14,12 +14,16 @@
 //! `Display` output reaches a client — those go to the log, where the operator who
 //! needs them can see them and the client cannot.
 
+use std::borrow::Borrow;
+
 use axum::Json;
+use axum::extract::rejection::PathRejection;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::http::logging;
+use crate::store::StoreError;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ApiError {
@@ -219,6 +223,33 @@ impl IntoResponse for ApiError {
         // the ones the router produces itself. Extensions never reach the wire.
         response.extensions_mut().insert(self);
         response
+    }
+}
+
+/// A route component the router could not extract — one that does not percent-decode
+/// to UTF-8, say — is SPEC §11's `400` row like any other invalid input, rather than
+/// axum's own plain-text answer that no decision line would recognise as a refusal.
+impl From<PathRejection> for ApiError {
+    fn from(rejection: PathRejection) -> ApiError {
+        tracing::debug!(error = %rejection, "refused a route component");
+        ApiError::InvalidInput("a route component is not valid")
+    }
+}
+
+/// A storage command that failed, as SPEC §11 answers it: a full queue is overload,
+/// and anything else means no state change can be committed. The source error goes
+/// to the log, never to the client.
+///
+/// Owned or borrowed, so a call site passes it straight to `map_err` rather than
+/// through a closure.
+pub(crate) fn storage_error(err: impl Borrow<StoreError>) -> ApiError {
+    let err = err.borrow();
+    tracing::warn!(error = %err, "a storage command failed; refusing the request");
+    match err {
+        StoreError::Busy => ApiError::Overloaded,
+        StoreError::Closed | StoreError::Database(_) | StoreError::Corrupt(_) => {
+            ApiError::StorageUnusable
+        }
     }
 }
 

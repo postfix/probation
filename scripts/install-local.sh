@@ -131,12 +131,36 @@ if [ -z "$PROBATION_BIN" ]; then
   fi
 fi
 
-if mkdir -p "$ETC_DIR/tls" "$DATA_DIR" 2>/dev/null; then
+# Who runs the service. A personal install (directories this user can create
+# without privilege) runs as that user. A system install runs as a dedicated
+# `probation` account that can read its policy but not change it: otherwise any
+# code running as the login user -- a package's postinstall script, say -- could
+# rewrite the blocklist and config, or replace a verified tarball in the cache,
+# for every user this host's npm/pip config points here.
+SYSTEM_INSTALL=0
+SERVICE_USER="$REAL_USER"
+if [ "$(id -u)" -ne 0 ] && mkdir -p "$ETC_DIR/tls" "$DATA_DIR" 2>/dev/null; then
   echo "==> Created $ETC_DIR and $DATA_DIR"
 else
+  SYSTEM_INSTALL=1
+  SERVICE_USER="probation"
   echo "==> Creating $ETC_DIR and $DATA_DIR (sudo)"
-  sudo mkdir -p "$ETC_DIR/tls" "$DATA_DIR"
-  sudo chown -R "$REAL_USER:$REAL_GROUP" "$ETC_DIR" "$DATA_DIR"
+  run_priv mkdir -p "$ETC_DIR/tls" "$DATA_DIR"
+  # Writable by the installing user only while this script fills them in; the
+  # final ownership is set once, at the end.
+  run_priv chown -R "$REAL_USER:$REAL_GROUP" "$ETC_DIR" "$DATA_DIR"
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    echo "==> Creating the '$SERVICE_USER' system account"
+    run_priv useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+  fi
+fi
+
+# The service account cannot run a binary from a home directory (0700 on many
+# distributions), so a system install runs a root-owned copy instead.
+if [ "$SYSTEM_INSTALL" -eq 1 ] && [ "${PROBATION_BIN#"$REAL_HOME"/}" != "$PROBATION_BIN" ]; then
+  echo "==> Installing $PROBATION_BIN to /usr/local/bin/probation for the service account"
+  run_priv install -m 755 "$PROBATION_BIN" /usr/local/bin/probation
+  PROBATION_BIN=/usr/local/bin/probation
 fi
 
 CERT="$ETC_DIR/tls/$HOST.pem"
@@ -237,18 +261,24 @@ else
   echo "==> Skipping pip config: no pip found for $REAL_USER"
 fi
 
-# Everything above ran as root when this whole script was invoked as
-# `sudo ./install-local.sh`, so every file it just created under $ETC_DIR/
-# $DATA_DIR — config.toml, the TLS key — is root-owned at this point, not the
-# real user's, whatever the earlier mkdir/chown did for the directories
-# alone. Fix that here, once, rather than chasing it at every write site
-# above. This also makes the TLS key (chmod 600) actually readable by the
-# user running `probation serve` afterward instead of only by root.
+# Final ownership, set once here rather than at every write site above.
+#
+# System install: $ETC_DIR (config, blocklist, TLS key) is root-owned and only
+# group-readable by the service account, so neither the service nor the login
+# user can change policy; $DATA_DIR belongs to the service account alone. The
+# blocklist producer must therefore write $ETC_DIR/blocklist.json as root.
+#
+# Personal install: everything belongs to the user who ran this, which is also
+# who runs the service.
 #
 # npmrc/pip.conf are NOT included here: they are the machine's global config,
-# so staying root-owned (their normal state on any system) is correct, not a
-# bug to fix.
-if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
+# so staying root-owned (their normal state on any system) is correct.
+if [ "$SYSTEM_INSTALL" -eq 1 ]; then
+  run_priv chown -R "root:$SERVICE_USER" "$ETC_DIR"
+  run_priv chmod -R u=rwX,g=rX,o= "$ETC_DIR"
+  run_priv chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
+  run_priv chmod 700 "$DATA_DIR"
+elif [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
   chown -R "$REAL_USER:$REAL_GROUP" "$ETC_DIR" "$DATA_DIR"
 fi
 
@@ -256,6 +286,9 @@ echo
 echo "==> Install complete."
 echo "    Config:     $ETC_DIR/config.toml"
 echo "    Blocklist:  $ETC_DIR/blocklist.json (sample — point your producer at this path)"
+if [ "$SYSTEM_INSTALL" -eq 1 ]; then
+  echo "    Runs as:    $SERVICE_USER (reads $ETC_DIR, cannot change it; the producer writes as root)"
+fi
 echo "    Cert:       $CERT"
 echo "    Decision log: $DATA_DIR/decisions.ndjson (self-rotating, capped at 200 MiB total;"
 echo "                  stdout/journald still gets the same lines too, uncapped by this script)"
@@ -300,7 +333,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$REAL_USER
+User=$SERVICE_USER
 LogNamespace=probation
 ExecStart=$PROBATION_BIN serve --config $ETC_DIR/config.toml
 Restart=on-failure
@@ -358,7 +391,12 @@ else
   echo "     support in your init system for that)"
   if [ "$START" -eq 1 ]; then
     echo "==> Starting 'probation serve' in the background"
-    if [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
+    if [ "$SYSTEM_INSTALL" -eq 1 ]; then
+      # The redirect runs as the service account: $DATA_DIR is not writable by
+      # whoever ran this script.
+      run_priv sudo -u "$SERVICE_USER" sh -c 'exec nohup "$0" serve --config "$1" > "$2/probation.log" 2>&1' \
+        "$PROBATION_BIN" "$ETC_DIR/config.toml" "$DATA_DIR" &
+    elif [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
       sudo -u "$REAL_USER" nohup "$PROBATION_BIN" serve --config "$ETC_DIR/config.toml" \
         > "$DATA_DIR/probation.log" 2>&1 &
     else
@@ -366,7 +404,7 @@ else
         > "$DATA_DIR/probation.log" 2>&1 &
     fi
     disown
-    echo "    Started (check 'pgrep -u $REAL_USER -f probation.serve' for the PID),"
+    echo "    Started (check 'pgrep -u $SERVICE_USER -f probation.serve' for the PID),"
     echo "    logs at $DATA_DIR/probation.log"
   else
     echo "    Start it with: $PROBATION_BIN serve --config $ETC_DIR/config.toml"

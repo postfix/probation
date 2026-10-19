@@ -11,6 +11,7 @@ use probation::config::Config;
 use probation::policy::blocklist;
 use probation::upstream::{OriginSet, ReqwestTransport};
 use probation::{App, AppDeps};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -73,7 +74,7 @@ async fn main() -> ExitCode {
         Command::CheckConfig { path, config } => {
             // clap guarantees exactly one of the two forms is present.
             match path.or(config) {
-                Some(path) => check_config(&path),
+                Some(path) => check_config(&path).await,
                 None => ExitCode::FAILURE,
             }
         }
@@ -83,8 +84,15 @@ async fn main() -> ExitCode {
 
 /// SPEC §4: the validation commands exit non-zero on failure and do not modify
 /// state. They read one file and print one line; nothing here writes anywhere.
-fn check_config(path: &Path) -> ExitCode {
-    match Config::load(path) {
+async fn check_config(path: &Path) -> ExitCode {
+    let checked = match Config::load(path) {
+        Ok(config) => probation::check_delivery(&config)
+            .await
+            .map(|()| config)
+            .map_err(|err| err.to_string()),
+        Err(err) => Err(err.to_string()),
+    };
+    match checked {
         Ok(config) => {
             println!(
                 "{}: valid configuration (listen {}, cooldown {}s)",
@@ -126,6 +134,16 @@ fn check_blocklist(path: &Path) -> ExitCode {
 }
 
 async fn serve(config_path: &Path) -> ExitCode {
+    // Installed before anything else, so a stop requested while startup is still
+    // running is caught and acted on once it finishes rather than killing the process.
+    let mut signals = match ShutdownSignals::install() {
+        Ok(signals) => signals,
+        Err(err) => {
+            tracing::error!(error = %err, "cannot listen for the shutdown signal");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let config = match Config::load(config_path) {
         Ok(config) => config,
         Err(err) => {
@@ -153,13 +171,8 @@ async fn serve(config_path: &Path) -> ExitCode {
 
     tracing::info!(addr = %running.local_addr, "listening");
 
-    match wait_for_shutdown_signal().await {
-        Ok(signal) => tracing::info!(signal, "shutting down"),
-        Err(err) => {
-            tracing::error!(error = %err, "cannot listen for the shutdown signal");
-            return ExitCode::FAILURE;
-        }
-    }
+    let signal = signals.received().await;
+    tracing::info!(signal, "shutting down");
 
     match running.shutdown().await {
         Ok(()) => ExitCode::SUCCESS,
@@ -170,16 +183,28 @@ async fn serve(config_path: &Path) -> ExitCode {
     }
 }
 
-/// Resolves when the service is asked to stop, naming the signal that asked.
-///
 /// `SIGTERM` is what a service manager sends — systemd's `stop` and a container
 /// runtime's `stop` both do — so it must reach the same graceful path as `SIGINT`.
 /// Its default disposition kills the process outright, which would leave every
 /// queued decision record undelivered and skip the shutdown summary.
-async fn wait_for_shutdown_signal() -> std::io::Result<&'static str> {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => result.map(|()| "SIGINT"),
-        _ = terminate.recv() => Ok("SIGTERM"),
+struct ShutdownSignals {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+impl ShutdownSignals {
+    fn install() -> std::io::Result<ShutdownSignals> {
+        Ok(ShutdownSignals {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
+    }
+
+    /// Resolves when the service is asked to stop, naming the signal that asked.
+    async fn received(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.interrupt.recv() => "SIGINT",
+            _ = self.terminate.recv() => "SIGTERM",
+        }
     }
 }

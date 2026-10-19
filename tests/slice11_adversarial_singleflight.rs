@@ -152,7 +152,7 @@ async fn npm_dropped_leader_does_not_wedge_the_project() {
     wait_until(
         "the dropped leader's slot is retired, not left RUNNING forever",
         PATIENCE,
-        || app.downloads.metadata().waiting_on(&key) == 0,
+        || !app.downloads.metadata().in_flight(&key),
     )
     .await;
 
@@ -225,7 +225,7 @@ async fn pypi_dropped_leader_does_not_wedge_the_project() {
     wait_until(
         "the dropped PyPI leader's slot is retired",
         PATIENCE,
-        || app.downloads.metadata().waiting_on(&key) == 0,
+        || !app.downloads.metadata().in_flight(&key),
     )
     .await;
 
@@ -285,9 +285,7 @@ async fn npm_and_pypi_projects_of_the_same_name_do_not_collide() {
     // The npm refresh is parked in flight.
     let npm_request = {
         let app = Arc::clone(&app);
-        tokio::spawn(
-            async move { probation::npm::ensure_fresh_project(&app, SHARED_NAME).await },
-        )
+        tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, SHARED_NAME).await })
     };
     gate.wait_until_reached().await;
     wait_until("the npm refresh is in flight", PATIENCE, || {
@@ -438,13 +436,13 @@ async fn a_panicking_transfer_and_a_dropped_metadata_leader_do_not_affect_each_o
     wait_until(
         "the reference's transfer slot is retired despite the concurrent metadata churn",
         PATIENCE,
-        || app.downloads.waiting_on(&reference_id) == 0,
+        || !app.downloads.in_flight(&reference_id),
     )
     .await;
     wait_until(
         "the unrelated metadata slot is retired despite the concurrent panic",
         PATIENCE,
-        || app.downloads.metadata().waiting_on(&metadata_key) == 0,
+        || !app.downloads.metadata().in_flight(&metadata_key),
     )
     .await;
 
@@ -508,9 +506,7 @@ async fn npm_joiner_dropped_mid_refresh_does_not_affect_the_leader_or_other_join
     let mut joiners: Vec<_> = (0..3)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(
-                async move { probation::npm::ensure_fresh_project(&app, WIDGET).await },
-            )
+            tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, WIDGET).await })
         })
         .collect();
     wait_until(
@@ -589,9 +585,7 @@ async fn many_late_subscribers_never_hang_on_an_already_resolved_refresh() {
         let leader = {
             let app = Arc::clone(&app);
             let name = name.clone();
-            tokio::spawn(
-                async move { probation::npm::ensure_fresh_project(&app, &name).await },
-            )
+            tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, &name).await })
         };
         gate.wait_until_reached().await;
 
@@ -603,9 +597,7 @@ async fn many_late_subscribers_never_hang_on_an_already_resolved_refresh() {
             .map(|_| {
                 let app = Arc::clone(&app);
                 let name = name.clone();
-                tokio::spawn(async move {
-                    probation::npm::ensure_fresh_project(&app, &name).await
-                })
+                tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, &name).await })
             })
             .collect();
 
@@ -680,9 +672,7 @@ async fn ttl_expiry_bursts_never_cause_more_than_one_refresh_per_window() {
         let requesters: Vec<_> = (0..24)
             .map(|_| {
                 let app = Arc::clone(&app);
-                tokio::spawn(async move {
-                    probation::npm::ensure_fresh_project(&app, name).await
-                })
+                tokio::spawn(async move { probation::npm::ensure_fresh_project(&app, name).await })
             })
             .collect();
         for requester in requesters {

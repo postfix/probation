@@ -147,6 +147,11 @@ impl DownloadCoordinator {
         self.transfers.waiting_on(id)
     }
 
+    /// Whether this reference has a transfer in the table at all.
+    pub fn in_flight(&self, id: &ReferenceId) -> bool {
+        self.transfers.in_flight(id)
+    }
+
     /// Whether this reference's transfer has passed the point after which it always
     /// completes.
     pub fn publishing(&self, id: &ReferenceId) -> bool {
@@ -234,11 +239,7 @@ async fn transfer(
     // SPEC §10: an unknown-length download counts against `max_artifact_bytes` until
     // its final size is known, and a reservation that cannot be taken refuses the
     // cold request rather than freeing space by force.
-    let mut temp = app
-        .content
-        .create_temp(cap)
-        .await
-        .map_err(DownloadError::Capacity)?;
+    let mut temp = content_write(app, app.content.create_temp(cap).await)?;
 
     let mut sha256 = Sha256::new();
     let mut sha512 = Sha512::new();
@@ -265,9 +266,7 @@ async fn transfer(
         sha256.update(&chunk);
         sha512.update(&chunk);
         sha1.update(&chunk);
-        temp.write_all(&chunk)
-            .await
-            .map_err(DownloadError::Capacity)?;
+        content_write(app, temp.write_all(&chunk).await)?;
     }
 
     let computed = Computed {
@@ -371,11 +370,8 @@ async fn transfer(
     }
 
     let key = ContentKey::from_sha256(computed.sha256);
-    let published = app
-        .content
-        .publish(temp, &key)
-        .await
-        .map_err(DownloadError::Capacity)?;
+    let published = content_write(app, app.content.publish(temp, &key).await)?;
+    app.store().note_content_write(true);
     tracing::debug!(
         reference = %row.id.to_hex(),
         content = %key,
@@ -397,6 +393,15 @@ async fn transfer(
         sha512: computed.sha512,
         size: computed.size,
     })
+}
+
+/// SPEC §10: "Storage write failures make readiness false". A write the content
+/// directory refused is one; a full budget is not, because nothing was written.
+fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, DownloadError> {
+    if matches!(result, Err(ContentError::Write { .. })) {
+        app.store().note_content_write(false);
+    }
+    result.map_err(DownloadError::Capacity)
 }
 
 /// A failed bump is logged and not fatal: the artifact is refused either way, and

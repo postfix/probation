@@ -60,20 +60,30 @@ cargo build --release --locked
 
 Both `check-*` commands stop at the first problem, report it, and write
 nothing. Run them in your deploy pipeline before restarting. A restart onto a
-broken config is an outage.
+broken config is an outage. Run `check-config` with the same environment as
+`serve`: with `siem_url` set it also refuses a `PROBATION_SIEM_AUTH` that
+`serve` would refuse.
 
 ### Stopping it
 
 `SIGINT` (Ctrl-C) and `SIGTERM` (`docker stop`, `systemctl stop`, plain `kill`)
 both shut it down cleanly: queued log records are delivered and a summary is
-printed. An abrupt stop is still safe. Nothing gets corrupted.
+printed. A signal that arrives while the service is still starting is acted on
+as soon as startup finishes. An abrupt stop is still safe. Nothing gets
+corrupted.
+
+Requests already in progress get 30 seconds to finish; after that their
+connections are closed and shutdown continues. Give the service manager more
+than that before it kills the process, so the log drain still runs: with
+systemd, `TimeoutStopSec=45`; with Docker, `docker stop -t 45` (the default is
+10 seconds).
 
 ### Health checks
 
 | Endpoint | What it tells you |
 | --- | --- |
 | `GET /health/live` | The process is up. Still `200` with an expired blocklist or broken storage. |
-| `GET /health/ready` | The blocklist is valid **and** storage works. `503` if either is broken. Does not check upstream npm/PyPI. |
+| `GET /health/ready` | The blocklist is valid **and** storage works. `503` if either is broken. Does not check upstream npm/PyPI. While storage is broken, package and download requests also answer `503 STORAGE_UNUSABLE`, even ones that could be served from memory. |
 | `GET /health/delivery` | **For alerts only, never a health probe.** `503` if a log record was lost in the last 60 seconds. See "The rated load" in section 8. |
 
 Point the liveness probe at `/health/live` and the readiness probe at
@@ -108,6 +118,17 @@ Deleting rows does not shrink the file, and nothing prunes it.
 > **Known gap:** no low-disk warning. If the disk fills, writes fail, the
 > service reports "not ready", and requests get `503`. It never relaxes its
 > rules to save space.
+
+"Not ready" covers both halves of the data folder: a failed write to the
+database or to `content/` turns `/health/ready` to `503`. Successful reads do
+not turn it back; only a successful write does. While it is not ready, the
+background maintenance pass (every 30 seconds) tries one small write to each,
+so readiness returns on its own within about 30 seconds of space being freed —
+it does not wait for traffic, which a load balancer would no longer send.
+
+A cached file found with the wrong size is deleted and downloaded again on the
+next request. A file already sitting where a download is about to be stored is
+kept only if its SHA-256 matches; anything else there is replaced.
 
 Keep room for one blocklist update: a 100,000-entry blocklist is about 9.6 MB,
 and the old and new copies exist together briefly.
@@ -146,9 +167,10 @@ This limit never affects blocklist enforcement: a blocked package stays
 blocked. It never affects downloaded files either. They are identified by
 content hash and cannot go stale.
 
-> **Upgrading:** this release added a database column and bumped the schema
-> version. A database made by an older build **will not open**. The service
-> refuses it rather than guess at a migration.
+> **Upgrading:** this release bumped the database schema version to 5 (it
+> indexes the cached-file mapping, so evicting files stays fast on a large
+> cache). A database made by an older build, including v0.1.0's version 4,
+> **will not open**. The service refuses it rather than guess at a migration.
 
 ## 4. The blocklist
 
@@ -169,8 +191,11 @@ How reloading works:
 5. An accepted update is saved to the database before it takes effect.
 
 A broken replacement keeps the last good blocklist in force and logs an error.
-An empty but valid blocklist is accepted (only the cooldown then protects you).
-A missing file is never treated as empty.
+A file larger than `max_blocklist_bytes` is refused the same way, and is read
+no further than that limit. An empty but valid blocklist is accepted (only the
+cooldown then protects you). A missing file is never treated as empty. A
+reload check that fails unexpectedly (a bug) is logged at error, and the next
+interval checks again; it never stops reloading.
 
 **If the blocklist expires, the service fails closed:** package lookups and
 downloads return `503`, even for cached files. The service stays "alive" but
@@ -204,7 +229,8 @@ never undo one.
 queue is full, or the answer cannot be parsed, the service treats it as "no
 match" and continues with its normal checks. A "no match" answer is cached for
 30 seconds so a struggling OSV endpoint is not hammered. A match is cached for
-`osv_cache_ttl_seconds` (default 300, 5 minutes).
+`osv_cache_ttl_seconds` (default 300, 5 minutes). The cache holds at most 65,536
+answers; past that the least recently used is dropped and asked again.
 
 `osv_mode` controls what a match does:
 
@@ -221,7 +247,9 @@ you restrict outbound traffic (section 6), allow `api.osv.dev` too. Otherwise
 every OSV check times out and fails open, and packages are served without it.
 
 `osv_request_timeout_ms` (default 500) bounds one batch of OSV lookups before
-it fails open.
+it fails open. All versions of a package are checked together, up to 256 per
+batch, so a package the service has not seen recently costs about one OSV round
+trip, not one per version.
 
 ## 5. Backup and restore
 
@@ -305,7 +333,20 @@ scripts/install-local.sh
 ```
 
 It uses `sudo` only where `/etc/probation` or `/var/lib/probation` need it.
-Pass `--start` to also start `probation serve`. It picks the best certificate
+Pass `--start` to also start `probation serve`.
+
+When it needs `sudo`, the service runs as a dedicated `probation` system
+account. `/etc/probation` (config, blocklist, TLS key) is owned by root and only
+readable by that account, and `/var/lib/probation` belongs to it alone. Neither
+the service nor your login user can change policy or the verified cache, so a
+package's install script running as you cannot either. Your blocklist producer
+must write `/etc/probation/blocklist.json` as root. When the directories are
+ones you can create yourself (`--etc-dir`/`--data-dir` under your home), it is a
+personal install and everything runs as you.
+
+**Upgrading from an earlier install:** it gave both directories to your login
+user. Re-run the script with `sudo`, or fix ownership by hand, to get the
+separation above. It picks the best certificate
 tool available:
 
 - [`mkcert`](https://github.com/FiloSottile/mkcert), if installed. This adds a
@@ -398,7 +439,10 @@ nothing (404/405):
 ```
 
 Every decision can be explained from `result`, `reason`, and
-`blocklist_revision` together. The `request_id` matches the one a client sees
+`blocklist_revision` together. `blocklist_revision` is the revision the request
+was judged against. `result` is `REFUSED` for a 4xx/5xx the router or HTTP
+layer produced without a policy decision (a malformed path, an unsatisfiable
+range), and those count as errors in the periodic summary. The `request_id` matches the one a client sees
 in its error message. Credentials are never logged and never forwarded
 upstream.
 
@@ -425,10 +469,25 @@ An external `logrotate` renaming or truncating it causes silent data loss.
 One backup generation (`.1`) is kept. For longer history, ship logs to your
 own log system.
 
+`log_file_max_bytes` is a hard ceiling. If the rollover rename fails (a
+single bind-mounted file, a directory the service cannot write to, or a
+directory sitting at the `.1` path), the file is not extended: new records are
+dropped and counted, with one warning, until a rename succeeds. A record too
+large to fit in an empty file is dropped and counted too.
+
 Dropped records are always counted. If writing cannot keep up, losses appear
-in the periodic summary as `dropped_file` and `dropped_siem`. A slow log
-destination never slows or fails a request. The record is dropped, not the
-request.
+in the periodic summary as `dropped_file` and `dropped_siem`. The summary has
+its own room in each queue, so the record that reports a loss is not lost to
+the same full queue. A slow log destination never slows or fails a request.
+The record is dropped, not the request.
+
+What the file promises: every record is written whole or not at all (a write
+that fails partway, such as on a full disk, is cut back off), and each record
+is handed to the kernel as soon as it is written, so it survives the process
+crashing or being killed. It is not `fsync`ed. A host crash or power loss can
+lose the records of the last few seconds that the kernel had not yet written
+out. Syncing every record would cap the rate at the disk's sync rate, far
+below the rated load, and the queue would then drop records instead.
 
 ### Sending logs to a SIEM or log collector
 
@@ -454,9 +513,19 @@ runs. The batch is held, and records queue behind it until the queue budget
 is full. Any other error, such as a bad credential, is not retried, and that
 batch is dropped. Lost records are counted in `dropped_siem`.
 
+Delivery is **at least once**. A collector that stores a batch but answers
+after the 3-second request timeout gets the same batch again on the retry, so
+deduplicate on `request_id` if duplicates matter to you. Only a timed-out or
+failed attempt is retried; a batch the collector acknowledged is never sent
+again.
+
+The service logs only the scheme, host and port of `siem_url`, never its path
+or query, so a token placed in the URL stays out of the console.
+
 **One limit:** when a collector rejects a batch, the *whole batch* of up to
-256 records is dropped, not one record. For guaranteed delivery use
-`log_file_path`, which does not have this problem.
+256 records is dropped, not one record. The file from `log_file_path` does not
+have this problem: one bad record never costs its neighbours, and each record
+is written at most once (see what the file promises, above).
 
 ### Shipping to a SIEM over syslog
 
@@ -639,10 +708,7 @@ covered. They need whatever client-side overrides they always needed.
 7. **A database from an older version will not open.** No automatic
    migration. See section 3a.
 8. **No admin API.** Everything is config files, signals, and logs.
-9. **Compiler warnings are not errors anywhere in this repo.** Run
-   `cargo clippy --all-targets -- -D warnings` yourself and wire it into CI.
-   Plain `cargo build` lets real bugs through as warnings.
-10. **One test is flaky in release builds only**
+9. **One test is flaky in release builds only**
     (`artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh`).
     Its timing margin is tuned for debug builds. The behavior it tests is
     fine.

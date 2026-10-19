@@ -240,6 +240,83 @@ async fn production_origin_set_rejects_private_addresses() {
     );
 }
 
+/// The gate above, as the production transport uses it. The origins are `localhost`
+/// with every relaxation taken back, so the name is admitted, resolves without a
+/// network, and lands on loopback — which only the guarded resolver refuses. A
+/// client built without it would connect, be refused by the closed port, and report
+/// a transport failure instead.
+#[tokio::test]
+async fn the_transport_resolves_through_the_guard() {
+    let _guard = ENVIRONMENT.lock().await;
+    let origins = OriginSet::for_tests(
+        parse("https://localhost"),
+        parse("https://localhost:1"),
+        parse("https://localhost:2"),
+    )
+    .refusing_private_addresses();
+    assert!(!origins.allows_private_addresses());
+    let transport = probation::upstream::ReqwestTransport::for_origins(origins.clone());
+
+    let url = origins
+        .url_for(OriginKind::NpmMetadata, &["left-pad"])
+        .expect("the origin builds its own URL");
+    let refused = transport.fetch_metadata(metadata(url)).await;
+    assert!(
+        matches!(refused, Err(UpstreamError::RejectedAddress { .. })),
+        "the metadata client asks the guard: {refused:?}",
+        refused = refused.err()
+    );
+
+    let url = origins
+        .url_for(OriginKind::PypiArtifacts, &["left_pad-1.0.tar.gz"])
+        .expect("the origin builds its own URL");
+    let refused = transport
+        .open_artifact(ArtifactRequest {
+            url,
+            max_bytes: A_MEGABYTE,
+        })
+        .await;
+    assert!(
+        matches!(refused, Err(UpstreamError::RejectedAddress { .. })),
+        "and so does the artifact client: {refused:?}",
+        refused = refused.err()
+    );
+}
+
+/// An address written into the URL never reaches the resolver at all, so the origin
+/// check is what has to refuse it — on the production origin set, through the
+/// production transport, for either kind of call.
+#[tokio::test]
+async fn an_ip_literal_never_leaves_through_the_production_transport() {
+    let _guard = ENVIRONMENT.lock().await;
+    let transport = probation::upstream::ReqwestTransport::production();
+    for literal in [
+        "https://127.0.0.1/left-pad",
+        "https://169.254.169.254/latest/meta-data",
+        "https://[::1]/left-pad",
+        "https://[::ffff:127.0.0.1]/left-pad",
+        "https://10.0.0.1:443/left-pad",
+    ] {
+        let refused = transport.fetch_metadata(metadata(parse(literal))).await;
+        assert!(
+            matches!(refused, Err(UpstreamError::RejectedUrl(UrlRejection::Host))),
+            "{literal} is refused before a packet exists: {refused:?}",
+            refused = refused.err()
+        );
+        let refused = transport
+            .open_artifact(ArtifactRequest {
+                url: parse(literal),
+                max_bytes: A_MEGABYTE,
+            })
+            .await;
+        assert!(
+            matches!(refused, Err(UpstreamError::RejectedUrl(UrlRejection::Host))),
+            "{literal} is refused for an artifact too: {refused:?}",
+            refused = refused.err()
+        );
+    }
+}
+
 /// An IPv6 address can carry an IPv4 one inside it, so a predicate that judges only
 /// the IPv6 shape lets a private target through wearing a global-looking address.
 /// Every case below embeds a loopback or private IPv4 and must be refused on the
@@ -423,7 +500,7 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         // as a breach of it. This crate uses no block comments.
         let code: String = source
             .lines()
-            .map(|line| line.split("//").next().unwrap_or(""))
+            .map(without_comment)
             .collect::<Vec<_>>()
             .join("\n");
         if code.contains("for_tests") {
@@ -435,6 +512,48 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         vec!["src/upstream/origins.rs".to_owned()],
         "`for_tests` is named only where it is defined; anything else is a release \
          path into the one constructor that can relax the boundary"
+    );
+}
+
+/// `line` up to its `//` comment, if it has one. A `//` inside a string literal —
+/// every `http://` in a URL — is code, so the split is made only outside one.
+fn without_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if in_string => index += 1,
+            // `'"'` is a character, not the start of a string.
+            b'"' if !(index > 0
+                && bytes[index - 1] == b'\''
+                && bytes.get(index + 1) == Some(&b'\'')) =>
+            {
+                in_string = !in_string
+            }
+            b'/' if !in_string && bytes.get(index + 1) == Some(&b'/') => return &line[..index],
+            _ => {}
+        }
+        index += 1;
+    }
+    line
+}
+
+/// The check above is only as good as its comment stripping, so that is pinned too.
+#[test]
+fn comment_stripping_keeps_code_that_follows_a_url() {
+    let call =
+        r#"let set = Url::parse("http://127.0.0.1:1").map(|u| OriginSet::for_tests(u, u, u));"#;
+    assert_eq!(without_comment(call), call, "a URL is not a comment");
+    assert_eq!(without_comment("/// see for_tests"), "");
+    assert_eq!(without_comment("let a = 1; // for_tests"), "let a = 1; ");
+    assert_eq!(
+        without_comment(r#"let q = '"'; // for_tests"#),
+        r#"let q = '"'; "#
+    );
+    assert_eq!(
+        without_comment(r#"let s = "a \" // b"; // for_tests"#),
+        r#"let s = "a \" // b"; "#
     );
 }
 
@@ -559,7 +678,8 @@ async fn a_refused_redirect_names_its_resolved_target() {
 
     // Relative: same origin, so each hop is admitted and followed until the chain
     // runs past the hop limit. The stopped response's `Location` is relative, and the
-    // refusal must still name the absolute URL it resolves to.
+    // refusal must still name the absolute URL it resolves to — and say that it was
+    // the limit that stopped it, not a refused origin.
     for hop in 0..10 {
         Mock::given(method("GET"))
             .and(path(format!("/hop{hop}")))
@@ -576,26 +696,30 @@ async fn a_refused_redirect_names_its_resolved_target() {
         .url_for(OriginKind::NpmMetadata, &["hop0"])
         .expect("the test origin builds its own URL");
     match upstream.transport.fetch_metadata(metadata(url)).await {
-        Err(UpstreamError::RejectedRedirect { to }) => {
+        Err(UpstreamError::RedirectLimit { to }) => {
             assert_eq!(
-                to.host_str(),
-                upstream.origins.origin(OriginKind::NpmMetadata).host_str()
-            );
-            let hop: u32 = to
-                .path()
-                .strip_prefix("/hop")
-                .and_then(|n| n.parse().ok())
-                .unwrap_or_else(|| panic!("expected a resolved /hopN target, got {to}"));
-            assert!(
-                hop > 0,
-                "the refusal named the hop it was at, not the hop it was sent to: {to}"
+                to.as_str(),
+                format!("{}/hop6", upstream.server.uri()),
+                "five hops are followed, and the sixth is the one refused"
             );
         }
         other => panic!(
-            "expected a refused redirect, got {other:?}",
+            "expected the redirect limit, got {other:?}",
             other = other.err()
         ),
     }
+    assert_eq!(
+        upstream
+            .server
+            .received_requests()
+            .await
+            .expect("the recorded requests")
+            .iter()
+            .filter(|request| request.url.path().starts_with("/hop"))
+            .count(),
+        6,
+        "the first request and five redirects, and not one request more"
+    );
 }
 
 /// Credentials in a URL are refused before the request, and refused again when they
@@ -1119,4 +1243,210 @@ async fn the_npm_route_reports_upstream_outcomes_apart() {
     assert_eq!(asked, ["/slow", "/broken", "/garbage", "/missing", "/fine"]);
 
     server.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// What each refusal says, and the edges of the counted read
+// ---------------------------------------------------------------------------
+
+/// Every refusal names what it refused: these strings are what an operator reads
+/// in the decision log when an upstream call is turned away.
+#[test]
+fn every_refusal_says_what_it_refused() {
+    let to = parse("https://evil.test/x");
+    for (refusal, text) in [
+        (UpstreamError::Timeout, "the upstream request timed out"),
+        (
+            UpstreamError::Transport("reset".to_owned()),
+            "upstream transport failure: reset",
+        ),
+        (UpstreamError::Status(500), "upstream answered 500"),
+        (
+            UpstreamError::TooLarge { limit: 9 },
+            "the upstream body exceeds the 9-byte cap",
+        ),
+        (
+            UpstreamError::RejectedRedirect { to: to.clone() },
+            "refused to follow a redirect to https://evil.test/x",
+        ),
+        (
+            UpstreamError::RedirectLimit { to },
+            "stopped at the redirect limit before following https://evil.test/x",
+        ),
+        (
+            UpstreamError::RejectedAddress {
+                addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            },
+            "refused to connect to 127.0.0.1",
+        ),
+    ] {
+        assert_eq!(refusal.to_string(), text);
+    }
+    for (rejection, text) in [
+        (UrlRejection::Scheme, "the scheme is not https"),
+        (
+            UrlRejection::Host,
+            "the host is not a configured upstream origin",
+        ),
+        (
+            UrlRejection::Port,
+            "the port is not the configured origin's port",
+        ),
+        (UrlRejection::Credentials, "the URL carries credentials"),
+        (
+            UrlRejection::ForeignOrigin,
+            "the host belongs to a different upstream origin",
+        ),
+        (
+            UrlRejection::PathEscape,
+            "the path leaves the configured origin's path",
+        ),
+    ] {
+        assert_eq!(
+            UpstreamError::RejectedUrl(rejection).to_string(),
+            format!("the upstream URL was refused: {text}")
+        );
+    }
+}
+
+/// The counted read stops at the chunk that crosses the cap, passes an upstream
+/// error through as itself, and is finished after either.
+#[tokio::test]
+async fn the_counted_read_ends_at_its_first_failure() {
+    let chunks = || {
+        futures_util::stream::iter([
+            Ok(bytes::Bytes::from_static(b"four")),
+            Ok(bytes::Bytes::from_static(b"four")),
+            Ok(bytes::Bytes::from_static(b"four")),
+        ])
+    };
+    let mut over = probation::upstream::capped(Box::pin(chunks()), 6);
+    assert_eq!(
+        over.next().await.expect("a chunk").expect("under the cap"),
+        &b"four"[..]
+    );
+    assert_eq!(
+        over.next().await.expect("the crossing chunk"),
+        Err(UpstreamError::TooLarge { limit: 6 })
+    );
+    assert!(over.next().await.is_none(), "and nothing after it");
+
+    let failing = futures_util::stream::iter([Err(UpstreamError::Status(500))]);
+    let mut failed = probation::upstream::capped(Box::pin(failing), 6);
+    assert_eq!(
+        failed.next().await.expect("the failure"),
+        Err(UpstreamError::Status(500))
+    );
+    assert!(failed.next().await.is_none());
+}
+
+/// A redirect status with no `Location` is a malformed answer, reported as the
+/// status it was rather than as a redirect to an invented target.
+#[tokio::test]
+async fn a_redirect_without_a_location_is_its_status() {
+    let upstream = upstream().await;
+    Mock::given(method("GET"))
+        .and(path("/nowhere"))
+        .respond_with(ResponseTemplate::new(302))
+        .mount(&upstream.server)
+        .await;
+    let url = upstream
+        .origins
+        .url_for(OriginKind::NpmMetadata, &["nowhere"])
+        .expect("the test origin builds its own URL");
+    let refused = upstream.transport.fetch_metadata(metadata(url)).await;
+    assert_eq!(refused.err(), Some(UpstreamError::Status(302)));
+
+    // A failure status is the status, not a redirect.
+    Mock::given(method("GET"))
+        .and(path("/broken"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&upstream.server)
+        .await;
+    let url = upstream
+        .origins
+        .url_for(OriginKind::NpmMetadata, &["broken"])
+        .expect("the test origin builds its own URL");
+    let refused = upstream.transport.fetch_metadata(metadata(url)).await;
+    assert_eq!(refused.err(), Some(UpstreamError::Status(500)));
+
+    // A `Location` that does not resolve to a URL is no better.
+    Mock::given(method("GET"))
+        .and(path("/unparsable"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "http://["))
+        .mount(&upstream.server)
+        .await;
+    let url = upstream
+        .origins
+        .url_for(OriginKind::NpmMetadata, &["unparsable"])
+        .expect("the test origin builds its own URL");
+    let refused = upstream.transport.fetch_metadata(metadata(url)).await;
+    assert_eq!(refused.err(), Some(UpstreamError::Status(302)));
+}
+
+/// A connection nothing answers is a transport failure, named as one.
+#[tokio::test]
+async fn a_refused_connection_is_a_transport_failure() {
+    let _guard = ENVIRONMENT.lock().await;
+    let origins = OriginSet::for_tests(
+        parse("http://127.0.0.1:1"),
+        parse("http://127.0.0.1:2"),
+        parse("http://127.0.0.1:3"),
+    );
+    let transport = probation::upstream::ReqwestTransport::for_origins(origins.clone());
+    let url = origins
+        .url_for(OriginKind::NpmMetadata, &["left-pad"])
+        .expect("the test origin builds its own URL");
+    let refused = transport.fetch_metadata(metadata(url)).await;
+    assert!(
+        matches!(&refused, Err(UpstreamError::Transport(reason)) if !reason.is_empty()),
+        "{refused:?}",
+        refused = refused.err()
+    );
+}
+
+/// A name that does not resolve is a transport failure that says which name.
+#[tokio::test]
+async fn a_name_that_does_not_resolve_is_named() {
+    let refused = GuardedResolver::new(false)
+        .resolve(Name::from_str("no-such-host.invalid").expect("a name"))
+        .await
+        .err()
+        .expect("nothing resolves under .invalid");
+    assert!(
+        matches!(
+            refusal_in(refused.as_ref()),
+            Some(UpstreamError::Transport(reason)) if reason.contains("no-such-host.invalid")
+        ),
+        "{refused}"
+    );
+}
+
+/// An origin with a path prefix admits only what is under that prefix, segment by
+/// segment: `/registry-other` is not under `/registry`.
+#[test]
+fn an_origin_path_prefix_is_compared_by_segment() {
+    let origins = OriginSet::for_tests(
+        parse("http://127.0.0.1:8080/registry"),
+        parse("http://127.0.0.1:8081"),
+        parse("http://127.0.0.1:8082"),
+    );
+    for (url, admitted) in [
+        ("http://127.0.0.1:8080/registry", Ok(())),
+        ("http://127.0.0.1:8080/registry/left-pad", Ok(())),
+        (
+            "http://127.0.0.1:8080/registry-other/left-pad",
+            Err(UrlRejection::PathEscape),
+        ),
+        (
+            "http://127.0.0.1:8080/left-pad",
+            Err(UrlRejection::PathEscape),
+        ),
+    ] {
+        assert_eq!(
+            origins.admit(&parse(url), OriginKind::NpmMetadata),
+            admitted,
+            "{url}"
+        );
+    }
 }

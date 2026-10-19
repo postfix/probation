@@ -14,10 +14,11 @@
 
 pub(crate) mod batcher;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use lru::LruCache;
 use reqwest::Client;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -35,9 +36,11 @@ const OSV_QUERYBATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 /// `BATCH_RECORDS`.
 pub(crate) const OSV_BATCH_RECORDS: usize = 256;
 
-/// How long a partial batch waits for company before it flushes anyway, mirroring
-/// `delivery/siem.rs`'s `BATCH_INTERVAL`.
-pub(crate) const OSV_BATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// How long a partial batch waits for company before it flushes anyway. Short, so a
+/// solitary lookup is answered well inside `osv_request_timeout_ms`, and long enough
+/// to gather every check one metadata request enqueues at once (`npm::resolve` and
+/// `pypi::resolve` judge all of a project's candidates together).
+pub(crate) const OSV_BATCH_INTERVAL: Duration = Duration::from_millis(10);
 
 /// How long a failure's answer stays cached (C14): short, so a struggling OSV
 /// endpoint is not re-hammered by repeat requests during an outage, but far shorter
@@ -47,6 +50,9 @@ pub(crate) const OSV_NEGATIVE_TTL: Duration = Duration::from_secs(30);
 /// The bounded queue's capacity (G2/C12a): 4x `OSV_BATCH_RECORDS`, mirroring
 /// `delivery/siem.rs`'s `BATCH_RECORDS` headroom convention.
 pub(crate) const OSV_CHANNEL_CAPACITY: usize = 1024;
+
+/// How many answers the cache holds at most; past it the least recently used goes.
+pub(crate) const OSV_CACHE_ENTRIES: usize = 65_536;
 
 /// How long [`OsvClient::check`] waits to enqueue before failing open (C12a).
 pub(crate) const OSV_ENQUEUE_TIMEOUT: Duration = Duration::from_millis(50);
@@ -74,29 +80,46 @@ struct CacheEntry {
 }
 
 /// The short-TTL result cache (C13), internally locked so every caller shares one
-/// map without holding a lock of its own.
-struct OsvCache {
-    entries: Mutex<HashMap<(Ecosystem, String, String), CacheEntry>>,
+/// map without holding a lock of its own. Shared with the batcher, which writes
+/// every answer it gets whether or not its waiter is still listening.
+pub(crate) struct OsvCache {
+    /// Bounded at `OSV_CACHE_ENTRIES`, least recently used out first; an expired
+    /// entry is also dropped as soon as a lookup finds it.
+    entries: Mutex<LruCache<(Ecosystem, String, String), CacheEntry>>,
+    /// The TTL a match is cached for. A non-match — confirmed or a failure, which
+    /// `false` alone cannot tell apart — always uses `OSV_NEGATIVE_TTL`, the
+    /// conservative choice on that ambiguity.
+    match_ttl: Duration,
 }
 
 impl OsvCache {
-    fn new() -> OsvCache {
+    fn new(match_ttl: Duration) -> OsvCache {
+        let capacity = NonZeroUsize::new(OSV_CACHE_ENTRIES).expect("a non-zero bound");
         OsvCache {
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(LruCache::new(capacity)),
+            match_ttl,
         }
     }
 
     fn get(&self, key: &(Ecosystem, String, String)) -> Option<bool> {
-        let entries = self.entries.lock().expect("the OSV cache");
-        entries
-            .get(key)
-            .filter(|entry| entry.expires_at > Instant::now())
-            .map(|entry| entry.matched)
+        let mut entries = self.entries.lock().expect("the OSV cache");
+        match entries.get(key) {
+            Some(entry) if entry.expires_at > Instant::now() => return Some(entry.matched),
+            Some(_) => {}
+            None => return None,
+        }
+        entries.pop(key);
+        None
     }
 
-    fn put(&self, key: (Ecosystem, String, String), matched: bool, ttl: Duration) {
+    pub(crate) fn put(&self, key: (Ecosystem, String, String), matched: bool) {
+        let ttl = if matched {
+            self.match_ttl
+        } else {
+            OSV_NEGATIVE_TTL
+        };
         let mut entries = self.entries.lock().expect("the OSV cache");
-        entries.insert(
+        entries.put(
             key,
             CacheEntry {
                 matched,
@@ -110,14 +133,11 @@ impl OsvCache {
 /// batcher's queue.
 pub struct OsvClient {
     tx: mpsc::Sender<OsvRequest>,
-    cache: OsvCache,
-    /// The TTL a confirmed answer (matched or not) is cached for. A failure path
-    /// always uses `OSV_NEGATIVE_TTL` instead (see `check`).
-    cache_ttl: Duration,
-    /// The bound `resolve` holds a waiting `check` call to (C12c/C14): the same
-    /// figure the batcher wraps its own outbound call in, so a solitary lookup
-    /// waiting on a flush that has not hit its count-cap or interval yet is not left
-    /// waiting on `OSV_BATCH_INTERVAL` instead.
+    cache: Arc<OsvCache>,
+    /// The bound a waiting `check` call is held to (C12c/C14):
+    /// `OSV_BATCH_INTERVAL` plus the figure the batcher wraps its own outbound call
+    /// in, so a waiter outlasts the flush it is in unless the batcher is still busy
+    /// with an earlier one.
     request_timeout: Duration,
     /// D5: how OSV enforcement behaves for every `check` this client's `evaluate`
     /// caller might make. Set once here, never mutated.
@@ -126,12 +146,8 @@ pub struct OsvClient {
 
 impl OsvClient {
     /// Spawns the batcher once and returns the client handle plus the batcher's
-    /// `JoinHandle`. `App::start` does not hold the `shutdown` token this needs
-    /// until it is already deep inside constructing `App` (`AppDeps` is what
-    /// carries the finished, already-spawned client in), so this is called by
-    /// whoever builds an `AppDeps` — `main.rs::serve()` in production, a test
-    /// helper otherwise — each with its own `CancellationToken` for the batcher's
-    /// lifetime; see `AppDeps::osv`'s doc comment.
+    /// `JoinHandle`. `App::start` calls this with its `drain` token and puts the
+    /// handle in the task set `Running::shutdown` joins.
     pub fn new(
         client: Client,
         cache_ttl: Duration,
@@ -160,13 +176,20 @@ impl OsvClient {
         shutdown: CancellationToken,
     ) -> (OsvClient, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(OSV_CHANNEL_CAPACITY);
-        let handle = tokio::spawn(batcher::run(client, url, rx, request_timeout, shutdown));
+        let cache = Arc::new(OsvCache::new(cache_ttl));
+        let handle = tokio::spawn(batcher::run(
+            client,
+            url,
+            rx,
+            request_timeout,
+            Arc::clone(&cache),
+            shutdown,
+        ));
         (
             OsvClient {
                 tx,
-                cache: OsvCache::new(),
-                cache_ttl,
-                request_timeout,
+                cache,
+                request_timeout: OSV_BATCH_INTERVAL + request_timeout,
                 mode,
             },
             handle,
@@ -176,46 +199,30 @@ impl OsvClient {
     /// `true` only on a confirmed OSV `MAL-*` match. Every failure path — a cache
     /// miss that cannot be resolved, a full or timed-out enqueue (C12a), a batch
     /// failure or length mismatch (C12b/C14), an outbound timeout (C12c) — answers
-    /// `false` instead, and is cached for `OSV_NEGATIVE_TTL` rather than
-    /// `cache_ttl`, since a `false` answer alone cannot distinguish "confirmed no
-    /// match" from "could not be resolved"; caching it briefly rather than for the
-    /// full TTL is the conservative choice on that ambiguity.
+    /// `false` instead. The batcher caches whatever answer a flush produced (see
+    /// `OsvCache::put` for the TTLs); this caches only a lookup that never reached
+    /// it.
     pub async fn check(&self, ecosystem: Ecosystem, name: &str, version: &str) -> bool {
         let key = (ecosystem, name.to_owned(), version.to_owned());
         if let Some(matched) = self.cache.get(&key) {
             return matched;
         }
 
-        let matched = self.resolve(key.clone()).await;
-        let ttl = if matched {
-            self.cache_ttl
-        } else {
-            OSV_NEGATIVE_TTL
-        };
-        self.cache.put(key, matched, ttl);
-        matched
-    }
-
-    /// The uncached round trip: enqueue, bounded by `OSV_ENQUEUE_TIMEOUT` (C12a), and
-    /// await the batcher's reply, bounded by `request_timeout` (C12c/C14). The
-    /// batcher's own contract (see `batcher::run`) is to always answer its waiters,
-    /// even on its own failure — but only once it flushes, which can be up to
-    /// `OSV_BATCH_INTERVAL` away for a solitary lookup that has not filled a batch.
-    /// Without its own bound here, a caller would wait on the batcher's flush
-    /// cadence rather than on `request_timeout`, so this wraps the reply wait
-    /// exactly as the batcher wraps its own outbound call.
-    async fn resolve(&self, key: (Ecosystem, String, String)) -> bool {
         let (reply_tx, reply_rx) = oneshot::channel();
         let enqueued =
-            tokio::time::timeout(OSV_ENQUEUE_TIMEOUT, self.tx.send((key, reply_tx))).await;
-        match enqueued {
-            Ok(Ok(())) => tokio::time::timeout(self.request_timeout, reply_rx)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or(false),
-            Ok(Err(_)) | Err(_) => false,
+            tokio::time::timeout(OSV_ENQUEUE_TIMEOUT, self.tx.send((key.clone(), reply_tx))).await;
+        if !matches!(enqueued, Ok(Ok(()))) {
+            self.cache.put(key, false);
+            return false;
         }
+        // Bounded even though the batcher always answers (see `batcher::run`): it
+        // may still be busy with an earlier flush. A waiter that gives up here still
+        // gets its answer cached by the batcher for the next caller.
+        tokio::time::timeout(self.request_timeout, reply_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
     }
 }
 
@@ -288,6 +295,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration as StdDuration;
 
+    /// The shipped `osv_request_timeout_ms`.
+    const SHIPPED_TIMEOUT: StdDuration = StdDuration::from_millis(500);
+
     fn candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
         Candidate {
             ecosystem: Ecosystem::Npm,
@@ -299,149 +309,6 @@ mod tests {
         }
     }
 
-    /// A client with no batcher behind it at all: every field is reachable directly
-    /// because these tests live in this module.
-    fn client_with_capacity(capacity: usize, cache_ttl: StdDuration) -> OsvClient {
-        let (tx, _rx) = mpsc::channel(capacity);
-        OsvClient {
-            tx,
-            cache: OsvCache::new(),
-            cache_ttl,
-            request_timeout: StdDuration::from_millis(500),
-            mode: OsvMode::Enforce,
-        }
-    }
-
-    /// A "fake OSV client" for use in tests of `evaluate` itself: it never runs a
-    /// batcher, answers a fixed value, and panics if asked more than `allowed` times
-    /// — the same shape `osv::evaluate`'s own tests need without paying for a real
-    /// batcher round trip. This is the test-fake convention `tests/common/mod.rs`
-    /// (Slice 1's `AppDeps` fake) also builds on.
-    struct FixedOsv {
-        answer: bool,
-        calls: AtomicUsize,
-        allowed: usize,
-    }
-
-    impl FixedOsv {
-        fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    /// `evaluate_skips_osv_when_producer_already_denies` and
-    /// `evaluate_calls_osv_only_when_producer_would_allow` need to observe whether
-    /// `OsvClient::check` ran without a real batcher; since `OsvClient` itself has no
-    /// trait to fake, both tests drive `osv::evaluate`'s own logic directly against
-    /// a `policy::evaluate`-shaped decision plus a counted stand-in for `check`.
-    async fn evaluate_with_fake(
-        fake: &FixedOsv,
-        snapshot: Option<&BlocklistSnapshot>,
-        now: i64,
-        cooldown: u64,
-        candidate: &Candidate<'_>,
-    ) -> Decision {
-        let blind = policy::evaluate(snapshot, now, cooldown, candidate, false);
-        if !matches!(blind, Decision::Allow) {
-            return blind;
-        }
-        let calls = fake.calls.fetch_add(1, Ordering::SeqCst);
-        assert!(
-            calls < fake.allowed,
-            "the fake OSV client was asked more than expected"
-        );
-        policy::evaluate(snapshot, now, cooldown, candidate, fake.answer)
-    }
-
-    #[tokio::test]
-    async fn evaluate_skips_osv_when_producer_already_denies() {
-        let now = 10_000_000;
-        let blocked = crate::policy::BlocklistSnapshot::parse_and_validate(
-            br#"{"schema_version":1,"revision":1,
-                 "generated_at":"1970-01-01T00:00:00Z","expires_at":"2099-01-01T00:00:00Z",
-                 "blocked_packages":[{"ecosystem":"npm","name":"left-pad","version":null,"reason":"malware"}],
-                 "blocked_hashes":[]}"#,
-            now,
-        )
-        .expect("a valid snapshot");
-
-        let fake = FixedOsv {
-            answer: true,
-            calls: AtomicUsize::new(0),
-            allowed: 0,
-        };
-        let decision = evaluate_with_fake(
-            &fake,
-            Some(&blocked),
-            now,
-            0,
-            &candidate("left-pad", "1.0.0"),
-        )
-        .await;
-
-        assert_eq!(
-            decision,
-            Decision::Deny(crate::policy::DenyReason::BlockedPackage)
-        );
-        assert_eq!(
-            fake.calls(),
-            0,
-            "OSV must not be asked about an already-denied candidate"
-        );
-    }
-
-    #[tokio::test]
-    async fn evaluate_calls_osv_only_when_producer_would_allow() {
-        let now = 10_000_000;
-        let clear = crate::policy::BlocklistSnapshot::parse_and_validate(
-            br#"{"schema_version":1,"revision":1,
-                 "generated_at":"1970-01-01T00:00:00Z","expires_at":"2099-01-01T00:00:00Z",
-                 "blocked_packages":[],"blocked_hashes":[]}"#,
-            now,
-        )
-        .expect("a valid snapshot");
-
-        let fake = FixedOsv {
-            answer: true,
-            calls: AtomicUsize::new(0),
-            allowed: 1,
-        };
-        let decision =
-            evaluate_with_fake(&fake, Some(&clear), now, 0, &candidate("left-pad", "1.0.0")).await;
-
-        assert_eq!(
-            decision,
-            Decision::Deny(crate::policy::DenyReason::BlockedByOsv)
-        );
-        assert_eq!(
-            fake.calls(),
-            1,
-            "a clean candidate must ask OSV exactly once"
-        );
-    }
-
-    #[tokio::test]
-    async fn check_returns_cached_answer_without_a_batcher_round_trip() {
-        let client = client_with_capacity(1, StdDuration::from_secs(60));
-        // No batcher is running behind `tx`, so a real second round trip would hang
-        // forever rather than "panic on a second call" — the cache is what must stop
-        // it from ever being attempted. Seed the cache directly instead of routing
-        // the first call through the (nonexistent) batcher.
-        client.cache.put(
-            (Ecosystem::Npm, "left-pad".to_owned(), "1.0.0".to_owned()),
-            true,
-            StdDuration::from_secs(60),
-        );
-
-        let first = client.check(Ecosystem::Npm, "left-pad", "1.0.0").await;
-        let second = client.check(Ecosystem::Npm, "left-pad", "1.0.0").await;
-        assert!(first);
-        assert!(
-            second,
-            "the cached answer, not a fresh (and here impossible) round trip"
-        );
-    }
-
     #[tokio::test]
     async fn check_fails_open_on_full_channel() {
         // Capacity 1, and the one slot is held by a request nothing will ever drain:
@@ -451,9 +318,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let client = OsvClient {
             tx,
-            cache: OsvCache::new(),
-            cache_ttl: StdDuration::from_secs(60),
-            request_timeout: StdDuration::from_millis(500),
+            cache: Arc::new(OsvCache::new(StdDuration::from_secs(60))),
+            request_timeout: SHIPPED_TIMEOUT,
             mode: OsvMode::Enforce,
         };
         let (holder_tx, _holder_rx) = oneshot::channel::<bool>();
@@ -471,35 +337,22 @@ mod tests {
 
         assert!(!matched, "a full channel fails open");
         assert!(
-            elapsed < StdDuration::from_millis(500),
+            elapsed < SHIPPED_TIMEOUT,
             "the enqueue must fail open at OSV_ENQUEUE_TIMEOUT, not block; took {elapsed:?}"
         );
     }
 
-    /// A local server that binds and never answers — mirrors `siem.rs`'s rl7 test.
-    async fn hung_server() -> (Url, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let hold = tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                held.push(stream);
-            }
-        });
-        (url, hold)
-    }
-
+    /// A solitary lookup against a collector that would match but answers too late
+    /// fails open within one batch interval plus `request_timeout` (C12c/C14).
     #[tokio::test]
     async fn check_fails_open_on_batcher_timeout() {
-        let (url, hold) = hung_server().await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
+        let (url, _server, _count) = osv_server(200, true, StdDuration::from_secs(60)).await;
+        let request_timeout = StdDuration::from_millis(50);
+        let (client, handle, shutdown) = spawn(
             url,
-            StdDuration::from_secs(60),
-            StdDuration::from_millis(50),
             OsvMode::Enforce,
-            shutdown.clone(),
+            StdDuration::from_secs(60),
+            request_timeout,
         );
 
         let started = Instant::now();
@@ -507,94 +360,12 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(!matched, "a hung collector fails the check open");
         assert!(
-            elapsed < OSV_BATCH_INTERVAL,
-            "resolve must bound the reply wait to request_timeout (C12c/C14), not the \
-             batcher's own OSV_BATCH_INTERVAL flush cadence; took {elapsed:?}"
+            elapsed < OSV_BATCH_INTERVAL + request_timeout + StdDuration::from_millis(200),
+            "bounded by the batch interval plus request_timeout; took {elapsed:?}"
         );
 
         shutdown.cancel();
         let _ = handle.await;
-        hold.abort();
-    }
-
-    /// The adversarial-testing regression: a *solitary* lookup — nothing else fills
-    /// the batch to `OSV_BATCH_RECORDS`, so only `OSV_BATCH_INTERVAL` (2s) would
-    /// ever trigger a flush — must still return within `request_timeout`. Before the
-    /// fix, `resolve` awaited the batcher's reply with no bound of its own, so a
-    /// caller waited on `OSV_BATCH_INTERVAL` (or longer, if the collector itself was
-    /// also slow) rather than on `request_timeout` — `check`'s own doc comment and
-    /// the design's C12c/C14 promise ("never blocks past request_timeout") were both
-    /// false in exactly this ordinary, non-adversarial shape. `request_timeout` here
-    /// is two orders of magnitude under `OSV_BATCH_INTERVAL`, so a pass proves the
-    /// bound is `request_timeout`, not a coincidence of two similar durations.
-    #[tokio::test]
-    async fn check_bounds_a_solitary_lookup_to_request_timeout_not_the_batch_interval() {
-        let (url, hold) = hung_server().await;
-        let shutdown = CancellationToken::new();
-        let request_timeout = StdDuration::from_millis(20);
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
-            url,
-            StdDuration::from_secs(60),
-            request_timeout,
-            OsvMode::Enforce,
-            shutdown.clone(),
-        );
-
-        let started = Instant::now();
-        let matched = client.check(Ecosystem::Npm, "left-pad", "1.0.0").await;
-        let elapsed = started.elapsed();
-
-        assert!(!matched, "an unresolved lookup fails open");
-        assert!(
-            elapsed < OSV_BATCH_INTERVAL / 10,
-            "a solitary lookup must be bounded by request_timeout ({request_timeout:?}), \
-             not by waiting for a flush the batch never fills toward on its own; took \
-             {elapsed:?}, OSV_BATCH_INTERVAL is {OSV_BATCH_INTERVAL:?}"
-        );
-
-        shutdown.cancel();
-        let _ = handle.await;
-        hold.abort();
-    }
-
-    #[tokio::test]
-    async fn check_writes_negative_ttl_on_failure() {
-        let (url, hold) = hung_server().await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
-            url,
-            // A long positive TTL and a short negative one, so the two are easy to
-            // tell apart: if the failure were cached at the positive TTL a second
-            // call would still be answered from cache (which this cannot observe
-            // directly), but a negative entry re-resolves once the batcher can
-            // answer, since it expires quickly.
-            StdDuration::from_secs(60),
-            StdDuration::from_millis(50),
-            OsvMode::Enforce,
-            shutdown.clone(),
-        );
-
-        let key = (Ecosystem::Npm, "left-pad".to_owned(), "1.0.0".to_owned());
-        assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
-        let cached = client
-            .cache
-            .get(&key)
-            .expect("a failure still writes a cache entry");
-        assert!(!cached);
-
-        // The entry must not still be readable once OSV_NEGATIVE_TTL has passed —
-        // `OsvCache::get` treats an expired entry as absent.
-        tokio::time::sleep(OSV_NEGATIVE_TTL + StdDuration::from_millis(10)).await;
-        assert!(
-            client.cache.get(&key).is_none(),
-            "a failure's cache entry must use the short negative TTL, not the 60s positive one"
-        );
-
-        shutdown.cancel();
-        let _ = handle.await;
-        hold.abort();
     }
 
     #[tokio::test]
@@ -608,34 +379,31 @@ mod tests {
             shutdown.clone(),
         );
         assert!(!handle.is_finished(), "the batcher is running");
+        // Without a shutdown signal: dropping the last client is enough to end it.
         drop(client);
-        shutdown.cancel();
         handle.await.expect("the one spawned batcher task joins");
+        drop(shutdown);
     }
 
     // ---------------------------------------------------------------------------
-    // `osv_mode` (D5): `evaluate` built against a real `OsvClient` via `spawn_with`
-    // against a local mock server, mirroring `osv::batcher`'s own `counting_server`
-    // pattern rather than the hand-duplicated `evaluate_with_fake` helper above —
-    // `mode` lives on the real client, so only a real client exercises it.
+    // The real `OsvClient` and `evaluate`, against a local OSV stand-in whose
+    // request count is what each test asserts on.
     // ---------------------------------------------------------------------------
 
-    /// A `wiremock` server answering every `POST /v1/querybatch` with a fixed
-    /// matched/unmatched verdict for every query in the batch, and counting how many
-    /// requests it received.
-    async fn mode_server(
+    /// A `wiremock` server answering every `POST /v1/querybatch` with `status` and,
+    /// for a `200`, a fixed matched/unmatched verdict for every query in the batch,
+    /// after `delay`. Counts how many requests it received.
+    pub(super) async fn osv_server(
+        status: u16,
         matched: bool,
-    ) -> (
-        Url,
-        wiremock::MockServer,
-        std::sync::Arc<AtomicUsize>,
-    ) {
+        delay: StdDuration,
+    ) -> (Url, wiremock::MockServer, Arc<AtomicUsize>) {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        let count = std::sync::Arc::new(AtomicUsize::new(0));
-        let counted = std::sync::Arc::clone(&count);
+        let count = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&count);
         Mock::given(method("POST"))
             .and(path("/v1/querybatch"))
             .respond_with(move |request: &wiremock::Request| {
@@ -652,7 +420,9 @@ mod tests {
                     .iter()
                     .map(|_| serde_json::json!({"vulns": vulns}))
                     .collect();
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": results}))
+                ResponseTemplate::new(status)
+                    .set_body_json(serde_json::json!({"results": results}))
+                    .set_delay(delay)
             })
             .mount(&server)
             .await;
@@ -660,24 +430,27 @@ mod tests {
         (url, server, count)
     }
 
-    /// A `wiremock` server that panics if it is ever asked — `off` mode must never
-    /// call `OsvClient::check`.
-    async fn panicking_server() -> (Url, wiremock::MockServer) {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+    /// [`osv_server`] answering `200` at once with `matched` for every query.
+    async fn mode_server(matched: bool) -> (Url, wiremock::MockServer, Arc<AtomicUsize>) {
+        osv_server(200, matched, StdDuration::ZERO).await
+    }
 
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/querybatch"))
-            .respond_with(|_: &wiremock::Request| {
-                panic!("off mode must never ask OSV");
-                #[allow(unreachable_code)]
-                ResponseTemplate::new(200)
-            })
-            .mount(&server)
-            .await;
-        let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).unwrap();
-        (url, server)
+    fn spawn(
+        url: Url,
+        mode: OsvMode,
+        cache_ttl: StdDuration,
+        request_timeout: StdDuration,
+    ) -> (OsvClient, JoinHandle<()>, CancellationToken) {
+        let shutdown = CancellationToken::new();
+        let (client, handle) = OsvClient::spawn_with(
+            Client::new(),
+            url,
+            cache_ttl,
+            request_timeout,
+            mode,
+            shutdown.clone(),
+        );
+        (client, handle, shutdown)
     }
 
     fn clean_snapshot(now: i64) -> BlocklistSnapshot {
@@ -690,100 +463,212 @@ mod tests {
         .expect("a valid snapshot")
     }
 
-    #[tokio::test]
-    async fn evaluate_off_mode_never_calls_check() {
-        let (url, _server) = panicking_server().await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
-            url,
-            StdDuration::from_secs(60),
-            StdDuration::from_millis(500),
-            OsvMode::Off,
-            shutdown.clone(),
-        );
-
-        let now = 10_000_000;
-        let snapshot = clean_snapshot(now);
-        let decision = evaluate(&client, Some(&snapshot), now, 0, &candidate("left-pad", "1.0.0"))
-            .await;
-
-        assert_eq!(decision, Decision::Allow, "off mode never asks OSV");
-
+    /// `evaluate` on a clean snapshot, against a matching OSV in `mode`: the decision
+    /// and how many times OSV was asked.
+    async fn evaluate_in(mode: OsvMode, snapshot: &BlocklistSnapshot) -> (Decision, usize) {
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) =
+            spawn(url, mode, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        let decision = evaluate(
+            &client,
+            Some(snapshot),
+            10_000_000,
+            0,
+            &candidate("left-pad", "1.0.0"),
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
+        (decision, count.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn evaluate_skips_osv_when_producer_already_denies() {
+        let blocked = crate::policy::BlocklistSnapshot::parse_and_validate(
+            br#"{"schema_version":1,"revision":1,
+                 "generated_at":"1970-01-01T00:00:00Z","expires_at":"2099-01-01T00:00:00Z",
+                 "blocked_packages":[{"ecosystem":"npm","name":"left-pad","version":null,"reason":"malware"}],
+                 "blocked_hashes":[]}"#,
+            10_000_000,
+        )
+        .expect("a valid snapshot");
+
+        let (decision, asked) = evaluate_in(OsvMode::Enforce, &blocked).await;
+        assert_eq!(
+            decision,
+            Decision::Deny(crate::policy::DenyReason::BlockedPackage)
+        );
+        assert_eq!(
+            asked, 0,
+            "OSV is not asked about an already-denied candidate"
+        );
     }
 
     #[tokio::test]
     async fn evaluate_enforce_mode_denies_on_match() {
-        let (url, _server, _count) = mode_server(true).await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
-            url,
-            StdDuration::from_secs(60),
-            OSV_BATCH_INTERVAL + StdDuration::from_secs(1),
-            OsvMode::Enforce,
-            shutdown.clone(),
-        );
-
-        let now = 10_000_000;
-        let snapshot = clean_snapshot(now);
-        let decision = evaluate(&client, Some(&snapshot), now, 0, &candidate("left-pad", "1.0.0"))
-            .await;
-
+        let (decision, asked) = evaluate_in(OsvMode::Enforce, &clean_snapshot(10_000_000)).await;
         assert_eq!(
             decision,
             Decision::Deny(crate::policy::DenyReason::BlockedByOsv)
         );
-
-        shutdown.cancel();
-        let _ = handle.await;
+        assert_eq!(asked, 1, "a clean candidate asks OSV exactly once");
     }
 
     #[tokio::test]
-    async fn evaluate_diagnostic_mode_allows_on_match() {
-        let (url, _server, _count) = mode_server(true).await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
-            url,
-            StdDuration::from_secs(60),
-            OSV_BATCH_INTERVAL + StdDuration::from_secs(1),
-            OsvMode::Diagnostic,
-            shutdown.clone(),
-        );
+    async fn evaluate_off_mode_never_calls_check() {
+        let (decision, asked) = evaluate_in(OsvMode::Off, &clean_snapshot(10_000_000)).await;
+        assert_eq!(decision, Decision::Allow);
+        assert_eq!(asked, 0, "off mode never asks OSV");
+    }
 
-        let now = 10_000_000;
-        let snapshot = clean_snapshot(now);
-        let decision = evaluate(&client, Some(&snapshot), now, 0, &candidate("left-pad", "1.0.0"))
-            .await;
-
+    #[tokio::test]
+    async fn evaluate_diagnostic_mode_asks_osv_and_allows_on_match() {
+        let (decision, asked) = evaluate_in(OsvMode::Diagnostic, &clean_snapshot(10_000_000)).await;
         assert_eq!(decision, Decision::Allow, "diagnostic mode never denies");
-
-        shutdown.cancel();
-        let _ = handle.await;
+        assert_eq!(asked, 1, "diagnostic mode still asks OSV");
     }
 
     #[tokio::test]
     async fn evaluate_diagnostic_mode_allows_without_match() {
-        let (url, _server, _count) = mode_server(false).await;
-        let shutdown = CancellationToken::new();
-        let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
+        let (url, _server, count) = mode_server(false).await;
+        let (client, handle, shutdown) = spawn(
             url,
-            StdDuration::from_secs(60),
-            OSV_BATCH_INTERVAL + StdDuration::from_secs(1),
             OsvMode::Diagnostic,
-            shutdown.clone(),
+            StdDuration::from_secs(60),
+            SHIPPED_TIMEOUT,
         );
-
         let now = 10_000_000;
-        let snapshot = clean_snapshot(now);
-        let decision = evaluate(&client, Some(&snapshot), now, 0, &candidate("left-pad", "1.0.0"))
-            .await;
+        let decision = evaluate(
+            &client,
+            Some(&clean_snapshot(now)),
+            now,
+            0,
+            &candidate("left-pad", "1.0.0"),
+        )
+        .await;
 
         assert_eq!(decision, Decision::Allow);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        shutdown.cancel();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn a_cached_answer_needs_no_second_round_trip() {
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(
+            url,
+            OsvMode::Enforce,
+            StdDuration::from_secs(60),
+            SHIPPED_TIMEOUT,
+        );
+
+        assert!(client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert!(client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "the second answer is the cached one"
+        );
+
+        shutdown.cancel();
+        let _ = handle.await;
+    }
+
+    /// A match is trusted for `cache_ttl` and no longer: past it OSV is asked again.
+    #[tokio::test]
+    async fn an_expired_answer_is_asked_again() {
+        let (url, _server, count) = mode_server(true).await;
+        let cache_ttl = StdDuration::from_millis(50);
+        let (client, handle, shutdown) = spawn(url, OsvMode::Enforce, cache_ttl, SHIPPED_TIMEOUT);
+
+        assert!(client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        tokio::time::sleep(cache_ttl * 2).await;
+        assert!(client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+
+        shutdown.cancel();
+        let _ = handle.await;
+    }
+
+    /// A failed batch fails open and is cached too, so a struggling OSV endpoint is
+    /// not asked again by the next caller (C14).
+    #[tokio::test]
+    async fn a_failed_lookup_fails_open_and_is_not_retried_at_once() {
+        let (url, _server, count) = osv_server(500, true, StdDuration::ZERO).await;
+        let (client, handle, shutdown) = spawn(
+            url,
+            OsvMode::Enforce,
+            StdDuration::from_secs(60),
+            SHIPPED_TIMEOUT,
+        );
+
+        assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the failure was cached");
+
+        shutdown.cancel();
+        let _ = handle.await;
+    }
+
+    /// The cache is bounded: once `OSV_CACHE_ENTRIES` other lookups have been
+    /// answered since, the oldest answer is gone and OSV is asked again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_cache_forgets_its_oldest_answer_past_its_bound() {
+        let (url, server, _count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(
+            url,
+            OsvMode::Enforce,
+            StdDuration::from_secs(600),
+            SHIPPED_TIMEOUT,
+        );
+        let versions: Vec<String> = (0..=OSV_CACHE_ENTRIES).map(|n| n.to_string()).collect();
+        for chunk in versions.chunks(OSV_BATCH_RECORDS) {
+            let answers = futures_util::future::join_all(
+                chunk
+                    .iter()
+                    .map(|version| client.check(Ecosystem::Npm, "left-pad", version)),
+            )
+            .await;
+            assert!(
+                answers.into_iter().all(|matched| matched),
+                "every lookup was answered"
+            );
+        }
+        let asked = server.received_requests().await.expect("recorded").len();
+
+        assert!(client.check(Ecosystem::Npm, "left-pad", "0").await);
+        let asked_again = server.received_requests().await.expect("recorded").len();
+        assert_eq!(asked_again, asked + 1, "the oldest answer was evicted");
+
+        shutdown.cancel();
+        let _ = handle.await;
+    }
+
+    /// A caller that stops waiting (its request was cancelled) does not lose the
+    /// answer: the batcher caches it, so the next caller gets the match without a
+    /// second round trip.
+    #[tokio::test]
+    async fn an_answer_nobody_waited_for_is_still_cached() {
+        let (url, _server, count) = osv_server(200, true, StdDuration::from_millis(100)).await;
+        let (client, handle, shutdown) = spawn(
+            url,
+            OsvMode::Enforce,
+            StdDuration::from_secs(60),
+            SHIPPED_TIMEOUT,
+        );
+
+        let abandoned = tokio::time::timeout(
+            StdDuration::from_millis(30),
+            client.check(Ecosystem::Npm, "left-pad", "1.0.0"),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the first caller gave up mid-flight");
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+
+        assert!(client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "answered from the cache");
 
         shutdown.cancel();
         let _ = handle.await;
@@ -792,40 +677,12 @@ mod tests {
     // ---------------------------------------------------------------------------
     // `App::start`/`Running::shutdown` wiring (tests 17/18 of Slice 1's scope).
     //
-    // `AppDeps::osv` (see its doc comment) is a finished, already-spawned
-    // `osv::OsvClient`, because `App::start` does not create the `CancellationToken`
-    // it uses for its own background loops until it is already deep inside
-    // constructing `App` — well after `AppDeps` has to exist. This is why
-    // `App::start` cannot be the one calling `osv::OsvClient::new` (it would need a
-    // token it does not have yet), and, in turn, why `Running::shutdown` does not
-    // literally await this batcher's `JoinHandle`: nothing in `AppDeps`'s declared
-    // shape carries a handle for it to join. What *is* true, and what these two
-    // tests check: `App::start` wires exactly the client it was given into `App`
-    // (not a second one, not none), and that client's batcher — proven independently
-    // by `osv_client_new_spawns_one_batcher_task` and
-    // `batcher_drains_after_shutdown_signal` above — responds to its own shutdown
-    // token and joins promptly once cancelled, which is the actual mechanism D3
-    // cares about.
+    // `App::start` builds the `OsvClient` itself, from `AppDeps::osv_client` (and
+    // `AppDeps::osv_base_url` when a test points it elsewhere), and hands the
+    // batcher's `JoinHandle` to the `Tasks` set `Running::shutdown` joins. These two
+    // tests check that wiring from outside: exactly one task beyond the baseline,
+    // a client that still answers, and a shutdown that completes.
     // ---------------------------------------------------------------------------
-
-    struct NoopTransport;
-
-    #[async_trait::async_trait]
-    impl crate::upstream::Transport for NoopTransport {
-        async fn fetch_metadata(
-            &self,
-            _req: crate::upstream::MetadataRequest,
-        ) -> Result<crate::upstream::MetadataResponse, crate::upstream::UpstreamError> {
-            Err(crate::upstream::UpstreamError::Status(404))
-        }
-
-        async fn open_artifact(
-            &self,
-            _req: crate::upstream::ArtifactRequest,
-        ) -> Result<crate::upstream::ArtifactBody, crate::upstream::UpstreamError> {
-            Err(crate::upstream::UpstreamError::Status(404))
-        }
-    }
 
     /// The minimum `Config` `App::start` needs to run at all, in a fresh temporary
     /// data directory. Written by hand against `Config::from_toml_str` rather than
@@ -861,11 +718,12 @@ mod tests {
         crate::App::start(crate::AppDeps {
             config: minimal_config(data_dir),
             clock: std::sync::Arc::new(crate::clock::SystemClock),
-            transport: std::sync::Arc::new(NoopTransport),
+            // These tests make no request, so the production transport never dials.
+            transport: std::sync::Arc::new(crate::upstream::ReqwestTransport::production()),
             // `OriginSet::for_tests` is deliberately not used here:
             // `no_config_key_or_env_var_relaxes_origins` asserts it is named only in
-            // its own defining file. `NoopTransport` never dials out, so the real
-            // production origins are exactly as inert here as a fake set would be.
+            // its own defining file. Nothing dials out, so the real production
+            // origins are exactly as inert here as a fake set would be.
             origins: crate::upstream::OriginSet::production(),
             osv_client: unreachable_client(),
             osv_base_url: None,

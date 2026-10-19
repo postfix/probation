@@ -8,12 +8,14 @@
 //! is no previous snapshot and the answer to every request stays `503`. Publishing
 //! first would make a block enforceable that a restart would then silently forget.
 
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::App;
@@ -41,7 +43,26 @@ pub async fn run(app: Arc<App>, shutdown: CancellationToken, mut watcher: Watche
             _ = tokio::time::sleep(interval) => {}
         }
 
-        poll_once(&app, &mut watcher).await;
+        // A pass that panics is reported, and the next interval polls again. Exiting
+        // would turn whatever made it panic — possibly the bytes of the file itself —
+        // into a crash loop; letting this task end would stop blocklist updates
+        // silently while the snapshot in force ran out.
+        let pass = AssertUnwindSafe(poll_once(&app, &mut watcher)).catch_unwind();
+        if let Err(panic) = pass.await {
+            let message = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("a non-string panic payload");
+            tracing::error!(
+                path = %app.config.blocklist_file.display(),
+                panic = message,
+                "a blocklist poll pass panicked; the last accepted snapshot stays in force \
+                 and polling continues"
+            );
+            // The pass may have recorded the file as seen before it panicked.
+            watcher.retry();
+        }
     }
 }
 
@@ -94,7 +115,7 @@ pub async fn poll_once(app: &App, watcher: &mut Watcher) {
     let path = app.config.blocklist_file.as_path();
     let now_monotonic = app.clock.now_monotonic();
 
-    let identity = match FileIdentity::of(path) {
+    let identity = match FileIdentity::of(path).await {
         Ok(identity) => Some(identity),
         Err(err) => {
             tracing::error!(
@@ -114,7 +135,7 @@ pub async fn poll_once(app: &App, watcher: &mut Watcher) {
         return;
     }
 
-    let bytes = match read_capped(path, app.config.max_blocklist_bytes.get()) {
+    let bytes = match read_capped(path, app.config.max_blocklist_bytes.get()).await {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             tracing::error!(
@@ -152,7 +173,14 @@ pub async fn poll_once(app: &App, watcher: &mut Watcher) {
     }
 
     let now = app.clock.now_utc_micros();
-    let candidate = match BlocklistSnapshot::parse_and_validate(&bytes, now) {
+    // Parsing up to `max_blocklist_bytes` of JSON is CPU work, so it runs off the
+    // runtime's workers, as the file I/O above does. A panic inside it is re-raised
+    // here, where `run` reports it.
+    let parsed =
+        tokio::task::spawn_blocking(move || BlocklistSnapshot::parse_and_validate(&bytes, now))
+            .await
+            .unwrap_or_else(|join| std::panic::resume_unwind(join.into_panic()));
+    let candidate = match parsed {
         Ok(candidate) => candidate,
         Err(err) => {
             watcher.retry_if(reject(path, &err));
@@ -235,11 +263,12 @@ fn reject(path: &Path, err: &BlocklistError) -> Retry {
 
 /// Reads at most `max_bytes`, answering `Ok(None)` when the file is larger. The cap
 /// is applied to the read itself, so an oversized file is never buffered whole.
-fn read_capped(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = File::open(path)?;
+async fn read_capped(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
+    let file = tokio::fs::File::open(path).await?;
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes)
+        .await?;
     if bytes.len() as u64 > max_bytes {
         return Ok(None);
     }
@@ -262,10 +291,10 @@ struct FileIdentity {
 
 impl FileIdentity {
     #[cfg(unix)]
-    fn of(path: &Path) -> io::Result<FileIdentity> {
+    async fn of(path: &Path) -> io::Result<FileIdentity> {
         use std::os::unix::fs::MetadataExt;
 
-        let metadata = std::fs::metadata(path)?;
+        let metadata = tokio::fs::metadata(path).await?;
         Ok(FileIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
@@ -280,8 +309,8 @@ impl FileIdentity {
     /// ships as a Linux container; this arm exists so the crate still builds and is
     /// honest about being weaker.
     #[cfg(not(unix))]
-    fn of(path: &Path) -> io::Result<FileIdentity> {
-        let metadata = std::fs::metadata(path)?;
+    async fn of(path: &Path) -> io::Result<FileIdentity> {
+        let metadata = tokio::fs::metadata(path).await?;
         let modified_nanos = metadata
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)

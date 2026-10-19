@@ -33,10 +33,17 @@ use url::Url;
 /// `data_dir` is left as the sample's production path on purpose: `TestServer`
 /// replaces it with a directory the test owns, so no test can accidentally take the
 /// lock on, or write to, a real deployment's state.
+///
+/// `blocklist_file` is replaced for the same reason: the sample's
+/// `/etc/probation/blocklist.json` exists on any host `install-local.sh` ran on, and
+/// a test that expects "no blocklist loaded" would then see a real one. This path is
+/// inside the repository and never committed, so it is absent on every host.
 pub fn sample_config() -> Config {
     let mut config = Config::load(Path::new("config.sample.toml"))
         .expect("config.sample.toml is valid configuration");
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.blocklist_file =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/absent-blocklist.json");
     config
 }
 
@@ -1086,7 +1093,7 @@ pub mod logs {
     /// Installs the capturing subscriber the first time it is called and hands back
     /// the shared buffer. Safe to call from every test in a binary.
     pub fn capture() -> Captured {
-        install(tracing::Level::ERROR)
+        install("error")
     }
 
     /// The same buffer, installed at `WARN`, for the exclusions SPEC §7 and §11 ask
@@ -1096,16 +1103,23 @@ pub mod logs {
     /// cargo gives every test file its own process, so a file that wants `WARN` gets
     /// it without widening what any other file captures.
     pub fn capture_warn() -> Captured {
-        install(tracing::Level::WARN)
+        install("warn")
     }
 
     /// The same buffer at `INFO`, which is where SPEC §11's per-request decision line
     /// and the periodic counter summary are written.
     pub fn capture_info() -> Captured {
-        install(tracing::Level::INFO)
+        install("info")
     }
 
-    fn install(level: tracing::Level) -> Captured {
+    /// The same buffer with this crate's `DEBUG` lines, where an authorized artifact
+    /// response is recorded. Every other crate stays at `INFO`, so the storage
+    /// engine's page-level tracing does not fill the buffer.
+    pub fn capture_debug() -> Captured {
+        install("info,probation=debug")
+    }
+
+    fn install(filter: &str) -> Captured {
         static CAPTURED: OnceLock<Captured> = OnceLock::new();
         CAPTURED
             .get_or_init(|| {
@@ -1116,7 +1130,7 @@ pub mod logs {
                     // name and its value, so an assertion about a structured field
                     // would be matching on terminal colours.
                     .with_ansi(false)
-                    .with_max_level(level)
+                    .with_env_filter(filter)
                     .finish();
                 // A second install would mean two test binaries in one process, which
                 // cargo does not do; ignoring the failure keeps the helper infallible.
@@ -1185,11 +1199,9 @@ pub fn snapshot_with(
 /// is a new snapshot in force at an instant they choose, without waiting a polling
 /// interval for it.
 pub fn publish_blocklist(server: &TestServer, document: &str, now_micros: i64) {
-    let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
-        document.as_bytes(),
-        now_micros,
-    )
-    .expect("the test blocklist is valid");
+    let snapshot =
+        probation::policy::BlocklistSnapshot::parse_and_validate(document.as_bytes(), now_micros)
+            .expect("the test blocklist is valid");
     server
         .running()
         .app()
@@ -1263,11 +1275,9 @@ impl Clock for TriggerClock {
                     .clone(),
             )
         {
-            let snapshot = probation::policy::BlocklistSnapshot::parse_and_validate(
-                document.as_bytes(),
-                now,
-            )
-            .expect("the test blocklist is valid");
+            let snapshot =
+                probation::policy::BlocklistSnapshot::parse_and_validate(document.as_bytes(), now)
+                    .expect("the test blocklist is valid");
             app.publish_blocklist(std::sync::Arc::new(snapshot));
         }
         now
@@ -1497,5 +1507,69 @@ pub async fn drive_rated_load(
         delivered: ids.len() as u64 + summaries,
         dropped,
         achieved: (offered - u64::from(WORKERS)) as f64 / elapsed.as_secs_f64(),
+    }
+}
+
+/// A `wiremock` server standing in for `https://api.osv.dev`: it answers
+/// `POST /v1/querybatch` with a `MAL-*` vuln for every query whose `(name, version)`
+/// is in `flagged`, and no vuln for anything else. Returns the `querybatch` URL to
+/// hand `TestServer::start_with_upstream_and_osv`, and the server, whose
+/// `received_requests` is how a test counts OSV round trips.
+pub async fn osv_flagging(flagged: &[(&str, &str)]) -> (Url, wiremock::MockServer) {
+    osv_flagging_after(flagged, Duration::ZERO).await
+}
+
+/// [`osv_flagging`], answering each batch only after `delay`.
+pub async fn osv_flagging_after(
+    flagged: &[(&str, &str)],
+    delay: Duration,
+) -> (Url, wiremock::MockServer) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let flagged: Vec<(String, String)> = flagged
+        .iter()
+        .map(|(name, version)| ((*name).to_owned(), (*version).to_owned()))
+        .collect();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/querybatch"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("a JSON batch body");
+            let results: Vec<serde_json::Value> = body["queries"]
+                .as_array()
+                .expect("a queries array")
+                .iter()
+                .map(|query| {
+                    let hit = flagged.iter().any(|(name, version)| {
+                        query["package"]["name"] == name.as_str()
+                            && query["version"] == version.as_str()
+                    });
+                    if hit {
+                        serde_json::json!({"vulns": [{"id": "MAL-2026-1234"}]})
+                    } else {
+                        serde_json::json!({"vulns": []})
+                    }
+                })
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"results": results}))
+                .set_delay(delay)
+        })
+        .mount(&server)
+        .await;
+    let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).expect("the mock's own URL");
+    (url, server)
+}
+
+impl TestServer {
+    /// [`TestServer::shutdown`] with a drain deadline of the test's choosing, so a
+    /// witness for the deadline does not wait out the shipped thirty seconds.
+    pub async fn shutdown_within(self, drain: Duration) {
+        self.running
+            .shutdown_within(drain)
+            .await
+            .expect("a clean shutdown");
     }
 }

@@ -863,6 +863,78 @@ async fn existing_project_with_no_eligible_files_returns_empty_listing() {
     harness.shutdown().await;
 }
 
+/// SPEC §5: "Treat contradictory metadata for the same published filename/version as
+/// an upstream integrity error until fresh consistent metadata is available." Two
+/// entries naming one filename with different URLs or hashes are refused, not both
+/// listed.
+#[tokio::test]
+async fn contradictory_metadata_for_one_filename_is_an_upstream_integrity_error() {
+    let old = "2020-01-01T00:00:00Z";
+    let bard_wheel = "friendly_bard-1.0-py3-none-any.whl";
+    let mut moved = file(bard_wheel, old);
+    moved["url"] = json!(format!("https://files.invalid/packages/ef/01/{bard_wheel}"));
+    let other_wheel = "other_project-1.0-py3-none-any.whl";
+    let mut rehashed = file(other_wheel, old);
+    rehashed["hashes"] = json!({"sha256": "bb".repeat(32)});
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        "",
+        &[
+            (BARD, document(BARD, vec![file(bard_wheel, old), moved])),
+            (
+                OTHER,
+                document(OTHER, vec![file(other_wheel, old), rehashed]),
+            ),
+        ],
+    )
+    .await;
+
+    for project in [BARD, OTHER] {
+        let response = harness
+            .server
+            .get_with_headers(
+                &format!("/pypi/simple/{project}/"),
+                &[("accept", JSON_ACCEPT)],
+            )
+            .await;
+        assert_eq!(response.status().as_u16(), 502, "{project}");
+        assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+    }
+
+    harness.shutdown().await;
+}
+
+/// A cold project's eligible files are checked against OSV together, so the listing
+/// costs about one OSV round trip, not one per file. The harness's OSV endpoint
+/// refuses every connection, so each unresolved check fails open; judged one at a
+/// time, 40 files cost 40 x the shipped `osv_request_timeout_ms` (500ms).
+#[tokio::test]
+async fn a_cold_project_costs_about_one_osv_round_trip_not_one_per_file() {
+    let files = (0..40)
+        .map(|minor| {
+            file(
+                &format!("friendly_bard-1.{minor}-py3-none-any.whl"),
+                "2020-01-01T00:00:00Z",
+            )
+        })
+        .collect();
+    let harness = harness(NOW, ONE_DAY, "", &[(BARD, document(BARD, files))]).await;
+    let timeout = Duration::from_millis(harness.server.app().config.osv_request_timeout_ms.get());
+
+    let started = std::time::Instant::now();
+    let listed = harness.json_filenames(BARD).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(listed.len(), 40);
+    assert!(
+        elapsed < timeout * 4,
+        "a cold 40-file project took {elapsed:?}, more than 4 x the {timeout:?} OSV timeout"
+    );
+
+    harness.shutdown().await;
+}
+
 /// SPEC §7: `/pypi/simple/` is "a valid index of projects already known to this
 /// instance, not a mirror of all PyPI projects".
 #[tokio::test]
@@ -1025,9 +1097,7 @@ async fn concurrent_cold_requests_cause_exactly_one_metadata_refresh() {
     let requests: Vec<_> = (0..6)
         .map(|_| {
             let app = Arc::clone(&app);
-            tokio::spawn(
-                async move { probation::pypi::ensure_fresh_project(&app, BARD).await },
-            )
+            tokio::spawn(async move { probation::pypi::ensure_fresh_project(&app, BARD).await })
         })
         .collect();
 
@@ -2090,10 +2160,7 @@ async fn ceiling_harness(max_age: u64, projects: &[&str]) -> Harness {
 
 /// The row on disk, read through the store rather than through the memory cache: the
 /// column itself is the subject of these tests, not a copy of it.
-async fn stored_project(
-    harness: &Harness,
-    project: &str,
-) -> probation::store::rows::ProjectRow {
+async fn stored_project(harness: &Harness, project: &str) -> probation::store::rows::ProjectRow {
     harness
         .server
         .running()
@@ -2107,11 +2174,8 @@ async fn stored_project(
 
 /// This project's effective ceiling in whole seconds.
 fn ceiling_seconds(project: &str, max_age: u64) -> i64 {
-    probation::store::effective_max_age_micros(
-        &ProjectKey::new(Ecosystem::PyPi, project),
-        max_age,
-    )
-    .expect("a nonzero maximum age has a ceiling")
+    probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::PyPi, project), max_age)
+        .expect("a nonzero maximum age has a ceiling")
         / 1_000_000
 }
 
@@ -2426,10 +2490,7 @@ async fn the_effective_ceiling_never_exceeds_the_configured_maximum() {
         }
     }
     assert_eq!(
-        probation::store::effective_max_age_micros(
-            &ProjectKey::new(Ecosystem::PyPi, BARD),
-            0
-        ),
+        probation::store::effective_max_age_micros(&ProjectKey::new(Ecosystem::PyPi, BARD), 0),
         None,
         "and zero is no ceiling at all rather than a ceiling of zero"
     );
@@ -2649,5 +2710,297 @@ async fn a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it()
 
     // The storage task stops when the last handle to it goes; this test is holding one.
     drop(app);
+    harness.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Unusable upstream shapes
+// ---------------------------------------------------------------------------
+
+/// SPEC §7/§11: every file whose identity cannot be established is excluded and the
+/// exclusion is logged with its reason; the one nameable file is still listed.
+#[tokio::test]
+async fn every_unnameable_file_is_excluded_and_logged_with_its_reason() {
+    const PROJECT: &str = "excluded-bard";
+    let captured = logs::capture_warn();
+    let old = "2020-01-01T00:00:00Z";
+    let mut malformed_hash = file("excluded_bard-1.4-py3-none-any.whl", old);
+    malformed_hash["hashes"] = json!({"sha256": "zz"});
+    let files = vec![
+        file("excluded_bard-1.0-py3-none-any.whl", old),
+        json!({"url": "https://files.invalid/packages/ab/cd/excluded_bard-1.1.tar.gz"}),
+        json!({"filename": "excluded_bard-1.2.tar.gz"}),
+        json!({"filename": "excluded_bard-1.3.tar.gz", "url": "not a url"}),
+        malformed_hash,
+        file("", old),
+        file("excluded_bard-1.5\u{7}.tar.gz", old),
+        // An sdist whose leading `-` leaves an empty name before the first split.
+        file("-excluded_bard-1.6.tar.gz", old),
+        // A wheel with no distribution component at all.
+        file("-1.7-py3-none-any.whl", old),
+    ];
+    let harness = harness(NOW, ONE_DAY, "", &[(PROJECT, document(PROJECT, files))]).await;
+
+    assert_eq!(
+        harness.json_filenames(PROJECT).await,
+        vec!["excluded_bard-1.0-py3-none-any.whl".to_owned()]
+    );
+    for reason in [
+        "the entry carries no `filename`",
+        "the entry carries no `url`",
+        "`url` is not a URL",
+        "an advertised hash does not decode",
+        "the filename is empty",
+        "`\\u{7}` cannot appear in a filename",
+        "no split of the name yields this project and a version",
+    ] {
+        assert!(
+            captured.lines_containing_all(&[PROJECT, reason]) >= 1,
+            "the exclusion is logged with its reason `{reason}`: {}",
+            captured.text()
+        );
+    }
+
+    harness.shutdown().await;
+}
+
+/// The other shapes upstream fields come in: an unparseable or non-string upload
+/// time denies the file, `yanked: true` is a yank without a reason, a hash in an
+/// algorithm SPEC §8 cannot block on is carried without an HTML fragment, and an
+/// `&` in a filename is escaped in HTML text.
+#[tokio::test]
+async fn upload_times_yanks_hashes_and_ampersands_in_their_other_shapes() {
+    let mut not_a_time = file("friendly_bard-1.0-py3-none-any.whl", "");
+    not_a_time["upload-time"] = json!("yesterday");
+    let mut a_number = file("friendly_bard-1.1-py3-none-any.whl", "");
+    a_number["upload-time"] = json!(1_577_836_800);
+    let mut yanked = file("friendly_bard-1.2-py3-none-any.whl", "2020-01-01T00:00:00Z");
+    yanked["yanked"] = json!(true);
+    let mut blake = file("friendly_bard-1.3-py3-none-any.whl", "2020-01-01T00:00:00Z");
+    blake["hashes"] = json!({"blake2b_256": "ab".repeat(32)});
+    let ampersand = file(
+        "friendly_bard-1.4-py3-none-any&.whl",
+        "2020-01-01T00:00:00Z",
+    );
+    let harness = harness(
+        NOW,
+        ONE_DAY,
+        "",
+        &[(
+            BARD,
+            document(BARD, vec![not_a_time, a_number, yanked, blake, ampersand]),
+        )],
+    )
+    .await;
+
+    let listing = harness.json_listing(BARD).await;
+    let files = listing["files"].as_array().expect("`files` is an array");
+    let names: Vec<&str> = files
+        .iter()
+        .map(|file| file["filename"].as_str().expect("a filename"))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "friendly_bard-1.2-py3-none-any.whl",
+            "friendly_bard-1.3-py3-none-any.whl",
+            "friendly_bard-1.4-py3-none-any&.whl",
+        ],
+        "both malformed upload times deny their files"
+    );
+    assert_eq!(files[0]["yanked"], json!(true));
+
+    let html = harness.listing(BARD, HTML_ACCEPT).await;
+    assert!(html.contains("any&amp;.whl</a>"), "{html}");
+    assert!(
+        html.contains("friendly_bard-1.3-py3-none-any.whl\""),
+        "no `#sha256=` fragment without a sha256: {html}"
+    );
+
+    harness.shutdown().await;
+}
+
+/// A document with no `files` array, and one with more files than
+/// `max_references_per_project`, are unusable upstream answers (TM-1).
+#[tokio::test]
+async fn a_document_without_files_or_over_the_reference_cap_is_502() {
+    let captured = logs::capture_warn();
+    let no_files = json!({"meta": {"api-version": "1.1"}, "name": BARD}).to_string();
+    let two_files = document(
+        OTHER,
+        vec![
+            file("other_project-1.0-py3-none-any.whl", "2020-01-01T00:00:00Z"),
+            file("other_project-1.1-py3-none-any.whl", "2020-01-01T00:00:00Z"),
+        ],
+    );
+    let answers = [
+        (BARD, FakeAnswer::Body(no_files)),
+        (OTHER, FakeAnswer::Body(two_files)),
+    ];
+    let harness = harness_configured(NOW, ONE_DAY, "", &answers, |config| {
+        config.max_references_per_project = std::num::NonZeroU32::new(1).expect("one");
+    })
+    .await;
+
+    for project in [BARD, OTHER] {
+        let response = harness
+            .server
+            .get(&format!("/pypi/simple/{project}/"))
+            .await;
+        assert_eq!(response.status().as_u16(), 502, "{project}");
+        assert_eq!(common::body_error(response).await, "UPSTREAM_INVALID");
+    }
+    assert_eq!(
+        captured.lines_containing_all(&[OTHER, "max_references_per_project"]),
+        1,
+        "the outlier is logged with its name: {}",
+        captured.text()
+    );
+
+    harness.shutdown().await;
+}
+
+/// SPEC §9: a blocklist past its expiry is no blocklist, for the project listing
+/// and the index alike.
+#[tokio::test]
+async fn an_expired_blocklist_is_503_for_the_listing_and_the_index() {
+    let harness = harness(NOW, ONE_DAY, "", &[(BARD, bard_document())]).await;
+    harness.clock.set_rfc3339("2100-01-01T00:00:00Z");
+
+    for path in [format!("/pypi/simple/{BARD}/"), "/pypi/simple/".to_owned()] {
+        let response = harness.server.get(&path).await;
+        assert_eq!(response.status().as_u16(), 503, "{path}");
+        assert_eq!(common::body_error(response).await, "POLICY_UNAVAILABLE");
+    }
+
+    harness.shutdown().await;
+}
+
+/// TM-4: an absent project is remembered for the metadata TTL and no longer.
+#[tokio::test]
+async fn an_absent_project_is_asked_about_again_once_the_ttl_passes() {
+    let harness = harness(NOW, ONE_DAY, "", &[]).await;
+    let path = "/pypi/simple/nothing-here/";
+
+    assert_eq!(harness.server.status(path).await, 404);
+    assert_eq!(harness.server.status(path).await, 404);
+    assert_eq!(
+        harness.metadata_calls("nothing-here"),
+        1,
+        "the second is remembered"
+    );
+
+    harness.clock.advance_seconds(metadata_ttl() + 1);
+    assert_eq!(harness.server.status(path).await, 404);
+    assert_eq!(
+        harness.metadata_calls("nothing-here"),
+        2,
+        "and forgotten after the TTL"
+    );
+
+    harness.shutdown().await;
+}
+
+/// SPEC §10: a `304` that repeats no validator keeps the stored ones, so the next
+/// revalidation is still conditional on them.
+#[tokio::test]
+async fn a_304_without_validators_keeps_the_stored_ones() {
+    let harness = validated_harness().await;
+    let upstream = pypi_upstream_path(BARD);
+    let first = harness.json_filenames(BARD).await;
+
+    harness.registry.answer(
+        &upstream,
+        FakeAnswer::AlwaysNotModified {
+            etag: None,
+            last_modified: None,
+        },
+    );
+    harness.clock.advance_seconds(metadata_ttl() + 1);
+    assert_eq!(harness.json_filenames(BARD).await, first);
+    harness.clock.advance_seconds(metadata_ttl() + 1);
+    assert_eq!(harness.json_filenames(BARD).await, first);
+
+    let conditional = harness.registry.conditional_calls(&upstream);
+    assert_eq!(conditional.len(), 2);
+    assert_eq!(
+        conditional[1].etag.as_deref(),
+        Some(ETAG),
+        "{conditional:?}"
+    );
+
+    harness.shutdown().await;
+}
+
+/// SPEC §11: an upstream that does not answer in time is a `504`, reported as itself.
+#[tokio::test]
+async fn an_upstream_timeout_is_504() {
+    let harness = harness_with_answers(
+        NOW,
+        ONE_DAY,
+        "",
+        &[(
+            BARD,
+            FakeAnswer::Fail(probation::upstream::UpstreamError::Timeout),
+        )],
+    )
+    .await;
+
+    let response = harness.server.get(&format!("/pypi/simple/{BARD}/")).await;
+    assert_eq!(response.status().as_u16(), 504);
+    assert_eq!(common::body_error(response).await, "UPSTREAM_TIMEOUT");
+
+    harness.shutdown().await;
+}
+
+/// A route name PyPI could never have published is a `400` logged (at `DEBUG`) with
+/// what was wrong with it, and an empty listing logs (at `INFO`) why every file was
+/// excluded (SPEC §7).
+///
+/// The server runs on this test's single-threaded runtime, so a subscriber installed
+/// for this thread sees its log lines without widening the binary-wide capture.
+#[tokio::test]
+async fn refusals_and_empty_listings_are_logged_with_why() {
+    let captured = logs::Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let held = vec![file(
+        "friendly_bard-1.0-py3-none-any.whl",
+        "2026-04-06T11:00:00Z",
+    )];
+    let harness = harness(NOW, ONE_DAY, "", &[(BARD, document(BARD, held))]).await;
+
+    let too_long = "a".repeat(215);
+    for (route, reason) in [
+        (
+            too_long.as_str(),
+            "a project name is at most 214 characters, this is 215",
+        ),
+        ("-bard", "begins and ends with a letter or a digit"),
+        ("ba~rd", "`~` cannot appear in a project name"),
+    ] {
+        let response = harness.server.get(&format!("/pypi/simple/{route}/")).await;
+        assert_eq!(response.status().as_u16(), 400, "{route}");
+        assert_eq!(common::body_error(response).await, "INVALID_INPUT");
+        assert_eq!(
+            captured.lines_containing_all(&["refused a project name", reason]),
+            1,
+            "{route}: {}",
+            captured.text()
+        );
+    }
+
+    assert!(harness.json_filenames(BARD).await.is_empty());
+    assert_eq!(
+        captured.lines_containing_all(&[BARD, "every file of this project was excluded"]),
+        1,
+        "{}",
+        captured.text()
+    );
+
     harness.shutdown().await;
 }

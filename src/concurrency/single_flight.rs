@@ -164,6 +164,13 @@ impl<K: Eq + Hash + Clone, V> SingleFlight<K, V> {
             .unwrap_or(0)
     }
 
+    /// Whether this key has a slot in the table at all. Unlike `waiting_on(key) == 0`,
+    /// false here means the next request starts fresh work: a slot every waiter has
+    /// left but nobody retired still answers zero waiters, and is still joined.
+    pub fn in_flight(&self, key: &K) -> bool {
+        self.table().contains_key(key)
+    }
+
     /// Whether this key's work has passed the point after which it always completes.
     pub fn publishing(&self, key: &K) -> bool {
         self.table()
