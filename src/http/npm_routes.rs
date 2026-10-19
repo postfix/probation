@@ -69,7 +69,7 @@ pub async fn package_version(
     Ok(respond(rendered))
 }
 
-fn parse_name(raw: &str) -> Result<PackageName, ApiError> {
+pub(super) fn parse_name(raw: &str) -> Result<PackageName, ApiError> {
     PackageName::parse_route(raw).map_err(|err| {
         tracing::debug!(error = %err, "refused a package name");
         ApiError::InvalidInput("the package name is not a valid npm package name")

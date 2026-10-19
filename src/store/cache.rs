@@ -139,7 +139,47 @@ pub struct CachedProject {
     ///
     /// Not counted in [`CachedProject::approximate_bytes`]: it is filled after the
     /// entry is sized, and it is small beside the payload it is derived from.
-    pub advertised: OnceLock<Arc<HashSet<ReferenceId>>>,
+    pub advertised: OnceLock<Arc<Advertised>>,
+}
+
+/// The references one project snapshot advertises, by id and by filename.
+///
+/// By filename is what a client holding a lockfile asks with: it names upstream's own
+/// tarball path, never a reference id. A filename two references share names neither,
+/// so it is left out rather than guessed at.
+#[derive(Debug, Default)]
+pub struct Advertised {
+    ids: HashSet<ReferenceId>,
+    by_filename: HashMap<String, ReferenceId>,
+}
+
+impl Advertised {
+    pub fn new<'a>(references: impl IntoIterator<Item = (ReferenceId, &'a str)>) -> Advertised {
+        let mut advertised = Advertised::default();
+        let mut ambiguous = HashSet::new();
+        for (id, filename) in references {
+            advertised.ids.insert(id);
+            if advertised
+                .by_filename
+                .insert(filename.to_owned(), id)
+                .is_some_and(|other| other != id)
+            {
+                ambiguous.insert(filename.to_owned());
+            }
+        }
+        for filename in ambiguous {
+            advertised.by_filename.remove(&filename);
+        }
+        advertised
+    }
+
+    pub fn contains(&self, id: &ReferenceId) -> bool {
+        self.ids.contains(id)
+    }
+
+    pub fn by_filename(&self, filename: &str) -> Option<ReferenceId> {
+        self.by_filename.get(filename).copied()
+    }
 }
 
 impl CachedProject {

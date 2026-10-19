@@ -19,7 +19,7 @@ pub mod filename;
 pub mod name;
 pub mod render;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,7 @@ use crate::pypi::filename::{FileIdentity, UnsupportedFilename, file_identity};
 use crate::pypi::render::ListedFile;
 use crate::store;
 use crate::store::cache::{
-    AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
+    AbsentMark, Advertised, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{
     ArtifactReference, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert,
@@ -247,10 +247,7 @@ async fn current_project(
 /// ([`CachedProject::advertised`]): a warm artifact request re-parses nothing, which
 /// is what SPEC §12's warm-artifact target needs on a project carrying thousands of
 /// files.
-pub async fn ensure_fresh_project(
-    app: &App,
-    name: &str,
-) -> Result<Arc<HashSet<ReferenceId>>, ApiError> {
+pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertised>, ApiError> {
     // Already normalised when it was stored; rebuilt rather than trusted, and a name
     // that is no longer a normal form is a reference nothing can be served for.
     let name = ProjectName::from_normalized(name).ok_or_else(|| {
@@ -270,8 +267,11 @@ pub async fn ensure_fresh_project(
     }
 
     let files = parse_stored(app, &name, &cached.row.payload)?;
-    let advertised: Arc<HashSet<ReferenceId>> =
-        Arc::new(files.iter().map(|file| file.id).collect());
+    let advertised = Arc::new(Advertised::new(
+        files
+            .iter()
+            .map(|file| (file.id, file.reference.filename.as_str())),
+    ));
     // Through the `Arc` the cache handed out, so the next request for this same
     // snapshot finds it. A racing filler sets the same value from the same bytes.
     let _ = cached.advertised.set(Arc::clone(&advertised));

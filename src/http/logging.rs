@@ -385,7 +385,35 @@ impl Target {
         let second = segments.next();
         let third = segments.next();
         let fourth = segments.next();
+        let fifth = segments.next();
         match (root, first, second, third, fourth) {
+            // Upstream's own tarball path, `/npm/{package}/-/{filename}` or
+            // `/npm/@{scope}/{package}/-/{filename}`. Ahead of the artifacts arm: a
+            // package named `artifacts` has this shape too, and no reference id is `-`.
+            // The package named `npm`, which npm 11 and later ask for unprefixed.
+            ("npm", Some("-"), Some(filename), None, None)
+                if filename.starts_with("npm-") && filename.ends_with(".tgz") =>
+            {
+                Target {
+                    ecosystem: root,
+                    package: loggable(Some("npm")),
+                    version: loggable(Some(filename)),
+                }
+            }
+            ("npm", package, Some("-"), Some(filename), None) => Target {
+                ecosystem: root,
+                package: loggable(package),
+                version: loggable(Some(filename)),
+            },
+            ("npm", Some(scope), Some(package), Some("-"), Some(filename))
+                if scope.starts_with('@') && fifth.is_none() =>
+            {
+                Target {
+                    ecosystem: root,
+                    package: loggable(Some(&format!("{scope}/{package}"))),
+                    version: loggable(Some(filename)),
+                }
+            }
             // `/{ecosystem}/artifacts/{reference_id}/{filename}`. Four segments, so a
             // package or project literally named `artifacts` — two segments, or three
             // with a version — reads as itself. SPEC §9: a reference id is a lookup
@@ -575,6 +603,34 @@ mod tests {
     fn component(max_len: usize) -> impl Strategy<Value = String> {
         proptest::collection::vec(proptest::prelude::any::<char>(), 0..max_len)
             .prop_map(String::from_iter)
+    }
+
+    /// Upstream's own tarball path names a package and a file, as the reference-id
+    /// route's line does; the `-` between them is not a version.
+    #[test]
+    fn an_upstream_tarball_path_logs_its_package_and_file() {
+        for (path, package, file) in [
+            (
+                "/npm/left-pad/-/left-pad-1.3.0.tgz",
+                "left-pad",
+                "left-pad-1.3.0.tgz",
+            ),
+            (
+                "/npm/@scope/pkg/-/pkg-1.0.0.tgz",
+                "@scope/pkg",
+                "pkg-1.0.0.tgz",
+            ),
+            (
+                "/npm/artifacts/-/artifacts-1.0.0.tgz",
+                "artifacts",
+                "artifacts-1.0.0.tgz",
+            ),
+            ("/npm/-/npm-10.9.0.tgz", "npm", "npm-10.9.0.tgz"),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.package, Some(format!("{package:?}")), "{path}");
+            assert_eq!(target.version, Some(format!("{file:?}")), "{path}");
+        }
     }
 
     /// One record built the way [`decide`] builds one: the generated method and path,

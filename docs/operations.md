@@ -462,8 +462,8 @@ It only checks packages as they are *downloaded*. It cannot help with:
   control to rely on.)
 - **Anything not fetched through this service:** other registries, Git or URL
   dependencies, local files, anything an install script downloads itself.
-- **Lockfiles that pin a direct upstream URL.** Pointing npm or pip here does
-  not rewrite those. Check your lockfiles when you roll this out.
+- **Lockfiles that pin a direct upstream URL**, except npm's (see "Clients"
+  below). Check your lockfiles when you roll this out.
 - **Code that runs during install.** It checks package files, not what an
   installer script does.
 
@@ -483,6 +483,68 @@ index-url = https://packages.example.org/pypi/simple/
 
 That is cooperative. To *enforce* it, block direct access to the public
 registries at the network level too.
+
+### Clients
+
+Each package tool decides for itself where it downloads from. Most npm tools
+read `.npmrc`. Most Python tools do not read `pip.conf`. A tool that is not
+pointed here downloads straight from the public registry, and nothing tells
+you so.
+
+| Tool | Covered by the config above? | To point it here |
+| --- | --- | --- |
+| npm, npx | Yes | Nothing more. |
+| pnpm | Yes, it reads `.npmrc` | Nothing more. |
+| bun | Only from `~/.npmrc` or a project's `.npmrc`, not the machine-wide npmrc the installer writes | Put the same `registry=` (and `cafile=`) lines in `~/.npmrc`. |
+| yarn 1 | New installs only | Rewrite each existing `yarn.lock` once (below). |
+| pip, pipx | Yes | Nothing more. |
+| uv | No | `uv.toml`, plus a certificate from `mkcert` (below). |
+| Poetry | No | Once per project (below). |
+| corepack | No | Set `COREPACK_NPM_REGISTRY` (below). |
+| conda packages | No, and cannot be | conda channels are not supported. |
+
+**npm lockfiles work as they are.** A `package-lock.json` made against the
+public registry names `https://registry.npmjs.org/...` in every `resolved`
+URL. npm rewrites only the host of those URLs to the configured registry, so
+it asks this service for upstream's own tarball path, which it serves under the
+same policy as every other download.
+
+**yarn 1 lockfiles need one rewrite.** yarn 1 downloads exactly the
+`resolved` URLs in `yarn.lock` and has no setting to change their host. Point
+them here once per project, and commit the result:
+
+```sh
+sed -i 's#https://registry.yarnpkg.com/#https://packages.example.org/npm/#g' yarn.lock
+```
+
+A teammate without access to this service cannot install from that lockfile.
+
+**uv** reads its own config, not `pip.conf`. Machine-wide, in
+`/etc/uv/uv.toml` (per user: `~/.config/uv/uv.toml`):
+
+```toml
+[[index]]
+url = "https://packages.example.org/pypi/simple/"
+default = true
+```
+
+uv also refuses the self-signed certificate `scripts/install-local.sh` falls
+back to without `mkcert`, even with `SSL_CERT_FILE` pointing at it. Use a
+certificate from a real CA, or install `mkcert` and re-run the installer.
+
+**Poetry** has no machine-wide setting. In each project:
+
+```sh
+poetry source add --priority=primary probation https://packages.example.org/pypi/simple/
+```
+
+With the self-signed certificate, also run
+`poetry config certificates.probation.cert /etc/probation/tls/localhost.pem`.
+
+**corepack** downloads yarn and pnpm themselves from `registry.npmjs.org`.
+Set `COREPACK_NPM_REGISTRY=https://packages.example.org/npm` in the
+environment, and `NODE_EXTRA_CA_CERTS` to the certificate if it is
+self-signed.
 
 ## 8. Logs
 

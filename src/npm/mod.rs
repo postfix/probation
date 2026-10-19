@@ -16,7 +16,7 @@ pub mod name;
 pub mod render;
 pub mod tags;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ use crate::policy::{
 };
 use crate::store;
 use crate::store::cache::{
-    AbsentMark, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
+    AbsentMark, Advertised, CachedProject, ProjectKey, RenderKey, RenderedResponse, Representation,
 };
 use crate::store::rows::{Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, UpstreamError};
@@ -215,10 +215,7 @@ async fn current_project(
 /// ([`CachedProject::advertised`]): a warm artifact request re-parses nothing, which
 /// is what SPEC §12's warm-artifact target needs on a project carrying thousands of
 /// versions.
-pub async fn ensure_fresh_project(
-    app: &App,
-    name: &str,
-) -> Result<Arc<HashSet<ReferenceId>>, ApiError> {
+pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertised>, ApiError> {
     // The stored name is a name this instance already accepted from upstream; it is
     // re-validated here rather than trusted, and a name that no longer parses is a
     // reference nothing can be served for.
@@ -233,21 +230,66 @@ pub async fn ensure_fresh_project(
         app.clock.now_monotonic(),
     )
     .await?;
+    advertised(app, &name, &cached)
+}
 
+/// What `cached` advertises, parsed once per snapshot.
+fn advertised(
+    app: &App,
+    name: &PackageName,
+    cached: &CachedProject,
+) -> Result<Arc<Advertised>, ApiError> {
     if let Some(advertised) = cached.advertised.get() {
         return Ok(Arc::clone(advertised));
     }
 
-    let document = parse_stored(app, &name, &cached.row.payload)?;
+    let document = parse_stored(app, name, &cached.row.payload)?;
     let entries = document
         .entries(app.config.max_references_per_project.get())
-        .map_err(|err| reference_cap_error(&name, err))?;
-    let advertised: Arc<HashSet<ReferenceId>> =
-        Arc::new(entries.iter().map(|entry| entry.id).collect());
+        .map_err(|err| reference_cap_error(name, err))?;
+    let advertised = Arc::new(Advertised::new(
+        entries
+            .iter()
+            .map(|entry| (entry.id, entry.reference.filename.as_str())),
+    ));
     // Through the `Arc` the cache handed out, so the next request for this same
     // snapshot finds it. A racing filler sets the same value from the same bytes.
     let _ = cached.advertised.set(Arc::clone(&advertised));
     Ok(advertised)
+}
+
+/// The reference upstream's own tarball path names: `{name}/-/{filename}`, which is
+/// what a lockfile's `resolved` URL carries.
+///
+/// A snapshot this instance already holds names it however old that snapshot is, so
+/// `serve_artifact` reaches its local decision without an upstream call (PERF-01),
+/// and still requires a fresh snapshot before it serves anything. Only a filename no
+/// held snapshot advertises asks upstream.
+pub async fn reference_for_file(
+    app: &App,
+    name: &PackageName,
+    filename: &str,
+) -> Result<ReferenceId, ApiError> {
+    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+    if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
+        return Err(ApiError::PolicyUnavailable);
+    }
+
+    let key = ProjectKey::new(Ecosystem::Npm, name.as_str());
+    let held = match app.store().caches().projects.get(&key) {
+        Some(cached) => Some(cached),
+        None => load_project(app, name).await?.map(Arc::new),
+    };
+    if let Some(held) = held
+        && let Some(id) = advertised(app, name, &held)?.by_filename(filename)
+    {
+        return Ok(id);
+    }
+
+    ensure_fresh_project(app, name.as_str())
+        .await?
+        .by_filename(filename)
+        .ok_or(ApiError::NotFound)
 }
 
 /// The stored project document, parsed, and counted as a stored parse.
