@@ -70,7 +70,12 @@ pub(super) async fn run(
                         send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
                     }
                 }
-                None => break,
+                None => {
+                    if !batch.is_empty() {
+                        send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
+                    }
+                    break;
+                }
             },
             () = tokio::time::sleep_until(deadline), if !batch.is_empty() => {
                 send(&client, &url, auth.as_ref(), &mut batch, &counters, &drain).await;
@@ -305,6 +310,38 @@ mod tests {
         )
         .await;
         assert_eq!(counters.total(), 0);
+    }
+
+    /// A closed queue ends the sink as a drain does: the batch in hand is sent, not
+    /// dropped uncounted.
+    #[tokio::test]
+    async fn a_closed_queue_sends_the_batch_in_hand() {
+        let collector = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&collector)
+            .await;
+        let url = Url::parse(&collector.uri()).unwrap();
+
+        let (sink, queue) = crate::delivery::channel(3);
+        for _ in 0..3 {
+            sink.push(crate::delivery::tests::decision());
+        }
+        drop(sink);
+        let counters = Arc::new(SinkCounters::new());
+        run(
+            Client::new(),
+            url,
+            None,
+            queue,
+            CancellationToken::new(),
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert_eq!(counters.total(), 0, "nothing was lost");
+        collector.verify().await;
     }
 
     /// rl7, the `Unsent::drop` site on its own: an undelivered batch is counted whole,
