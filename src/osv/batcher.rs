@@ -126,14 +126,15 @@ pub(super) async fn run(
                         ship(&mut batch, &mut in_flight);
                     }
                 }
-                if !batch.is_empty() {
-                    ship(&mut batch, &mut in_flight);
-                }
                 break;
             }
         }
     }
-    // Every waiter is answered before the batcher reports itself finished.
+    // Every waiter is answered before the batcher reports itself finished, whether a
+    // closed channel or shutdown ended the loop.
+    if !batch.is_empty() {
+        ship(&mut batch, &mut in_flight);
+    }
     while in_flight.join_next().await.is_some() {}
 }
 
@@ -476,6 +477,37 @@ mod tests {
             "every waiter fails open on a mismatch"
         );
         assert!(!reply_b.await.unwrap());
+    }
+
+    /// Closing the channel ends the batcher as shutdown does, and answers what is
+    /// already batched the same way.
+    #[tokio::test]
+    async fn batcher_answers_its_open_batch_when_the_channel_closes() {
+        let body = serde_json::json!({"results": [{"vulns": []}, {"vulns": []}]});
+        let (url, server, count) =
+            counting_server(wiremock::ResponseTemplate::new(200).set_body_json(body)).await;
+
+        let (tx, rx) = mpsc::channel(8);
+        let (req_a, reply_a) = request("pkg-a");
+        let (req_b, reply_b) = request("pkg-b");
+        tx.send(req_a).await.unwrap();
+        tx.send(req_b).await.unwrap();
+        drop(tx);
+
+        run(
+            Client::new(),
+            url,
+            rx,
+            Duration::from_secs(5),
+            Arc::new(OsvCache::new(Duration::from_secs(60))),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert_eq!(reply_a.await, Ok(false), "a batched lookup is answered");
+        assert_eq!(reply_b.await, Ok(false));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(server);
     }
 
     #[tokio::test]
