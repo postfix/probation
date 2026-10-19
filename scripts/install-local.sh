@@ -186,6 +186,16 @@ else
 fi
 chmod 600 "$KEY"
 
+# What Node-based clients (npm, bun, corepack) must trust to reach this instance:
+# mkcert's root, or the self-signed cert itself. Copied here because mkcert's root
+# lives in the installing user's home, which other users may not be able to read.
+CA_FILE="$ETC_DIR/tls/ca.pem"
+if [ "$TRUSTED" -eq 1 ]; then
+  cp "$(mkcert -CAROOT)/rootCA.pem" "$CA_FILE"
+else
+  cp "$CERT" "$CA_FILE"
+fi
+
 echo "==> Writing $ETC_DIR/config.toml"
 cp "$REPO_ROOT/config.sample.toml" "$ETC_DIR/config.toml"
 sed --in-place \
@@ -224,9 +234,6 @@ if [ "$HAVE_NPM" -eq 1 ]; then
     cat "$TMP_NPMRC"
     echo "registry=https://$HOST:$LISTEN_PORT/npm/"
     echo "audit=false"
-    if [ "$TRUSTED" -eq 0 ]; then
-      echo "cafile=$CERT"
-    fi
   } > "$TMP_NPMRC.new"
   run_priv mkdir -p "$(dirname "$NPMRC")"
   run_priv install -m 644 "$TMP_NPMRC.new" "$NPMRC"
@@ -261,6 +268,35 @@ else
   echo "==> Skipping pip config: no pip found for $REAL_USER"
 fi
 
+# Node does not read the machine's trust store, so npm, bun and corepack are given
+# this instance's authority with NODE_EXTRA_CA_CERTS, which adds to Node's list. Not
+# npm's `cafile`: that replaces the list, and npm could then reach nothing else over
+# TLS. /etc/environment is machine-wide, so only a system install writes it, and
+# Node takes only one such file, so one this machine already names is left alone.
+ENV_LINE="NODE_EXTRA_CA_CERTS=$CA_FILE"
+if [ "$SYSTEM_INSTALL" -eq 1 ]; then
+  CURRENT_ENV="$(mktemp)"
+  if [ -e /etc/environment ] && ! cat /etc/environment > "$CURRENT_ENV"; then
+    echo "==> Cannot read /etc/environment; leaving it unchanged." >&2
+    exit 1
+  fi
+  PREVIOUS="$(sed -n 's/^NODE_EXTRA_CA_CERTS=//p' "$CURRENT_ENV" | tail -n 1 | tr -d '"')"
+  if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$CA_FILE" ]; then
+    echo "==> /etc/environment already sets NODE_EXTRA_CA_CERTS=$PREVIOUS; leaving it."
+    echo "    Node trusts only one extra file. To keep both, combine them and point it there:"
+    echo "      cat $PREVIOUS $CA_FILE > /usr/local/share/node-extra-ca.pem"
+  else
+    echo "==> Setting $ENV_LINE in /etc/environment (from your next login)"
+    { grep -v '^NODE_EXTRA_CA_CERTS=' "$CURRENT_ENV" || true; } > "$CURRENT_ENV.new"
+    echo "$ENV_LINE" >> "$CURRENT_ENV.new"
+    run_priv install -m 644 "$CURRENT_ENV.new" /etc/environment
+  fi
+  rm -f "$CURRENT_ENV" "$CURRENT_ENV.new"
+else
+  echo "==> Add this to your shell profile so npm, bun and corepack trust $CA_FILE:"
+  echo "      export $ENV_LINE"
+fi
+
 # Final ownership, set once here rather than at every write site above.
 #
 # System install: $ETC_DIR (config, blocklist, TLS key) is root-owned and only
@@ -280,7 +316,7 @@ if [ "$SYSTEM_INSTALL" -eq 1 ]; then
   run_priv chmod -R u=rwX,g=rX,o= "$ETC_DIR"
   # The certificate is public, and every user's npm and pip read it as their CA.
   run_priv chmod o+x "$ETC_DIR" "$ETC_DIR/tls"
-  run_priv chmod o+r "$CERT"
+  run_priv chmod o+r "$CERT" "$CA_FILE"
   run_priv chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
   run_priv chmod 700 "$DATA_DIR"
 elif [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
@@ -297,12 +333,13 @@ fi
 echo "    Cert:       $CERT"
 echo "    Decision log: $DATA_DIR/decisions.ndjson (self-rotating, capped at 200 MiB total;"
 echo "                  stdout/journald still gets the same lines too, uncapped by this script)"
-if [ "$TRUSTED" -eq 0 ]; then
-  echo "    This cert is untrusted; npm/pip were configured with an explicit cafile/cert."
+if [ "$TRUSTED" -eq 0 ] && [ "$HAVE_PIP" -eq 1 ]; then
+  echo "    This cert is untrusted; pip was configured with an explicit cert."
 fi
 if [ "$HAVE_NPM" -eq 1 ]; then
   echo "    npm (every user, machine-wide): $NPMRC -> https://$HOST:$LISTEN_PORT/npm/"
 fi
+echo "    Shells already open: export $ENV_LINE"
 if [ "$HAVE_PIP" -eq 1 ]; then
   echo "    pip (every user, machine-wide): $PIP_CONF -> https://$HOST:$LISTEN_PORT/pypi/simple/"
 fi

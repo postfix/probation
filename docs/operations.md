@@ -408,13 +408,35 @@ user. Section 5, "Upgrading", has the steps to get the separation above.
 The script picks the best certificate tool available:
 
 - [`mkcert`](https://github.com/FiloSottile/mkcert), if installed. This adds a
-  local certificate authority to the machine's trust store once, so every cert
-  it issues is trusted by `npm`, `pip`, and `curl` on that machine with no
-  flags. A mkcert cert is not valid on any other machine, which is what you
-  want for local testing.
+  local certificate authority to the machine's trust store once, so `pip` and
+  `curl` on that machine trust every cert it issues with no flags. A mkcert
+  cert is not valid on any other machine, which is what you want for local
+  testing.
 - Otherwise a self-signed `openssl` cert, which clients would refuse. The
-  script adds the `cafile=` and `cert=` lines pointing at it to the npm and
-  pip config for you. Force this with `--self-signed`.
+  script adds a `cert=` line pointing at it to the pip config for you. Force
+  this with `--self-signed`.
+
+Either way, Node does not read the machine's trust store, so npm, bun and
+corepack need the authority named separately. The script copies it to
+`/etc/probation/tls/ca.pem` and points `NODE_EXTRA_CA_CERTS` at it, which adds
+it to the authorities Node trusts. It does not use npm's `cafile=`: that
+*replaces* Node's list, so npm could then reach nothing else over TLS, such as
+a scoped private registry. An install that wrote `cafile=` into npm's
+machine-wide config has it removed on the next run; remove it from `~/.npmrc`
+yourself.
+
+- A system install writes `NODE_EXTRA_CA_CERTS` to `/etc/environment`, which
+  login sessions read from the next login. Shells already open need
+  `export NODE_EXTRA_CA_CERTS=/etc/probation/tls/ca.pem`. A personal install
+  prints that line for your own shell profile instead.
+- Node trusts only one such file. If `/etc/environment` already names another
+  (a corporate proxy's CA, say), the script leaves it and prints how to combine
+  the two.
+- systemd services and CI runners do not read `/etc/environment`. One that runs
+  npm needs `Environment=NODE_EXTRA_CA_CERTS=/etc/probation/tls/ca.pem` in its
+  unit.
+- A `NODE_EXTRA_CA_CERTS` you set yourself, in `~/.profile` for instance,
+  overrides this one.
 
 Run `scripts/install-local.sh --help` for every flag.
 
@@ -495,7 +517,7 @@ you so.
 | --- | --- | --- |
 | npm, npx | Yes | Nothing more. |
 | pnpm | Yes, it reads `.npmrc` | Nothing more. |
-| bun | Only from `~/.npmrc` or a project's `.npmrc`, not the machine-wide npmrc the installer writes | Put the same `registry=` (and `cafile=`) lines in `~/.npmrc`. |
+| bun | Only from `~/.npmrc` or a project's `.npmrc`, not the machine-wide npmrc the installer writes | Put the same `registry=` line in `~/.npmrc`. |
 | yarn 1 | New installs only | Rewrite each existing `yarn.lock` once (below). |
 | pip, pipx | Yes | Nothing more. |
 | uv | No | `uv.toml`, plus a certificate from `mkcert` (below). |
@@ -543,8 +565,8 @@ With the self-signed certificate, also run
 
 **corepack** downloads yarn and pnpm themselves from `registry.npmjs.org`.
 Set `COREPACK_NPM_REGISTRY=https://packages.example.org/npm` in the
-environment, and `NODE_EXTRA_CA_CERTS` to the certificate if it is
-self-signed.
+environment. It trusts this service's certificate through the same
+`NODE_EXTRA_CA_CERTS` the installer sets for npm.
 
 ## 8. Logs
 
