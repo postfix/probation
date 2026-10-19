@@ -229,7 +229,7 @@ if [ "$HAVE_NPM" -eq 1 ]; then
     fi
   } > "$TMP_NPMRC.new"
   run_priv mkdir -p "$(dirname "$NPMRC")"
-  run_priv cp "$TMP_NPMRC.new" "$NPMRC"
+  run_priv install -m 644 "$TMP_NPMRC.new" "$NPMRC"
   rm -f "$TMP_NPMRC" "$TMP_NPMRC.new"
 else
   echo "==> Skipping npm config: no npm found for $REAL_USER"
@@ -255,7 +255,7 @@ with open(path, "w") as f:
     config.write(f)
 EOF
   run_priv mkdir -p "$(dirname "$PIP_CONF")"
-  run_priv cp "$TMP_PIP" "$PIP_CONF"
+  run_priv install -m 644 "$TMP_PIP" "$PIP_CONF"
   rm -f "$TMP_PIP"
 else
   echo "==> Skipping pip config: no pip found for $REAL_USER"
@@ -272,10 +272,15 @@ fi
 # who runs the service.
 #
 # npmrc/pip.conf are NOT included here: they are the machine's global config,
-# so staying root-owned (their normal state on any system) is correct.
+# so staying root-owned (their normal state on any system) is correct. They and
+# the unit files are written with `install -m 644`, not `cp` of a `mktemp` file:
+# that would leave them 0600, and pip silently ignores a config it cannot read.
 if [ "$SYSTEM_INSTALL" -eq 1 ]; then
   run_priv chown -R "root:$SERVICE_USER" "$ETC_DIR"
   run_priv chmod -R u=rwX,g=rX,o= "$ETC_DIR"
+  # The certificate is public, and every user's npm and pip read it as their CA.
+  run_priv chmod o+x "$ETC_DIR" "$ETC_DIR/tls"
+  run_priv chmod o+r "$CERT"
   run_priv chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
   run_priv chmod 700 "$DATA_DIR"
 elif [ "$(id -u)" -eq 0 ] && [ "$REAL_USER" != "root" ]; then
@@ -320,7 +325,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 Storage=persistent
 SystemMaxUse=200M
 EOF
-  run_priv cp "$TMP_JOURNALD_NS" "$JOURNALD_NS_CONF"
+  run_priv install -m 644 "$TMP_JOURNALD_NS" "$JOURNALD_NS_CONF"
   rm -f "$TMP_JOURNALD_NS"
 
   UNIT_FILE="/etc/systemd/system/probation.service"
@@ -343,7 +348,7 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  run_priv cp "$TMP_UNIT" "$UNIT_FILE"
+  run_priv install -m 644 "$TMP_UNIT" "$UNIT_FILE"
   rm -f "$TMP_UNIT"
   run_priv systemctl daemon-reload
   run_priv systemctl enable probation.service >/dev/null
