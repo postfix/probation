@@ -14,11 +14,12 @@ mod common;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::{
     FakeAnswer, FakeRegistry, TestClock, TestServer, artifact_path, config_with_open_blocklist,
     npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path, publish_blocklist,
-    snapshot_with,
+    snapshot_with, wait_until,
 };
 use probation::artifacts::content::{ContentKey, ContentStore, SyncStep};
 use probation::config::Config;
@@ -400,6 +401,20 @@ async fn a_cached_object_of_the_wrong_size_is_removed_with_its_mapping() {
     .await;
     let path = harness.artifact_path().await;
     assert_eq!(harness.server.get(&path).await.status().as_u16(), 200);
+    // SPEC §10 never evicts an open file, and the response above can still hold this
+    // one open after its status arrives.
+    let key = harness
+        .reference(&path)
+        .await
+        .content_key
+        .expect("the body is cached");
+    // No `App` handle outlives the wait: shutdown drops the last one to stop the store.
+    wait_until(
+        "the first response released the file",
+        Duration::from_secs(5),
+        || harness.server.app().content.open_count(&key) == 0,
+    )
+    .await;
 
     std::fs::write(harness.body_object(), "short").expect("the object is truncated");
     harness.registry.go_offline();
