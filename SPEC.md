@@ -246,6 +246,8 @@ Artifacts are served under the same path prefix as the ecosystem's metadata beca
 
 `reference_id` is a SHA-256 digest of an unambiguous, length-prefixed encoding of the exact artifact reference. It is a lookup key, not a content hash or authorization token. Persist its record before advertising the URL. The filename preserves the original extension and wheel name. The server looks up the record; it never constructs an upstream URL from an arbitrary client URL parameter.
 
+npm tarballs are also served at upstream's own path, `/npm/{package}/-/{filename}`, because that is what an existing lockfile names: npm rewrites only the host of a `resolved` URL to the configured registry. The server finds the reference the current upstream snapshot advertises under that filename and then decides exactly as for the reference-id URL. A filename that no reference, or more than one, is advertised under is not found. npm 11 and later leave the registry path off a URL whose path already starts with it, so the package named `npm` is asked for at `/npm/-/npm-{version}.tgz`, the one path under npm's `-` namespace that is served.
+
 The ecosystem in the URL is part of what the client is asserting, and it is checked the same way: the server compares it with the stored record's own ecosystem and answers `404` on a mismatch, on every method and for a byte range as well as a whole body. Because the reference id is derived from public metadata and is not an authorization token, an unchecked ecosystem segment would let a valid reference be served, and logged, under an ecosystem that did not decide it.
 
 Every artifact request must confirm that the reference is still advertised by a sufficiently fresh upstream project snapshot, pass the current blocklist/age checks, and then use the flow below. A removed reference is unavailable even if its bytes remain cached. Perform locally conclusive denials first: a known malware block or expired blocklist must not wait for upstream metadata. Local absence of a denial does not authorize delivery.
@@ -352,6 +354,7 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | `GET /pypi/simple/` | Known-project index. |
 | `GET /pypi/simple/{project}/` | Filtered HTML or JSON file listing. |
 | `GET, HEAD /npm/artifacts/{reference_id}/{filename}` | Verified artifact delivery for an npm reference. |
+| `GET, HEAD /npm/{package}/-/{filename}` | The same delivery, at upstream's tarball path, for lockfiles. |
 | `GET, HEAD /pypi/artifacts/{reference_id}/{filename}` | Verified artifact delivery for a PyPI reference. |
 | `GET /health/live` | Process liveness. |
 | `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. |
@@ -387,7 +390,7 @@ audit=false
 index-url = https://packages.example.org/pypi/simple/
 ```
 
-These configure cooperative clients. Enforced use requires network policy that prevents direct public-registry downloads and a controlled cache policy. Alternate indexes, Git/URL dependencies, local wheels, preexisting caches, and installer-initiated network downloads are outside registry-proxy coverage. Existing lockfiles containing direct upstream URLs must be assessed during deployment; never claim that changing one registry setting rewrites every lockfile URL.
+These configure cooperative clients. Enforced use requires network policy that prevents direct public-registry downloads and a controlled cache policy. Alternate indexes, Git/URL dependencies, local wheels, preexisting caches, and installer-initiated network downloads are outside registry-proxy coverage. Existing lockfiles containing direct upstream URLs must be assessed during deployment; never claim that changing one registry setting rewrites every lockfile URL. npm lockfiles naming `registry.npmjs.org` are covered, because npm rewrites their host. yarn 1 never rewrites a lockfile's hosts, so its `registry.yarnpkg.com` URLs must be rewritten to the firewall once per project.
 
 Log request ID, ecosystem, package/version when known, policy result, reason, blocklist revision, cache status, duration, and bytes served. Never log credentials. Emit counts and timing summaries periodically to stdout; no separate metrics service is required for the MVP.
 

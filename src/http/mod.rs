@@ -30,7 +30,8 @@ use crate::http::error::ApiError;
 /// fetch for a package called `-`. SPEC §6: "Unsupported API routes receive an
 /// explicit error and are never blindly forwarded." A static segment outranks a
 /// capture in the router, so `ping` is served and everything else under `-` is refused
-/// without a lookup.
+/// without a lookup, bar the tarball of the package named `npm`
+/// ([`artifact_routes::serve_npm_namespace`]).
 ///
 /// Artifacts are served under each ecosystem's own root rather than a root of their
 /// own, because npm 12 refuses a tarball whose path does not start with the
@@ -45,7 +46,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/health/delivery", get(health::delivery))
         .route("/npm/-/ping", get(npm_routes::ping))
         .route("/npm/-", get(unknown_route))
-        .route("/npm/-/{*rest}", get(unknown_route))
+        .route("/npm/-/{*rest}", get(artifact_routes::serve_npm_namespace))
         .route("/npm/{package}", get(npm_routes::package))
         .route(
             "/npm/{package}/{version_or_tag}",
@@ -67,6 +68,16 @@ pub fn router(app: Arc<App>) -> Router {
         .route(
             "/pypi/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_pypi).head(artifact_routes::serve_pypi),
+        )
+        // Upstream's own tarball paths, which existing lockfiles name.
+        .route(
+            "/npm/{package}/-/{filename}",
+            get(artifact_routes::serve_npm_upstream).head(artifact_routes::serve_npm_upstream),
+        )
+        .route(
+            "/npm/{scope}/{package}/-/{filename}",
+            get(artifact_routes::serve_npm_upstream_scoped)
+                .head(artifact_routes::serve_npm_upstream_scoped),
         )
         .fallback(unknown_route)
         .method_not_allowed_fallback(unsupported_method)

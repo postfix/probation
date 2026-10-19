@@ -762,6 +762,54 @@ async fn npm_ci_succeeds_on_an_allowed_lockfile() {
     harness.shutdown().await;
 }
 
+/// Most projects' lockfiles were made against the public registry, so every
+/// `resolved` URL names `registry.npmjs.org`. npm rewrites only the host of such a URL
+/// to the configured registry (`replace-registry-host` defaults to `npmjs`), so it
+/// asks this instance for upstream's own tarball path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "spawns the real npm client"]
+async fn npm_ci_installs_a_lockfile_made_against_the_public_registry() {
+    let workspace = tempfile::tempdir().expect("a client workspace");
+    let harness = Harness::start("").await;
+
+    let seed = Project::new(workspace.path(), "seed", "^1.0.0");
+    let installed = harness.npm(&seed, &["install", "--audit=false"]);
+    assert!(
+        installed.status.success(),
+        "the seed install failed: {}",
+        stderr(&installed)
+    );
+
+    let mut lockfile: Value =
+        serde_json::from_str(&read(&seed.lockfile())).expect("the lockfile is JSON");
+    for (key, entry) in lockfile["packages"]
+        .as_object_mut()
+        .expect("a lockfile v3 package map")
+    {
+        let Some(resolved) = entry.get("resolved").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = key.trim_start_matches("node_modules/");
+        let filename = resolved.rsplit('/').next().expect("a tarball filename");
+        entry["resolved"] = json!(format!("https://registry.npmjs.org/{name}/-/{filename}"));
+    }
+    let public = serde_json::to_string_pretty(&lockfile).expect("the lockfile serialises");
+    assert!(public.contains("https://registry.npmjs.org/fixture-widget/-/"));
+
+    let project = Project::new(workspace.path(), "public", "^1.0.0");
+    std::fs::write(project.lockfile(), &public).expect("the lockfile is written");
+
+    let output = harness.npm(&project, &["ci", "--audit=false"]);
+    assert!(
+        output.status.success(),
+        "npm ci failed on a lockfile made against the public registry: {}",
+        stderr(&output)
+    );
+    assert_eq!(project.installed_version(), OLD);
+
+    harness.shutdown().await;
+}
+
 /// SPEC §2: "Frozen lockfile references a blocked artifact → refuse the download.
 /// Updating the lockfile is a separate client operation." The install fails and the
 /// lockfile is byte-identical afterwards.
