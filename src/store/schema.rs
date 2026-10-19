@@ -5,10 +5,10 @@
 //! engine/crate version used by this build". The two are treated differently on
 //! purpose:
 //!
-//! * a **schema version** mismatch is refused. This release cannot read another
-//!   schema's rows, and SPEC §10 forbids recreating the database to get past that,
-//!   so the only safe answer is to keep the bytes and report why the store is
-//!   unusable.
+//! * a **schema version** mismatch is refused, except v0.1.0's version 4, which is
+//!   upgraded in place. This release cannot read another schema's rows, and SPEC
+//!   §10 forbids recreating the database to get past that, so the only safe answer
+//!   is to keep the bytes and report why the store is unusable.
 //! * an **engine version** change is recorded and logged rather than refused. The
 //!   pinned engine is pre-1.0 and will move; refusing to open a database after a
 //!   dependency bump would turn every upgrade into an outage, while losing the note
@@ -20,10 +20,9 @@ use turso::transaction::Transaction;
 
 use std::fmt;
 
-/// The version of the tables below. Slices that add tables bump it, and a database
-/// written by a different version is refused rather than migrated: there is no
-/// deployed database to migrate (SPEC §10), and the first release that needs one
-/// will add a real migration step here.
+/// The version of the tables below. Slices that add tables bump it. Version 4,
+/// which v0.1.0 shipped, is upgraded in place by `ensure_in`; any other version is
+/// refused rather than guessed at.
 pub const SCHEMA_VERSION: i64 = 5;
 
 /// The `turso` release this build was compiled against, recorded so a diagnosis can
@@ -147,6 +146,21 @@ async fn ensure_in(transaction: &Transaction<'_>) -> Result<(), SchemaError> {
     drop(rows);
 
     match recorded {
+        // v0.1.0's version 4 lacks only the content-key index, which the DDL above has
+        // just created inside this transaction.
+        Some((4, _)) => {
+            tracing::info!(
+                from = 4,
+                to = SCHEMA_VERSION,
+                "upgrading the database schema"
+            );
+            transaction
+                .execute(
+                    "UPDATE schema_meta SET schema_version = ?1, engine_version = ?2 WHERE id = 1",
+                    (SCHEMA_VERSION, TURSO_CRATE_VERSION),
+                )
+                .await?;
+        }
         // A database this build did not write. Refuse, and change nothing: the
         // transaction, tables and all, is rolled back on the way out.
         Some((version, _)) if version != SCHEMA_VERSION => {
@@ -319,6 +333,90 @@ mod tests {
             tables,
             vec![Some("blocklist".to_owned()), Some("schema_meta".to_owned())],
             "and nothing this build would have created was"
+        );
+    }
+
+    /// v0.1.0 wrote version 4, which is version 5 without the content-key index. Its
+    /// database is upgraded in place, and the pins and first-seen times SPEC §10
+    /// calls irreplaceable come through unchanged.
+    #[tokio::test]
+    async fn a_version_4_database_is_upgraded_with_its_records_intact() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("firewall.db");
+
+        let content_index = "CREATE INDEX IF NOT EXISTS artifact_references_by_content\n    \
+                             ON artifact_references (content_key);\n";
+        let version_4 = DDL.replace(content_index, "");
+        assert_ne!(
+            version_4, DDL,
+            "the fixture lacks exactly the version 5 index"
+        );
+
+        let mut connection = open(&path).await;
+        connection
+            .execute_batch(&version_4)
+            .await
+            .expect("v0.1.0's tables");
+        for statement in [
+            "INSERT INTO schema_meta (id, schema_version, engine_version) VALUES (1, 4, '0.7.2')",
+            "INSERT INTO artifact_references (id, ecosystem, name, version, filename, \
+             upstream_url, expected, first_seen_micros, pinned_sha256, pinned_size) \
+             VALUES (x'01', 'npm', 'widget', '1.0.0', 'widget-1.0.0.tgz', \
+             'https://registry.npmjs.org/widget/-/widget-1.0.0.tgz', '[]', 1234, x'abcd', 7)",
+        ] {
+            connection
+                .execute(statement, ())
+                .await
+                .expect("v0.1.0's rows");
+        }
+
+        ensure(&mut connection)
+            .await
+            .expect("version 4 is upgraded");
+
+        let mut rows = connection
+            .query("SELECT schema_version FROM schema_meta WHERE id = 1", ())
+            .await
+            .expect("the schema row");
+        let row = rows.next().await.expect("a row").expect("exactly one row");
+        assert_eq!(
+            row.get_value(0).expect("a value").as_integer().copied(),
+            Some(SCHEMA_VERSION)
+        );
+        drop(rows);
+
+        let mut rows = connection
+            .query(
+                "SELECT first_seen_micros, pinned_sha256, pinned_size FROM artifact_references",
+                (),
+            )
+            .await
+            .expect("the reference");
+        let row = rows.next().await.expect("a row").expect("exactly one row");
+        assert_eq!(
+            row.get_value(0).expect("a value").as_integer().copied(),
+            Some(1234)
+        );
+        assert_eq!(
+            row.get_value(1).expect("a value").as_blob().cloned(),
+            Some(vec![0xab, 0xcd])
+        );
+        assert_eq!(
+            row.get_value(2).expect("a value").as_integer().copied(),
+            Some(7)
+        );
+        drop(rows);
+
+        let mut rows = connection
+            .query(
+                "SELECT name FROM sqlite_schema WHERE name = 'artifact_references_by_content'",
+                (),
+            )
+            .await
+            .expect("the schema listing");
+        assert!(
+            rows.next().await.expect("a row").is_some(),
+            "and the index version 5 adds is there"
         );
     }
 

@@ -169,8 +169,9 @@ content hash and cannot go stale.
 
 > **Upgrading:** this release bumped the database schema version to 5 (it
 > indexes the cached-file mapping, so evicting files stays fast on a large
-> cache). A database made by an older build, including v0.1.0's version 4,
-> **will not open**. The service refuses it rather than guess at a migration.
+> cache). v0.1.0's version 4 is upgraded in place on first start, keeping
+> every pinned hash and first-seen time. Any other version is refused rather
+> than guessed at. See section 5, "Upgrading".
 
 ## 4. The blocklist
 
@@ -312,6 +313,53 @@ anything else. The WAL file is your real data.
 If another process holds the lock on the data folder, `serve` reports that
 and exits.
 
+### Upgrading
+
+Stop the service, replace the binary, start it again. On its first start a
+new release upgrades the database in place when it knows how. v0.1.0's schema
+(version 4) becomes version 5, with every pinned hash, first-seen time and the
+blocklist revision kept. A database from any other version is refused and left
+untouched, as described under "If recovery fails" above.
+
+An upgraded database does not open in the older release. Keep the old binary
+and a backup of `state/` until you are sure you will not roll back.
+
+1. **Back up** the config, the blocklist, and the whole `state/` folder, with
+   the service stopped (see "How to back it up"). Keep a copy of the old
+   binary too.
+2. **Get the new binary**, any one of:
+   - `cargo install probation --locked`, which puts it in `~/.cargo/bin`
+   - the archive for your platform from the GitHub release, checked against
+     its `.sha256`
+   - `cargo build --release --locked` in a checkout of the release tag
+3. **Install it where the service runs it from**, for example
+   `sudo install -m 755 probation /usr/local/bin/probation`. With Docker,
+   build the new image and start a new container on the same data folder.
+4. **Check the config** with the new binary:
+   `probation check-config /etc/probation/config.toml`.
+5. **Start the service** and wait for `/health/ready` to return `200`. The
+   log says `upgrading the database schema`, with `from` and `to`, on the
+   first start only.
+
+To roll back: stop the service, put the old binary back, restore the `state/`
+backup from step 1, and start it.
+
+**If you installed v0.1.0 with `scripts/install-local.sh`:** that version ran
+the service as your login user. To move to the dedicated `probation` account
+(section 6), do steps 1–3 above, then re-run `sudo scripts/install-local.sh`
+with the same options you used before (`--etc-dir`, `--data-dir`, `--host`, …). Two things
+to know first:
+
+- It **replaces `config.toml` and `blocklist.json`** with the samples. Copy
+  yours back afterwards (as root, since the folder then belongs to root) and
+  restart the service.
+- Under `sudo` it runs whatever `probation` it finds first, normally
+  `/usr/local/bin/probation`. That is why step 3 has to come first: otherwise
+  the service keeps running the old release.
+
+Check that the service account is in use with
+`ps -o user= -p "$(pgrep -x probation)"`, which should print `probation`.
+
 ## 6. TLS, and the one job a reverse proxy still has
 
 ### TLS is built in
@@ -345,9 +393,9 @@ ones you can create yourself (`--etc-dir`/`--data-dir` under your home), it is a
 personal install and everything runs as you.
 
 **Upgrading from an earlier install:** it gave both directories to your login
-user. Re-run the script with `sudo`, or fix ownership by hand, to get the
-separation above. It picks the best certificate
-tool available:
+user. Section 5, "Upgrading", has the steps to get the separation above.
+
+The script picks the best certificate tool available:
 
 - [`mkcert`](https://github.com/FiloSottile/mkcert), if installed. This adds a
   local certificate authority to the machine's trust store once, so every cert
