@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }} · Probation</title>
+<link rel="stylesheet" href="/static/portal.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<header class="top">
+<b>Probation</b>
+{% if let Some(top) = top %}
+{% if !top.places.is_empty() %}
+<form method="get" action="/account" class="switch">
+<label for="place-switcher">Place</label>
+<select id="place-switcher" name="place">{% for place in top.places %}<option>{{ place }}</option>{% endfor %}</select>
+<button type="submit">Switch</button>
+</form>
+{% endif %}
+<span>{{ top.name }}</span>
+<form method="post" action="/signout" class="inline">
+<input type="hidden" name="csrf" value="{{ top.csrf }}">
+<button type="submit" class="link">Sign out</button>
+</form>
+{% endif %}
+</header>
+{% if top.is_some() %}
+<nav aria-label="Portal"><a href="/account" aria-current="page">Account</a></nav>
+{% endif %}
+<main id="main">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

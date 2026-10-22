@@ -1,0 +1,13 @@
+{
+  "name": "probation-portal-a11y",
+  "private": true,
+  "description": "A11Y-axe: signs in through the portal's real form with Playwright Chromium and runs axe-core on each page of a slice.",
+  "type": "module",
+  "scripts": {
+    "slice5": "node axe.mjs --slice 5"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "playwright": "1.64.1"
+  }
+}

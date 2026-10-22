@@ -2,10 +2,12 @@
 //! tenancy and audit on Postgres (02-architecture.md § Fit, C97). A library, so its
 //! tests call internal functions; `main.rs` is a thin binary over it.
 
+pub mod accounts;
 pub mod audit;
 pub mod fleet;
 pub mod keys;
 pub mod policy;
+pub mod portal;
 pub mod sync;
 pub mod tenancy;
 
@@ -25,6 +27,9 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub server: ServerConfig,
+    /// The self-service portal; without it the server answers only the sync API.
+    #[serde(default)]
+    pub portal: Option<portal::PortalConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -72,9 +77,13 @@ pub async fn migrate(owner: &PgPool) -> Result<(), sqlx::migrate::MigrateError> 
     sqlx::migrate!("./migrations").run(owner).await
 }
 
-/// Serves the sync API on `config.server.listen` until the process is stopped, and
-/// prunes `change_log` once an hour.
-pub async fn serve(config: Config, pool: PgPool) -> std::io::Result<()> {
+/// Serves the sync API, and the portal when `portal` is given, on `config.server.listen`
+/// until the process is stopped, and prunes `change_log` once an hour.
+pub async fn serve(
+    config: Config,
+    pool: PgPool,
+    portal: Option<portal::PortalDeps>,
+) -> std::io::Result<()> {
     let retention = config.server.change_log_retention_days;
     let pruner = pool.clone();
     tokio::spawn(async move {
@@ -88,9 +97,13 @@ pub async fn serve(config: Config, pool: PgPool) -> std::io::Result<()> {
     });
     let listener = tokio::net::TcpListener::bind(config.server.listen).await?;
     let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies));
+    let mut router = build_router(state);
+    if let Some(deps) = portal {
+        router = router.merge(portal::Portal::launch(deps));
+    }
     axum::serve(
         listener,
-        build_router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
 }

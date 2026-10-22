@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Account settings</h1>
+<p class="mut">Settings for your login. They are the same whichever place is selected at the top.</p>
+
+<section aria-labelledby="methods-heading">
+<h2 id="methods-heading">Sign-in methods</h2>
+<p>These are the ways you can sign in to this login.</p>
+{% if let Some(error) = methods_error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<div class="wrap"><table>
+<caption class="mut">Sign-in methods of this login</caption>
+<thead><tr><th scope="col">Method</th><th scope="col">Email it uses</th><th scope="col">Linked</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for method in methods %}
+<tr><td>{{ method.label() }}</td><td>{{ method.email }}</td><td>{{ method.linked }}</td>
+<td><form method="post" action="/account/methods/{{ method.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove {{ method.label() }} {{ method.email }}">Remove</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+<h3>Link another sign-in method</h3>
+<div class="row">
+{% for provider in providers %}<form method="post" action="/account/link/{{ provider.name }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Link {{ provider.label }}</button></form>
+{% endfor %}
+</div>
+<form method="post" action="/account/link/sso" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="sso-org">Organisation name</label>
+<input id="sso-org" name="name" autocomplete="organization">
+<button type="submit">Link company SSO</button>
+</form>
+<p class="mut">You can remove a method while another stays linked. The last one cannot be removed; to remove it, delete your login.</p>
+<p class="mut">You can link a method only while you are signed in, as you are now. It then joins this login. Matching emails never merge logins: a method you have not linked here signs in to a separate login, even when its email is the same as one above.</p>
+</section>
+
+{% if has_password %}
+<section aria-labelledby="password-heading">
+<h2 id="password-heading">Password</h2>
+{% if let Some(error) = password_error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/account/password">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="current">Current password</label>
+<input id="current" type="password" name="current" autocomplete="current-password" required>
+<label for="new">New password <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<input id="new" type="password" name="new" autocomplete="new-password" required minlength="12">
+<label for="again">New password again</label>
+<input id="again" type="password" name="again" autocomplete="new-password" required minlength="12">
+<button type="submit" class="pri">Change password</button>
+</form>
+</section>
+{% endif %}
+
+<section aria-labelledby="totp-heading">
+<h2 id="totp-heading">Authenticator app</h2>
+{% if totp_on %}
+<p class="good">Authenticator app: on</p>
+{% if totp_required %}
+<p class="row"><button type="button" disabled>Turn off</button> <span class="mut">Org admins and global admins cannot turn it off.</span></p>
+{% else %}
+<form method="post" action="/account/totp/disable">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Turn off</button>
+</form>
+{% endif %}
+{% else %}
+<p>Authenticator app: off. Turn it on to be asked for a 6-digit code from your phone each time you sign in with your email and password.</p>
+<form method="post" action="/account/totp/setup">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="pri">Turn on</button>
+</form>
+{% endif %}
+</section>
+
+<section aria-labelledby="places-heading">
+<h2 id="places-heading">Your places</h2>
+{% if let Some(error) = places_error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<h3>Create an organisation</h3>
+<form method="post" action="/account/org" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="org-name">Organisation name</label>
+<input id="org-name" name="name" required maxlength="100">
+<button type="submit" class="pri">Create organisation</button>
+</form>
+<p class="mut">You become its org admin and invite the others.</p>
+<h3>Personal account</h3>
+{% match personal %}
+{% when Personal::None %}
+<form method="post" action="/account/personal">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<p>You do not have a personal account. It is free, just for you, with your own rules on top of the platform rules.</p>
+<button type="submit" class="pri">Add a personal account</button>
+</form>
+{% when Personal::Live { with_login } %}
+<p>You have a personal account.</p>
+{% when Personal::Deleted { on, until } %}
+<p class="err">Your personal account was deleted on {{ on }}. It will be erased for good on {{ until }}.</p>
+<form method="post" action="/account/personal/restore">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="pri">Restore personal account</button>
+</form>
+<p>After a restore your keys work again within about 1 minute.</p>
+{% endmatch %}
+</section>
+
+{% if let Some(error) = delete_error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% match personal %}
+{% when Personal::Live { with_login } %}
+<section aria-labelledby="delete-personal-heading">
+<h2 id="delete-personal-heading">Delete your personal account</h2>
+<p>Your personal account's keys stop working within about 1 minute. Everything else in it is erased after 30 days; until then you can restore it here in Account settings. The audit log is kept for its normal retention.</p>
+{% if *with_login %}
+<p>Your login belongs to no organisation, so it is deleted together with its personal account. To restore both within the same 30 days, sign in again with any of its old sign-in methods and choose "Restore login".</p>
+{% else %}
+<p>Your login stays, because it still belongs to an organisation.</p>
+{% endif %}
+<form method="post" action="/account/personal/delete">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="confirm-personal">Type <b>delete</b> to confirm</label>
+<input id="confirm-personal" name="confirm" autocomplete="off">
+<button type="submit" class="danger">Delete personal account</button>
+</form>
+</section>
+{% when _ %}
+{% endmatch %}
+{% if offer_login_delete %}
+<section aria-labelledby="delete-login-heading">
+<h2 id="delete-login-heading">Delete your login</h2>
+<p>This login has no personal account and belongs to no organisation. Deleting it stops all its sign-in methods from opening it. To restore it within 30 days, sign in again with any of those methods and choose "Restore login"; after 30 days it is erased for good. The audit log is kept for its normal retention.</p>
+<form method="post" action="/account/delete">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="confirm-login">Type <b>delete</b> to confirm</label>
+<input id="confirm-login" name="confirm" autocomplete="off">
+<button type="submit" class="danger">Delete your login</button>
+</form>
+</section>
+{% endif %}
+{% endblock %}

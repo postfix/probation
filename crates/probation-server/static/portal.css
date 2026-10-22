@@ -1,0 +1,38 @@
+/* The portal's only stylesheet: the mockups' look, served from 'self' (CSP, T13). */
+:root{--fg:#1d2329;--mut:#525c67;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--ok:#17702f;--focus:#c26a00}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.skip{position:absolute;left:-9999px;top:0;background:#fff;color:var(--acc);padding:8px}
+.skip:focus{left:8px;z-index:1}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}
+.top label{display:inline;margin:0 4px 0 0}
+.top form{display:inline-flex;gap:6px;align-items:center;margin:0}
+.top .link{color:#fff}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+section{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+button,.button{font:inherit;padding:4px 12px;border:1px solid #8a96a3;border-radius:4px;background:#fff;color:var(--fg);cursor:pointer;text-decoration:none;display:inline-block}
+button.link{border:0;background:none;padding:0;text-decoration:underline;color:var(--acc)}
+button:disabled{color:var(--mut);cursor:not-allowed}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%;border:1px solid #8a96a3;border-radius:3px}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.indent{margin-left:24px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.inline{display:inline}
+.qr{width:200px;height:200px;border:1px solid var(--line);background:#fff}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
