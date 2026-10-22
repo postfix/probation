@@ -211,11 +211,6 @@ impl Actor {
         }
     }
 
-    /// The global admin `admin bootstrap` has just created.
-    pub(crate) fn bootstrap(login_id: i32) -> Actor {
-        Actor::own_account(login_id, true)
-    }
-
     /// The automation token acting, if it is one.
     pub fn token(&self) -> Option<KeyId> {
         match self {

@@ -73,6 +73,10 @@ pub(super) enum Standing {
 #[derive(Default)]
 struct Invalidations {
     floor: u64,
+    /// Raised by every reset: an answer from an ask that started before one is dropped,
+    /// whatever its revision, since a server restored from a backup answers lower
+    /// revisions than before (C126).
+    epoch: u64,
     keys: HashMap<KeyId, Seen>,
     places: HashMap<PlaceRef, Seen>,
     limits: HashMap<(AccountKind, Option<u32>), Seen>,
@@ -118,6 +122,9 @@ pub(super) struct KeyCache {
     ttl: Duration,
     clock: Arc<dyn Clock>,
     invalidations: Mutex<Invalidations>,
+    /// How long an invalidation is remembered: as long as an answer read before it can
+    /// still arrive (X4), and at least one TTL.
+    records_for: Duration,
     /// Set by a failed call to the server, cleared by the next answered sync.
     down: AtomicBool,
 }
@@ -130,8 +137,21 @@ impl KeyCache {
             ttl,
             clock,
             invalidations: Mutex::new(Invalidations::default()),
+            records_for: ttl,
             down: AtomicBool::new(false),
         }
+    }
+
+    /// Remembers each invalidation for at least `longest_ask`, the longest a lookup and
+    /// its `layers` calls can be in flight.
+    pub(super) fn keeping_records_for(mut self, longest_ask: Duration) -> KeyCache {
+        self.records_for = self.ttl.max(longest_ask);
+        self
+    }
+
+    /// How long an invalidation is remembered.
+    pub(super) fn records_for(&self) -> Duration {
+        self.records_for
     }
 
     fn shard(&self, hash: &KeyHash) -> MutexGuard<'_, HashMap<KeyHash, Entry>> {
@@ -267,9 +287,29 @@ impl KeyCache {
     }
 
     /// A reset: every lookup answer read below `revision` is dropped.
-    pub(super) fn raise_invalidation_floor(&self, revision: u64) {
+    /// A reset: the answered revision becomes the floor, even when it is lower than
+    /// before, every record goes, and every ask in flight is from an older epoch (C126).
+    pub(super) fn reset_invalidations(&self, revision: u64) {
         let mut invalidations = self.invalidations();
-        invalidations.floor = invalidations.floor.max(revision);
+        let epoch = invalidations.epoch + 1;
+        *invalidations = Invalidations {
+            floor: revision,
+            epoch,
+            ..Invalidations::default()
+        };
+    }
+
+    /// The reset epoch an ask starts in.
+    pub(super) fn epoch(&self) -> u64 {
+        self.invalidations().epoch
+    }
+
+    /// Runs `keep` if no reset has happened since `epoch`, under the invalidations lock,
+    /// so a reset cannot land between the check and what `keep` stores. False when one
+    /// has, or when `keep` refuses.
+    pub(super) fn in_epoch(&self, epoch: u64, keep: impl FnOnce() -> bool) -> bool {
+        let invalidations = self.invalidations();
+        invalidations.epoch == epoch && keep()
     }
 
     pub(super) fn floor(&self) -> u64 {
@@ -282,11 +322,11 @@ impl KeyCache {
         if keys.is_empty() {
             return;
         }
-        {
-            let mut invalidations = self.invalidations();
-            for key in keys {
-                note(&mut invalidations.keys, *key, revision);
-            }
+        // Held until the entries are gone, so an insert checked against these records
+        // either sees them or lands before them (H6).
+        let mut invalidations = self.invalidations();
+        for key in keys {
+            note(&mut invalidations.keys, *key, revision);
         }
         self.each(|shard| {
             shard.retain(|_, entry| {
@@ -306,11 +346,9 @@ impl KeyCache {
         if places.is_empty() {
             return;
         }
-        {
-            let mut invalidations = self.invalidations();
-            for place in places {
-                note(&mut invalidations.places, *place, revision);
-            }
+        let mut invalidations = self.invalidations();
+        for place in places {
+            note(&mut invalidations.places, *place, revision);
         }
         let now = self.clock.now_monotonic();
         let named = |chain: &[PlaceRef]| chain.iter().any(|place| places.contains(place));
@@ -342,15 +380,13 @@ impl KeyCache {
         if changes.is_empty() {
             return;
         }
-        {
-            let mut invalidations = self.invalidations();
-            for change in changes {
-                note(
-                    &mut invalidations.limits,
-                    (change.scope_kind, change.scope_id),
-                    revision,
-                );
-            }
+        let mut invalidations = self.invalidations();
+        for change in changes {
+            note(
+                &mut invalidations.limits,
+                (change.scope_kind, change.scope_id),
+                revision,
+            );
         }
         self.each(|shard| {
             for entry in shard.values_mut() {
@@ -378,43 +414,54 @@ impl KeyCache {
 
     /// Whether a lookup answer was read after every invalidation that touches it.
     pub(super) fn is_current(&self, answer: &KeyLookup) -> bool {
+        current(&self.invalidations(), answer)
+    }
+
+    /// Caches `principal`, unless `answer`, the lookup it came from, is no longer
+    /// current: checked and inserted under the invalidations lock, so an invalidation
+    /// applied while its layers were fetched is never undone (H6).
+    pub(super) fn insert_current(
+        &self,
+        hash: KeyHash,
+        principal: Principal,
+        answer: &KeyLookup,
+        epoch: u64,
+    ) -> Insert {
         let invalidations = self.invalidations();
-        let (revision, key, chain, account) = match answer {
-            KeyLookup::Known {
-                key_id,
-                place_chain,
-                account,
-                revision,
-                ..
-            } => (*revision, Some(*key_id), &place_chain[..], Some(*account)),
-            KeyLookup::Revoked {
-                key_id,
-                place_chain,
-                revision,
-                ..
-            }
-            | KeyLookup::Suspended {
-                key_id,
-                place_chain,
-                revision,
-                ..
-            } => (*revision, Some(*key_id), &place_chain[..], None),
-            KeyLookup::Unknown { revision } => (*revision, None, &[][..], None),
-        };
-        if revision < invalidations.floor {
+        if invalidations.epoch != epoch || !current(&invalidations, answer) {
+            return Insert::Late;
+        }
+        if self.insert(hash, principal) {
+            Insert::Done
+        } else {
+            Insert::Full
+        }
+    }
+
+    /// [`KeyCache::refuse`], under the same rule as [`KeyCache::insert_current`].
+    pub(super) fn refuse_current(
+        &self,
+        hash: KeyHash,
+        unknown_for: Option<Duration>,
+        known: Option<KnownRefusal>,
+        answer: &KeyLookup,
+        epoch: u64,
+    ) -> bool {
+        let invalidations = self.invalidations();
+        if invalidations.epoch != epoch || !current(&invalidations, answer) {
             return false;
         }
-        let key_late = key.is_some_and(|key| after(&invalidations.keys, &key, revision));
-        let place_late = chain
-            .iter()
-            .any(|link| after(&invalidations.places, &link.place, revision));
-        let limit_late = account.is_some_and(|account| {
-            account_kind(account).is_some_and(|kind| {
-                after(&invalidations.limits, &(kind, None), revision)
-                    || after(&invalidations.limits, &(kind, Some(account.id)), revision)
-            })
-        });
-        !(key_late || place_late || limit_late)
+        self.refuse(hash, unknown_for, known);
+        true
+    }
+
+    /// Drops `hash`'s entry if it is still `key`'s live one.
+    pub(super) fn remove_live(&self, hash: &KeyHash, key: KeyId) {
+        let mut shard = self.shard(hash);
+        if matches!(shard.get(hash), Some(Entry::Live { principal, .. }) if principal.key_id == key)
+        {
+            shard.remove(hash);
+        }
     }
 
     /// After an answered sync only: entries unused for one TTL and refusals past their
@@ -439,11 +486,11 @@ impl KeyCache {
                 Entry::Refused { expires_at, .. } => now < *expires_at,
             });
         });
-        // An answer can only be late by the length of one call; a record older than a
-        // TTL guards nothing.
+        // An answer can only be late by as long as an ask can be in flight; a record
+        // older than that guards nothing.
         let mut invalidations = self.invalidations();
-        let ttl = self.ttl;
-        let young = |seen: &mut Seen| seen.at.elapsed() < ttl;
+        let kept = self.records_for;
+        let young = |seen: &mut Seen| seen.at.elapsed() < kept;
         invalidations.keys.retain(|_, seen| young(seen));
         invalidations.places.retain(|_, seen| young(seen));
         invalidations.limits.retain(|_, seen| young(seen));
@@ -505,6 +552,57 @@ impl KeyCache {
             },
         );
     }
+}
+
+/// Whether `answer` was read after every invalidation in `invalidations` that touches
+/// it: its key, a place of its chain, its account's limits, and the reset floor.
+fn current(invalidations: &Invalidations, answer: &KeyLookup) -> bool {
+    let (revision, key, chain, account) = match answer {
+        KeyLookup::Known {
+            key_id,
+            place_chain,
+            account,
+            revision,
+            ..
+        } => (*revision, Some(*key_id), &place_chain[..], Some(*account)),
+        KeyLookup::Revoked {
+            key_id,
+            place_chain,
+            revision,
+            ..
+        }
+        | KeyLookup::Suspended {
+            key_id,
+            place_chain,
+            revision,
+            ..
+        } => (*revision, Some(*key_id), &place_chain[..], None),
+        KeyLookup::Unknown { revision } => (*revision, None, &[][..], None),
+    };
+    if revision < invalidations.floor {
+        return false;
+    }
+    let key_late = key.is_some_and(|key| after(&invalidations.keys, &key, revision));
+    let place_late = chain
+        .iter()
+        .any(|link| after(&invalidations.places, &link.place, revision));
+    let limit_late = account.is_some_and(|account| {
+        account_kind(account).is_some_and(|kind| {
+            after(&invalidations.limits, &(kind, None), revision)
+                || after(&invalidations.limits, &(kind, Some(account.id)), revision)
+        })
+    });
+    !(key_late || place_late || limit_late)
+}
+
+/// What [`KeyCache::insert_current`] did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Insert {
+    Done,
+    /// The answer was read before an invalidation applied since.
+    Late,
+    /// The cache is full while the server is down.
+    Full,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -692,6 +790,12 @@ impl Policies {
         for place in places {
             note(&mut layers.invalidated, *place, revision);
         }
+    }
+
+    /// Whether a layer of `chain` is held stale: a `layer` row arrived after it was read.
+    pub(super) fn any_stale(&self, chain: &[PlaceRef]) -> bool {
+        let layers = lock(&self.layers);
+        chain.iter().any(|place| layers.is_stale(place))
     }
 
     /// The held layers a `layer` row made stale.
@@ -1131,7 +1235,7 @@ mod tests {
         cache.update_limits(&[change(Some(10))], 11);
         assert!(!cache.is_current(&known(3, acme, 10)), "its own limit");
         assert!(cache.is_current(&known(3, acme, 11)));
-        cache.raise_invalidation_floor(20);
+        cache.reset_invalidations(20);
         assert!(
             !cache.is_current(&KeyLookup::Unknown { revision: 19 }),
             "the floor"

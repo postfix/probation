@@ -1,0 +1,12 @@
+# Slice 5 evidence — sign-up, verification, sign-in (password, OAuth, SSO), linking, TOTP, delete/restore in the portal
+
+Started 2026-10-22 at the user's request ("start slice 5 in parallel too"), in worktree ../probation-slice5 (branch `management-server-slice5`), from `management-server-slice4` at d148f8a (slices 1–4, with the slice-4 review fixes; slice 3's review fixes are still pending). It is built in parallel with the slice 3/4 review fixes and merged after them.
+
+## Decisions and deviations
+| ID | Status | Item | Decision |
+|---|---|---|---|
+| S5-1 | process | The user asked to start slice 6 in parallel. Slice 6 edits slice 5's new files (accounts.rs, portal/mod.rs, axe.mjs, seed.sql) and signs in through slice 5's portal. | Slice 5 lands its portal foundation first (router, sessions, CSRF, base template, password sign-in, tests) and reports a CHECKPOINT. I commit it, and slice 6 branches from that commit. After that the foundation's API stays stable. |
+| S5-2 | decision C127 | A taken organisation name is refused at sign-up, which reveals that the organisation exists. | User: accept, like A3. |
+| S5-3 | decision C128 | SSO join timing. | User: an SSO user joins at sign-in; a removed member is not re-added by SSO (current behaviour). |
+| S5-4 | to slice 6 | T-portal-unverified-blocked holds only structurally: an unconfirmed login has no place. If slice 6 lets an unconfirmed login gain a place (for example by invitation), add a verification check in tenancy.rs. | Sent to slice 6. |
+| S5-5 | for review | Deviations: OIDC through `jsonwebtoken` with hand-written discovery, PKCE, state, nonce and issuer checks, and GitHub OAuth by hand (not `openidconnect`); the portal's client-IP code copies `sync::source_address` (merge after slices land); PROBATION_SERVER_SESSION_KEY unused (sessions are random ids stored hashed); backup codes are HMAC-SHA256 under a key derived from SECRET_KEY, not Argon2; a sent mail's body is wiped; TOTP throttle is 5 failures per 15 min, and a throttled sign-in answers 429 identically for known and unknown emails; `GuardedClient::allowing_loopback_for_tests()` is hidden-public; axum `form`/`query` features added; purge runs one transaction per login, and erasing a global admin who owns slice 6/7 rows will fail (slices 6/7 decide); the place switcher does nothing until slice 6; the A11Y-keyboard checklist is in tdd-slice-5.md; tests/a11y/node_modules must not be committed (needs a .gitignore entry). | Reviewers judge. |

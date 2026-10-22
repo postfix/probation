@@ -5,7 +5,7 @@
 mod common;
 
 use std::num::NonZeroU32;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use common::{Db, client, post};
 use ipnet::IpNet;
@@ -82,6 +82,7 @@ fn event(n: usize, key_id: KeyId, place: PlaceRef) -> ActivityEvent {
         layer: ActivityLayer::Layer(LayerKind::Org),
         client_ip: None,
         eligible_at: None,
+        at: None,
     }
 }
 
@@ -307,15 +308,78 @@ async fn t_sync_api_contract() {
     // A cursor above the log, as after the database was restored from a backup: the
     // reset is answered at or above the cursor, so the firewall's invalidation floor
     // never outruns the server and the next lookup is still served (R3).
-    let ahead = revision + 100;
-    let restored = changes(&url, token, ahead).await;
-    assert!(restored.reset, "{restored:?}");
-    assert!(restored.revision >= ahead, "{restored:?}");
-    match sync.lookup(KeyHash::of(&live.secret)).await.unwrap() {
-        KeyLookup::Known { revision, .. } => assert!(revision >= ahead, "read at {revision}"),
-        other => panic!("{other:?}"),
+    // C126: a cursor above the server's revision (the database was restored from a
+    // backup) is reset at the server's current revision, and a `changes` call never
+    // moves the revision or `pruned_through`.
+    let counter = || async {
+        sqlx::query_as::<_, (i64, i64)>("SELECT value, pruned_through FROM change_counter")
+            .fetch_one(&db.owner)
+            .await
+            .unwrap()
+    };
+    let before = counter().await;
+    let others = [
+        register(&db, &["127.0.0.0/8"]).await,
+        register(&db, &["127.0.0.0/8"]).await,
+    ];
+    for (token, cursor) in [
+        (token.as_str(), revision + 100),
+        (others[0].token.as_str(), revision + 50),
+        (others[1].token.as_str(), revision + 100),
+        (token.as_str(), i64::MAX as u64 - 1),
+    ] {
+        assert_eq!(changes(&url, token, cursor).await, reset, "cursor {cursor}");
     }
-    assert!(!changes(&url, token, restored.revision).await.reset);
+    assert_eq!(counter().await, before, "(value, pruned_through) moved");
+    // A fourth firewall, at the server's revision, is not reset and sees exactly the
+    // changes after it.
+    let fourth = register(&db, &["127.0.0.0/8"]).await;
+    assert_eq!(
+        changes(&url, &fourth.token, revision).await,
+        ChangesResponse {
+            revision,
+            ..ChangesResponse::default()
+        }
+    );
+    let mut tx = db.app.begin().await.unwrap();
+    record_change(&mut tx, ChangeKind::Ranges, &acme)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        changes(&url, &fourth.token, revision).await,
+        ChangesResponse {
+            revision: revision + 1,
+            network_lock: reset.network_lock.clone(),
+            ..ChangesResponse::default()
+        }
+    );
+    // A subject repeated in the delta is named once.
+    let mut tx = db.app.begin().await.unwrap();
+    for _ in 0..2 {
+        record_change(&mut tx, ChangeKind::Layer, &acme)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(
+        changes(&url, &fourth.token, revision + 1).await,
+        ChangesResponse {
+            revision: revision + 3,
+            changed_layers: vec![acme],
+            ..ChangesResponse::default()
+        }
+    );
+    // Only a cursor that is no Postgres bigint is refused.
+    let answer = post(
+        &client(),
+        url.join("api/v1/sync/changes").unwrap(),
+        Some(token),
+        &[],
+        changes_body(u64::MAX, Vec::new(), Vec::new()),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// T-firewall-token-required: no token, an unknown token and a retired firewall's
@@ -489,25 +553,31 @@ async fn t_firewall_token_source() {
     assert!(refused_source(&answer), "{}", answer.status());
 
     // 201 requests within one second from an allowed address: the 201st is refused.
-    let started = Instant::now();
-    let mut statuses = Vec::new();
-    for _ in 0..201 {
-        statuses.push(
-            post(&http, layers(&direct), Some(&local.token), &[], empty())
-                .await
-                .status(),
+    // On a loaded host a burst can take longer than a second, which proves nothing
+    // either way; such a burst is waited out and sent again.
+    for attempt in 1..=5 {
+        let started = Instant::now();
+        let mut statuses = Vec::new();
+        for _ in 0..201 {
+            statuses.push(
+                post(&http, layers(&direct), Some(&local.token), &[], empty())
+                    .await
+                    .status(),
+            );
+        }
+        if started.elapsed() >= Duration::from_secs(1) {
+            assert!(attempt < 5, "no burst of 201 fitted in one second");
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
+            continue;
+        }
+        assert!(
+            statuses[..200]
+                .iter()
+                .all(|status| *status == StatusCode::OK)
         );
+        assert_eq!(statuses[200], StatusCode::TOO_MANY_REQUESTS);
+        break;
     }
-    assert!(
-        started.elapsed().as_secs_f64() < 1.0,
-        "the burst fits in one second"
-    );
-    assert!(
-        statuses[..200]
-            .iter()
-            .all(|status| *status == StatusCode::OK)
-    );
-    assert_eq!(statuses[200], StatusCode::TOO_MANY_REQUESTS);
 }
 
 /// T-body-limits (T24): a `changes` call one entry over a cap, or one byte over 2 MiB,
@@ -647,5 +717,96 @@ async fn t_activity_place_from_key() {
                 Some("192.0.2.7".into())
             ),
         ]
+    );
+
+    // The firewall's time of each event (S4-11): kept when it is within the activity
+    // retention (Acme: the platform's 90 days), clamped to it when older, and now when
+    // it is in the future, missing or no RFC 3339 time.
+    let rfc3339 = |interval: &'static str| {
+        let db = &db;
+        async move {
+            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(format!(
+                "SELECT to_char((now() + interval '{interval}') AT TIME ZONE 'UTC',
+                                'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"
+            )))
+            .fetch_one(&db.owner)
+            .await
+            .unwrap()
+        }
+    };
+    let ten_minutes_ago = rfc3339("-10 minutes").await;
+    // Globex keeps its activity 30 days, overriding the platform's 90.
+    sqlx::query("UPDATE orgs SET activity_retention_days = 30 WHERE id = $1")
+        .bind(globex.id as i32)
+        .execute(&db.owner)
+        .await
+        .unwrap();
+    let (actor, globex_place) = db.as_admin(admin, globex).await;
+    let globex_key = keys::create(&db.app, &actor, &globex_place, "ci")
+        .await
+        .unwrap();
+    let timed = |n: usize, at: Option<String>| ActivityEvent {
+        at,
+        ..event(n, key.id, acme)
+    };
+    let batch = changes_body(
+        0,
+        vec![
+            timed(4, Some(ten_minutes_ago.clone())),
+            timed(5, Some(rfc3339("1 hour").await)),
+            timed(6, None),
+            timed(7, Some("yesterday".to_owned())),
+            timed(8, Some(rfc3339("-200 days").await)),
+            ActivityEvent {
+                at: Some(rfc3339("-200 days").await),
+                ..event(9, globex_key.id, globex)
+            },
+        ],
+        Vec::new(),
+    );
+    let clock = || async {
+        sqlx::query_scalar::<_, String>("SELECT clock_timestamp()::text")
+            .fetch_one(&db.owner)
+            .await
+            .unwrap()
+    };
+    let before = clock().await;
+    let answer = post(
+        &client(),
+        url.join("api/v1/sync/changes").unwrap(),
+        Some(&firewall.token),
+        &[],
+        batch,
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::OK);
+    let after = clock().await;
+    let stored: Vec<(String, bool, bool, bool, bool)> = sqlx::query_as(
+        "SELECT event_id,
+                at = $1::timestamptz,
+                at BETWEEN $2::timestamptz AND $3::timestamptz,
+                at BETWEEN $2::timestamptz - interval '90 days' AND $3::timestamptz - interval '90 days',
+                at BETWEEN $2::timestamptz - interval '30 days' AND $3::timestamptz - interval '30 days'
+         FROM activity
+         WHERE event_id IN ('event-4', 'event-5', 'event-6', 'event-7', 'event-8', 'event-9')
+         ORDER BY event_id",
+    )
+    .bind(&ten_minutes_ago)
+    .bind(&before)
+    .bind(&after)
+    .fetch_all(&db.owner)
+    .await
+    .unwrap();
+    assert_eq!(
+        stored,
+        vec![
+            ("event-4".into(), true, false, false, false),
+            ("event-5".into(), false, true, false, false),
+            ("event-6".into(), false, true, false, false),
+            ("event-7".into(), false, true, false, false),
+            ("event-8".into(), false, false, true, false),
+            ("event-9".into(), false, false, false, true),
+        ],
+        "(event, at the firewall's time, at now, at the 90-day bound, at the 30-day bound)"
     );
 }

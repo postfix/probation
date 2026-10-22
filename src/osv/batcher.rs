@@ -288,7 +288,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};
 
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&count);
         Mock::given(method("POST"))

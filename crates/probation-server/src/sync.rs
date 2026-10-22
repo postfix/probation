@@ -2,7 +2,8 @@
 //! (02-architecture.md § Endpoints), and the change log every state change a firewall
 //! caches is written to (02 § Change propagation).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -43,10 +44,6 @@ pub const MAX_LAYER_PLACES: usize = 1_000;
 /// The most activity events, and `activity_dropped` entries, one `changes` call may
 /// carry: the firewall's `ACTIVITY_BATCH_MAX` (02 § Endpoints).
 pub const MAX_ACTIVITY_ENTRIES: usize = 1_000;
-
-/// The highest `since` a `changes` call may send: half the counter's range, so a
-/// counter raised to it (a restore, R3) still has room for every later revision.
-pub const MAX_CURSOR: u64 = i64::MAX as u64 / 2;
 
 /// The longest `last_apply_error` a report may carry.
 pub const MAX_APPLY_ERROR_BYTES: usize = 2 * 1024;
@@ -363,38 +360,28 @@ async fn changes(
     {
         return Err(SyncError::TooLarge);
     }
-    // A cursor this far out is no revision any server handed out; raising the counter
-    // to it would leave no room for the revisions after it.
-    if asked.since > MAX_CURSOR {
+    // Every revision the server hands out is a Postgres bigint; only a cursor that
+    // cannot be one is refused (N2).
+    if asked.since > i64::MAX as u64 - 1 {
         return Err(SyncError::Unprocessable);
     }
-    let ahead = record_report(&state.pool, firewall, &asked).await?;
+    let () = record_report(&state.pool, firewall, &asked).await?;
     let (mut tx, revision) = snapshot(&state.pool).await?;
-    let answer = delta(&mut tx, firewall, &asked, revision, ahead).await?;
+    let answer = delta(&mut tx, firewall, &asked, revision).await?;
     let () = tx.commit().await?;
     Ok(Json(answer))
 }
 
 /// The firewall's check-in and its activity, in one transaction. Each event is stored
 /// under its key's place, whatever place the firewall named (T9, T18); an event for no
-/// known API key is not stored, and a batch sent again is not duplicated.
-///
-/// A cursor above the change counter (the database was restored from a backup) raises
-/// the counter to it, so the reset answered next is at or above the firewall's
-/// invalidation floor and later lookups are not dropped as old. Returns whether it did.
+/// known API key is not stored, and a batch sent again is not duplicated. It never
+/// touches the change counter (C126).
 async fn record_report(
     pool: &PgPool,
     firewall: i32,
     asked: &ChangesRequest,
-) -> Result<bool, SyncError> {
+) -> Result<(), SyncError> {
     let mut tx = pool.begin().await?;
-    // Locks the counter row only when it is behind the cursor.
-    let ahead = sqlx::query("UPDATE change_counter SET value = $1 WHERE id = 1 AND value < $1")
-        .bind(asked.since as i64)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-        == 1;
     let report = serde_json::json!({
         "report": asked.report,
         "activity_dropped": asked.activity_dropped,
@@ -409,19 +396,38 @@ async fn record_report(
     sqlx::query(
         "INSERT INTO activity (event_id, at, firewall_id, place_kind, place_id, key_id, layer,
                                ecosystem, package, version, result, rule, client_ip, eligible_at)
-         SELECT e.event_id, now(), $1, k.place_kind, k.place_id, k.id, e.layer,
+         SELECT e.event_id,
+                -- The firewall's time, within [now - activity retention, now] (S4-11).
+                LEAST(now(), GREATEST(COALESCE(e.at::timestamptz, now()),
+                    now() - make_interval(days => COALESCE(
+                        (SELECT o.activity_retention_days FROM orgs AS o
+                         WHERE o.id = place_org(k.place_kind, k.place_id)),
+                        (SELECT p.activity_retention_days FROM platform_settings AS p
+                         WHERE p.id = 1))))),
+                $1, k.place_kind, k.place_id, k.id, e.layer,
                 e.ecosystem, e.package, e.version, e.result, e.rule,
                 CASE WHEN e.result = 'refused_network' THEN e.client_ip END,
                 e.eligible_at::timestamptz
          FROM unnest($2::text[], $3::bigint[], $4::text[], $5::text[], $6::text[], $7::text[],
-                     $8::text[], $9::text[], $10::inet[], $11::text[])
-              AS e(event_id, key_id, layer, ecosystem, package, version, result, rule, client_ip, eligible_at)
+                     $8::text[], $9::text[], $10::inet[], $11::text[], $12::text[])
+              AS e(event_id, key_id, layer, ecosystem, package, version, result, rule, client_ip,
+                   eligible_at, at)
          JOIN keys AS k ON k.id = e.key_id AND k.kind IN ('user', 'service')
          ON CONFLICT (firewall_id, event_id) DO NOTHING",
     )
     .bind(firewall)
-    .bind(events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.key_id.0 as i64).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.key_id.0 as i64)
+            .collect::<Vec<_>>(),
+    )
     .bind(
         events
             .iter()
@@ -434,32 +440,67 @@ async fn record_report(
             .map(|event| event.ecosystem.map(|ecosystem| ecosystem.as_tag()))
             .collect::<Vec<_>>(),
     )
-    .bind(events.iter().map(|event| event.package.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.version.clone()).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.package.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.version.clone())
+            .collect::<Vec<_>>(),
+    )
     .bind(
         events
             .iter()
             .map(|event| word(serde_json::to_value(event.result).expect("a result encodes")))
             .collect::<Vec<_>>(),
     )
-    .bind(events.iter().map(|event| event.rule.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.client_ip).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.eligible_at.clone()).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.rule.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.client_ip)
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.eligible_at.clone())
+            .collect::<Vec<_>>(),
+    )
+    // Parsed here, so a time that is no RFC 3339 falls back to now instead of failing
+    // the batch; what goes to Postgres is jiff's own rendering.
+    .bind(
+        events
+            .iter()
+            .map(|event| {
+                let at = event.at.as_deref()?.parse::<jiff::Timestamp>().ok()?;
+                Some(at.to_string())
+            })
+            .collect::<Vec<_>>(),
+    )
     .execute(&mut *tx)
     .await?;
     let () = tx.commit().await?;
-    Ok(ahead)
+    Ok(())
 }
 
 /// What changed after `asked.since`, read at `revision`. A cursor below
-/// `pruned_through`, or one `record_report` found `ahead` of the log (a restore), is
-/// answered with a reset.
+/// `pruned_through`, or above the log (a database restored from a backup), is answered
+/// with a reset at the server's current revision: only that firewall resets (C126).
 async fn delta(
     conn: &mut PgConnection,
     firewall: i32,
     asked: &ChangesRequest,
     revision: u64,
-    ahead: bool,
 ) -> Result<ChangesResponse, SyncError> {
     let pruned_through: i64 =
         sqlx::query_scalar("SELECT pruned_through FROM change_counter WHERE id = 1")
@@ -476,7 +517,7 @@ async fn delta(
             toml: settings.1,
         });
     let since = asked.since;
-    if ahead || since < pruned_through as u64 || since > revision {
+    if since < pruned_through as u64 || since > revision {
         return Ok(ChangesResponse {
             revision,
             network_lock: Some(network_lock(conn).await?),
@@ -498,18 +539,23 @@ async fn delta(
         ..ChangesResponse::default()
     };
     let mut ranges = since == 0;
+    // A long delta repeats subjects; each list names one once, in first-seen order.
+    let (mut keys, mut layers, mut places) = (HashSet::new(), HashSet::new(), HashSet::new());
     for (kind, subject) in rows {
         match kind.as_str() {
             "key" => push_new(
                 &mut answer.changed_keys,
+                &mut keys,
                 serde_json::from_value::<KeyId>(subject).map_err(subject_error("key"))?,
             ),
             "layer" => push_new(
                 &mut answer.changed_layers,
+                &mut layers,
                 serde_json::from_value::<PlaceRef>(subject).map_err(subject_error("layer"))?,
             ),
             "place" => push_new(
                 &mut answer.changed_places,
+                &mut places,
                 serde_json::from_value::<PlaceRef>(subject).map_err(subject_error("place"))?,
             ),
             "limits" => answer.changed_limits.push(
@@ -534,8 +580,8 @@ fn subject_error(what: &'static str) -> impl Fn(serde_json::Error) -> SyncError 
     }
 }
 
-fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) {
-    if !list.contains(&item) {
+fn push_new<T: Copy + Eq + Hash>(list: &mut Vec<T>, seen: &mut HashSet<T>, item: T) {
+    if seen.insert(item) {
         list.push(item);
     }
 }

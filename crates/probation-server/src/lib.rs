@@ -191,7 +191,8 @@ pub mod admin {
         .await?;
         let firewall =
             fleet::insert(&mut tx, &input.firewall_name, &input.firewall_sources).await?;
-        let actor = Actor::bootstrap(login_id);
+        // The host operator ran this; the admin it creates has not acted yet (F7).
+        let actor = Actor::Operator;
         let after = serde_json::json!({
             "global_admin": login_id,
             "org": org.0,

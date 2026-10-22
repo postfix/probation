@@ -479,7 +479,6 @@ pub async fn with_settings_overlay(config: Config) -> Config {
     }
     let dir = config.data_dir.clone();
     let overlay = dir.join(config::SETTINGS_OVERLAY);
-    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
     loop {
         let Ok(text) = std::fs::read_to_string(&overlay) else {
             return config;
@@ -495,20 +494,91 @@ pub async fn with_settings_overlay(config: Config) -> Config {
             Ok(merged) => return merged,
             Err(reason) => reason,
         };
-        tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
-        let mut state = config::SettingsState::load(&dir);
-        state.failed_revision = Some(state.settings_revision);
-        state.settings_revision = state.previous_revision;
-        state.previous_revision = 0;
-        state.last_apply_error = Some(reason);
-        let restored = if previous.exists() {
-            std::fs::rename(&previous, &overlay)
-        } else {
-            std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
-        };
-        if let Err(err) = restored.and_then(|()| state.save(&dir)) {
-            tracing::error!(error = %err, "the failed settings could not be set aside");
+        if roll_back_settings(&dir, reason).is_err() {
             return config;
+        }
+    }
+}
+
+/// Swaps the settings overlay in `dir` for the previous one, or sets it aside when
+/// there is none, and records `reason` and the failed revision for the next report
+/// (C71). The failed revision is never applied again.
+fn roll_back_settings(dir: &std::path::Path, reason: String) -> std::io::Result<()> {
+    tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
+    let overlay = dir.join(config::SETTINGS_OVERLAY);
+    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
+    let mut state = config::SettingsState::load(dir);
+    state.failed_revision = Some(state.settings_revision);
+    state.settings_revision = state.previous_revision;
+    state.previous_revision = 0;
+    state.last_apply_error = Some(reason);
+    let restored = if previous.exists() {
+        std::fs::rename(&previous, &overlay)
+    } else {
+        std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
+    };
+    let rolled = restored.and_then(|()| state.save(dir));
+    if let Err(err) = &rolled {
+        tracing::error!(error = %err, "the failed settings could not be set aside");
+    }
+    rolled
+}
+
+/// [`App::start`] on `local` with its settings overlay (C105). A start that fails while
+/// an overlay is in force, in a way a pushed setting can cause (delivery), rolls the
+/// overlay back (C71) and is tried once more, so a push that passed every check and
+/// still breaks the start cannot hold the firewall in a crash loop. The overlay is read
+/// and rolled back only while this process holds the data directory, so a second
+/// instance on a held directory changes nothing.
+pub async fn start_with_settings(
+    local: Config,
+    deps: impl Fn(Config) -> AppDeps,
+) -> Result<Running, StartupError> {
+    if local.management.is_none() {
+        return App::start(deps(local)).await;
+    }
+    let held = hold_data_dir(&local.data_dir, false).await?;
+    let config = with_settings_overlay(local.clone()).await;
+    let overlaid = local.data_dir.join(config::SETTINGS_OVERLAY).exists();
+    drop(held);
+    let err = match App::start(deps(config)).await {
+        // The data directory, the listener and the TLS files are this host's: a push
+        // cannot set them, so their failures leave the overlay alone.
+        Err(err @ StartupError::Delivery(_)) if overlaid => err,
+        started => return started,
+    };
+    // The failed start's store lets go of the lock as it winds down.
+    let held = hold_data_dir(&local.data_dir, true).await?;
+    if roll_back_settings(&local.data_dir, err.to_string()).is_err() {
+        return Err(err);
+    }
+    let config = with_settings_overlay(local).await;
+    drop(held);
+    App::start(deps(config)).await
+}
+
+/// The data directory's lock, held by this process; with `wait`, for up to two seconds.
+async fn hold_data_dir(
+    dir: &std::path::Path,
+    wait: bool,
+) -> Result<store::lock::DataDirLock, StartupError> {
+    std::fs::create_dir_all(dir).map_err(|source| {
+        StartupError::DataDir(store::startup::StartupError::Directory {
+            path: dir.to_path_buf(),
+            source,
+        })
+    })?;
+    let mut attempts = if wait { 100 } else { 1 };
+    loop {
+        attempts -= 1;
+        match store::lock::acquire(dir) {
+            Ok(held) => return Ok(held),
+            Err(_) if attempts > 0 => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(err) => {
+                return Err(StartupError::DataDir(store::startup::StartupError::Lock(
+                    err,
+                )));
+            }
         }
     }
 }

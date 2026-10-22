@@ -6,11 +6,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use probation::AppDeps;
 use probation::clock::{Clock, SystemClock};
 use probation::config::Config;
 use probation::policy::blocklist;
 use probation::upstream::{OriginSet, ReqwestTransport};
-use probation::{App, AppDeps};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
@@ -145,21 +145,25 @@ async fn serve(config_path: &Path) -> ExitCode {
     };
 
     let config = match Config::load(config_path) {
-        Ok(config) => probation::with_settings_overlay(config).await,
+        Ok(config) => config,
         Err(err) => {
             tracing::error!(path = %config_path.display(), error = %err, "invalid configuration");
             return ExitCode::FAILURE;
         }
     };
 
-    let origins = OriginSet::configured(&config);
-    let running = match App::start(AppDeps {
-        config,
-        clock: Arc::new(SystemClock),
-        transport: Arc::new(ReqwestTransport::for_origins(origins.clone())),
-        origins,
-        osv_client: reqwest::Client::new(),
-        osv_base_url: None,
+    // The settings overlay is merged in, and rolled back if the start fails on it (C105,
+    // C71). The origins follow whatever configuration finally starts.
+    let running = match probation::start_with_settings(config, |config| {
+        let origins = OriginSet::configured(&config);
+        AppDeps {
+            config,
+            clock: Arc::new(SystemClock),
+            transport: Arc::new(ReqwestTransport::for_origins(origins.clone())),
+            origins,
+            osv_client: reqwest::Client::new(),
+            osv_base_url: None,
+        }
     })
     .await
     {

@@ -25,13 +25,13 @@ use axum::http::{HeaderMap, HeaderValue};
 use probation_policy::PlaceRef;
 use probation_policy::api::{
     ActivityEvent, ActivityLayer, ActivityResult, ChainLink, FirewallReport, KeyHash, KeyId,
-    KeyLookup, LimitSource, OrgId, ReportStatus, Upstreams,
+    KeyLookup, LayersResponse, LimitSource, OrgId, ReportStatus, Upstreams,
 };
 use tokio_util::sync::CancellationToken;
 
 use self::activity::ActivityQueue;
 use self::cache::{
-    Budget, KeyCache, KnownRefusal, Policies, Snapshot, Standing, UNKNOWN_FOR, Unresolved,
+    Budget, Insert, KeyCache, KnownRefusal, Policies, Snapshot, Standing, UNKNOWN_FOR, Unresolved,
 };
 use self::client::{CallError, SyncClient};
 use self::lock::{NetworkLock, TrustedProxies};
@@ -115,13 +115,16 @@ pub struct Managed {
     /// Cancelled once a settings push is written: the process drains and exits 75.
     restart: CancellationToken,
     data_dir: PathBuf,
-    ttl: Duration,
     period: Duration,
+    clock: Arc<dyn Clock>,
 }
 
 /// The longest `Authorization` value decoded. A key is 36 characters; anything this
 /// long is refused before a byte of it is decoded (T19).
 const MAX_CREDENTIALS_BYTES: usize = 1024;
+
+/// The most calls one ask makes: two lookups, and two rounds of two `layers` calls.
+const ASK_CALLS: u32 = 6;
 
 /// The longest `last_apply_error` a report carries, below the server's cap.
 const MAX_APPLY_ERROR_BYTES: usize = 2048;
@@ -136,11 +139,13 @@ impl Managed {
         data_dir: &Path,
     ) -> Managed {
         let ttl = Duration::from_secs(config.key_cache_ttl_seconds.get());
-        let cache = Arc::new(KeyCache::new(
-            config.key_cache_max_entries.get(),
-            ttl,
-            Arc::clone(&clock),
-        ));
+        let request_timeout = Duration::from_secs(config.request_timeout_seconds.get());
+        // An ask is at most two lookups and two rounds of two `layers` calls, each
+        // within the request timeout; an invalidation outlives any answer read before it.
+        let cache = Arc::new(
+            KeyCache::new(config.key_cache_max_entries.get(), ttl, Arc::clone(&clock))
+                .keeping_records_for(request_timeout * ASK_CALLS),
+        );
         let policies = Arc::new(Policies::default());
         let network_lock = Arc::new(NetworkLock::default());
         let retired = Arc::new(AtomicBool::new(false));
@@ -200,10 +205,10 @@ impl Managed {
             settings: Mutex::new(SettingsState::load(data_dir)),
             restart: CancellationToken::new(),
             data_dir: data_dir.to_path_buf(),
-            ttl,
             period: sync_interval
                 .saturating_sub(margin)
                 .max(Duration::from_secs(1)),
+            clock,
         }
     }
 
@@ -213,6 +218,13 @@ impl Managed {
     #[cfg(feature = "test-support")]
     pub fn waiting_on(&self, hash: &KeyHash) -> usize {
         self.lookups.waiting_on(hash)
+    }
+
+    /// How many requests share the `layers` call in flight for `place`. **Compiled only
+    /// under `test-support`.**
+    #[cfg(feature = "test-support")]
+    pub fn waiting_on_layer(&self, place: PlaceRef) -> usize {
+        self.layer_fetches.waiting_on(&place)
     }
 
     /// Whether requests may be authenticated: a cache snapshot was loaded or a sync
@@ -348,7 +360,15 @@ impl Managed {
         };
         let answer = self.ask_server(hash, client, invalidated.is_some()).await;
         match (answer, invalidated) {
-            (Err(Failed::Unreachable), Some(_)) | (Err(Failed::Busy), Some(false)) => {
+            (Err(Failed::Unreachable), Some(_)) => self.cache.stale(hash).ok_or(Failed::Busy),
+            // Read again: a `place` row may have expired the entry while it was asked
+            // about, and a place-expired entry is never served for a busy server.
+            (Err(Failed::Busy), Some(false))
+                if matches!(
+                    self.cache.standing(hash),
+                    Standing::Expired { invalidated: false }
+                ) =>
+            {
                 self.cache.stale(hash).ok_or(Failed::Busy)
             }
             (answer, _) => answer,
@@ -364,14 +384,18 @@ impl Managed {
         if !self.budget.take(client, has_entry) {
             return Err(Failed::Busy);
         }
+        // The reset epoch each call starts in: an answer from before a reset is never
+        // kept (C126).
+        let mut epoch = self.cache.epoch();
         let mut answer = self
             .client
             .lookup(*hash)
             .await
             .map_err(|e| self.failed(e))?;
-        if !self.cache.is_current(&answer) {
+        if !self.cache.is_current(&answer) || self.cache.epoch() != epoch {
             // Read before an invalidation this firewall has already applied: dropped,
             // and asked once more (H6).
+            epoch = self.cache.epoch();
             answer = self
                 .client
                 .lookup(*hash)
@@ -382,6 +406,9 @@ impl Managed {
             }
         }
         let suspended = matches!(answer, KeyLookup::Suspended { .. });
+        // Checked again where it is cached: an invalidation can land while the layers
+        // are fetched.
+        let read = answer.clone();
         let (key_id, org, account, chain, rate_limit, rate_limit_source) = match answer {
             KeyLookup::Known {
                 key_id,
@@ -400,7 +427,8 @@ impl Managed {
                 rate_limit_source,
             ),
             KeyLookup::Unknown { .. } => {
-                self.cache.refuse(*hash, Some(UNKNOWN_FOR), None);
+                self.cache
+                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch);
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
             KeyLookup::Revoked {
@@ -424,8 +452,14 @@ impl Managed {
                     chain,
                     suspended,
                 };
+                if !self
+                    .cache
+                    .refuse_current(*hash, None, Some(known.clone()), &read, epoch)
+                {
+                    // A `key` or `place` row since may have restored it: asked again.
+                    return Err(Failed::Busy);
+                }
                 self.record_refusal(&known);
-                self.cache.refuse(*hash, None, Some(known));
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
         };
@@ -443,9 +477,25 @@ impl Managed {
             org,
             chain: chain.iter().map(|link| link.place).collect(),
         };
-        if !self.cache.insert(*hash, found.clone()) {
-            // The cache is full while the server is down, and nothing is evicted then.
-            return Err(Failed::Busy);
+        match self
+            .cache
+            .insert_current(*hash, found.clone(), &read, epoch)
+        {
+            Insert::Done => {}
+            // Invalidated while its layers were fetched (H6), or the cache is full while
+            // the server is down, when nothing is evicted.
+            Insert::Late | Insert::Full => return Err(Failed::Busy),
+        }
+        // Retired, or a `layer` row for its chain, since the policy was built: its own
+        // invalidation already ran, so the entry it would have cleared goes now.
+        let retired = self.retired.load(Ordering::Acquire);
+        if retired || self.policies.any_stale(&found.chain) {
+            self.cache.remove_live(hash, key_id);
+            return Err(if retired {
+                Failed::Refused(Refusal::Unauthenticated)
+            } else {
+                Failed::Busy
+            });
         }
         Ok(found)
     }
@@ -537,26 +587,36 @@ impl Managed {
         {
             return Err(Failed::Busy);
         }
+        let epoch = self.cache.epoch();
         let answer = self
             .client
             .layers(places.clone())
             .await
             .map_err(|e| self.failed(e))?;
-        if self.policies.store(answer, self.cache.floor()) {
+        if self.store_layers(answer, epoch) {
             return Ok(());
         }
         // Read before a `layer` row or a reset this firewall has applied: asked once
         // more (H6).
+        let epoch = self.cache.epoch();
         let answer = self
             .client
             .layers(places)
             .await
             .map_err(|e| self.failed(e))?;
-        if self.policies.store(answer, self.cache.floor()) {
+        if self.store_layers(answer, epoch) {
             Ok(())
         } else {
             Err(Failed::Busy)
         }
+    }
+
+    /// Keeps a `layers` answer unless a reset happened since its call started (C126) or
+    /// it was read before an invalidation (H6).
+    fn store_layers(&self, answer: LayersResponse, epoch: u64) -> bool {
+        let floor = self.cache.floor();
+        self.cache
+            .in_epoch(epoch, || self.policies.store(answer, floor))
     }
 
     /// What a failed call to the server means for this firewall.
@@ -591,7 +651,10 @@ impl Managed {
         );
     }
 
-    fn record(&self, account: PlaceRef, event: ActivityEvent) {
+    /// Queues `event`, stamped with when it happened (M3): a batch re-sent after an
+    /// outage keeps its time.
+    fn record(&self, account: PlaceRef, mut event: ActivityEvent) {
+        event.at = Some(crate::delivery::rfc3339(self.clock.now_utc_micros()));
         self.activity.record_activity(account, event);
     }
 
@@ -644,7 +707,7 @@ impl Managed {
                 .rebuild(&stale, |chain| policies.compile_places(chain));
         }
         let used = self.cache.prune_idle();
-        self.policies.retain(&used, self.ttl);
+        self.policies.retain(&used, self.cache.records_for());
         self.rates.prune();
     }
 
@@ -737,6 +800,7 @@ fn row(
         layer,
         client_ip: None,
         eligible_at: None,
+        at: None,
     }
 }
 

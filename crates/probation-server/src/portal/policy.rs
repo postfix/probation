@@ -606,7 +606,9 @@ pub(crate) async fn edit(
             )
             .await
         }
-        Err(SaveError::WrongPlace) => refused("Your role cannot change this layer."),
+        Err(SaveError::WrongPlace | SaveError::WrongActor) => {
+            refused("Your role cannot change this layer.")
+        }
         Err(SaveError::Db(err)) => unavailable(err),
     }
 }

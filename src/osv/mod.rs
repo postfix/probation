@@ -391,7 +391,10 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
+        // A server of its own, not one from wiremock's shared pool: a pooled server
+        // passes from test to test, and a request one test left half-sent is counted
+        // by the next.
+        let server = MockServer::builder().start().await;
         let count = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&count);
         Mock::given(method("POST"))
@@ -418,6 +421,40 @@ mod tests {
             .await;
         let url = Url::parse(&format!("{}/v1/querybatch", server.uri())).unwrap();
         (url, server, count)
+    }
+
+    /// Rework 3: a test's OSV stand-in counts only that test's requests. A request
+    /// another test left half-sent, finished after that test's stand-in is gone and
+    /// this one has started, is not counted here (`evaluate_enforce_mode_denies_on_match`
+    /// once read 2 for 1 this way under load).
+    #[tokio::test]
+    async fn a_request_another_test_left_half_sent_is_not_counted_here() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (url, earlier, _) = mode_server(true).await;
+        let addr = format!("{}:{}", url.host_str().unwrap(), url.port().unwrap());
+        let mut late = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let body =
+            br#"{"queries":[{"package":{"name":"left-pad","ecosystem":"npm"},"version":"1.0.0"}]}"#;
+        let head = format!(
+            "POST /v1/querybatch HTTP/1.1\r\nhost: {addr}\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        late.write_all(head.as_bytes()).await.unwrap();
+        drop(earlier);
+
+        let (_url, _server, count) = mode_server(true).await;
+        let _ = late.write_all(body).await;
+        // Whatever answer the rest of the request gets, it has had it once this returns.
+        let mut answer = Vec::new();
+        let _ = late.read_to_end(&mut answer).await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "the left-over request reached this test's stand-in: {}",
+            String::from_utf8_lossy(&answer)
+        );
     }
 
     /// [`osv_server`] answering `200` at once with `matched` for every query.

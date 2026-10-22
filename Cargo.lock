@@ -3024,6 +3024,7 @@ dependencies = [
  "hex",
  "hmac",
  "ipnet",
+ "jiff",
  "jsonwebtoken",
  "lettre",
  "probation",

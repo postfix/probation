@@ -18,23 +18,29 @@ pub struct NetworkLock {
 }
 
 impl NetworkLock {
-    /// Replaces the table with `ranges` when one was sent; `None` keeps it. A range that
-    /// does not parse is left out and logged: the server validated it, so this is a
-    /// version skew, not a client's doing.
+    /// Replaces the table with `ranges` when one was sent; `None` keeps it. A range is
+    /// read as every address it names: one in IPv4-mapped form as its IPv4 range, and
+    /// an IPv6 range wide enough to hold the whole mapped block as all of IPv4 too, so
+    /// the lock never reads narrower than written (C113). A range that does not parse
+    /// at all is left out and logged: the server validated it, so this is a version
+    /// skew, not a client's doing.
     pub fn adopt(&self, ranges: Option<&[LockRange]>) {
         let Some(ranges) = ranges else {
             return;
         };
-        let parsed = ranges
-            .iter()
-            .filter_map(|range| match Cidr::parse(&range.cidr) {
-                Some(cidr) => Some((cidr, range.org)),
-                None => {
-                    tracing::error!(cidr = %range.cidr, "the server sent a network-lock range this firewall cannot read; leaving it out");
-                    None
+        let mut parsed: Vec<(Cidr, OrgId)> = Vec::new();
+        for range in ranges {
+            let read = lock_ranges(&range.cidr);
+            if read.is_empty() {
+                tracing::error!(cidr = %range.cidr, "the server sent a network-lock range this firewall cannot read; leaving it out");
+            }
+            for cidr in read {
+                // One entry a range: the snapshot of this table is read back through here.
+                if !parsed.contains(&(cidr, range.org)) {
+                    parsed.push((cidr, range.org));
                 }
-            })
-            .collect();
+            }
+        }
         self.ranges.store(Arc::new(parsed));
     }
 
@@ -60,6 +66,32 @@ impl NetworkLock {
             })
             .collect()
     }
+}
+
+/// The ranges one network-lock entry covers; empty when it does not parse.
+fn lock_ranges(text: &str) -> Vec<Cidr> {
+    const ALL_OF_IPV4: Cidr = Cidr {
+        addr: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        prefix: 0,
+    };
+    let raw = text.split_once('/').and_then(|(addr, prefix)| {
+        Some((addr.parse::<IpAddr>().ok()?, prefix.parse::<u8>().ok()?))
+    });
+    let Some((addr, prefix)) = raw else {
+        return Vec::new();
+    };
+    let mut read: Vec<Cidr> = Cidr::parse(text).into_iter().collect();
+    // An IPv6 range holding all of `::ffff:0:0/96` holds every IPv4 client too.
+    if let IpAddr::V6(v6) = addr
+        && prefix <= 96
+        && same_prefix(u128::from(v6), 0xffff_0000_0000, prefix, 128)
+    {
+        if read.is_empty() {
+            read.push(Cidr { addr, prefix });
+        }
+        read.push(ALL_OF_IPV4);
+    }
+    read
 }
 
 /// Peers whose `X-Forwarded-For` is believed (C113).
@@ -198,5 +230,69 @@ mod tests {
         let mut forged = HeaderMap::new();
         forged.append(FORWARDED_FOR, "192.0.2.7, junk".parse().unwrap());
         assert_eq!(proxies.client(ip("10.0.0.5"), &forged), None);
+    }
+
+    /// M1: a range written in IPv4-mapped form holds its whole IPv4 range; one wider
+    /// than the mapped block holds all of IPv4; a mapped trusted proxy range too.
+    #[test]
+    fn a_mapped_range_is_read_at_its_full_width() {
+        let lock = NetworkLock::default();
+        let range = |cidr: &str| LockRange {
+            cidr: cidr.to_owned(),
+            org: OrgId(10),
+        };
+        lock.adopt(Some(&[range("::ffff:198.51.100.0/120")]));
+        assert!(lock.refuses(ip("198.51.100.77"), None));
+        assert!(!lock.refuses(ip("198.51.101.1"), None));
+        lock.adopt(Some(&[range("::ffff:0:0/80")]));
+        assert!(
+            lock.refuses(ip("203.0.113.9"), None),
+            "wider than the mapped block"
+        );
+        assert!(lock.refuses(ip("::ffff:203.0.113.9"), None));
+        lock.adopt(Some(&[range("::/0")]));
+        assert!(lock.refuses(ip("203.0.113.9"), None));
+        assert!(lock.refuses(ip("2001:db8::1"), None));
+        lock.adopt(Some(&[range("2001:db8::/32")]));
+        assert!(!lock.refuses(ip("203.0.113.9"), None));
+        lock.adopt(Some(&[range("not a range")]));
+        assert!(!lock.refuses(ip("203.0.113.9"), None));
+
+        assert_eq!(cidr("::ffff:127.0.9.0/120"), cidr("127.0.9.0/24"));
+        assert_eq!(
+            Cidr::parse("::ffff:0:0/80"),
+            None,
+            "refused as a proxy range"
+        );
+        let proxies = TrustedProxies::new(vec![cidr("::ffff:10.0.0.0/104")]);
+        let mut headers = HeaderMap::new();
+        headers.append(FORWARDED_FOR, "192.0.2.7".parse().unwrap());
+        assert_eq!(
+            proxies.client(ip("10.9.9.9"), &headers),
+            Some(ip("192.0.2.7"))
+        );
+    }
+
+    /// X5: the table read back from its own snapshot is the same table, however many
+    /// restarts it goes through.
+    #[test]
+    fn a_snapshot_round_trip_adds_no_range() {
+        let lock = NetworkLock::default();
+        lock.adopt(Some(&[
+            LockRange {
+                cidr: "::ffff:0:0/80".to_owned(),
+                org: OrgId(10),
+            },
+            LockRange {
+                cidr: "0.0.0.0/0".to_owned(),
+                org: OrgId(10),
+            },
+        ]));
+        let first = lock.ranges();
+        for _ in 0..3 {
+            lock.adopt(Some(&lock.ranges()));
+        }
+        assert_eq!(lock.ranges(), first);
+        assert_eq!(first.len(), 2, "{first:?}");
     }
 }
