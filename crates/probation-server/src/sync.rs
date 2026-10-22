@@ -44,6 +44,10 @@ pub const MAX_LAYER_PLACES: usize = 1_000;
 /// carry: the firewall's `ACTIVITY_BATCH_MAX` (02 § Endpoints).
 pub const MAX_ACTIVITY_ENTRIES: usize = 1_000;
 
+/// The highest `since` a `changes` call may send: half the counter's range, so a
+/// counter raised to it (a restore, R3) still has room for every later revision.
+pub const MAX_CURSOR: u64 = i64::MAX as u64 / 2;
+
 /// The longest `last_apply_error` a report may carry.
 pub const MAX_APPLY_ERROR_BYTES: usize = 2 * 1024;
 
@@ -359,9 +363,14 @@ async fn changes(
     {
         return Err(SyncError::TooLarge);
     }
-    let () = record_report(&state.pool, firewall, &asked).await?;
+    // A cursor this far out is no revision any server handed out; raising the counter
+    // to it would leave no room for the revisions after it.
+    if asked.since > MAX_CURSOR {
+        return Err(SyncError::Unprocessable);
+    }
+    let ahead = record_report(&state.pool, firewall, &asked).await?;
     let (mut tx, revision) = snapshot(&state.pool).await?;
-    let answer = delta(&mut tx, firewall, &asked, revision).await?;
+    let answer = delta(&mut tx, firewall, &asked, revision, ahead).await?;
     let () = tx.commit().await?;
     Ok(Json(answer))
 }
@@ -369,12 +378,23 @@ async fn changes(
 /// The firewall's check-in and its activity, in one transaction. Each event is stored
 /// under its key's place, whatever place the firewall named (T9, T18); an event for no
 /// known API key is not stored, and a batch sent again is not duplicated.
+///
+/// A cursor above the change counter (the database was restored from a backup) raises
+/// the counter to it, so the reset answered next is at or above the firewall's
+/// invalidation floor and later lookups are not dropped as old. Returns whether it did.
 async fn record_report(
     pool: &PgPool,
     firewall: i32,
     asked: &ChangesRequest,
-) -> Result<(), SyncError> {
+) -> Result<bool, SyncError> {
     let mut tx = pool.begin().await?;
+    // Locks the counter row only when it is behind the cursor.
+    let ahead = sqlx::query("UPDATE change_counter SET value = $1 WHERE id = 1 AND value < $1")
+        .bind(asked.since as i64)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
     let report = serde_json::json!({
         "report": asked.report,
         "activity_dropped": asked.activity_dropped,
@@ -428,16 +448,18 @@ async fn record_report(
     .execute(&mut *tx)
     .await?;
     let () = tx.commit().await?;
-    Ok(())
+    Ok(ahead)
 }
 
 /// What changed after `asked.since`, read at `revision`. A cursor below
-/// `pruned_through` (or above the log, as after a restore) is answered with a reset.
+/// `pruned_through`, or one `record_report` found `ahead` of the log (a restore), is
+/// answered with a reset.
 async fn delta(
     conn: &mut PgConnection,
     firewall: i32,
     asked: &ChangesRequest,
     revision: u64,
+    ahead: bool,
 ) -> Result<ChangesResponse, SyncError> {
     let pruned_through: i64 =
         sqlx::query_scalar("SELECT pruned_through FROM change_counter WHERE id = 1")
@@ -454,7 +476,7 @@ async fn delta(
             toml: settings.1,
         });
     let since = asked.since;
-    if since < pruned_through as u64 || since > revision {
+    if ahead || since < pruned_through as u64 || since > revision {
         return Ok(ChangesResponse {
             revision,
             network_lock: Some(network_lock(conn).await?),

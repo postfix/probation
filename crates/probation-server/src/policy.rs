@@ -30,6 +30,8 @@ impl From<sqlx::Error> for StoreError {
 pub enum SaveError {
     /// The layer's revision is no longer the one the form was loaded at.
     Conflict,
+    /// The permit was granted for another place than the edit's.
+    WrongPlace,
     Db(sqlx::Error),
 }
 
@@ -87,6 +89,11 @@ impl PolicyStore {
         permit: EditPermit,
         checked: CheckedEdit,
     ) -> Result<i64, SaveError> {
+        // A permit allows one place: a member's permit for their own layer never saves
+        // the organisation's.
+        if permit.place() != checked.place() {
+            return Err(SaveError::WrongPlace);
+        }
         let mut tx = self.pool.begin().await?;
         let revision = update_layer(&mut tx, &checked).await?;
         let () = insert_change(&mut tx, checked.place(), revision).await?;
@@ -214,14 +221,15 @@ async fn insert_change(
         .map(drop)
 }
 
-/// The edit's audit row: actor, global-admin flag (C79), the layer before and after.
+/// The edit's audit row: actor, global-admin flag (C79), the layer before and after,
+/// under the edited place (`save_edit` checked the permit is for it).
 async fn insert_audit(
     conn: &mut PgConnection,
     actor: &Actor,
-    permit: &EditPermit,
+    _permit: &EditPermit,
     checked: &CheckedEdit,
 ) -> Result<(), sqlx::Error> {
-    let place = permit.place();
+    let place = checked.place();
     let before: Option<String> =
         sqlx::query_scalar("SELECT current_setting('probation.layer_before', true)")
             .fetch_one(&mut *conn)

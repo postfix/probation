@@ -44,3 +44,11 @@ tdd: T-sync-api-contract (`changes` deltas, the `ranges` table, the `pruned_thro
 tdd: T-firewall-token-required (`changes` added to the routes) — red: `panicked at crates/probation-server/tests/sync_api.rs:328:13: api/v1/sync/changes with None; left: 404 right: 401` — green: `cargo test -p probation-server --test sync_api` passed
 tdd: T-body-limits — red: `panicked at crates/probation-server/tests/sync_api.rs:527:9: 1 001 events; left: 404 right: 413` — green: `cargo test -p probation-server --test sync_api` passed
 tdd: T-activity-place-from-key — red: `panicked at crates/probation-server/tests/sync_api.rs:582:9: left: 404 right: 200` — green: `cargo test -p probation-server --test sync_api` passed
+
+## Rework
+
+Review findings R1–R3. The witness counts stay 6/8/3: each new case extends the test whose promise it belongs to (R1 and R2 in T-authz-matrix, R3 in T-sync-api-contract).
+
+tdd: T-authz-matrix, R1 case (a permit for one place never saves another) — red (written first, before the fix): `panicked at crates/probation-server/tests/tenancy.rs:195:5: a permit for PlaceRef { kind: User, id: 4 } saved PlaceRef { kind: Org, id: 1 }: Ok(4)` — green: `cargo test -p probation-server --test tenancy` passed (3 passed)
+tdd: T-authz-matrix, R2 keys/fleet table (member, group admin, org admin, global admin × org, group, own user, other user; create and revoke; non-global `fleet::register`) — the checks already existed, so red is each check removed: `keys::create` check removed → `tenancy.rs:55:5: login 3 on PlaceRef { kind: Org, id: 1 }: create and revoke disagree; left: true right: false`; `keys::revoke` check removed → `tenancy.rs:55:5: … create and revoke disagree; left: false right: true`; `fleet::register` global-admin check removed → `tenancy.rs:174:27: fleet::register by login 2: None`; `may_manage_keys` admitting members → `tenancy.rs:154:13: keys: login 3 on PlaceRef { kind: Org, id: 1 }; left: true right: false` — green: `cargo test -p probation-server --test tenancy` passed
+tdd: T-sync-api-contract, R3 case (a cursor above the log after a restore) — red (written first, before the fix): `panicked at crates/probation-server/tests/sync_api.rs:313:5: ChangesResponse { revision: 4, …, reset: true, … }` (the reset answered below the cursor 104) — green: `cargo test -p probation-server --test sync_api` passed (6 passed)

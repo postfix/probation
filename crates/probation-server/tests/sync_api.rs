@@ -303,6 +303,19 @@ async fn t_sync_api_contract() {
     assert_eq!(pruned, 3);
     assert_eq!(changes(&url, token, 2).await, reset);
     assert!(!changes(&url, token, 3).await.reset);
+
+    // A cursor above the log, as after the database was restored from a backup: the
+    // reset is answered at or above the cursor, so the firewall's invalidation floor
+    // never outruns the server and the next lookup is still served (R3).
+    let ahead = revision + 100;
+    let restored = changes(&url, token, ahead).await;
+    assert!(restored.reset, "{restored:?}");
+    assert!(restored.revision >= ahead, "{restored:?}");
+    match sync.lookup(KeyHash::of(&live.secret)).await.unwrap() {
+        KeyLookup::Known { revision, .. } => assert!(revision >= ahead, "read at {revision}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!changes(&url, token, restored.revision).await.reset);
 }
 
 /// T-firewall-token-required: no token, an unknown token and a retired firewall's

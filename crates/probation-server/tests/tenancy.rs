@@ -9,8 +9,9 @@ use std::process::Command;
 use common::{Db, EditFailure};
 use probation_policy::api::KeyId;
 use probation_policy::{Block, Ecosystem, Layer, LayerKind, PlaceRef};
+use probation_server::fleet;
 use probation_server::keys::{self, RevokeError};
-use probation_server::tenancy::{NotFound, PLATFORM, Session};
+use probation_server::tenancy::{NotFound, PLATFORM, Session, authorize};
 
 fn stricter(layer: &mut Layer) {
     layer.blocks.push(Block::Package {
@@ -25,6 +26,37 @@ enum May {
     Nothing,
     Read,
     Edit,
+}
+
+/// Whether `login` may create a key on `place` and revoke one there (created by the
+/// global admin `admin`); both answers must agree.
+async fn may_manage_keys(db: &Db, admin: i32, login: i32, place: PlaceRef) -> bool {
+    let (admin_actor, admin_place) = db.as_admin(admin, place).await;
+    let target = keys::create(&db.app, &admin_actor, &admin_place, "target")
+        .await
+        .unwrap();
+    let session = Session::new(login, None);
+    let authorized = db
+        .tenancy()
+        .authorized_place(&session, place)
+        .await
+        .unwrap();
+    let actor = db.tenancy().actor(&session, &authorized).await.unwrap();
+    let created = match keys::create(&db.app, &actor, &authorized, "own").await {
+        Ok(_) => true,
+        Err(keys::KeyError::Denied) => false,
+        Err(other) => panic!("create: {other:?}"),
+    };
+    let revoked = match keys::revoke(&db.app, &actor, &authorized, target.id).await {
+        Ok(()) => true,
+        Err(RevokeError::Denied) => false,
+        Err(other) => panic!("revoke: {other:?}"),
+    };
+    assert_eq!(
+        created, revoked,
+        "login {login} on {place:?}: create and revoke disagree"
+    );
+    created
 }
 
 async fn may(db: &Db, login: i32, place: PlaceRef) -> May {
@@ -95,6 +127,78 @@ async fn t_authz_matrix() {
             );
         }
     }
+
+    // Keys: create and revoke, each role on the organisation, a group, the login's own
+    // user place and another member's (C14, C27, C50). A global admin has no user place.
+    let (yes, no, absent) = (Some(true), Some(false), None);
+    #[rustfmt::skip]
+    let key_matrix = [
+        // org, g1, own user, other user (m2's)
+        (global,      [yes, yes, absent, yes]),
+        (org_admin,   [yes, yes, yes,    yes]),
+        (group_admin, [no,  yes, yes,    no ]),
+        (m1,          [no,  no,  yes,    no ]),
+    ];
+    let own_place = |login| match login {
+        l if l == org_admin => Some(org_admin_place),
+        l if l == group_admin => Some(group_admin_place),
+        l if l == m1 => Some(m1_place),
+        _ => None,
+    };
+    for (login, row) in key_matrix {
+        let targets = [Some(acme), Some(g1), own_place(login), Some(m2_place)];
+        for (target, want) in targets.into_iter().zip(row) {
+            let (Some(target), Some(want)) = (target, want) else {
+                continue;
+            };
+            assert_eq!(
+                may_manage_keys(&db, global, login, target).await,
+                want,
+                "keys: login {login} on {target:?}"
+            );
+        }
+    }
+    // Firewalls: only a global admin registers one.
+    let sources = ["192.0.2.0/24".parse().unwrap()];
+    for (login, at, want) in [
+        (global, acme, true),
+        (org_admin, acme, false),
+        (m1, m1_place, false),
+    ] {
+        let session = Session::new(login, None);
+        let authorized = db.tenancy().authorized_place(&session, at).await.unwrap();
+        let actor = db.tenancy().actor(&session, &authorized).await.unwrap();
+        let registered = fleet::register(&db.app, &actor, "fw", &sources).await;
+        match (want, registered) {
+            (true, Ok(_)) | (false, Err(fleet::RegisterError::Denied)) => {}
+            (_, other) => panic!("fleet::register by login {login}: {:?}", other.err()),
+        }
+    }
+
+    // A permit is for one place: m1's permit for its own user layer, paired with a
+    // checked edit of the organisation layer, writes nothing (R1).
+    let session = Session::new(m1, None);
+    let own = db
+        .tenancy()
+        .authorized_place(&session, m1_place)
+        .await
+        .unwrap();
+    let actor = db.tenancy().actor(&session, &own).await.unwrap();
+    let own_edit = db.check(&own, stricter).await.unwrap();
+    let permit = authorize(&actor, &own_edit).unwrap();
+    let org = db.tenancy().authorized_place(&session, acme).await.unwrap();
+    let org_edit = db.check(&org, stricter).await.unwrap();
+    let before = db.store().layer(&org).await.unwrap();
+    let audits = db.count("SELECT count(*) FROM audit_log").await;
+    let changes = db.count("SELECT count(*) FROM change_log").await;
+    let saved = db.store().save_edit(&actor, permit, org_edit).await;
+    assert!(
+        saved.is_err(),
+        "a permit for {m1_place:?} saved {acme:?}: {saved:?}"
+    );
+    assert_eq!(db.store().layer(&org).await.unwrap(), before);
+    assert_eq!(db.count("SELECT count(*) FROM audit_log").await, audits);
+    assert_eq!(db.count("SELECT count(*) FROM change_log").await, changes);
 
     db.suspend_org(acme).await;
     for (login, want) in [(global, E), (org_admin, R), (group_admin, R), (m1, R)] {
