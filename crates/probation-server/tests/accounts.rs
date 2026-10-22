@@ -335,6 +335,9 @@ struct FakeNet {
     github_tokens: Mutex<HashMap<String, serde_json::Value>>,
     /// The range API never answers.
     leak_check_hangs: std::sync::atomic::AtomicBool,
+    /// The IdPs redeem a code without checking its PKCE verifier, as one that does not
+    /// support PKCE would, so the portal's own `state` and `nonce` checks stand alone.
+    ignore_pkce: std::sync::atomic::AtomicBool,
 }
 
 const MICROSOFT_COMMON: &str = "https://login.microsoftonline.com/common/v2.0";
@@ -430,7 +433,7 @@ impl FakeNet {
         let valid = form.get("client_id") == Some(&grant.client_id.as_str())
             && form.get("client_secret") == Some(&secret.as_str())
             && form.get("redirect_uri") == Some(&grant.redirect_uri.as_str())
-            && challenge == grant.challenge;
+            && (challenge == grant.challenge || self.ignore_pkce.load(Ordering::SeqCst));
         if valid {
             Ok(grant)
         } else {
@@ -718,6 +721,31 @@ async fn t_portal_signup_duplicate_email() {
             .iter()
             .any(|mail| mail.subject == "You already have a Probation login")
     );
+
+    // R3: sign-ups from one client IP are capped; past the cap the page is the same and
+    // nothing is created or mailed.
+    let mut flood = Browser::new(fx.addr, "203.0.113.50");
+    let mut last = None;
+    for n in 0..25 {
+        let email = format!("flood{n}@spam.test");
+        let fields = [
+            ("email", email.as_str()),
+            ("password", PASSWORD),
+            ("kind", "personal"),
+        ];
+        let page = flood.submit("/signup", "/signup", &fields).await;
+        assert!(page.has("We sent a link to"), "{}", page.body);
+        last = Some((email, page));
+    }
+    let (email, page) = last.unwrap();
+    let fresh = signup_page(&fx, "fresh@spam.test").await;
+    assert_eq!(
+        without_csrf(&page.body).replace(&email, "x"),
+        without_csrf(&fresh.body).replace("fresh@spam.test", "x")
+    );
+    let flooded = "SELECT count(*) FROM sign_in_methods WHERE email LIKE 'flood%'";
+    let made = fx.db.count(flooded).await;
+    assert!(made < 25, "{made} sign-ups from one IP");
 }
 
 /// `path` with every `{…}` segment replaced by `with`.
@@ -955,6 +983,38 @@ fn without_csrf(body: &str) -> String {
 
 const THROTTLED: &str = "Too many attempts";
 
+/// One burst: each browser POSTs `fields` (plus its own CSRF token from `page`) to
+/// `path`, all at once; returns the answers.
+async fn burst(
+    browsers: Vec<Browser>,
+    page: &str,
+    path: &str,
+    fields: &[(&str, &str)],
+) -> Vec<Page> {
+    let mut ready = Vec::new();
+    for mut browser in browsers {
+        let csrf = browser.get(page).await.csrf();
+        ready.push((browser, csrf));
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for (mut browser, csrf) in ready {
+        let path = path.to_owned();
+        let mut fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        fields.push(("csrf".to_owned(), csrf));
+        set.spawn(async move {
+            let fields: Vec<(&str, &str)> = fields
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            browser.post_raw(&path, &fields).await
+        });
+    }
+    set.join_all().await
+}
+
 /// T-portal-auth-session (T15, T32): the sign-in cookie is Secure and HttpOnly; the
 /// session id changes at sign-in and after TOTP; the 6th wrong TOTP code is refused by
 /// throttling; a reused code is refused; the 11th password attempt for one email is
@@ -1046,6 +1106,44 @@ async fn t_portal_auth_session() {
         "{}",
         accepted.body
     );
+
+    // R2: one burst of limit + 5 concurrent attempts verifies at most the limit.
+    member(&fx, "zed@home.test", &[("kind", "personal")]).await;
+    let browsers = (0..15).map(|_| fx.browser()).collect();
+    let pages = burst(
+        browsers,
+        "/signin",
+        "/signin",
+        &[("email", "zed@home.test"), ("password", "wrong password!")],
+    )
+    .await;
+    let verified = pages
+        .iter()
+        .filter(|page| page.has("That email and password do not match"))
+        .count();
+    let throttled = pages.iter().filter(|page| page.has(THROTTLED)).count();
+    assert_eq!(verified + throttled, 15);
+    assert!(
+        verified <= 10,
+        "{verified} of 15 password attempts were verified"
+    );
+    let mut una = member(&fx, "una@home.test", &[("kind", "personal")]).await;
+    turn_totp_on(&mut una).await;
+    let mut waiting = Vec::new();
+    for _ in 0..10 {
+        let mut browser = fx.browser();
+        let first = sign_in(&mut browser, "una@home.test", PASSWORD).await;
+        assert_eq!(first.location.as_deref(), Some("/totp"));
+        waiting.push(browser);
+    }
+    let pages = burst(waiting, "/totp", "/totp", &[("code", "000000")]).await;
+    let verified = pages
+        .iter()
+        .filter(|page| page.has("That code is wrong"))
+        .count();
+    let throttled = pages.iter().filter(|page| page.has(THROTTLED)).count();
+    assert_eq!(verified + throttled, 10);
+    assert!(verified <= 5, "{verified} of 10 codes were verified");
 }
 
 const NEW_PASSWORD: &str = "a brand new passphrase";
@@ -1167,7 +1265,7 @@ async fn choose_password(browser: &mut Browser, link: &str, password: &str) -> P
 async fn t_portal_password_reset() {
     let fx = Fixture::start().await;
     let mut other = member(&fx, "rae@home.test", &[("kind", "personal")]).await;
-    turn_totp_on(&mut other).await;
+    let (secret, _) = turn_totp_on(&mut other).await;
     let link = reset_link(&fx, "rae@home.test").await;
     let mut browser = fx.browser();
     let done = choose_password(&mut browser, &link, NEW_PASSWORD).await;
@@ -1206,6 +1304,23 @@ async fn t_portal_password_reset() {
         expired.has("This link has expired or was already used"),
         "{}",
         expired.body
+    );
+
+    // R5: a session waiting at the TOTP step does not survive a password reset.
+    let mut waiting = fx.browser();
+    let first = sign_in(&mut waiting, "rae@home.test", NEW_PASSWORD).await;
+    assert_eq!(first.location.as_deref(), Some("/totp"));
+    let csrf = waiting.get("/totp").await.csrf();
+    let link = reset_link(&fx, "rae@home.test").await;
+    choose_password(&mut fx.browser(), &link, "yet another passphrase").await;
+    let code = totp_code(&secret, now_unix());
+    let late = waiting
+        .post_raw("/totp", &[("code", &code), ("csrf", &csrf)])
+        .await;
+    assert_ne!(late.location.as_deref(), Some("/account"), "{}", late.body);
+    assert_eq!(
+        waiting.get("/account").await.location.as_deref(),
+        Some("/signin")
     );
 }
 
@@ -1263,6 +1378,30 @@ async fn t_portal_auth_links() {
     );
     let signed = sign_in(&mut browser, "lu@home.test", NEW_PASSWORD).await;
     assert_eq!(signed.location.as_deref(), Some("/totp"));
+
+    // R3: a few mails per address in 15 minutes, with the same answer for a known and an
+    // unknown address.
+    let fx = &fx;
+    let asked = |email: &'static str| async move {
+        let mut browser = fx.browser();
+        browser
+            .submit("/reset", "/reset", &[("email", email)])
+            .await
+    };
+    let before = fx.mail.to("lu@home.test").len();
+    let mut answers = Vec::new();
+    for _ in 0..5 {
+        answers.push(without_csrf(&asked("lu@home.test").await.body));
+        answers.push(without_csrf(&asked("nobody@home.test").await.body));
+    }
+    fx.deliver().await;
+    assert!(
+        answers.iter().all(|answer| *answer == answers[0]),
+        "the same page every time"
+    );
+    let sent = fx.mail.to("lu@home.test").len() - before;
+    assert!(sent < 5, "{sent} reset mails in a row");
+    assert!(fx.mail.to("nobody@home.test").is_empty());
 }
 
 /// The place switcher's options on `page`.
@@ -1614,6 +1753,27 @@ async fn t_portal_auth_state() {
     );
     assert_eq!(fx.db.count(signed_in).await, 1, "no second session");
     assert_eq!(fx.db.count("SELECT count(*) FROM logins").await, 1);
+
+    // R6: with an IdP that does not enforce PKCE, the `state` check stands alone (GitHub
+    // has no nonce), and a wrong `nonce` is refused on its own.
+    fx.net.ignore_pkce.store(true, Ordering::SeqCst);
+    let mut victim = fx.browser();
+    let mut attacker = fx.browser();
+    let victims = victim.get("/oauth/github/start").await.location.unwrap();
+    attacker.get("/oauth/github/start").await;
+    let foreign = fx.net.authorize(&victims, serde_json::json!({"id": 666}));
+    let crossed = attacker.get(&foreign).await;
+    assert_eq!(crossed.status, StatusCode::BAD_REQUEST, "{}", crossed.body);
+    let mut wrong_nonce = fx.browser();
+    let refused = oauth(
+        &fx,
+        &mut wrong_nonce,
+        "/oauth/google/start",
+        serde_json::json!({"sub": "g-9", "nonce": "not-yours"}),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(fx.db.count(signed_in).await, 1, "neither signed in");
 }
 
 /// Connects `org`'s own OIDC sign-in: issuer, client and its sealed secret (what the
@@ -1705,6 +1865,29 @@ async fn t_portal_sso_join() {
     .await;
     assert_eq!(fx.db.count("SELECT count(*) FROM logins").await, 1);
     assert_eq!(fx.db.count("SELECT count(*) FROM memberships").await, 1);
+
+    // R4: a session opened through an organisation's SSO cannot change the login.
+    let csrf = browser.get("/account").await.csrf();
+    let method = sqlx::query_scalar::<_, i32>("SELECT id FROM sign_in_methods WHERE login_id = $1")
+        .bind(login)
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap()
+        .to_string();
+    let before = state(&fx.db).await;
+    for path in [
+        "/account/link/google".to_owned(),
+        format!("/account/methods/{method}/remove"),
+        "/account/delete".to_owned(),
+        "/account/personal".to_owned(),
+        "/account/totp/setup".to_owned(),
+    ] {
+        let page = browser
+            .post_raw(&path, &[("csrf", &csrf), ("confirm", "delete")])
+            .await;
+        assert_eq!(page.status, StatusCode::FORBIDDEN, "{path}: {}", page.body);
+    }
+    assert_eq!(state(&fx.db).await, before, "nothing written");
 }
 
 /// T-portal-org-signin-link (C37): `/o/acme` and typing "acme" in the organisation field
@@ -1807,6 +1990,37 @@ async fn t_oidc_issuer_scoped() {
         Some("/account"),
         "{}",
         accepted.body
+    );
+
+    // R6: Microsoft's common endpoint: a token signs in under its own tenant's issuer,
+    // and one whose `iss` names another tenant than its `tid` is refused.
+    let mut m = fx.browser();
+    let ok = oauth(
+        &fx,
+        &mut m,
+        "/oauth/microsoft/start",
+        serde_json::json!({"sub": "s", "tid": "t1", "oid": "o1"}),
+    )
+    .await;
+    assert_eq!(ok.location.as_deref(), Some("/account"), "{}", ok.body);
+    let subject: String =
+        sqlx::query_scalar("SELECT subject FROM sign_in_methods WHERE kind = 'microsoft'")
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    assert_eq!(subject, "t1/o1");
+    let mut n = fx.browser();
+    let other_tenant = serde_json::json!({
+        "sub": "s", "tid": "t1", "oid": "o2",
+        "iss": "https://login.microsoftonline.com/t2/v2.0",
+    });
+    let refused = oauth(&fx, &mut n, "/oauth/microsoft/start", other_tenant).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM sign_in_methods WHERE kind = 'microsoft'")
+            .await,
+        1
     );
 }
 
@@ -2189,6 +2403,100 @@ async fn t_portal_delete_restore() {
     assert_eq!(forged.status, StatusCode::FORBIDDEN, "{}", forged.body);
     assert_eq!(fx.db.count(state).await, before);
     assert_eq!(deleted(&fx.db, ana_login).await, Some(false));
+
+    // R1: a deleted login with an authenticator offers the C94 choice only after its
+    // code; its password alone can neither erase nor restore it.
+    let mut tess = member(&fx, "tess@home.test", &[("kind", "personal")]).await;
+    let (secret, _) = turn_totp_on(&mut tess).await;
+    tess.submit("/account", "/account/personal/delete", &DELETE)
+        .await;
+    let tess_login = login_of(&fx.db, "tess@home.test").await;
+    assert_eq!(deleted(&fx.db, tess_login).await, Some(true));
+    let mut thief = fx.browser();
+    let first = sign_in(&mut thief, "tess@home.test", PASSWORD).await;
+    assert_eq!(
+        first.location.as_deref(),
+        Some("/totp"),
+        "the code comes first: {}",
+        first.body
+    );
+    for path in ["/deleted/new", "/deleted/restore"] {
+        let csrf = thief.get("/totp").await.csrf();
+        let refused = thief.post_raw(path, &[("csrf", &csrf)]).await;
+        assert_ne!(
+            refused.location.as_deref(),
+            Some("/account"),
+            "{path}: {}",
+            refused.body
+        );
+        assert_eq!(
+            deleted(&fx.db, tess_login).await,
+            Some(true),
+            "{path}: still deleted"
+        );
+        assert_eq!(
+            personal_deleted(&fx.db, tess_login).await,
+            Some(true),
+            "{path}: intact"
+        );
+    }
+    assert_eq!(
+        thief.get("/deleted").await.location.as_deref(),
+        Some("/signin")
+    );
+    // Even a session put at the choice without the code is refused there.
+    let tess_method = method_id(&fx.db, tess_login, "password").await;
+    let forged =
+        serde_json::json!({"deleted": tess_login, "method": tess_method, "by_password": true});
+    sqlx::query("UPDATE sessions SET pending = $1 WHERE pending->>'totp' = $2::text")
+        .bind(&forged)
+        .bind(tess_login.to_string())
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    for path in ["/deleted/new", "/deleted/restore"] {
+        let csrf = thief.get("/deleted").await.csrf();
+        let refused = thief.post_raw(path, &[("csrf", &csrf)]).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{path}: {}",
+            refused.body
+        );
+        assert_eq!(
+            deleted(&fx.db, tess_login).await,
+            Some(true),
+            "{path}: still deleted"
+        );
+        assert_eq!(
+            personal_deleted(&fx.db, tess_login).await,
+            Some(true),
+            "{path}: intact"
+        );
+    }
+    let mut owner = fx.browser();
+    sign_in(&mut owner, "tess@home.test", PASSWORD).await;
+    let coded = owner
+        .submit(
+            "/totp",
+            "/totp",
+            &[("code", &totp_code(&secret, now_unix()))],
+        )
+        .await;
+    assert_eq!(
+        coded.location.as_deref(),
+        Some("/deleted"),
+        "{}",
+        coded.body
+    );
+    let back = owner.submit("/deleted", "/deleted/restore", &[]).await;
+    assert_eq!(
+        back.location.as_deref(),
+        Some("/account"),
+        "no second code: {}",
+        back.body
+    );
+    assert_eq!(deleted(&fx.db, tess_login).await, Some(false));
 }
 
 async fn personal_deleted(db: &Db, login: i32) -> Option<bool> {

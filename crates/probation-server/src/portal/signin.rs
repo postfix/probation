@@ -79,6 +79,25 @@ pub(crate) async fn signup_form(State(portal): State<Shared>, headers: HeaderMap
     )
 }
 
+/// Whether this client IP may make one more request that sends mail (sign-up, "send
+/// the link again", reset); counted when it may (R3).
+async fn mail_ip_allowed(
+    portal: &super::Portal,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+) -> Result<bool, sqlx::Error> {
+    let ip = client_ip(peer, headers, &portal.trusted_proxies)
+        .map_or_else(|| "unparsable".to_owned(), |ip| ip.to_string());
+    let checks = [("ip", format!("mail:{ip}"), accounts::MAIL_PER_IP)];
+    Ok(match accounts::attempt(&portal.pool, &checks).await? {
+        Some(counted) => {
+            counted.keep();
+            true
+        }
+        None => false,
+    })
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct SignupForm {
@@ -91,6 +110,7 @@ pub(crate) struct SignupForm {
 
 pub(crate) async fn signup(
     State(portal): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Form(form): Form<SignupForm>,
 ) -> Response {
@@ -128,6 +148,15 @@ pub(crate) async fn signup(
     } else {
         SignupKind::Personal
     };
+    // Over the cap the page is the one a sent link shows (C91), with nothing done.
+    match mail_ip_allowed(&portal, peer, &headers).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let view = SignupView::CheckEmail { email: &email };
+            return render(StatusCode::OK, &signup_page(&portal, session.csrf(), view));
+        }
+        Err(err) => return unavailable(err),
+    }
     if let Err(problem) = accounts::check_new_password(
         portal.outbound.as_ref(),
         &portal.config.leaked_password_url,
@@ -160,6 +189,7 @@ pub(crate) struct ResendForm {
 
 pub(crate) async fn resend(
     State(portal): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Form(form): Form<ResendForm>,
 ) -> Response {
@@ -168,7 +198,12 @@ pub(crate) async fn resend(
         Err(refused) => return refused,
     };
     let email = accounts::normal_email(&form.email).unwrap_or_default();
-    if !email.is_empty()
+    let allowed = match mail_ip_allowed(&portal, peer, &headers).await {
+        Ok(allowed) => allowed,
+        Err(err) => return unavailable(err),
+    };
+    if allowed
+        && !email.is_empty()
         && let Err(err) =
             accounts::resend_verification(&portal.pool, &portal.config.base_url, &email).await
     {
@@ -334,15 +369,13 @@ pub(crate) async fn signin(
     let email = accounts::normal_email(&form.email).unwrap_or_default();
     let ip = client_ip(peer, &headers, &portal.trusted_proxies)
         .map_or_else(|| "unparsable".to_owned(), |ip| ip.to_string());
-    let throttled = async {
-        Ok::<_, sqlx::Error>(
-            accounts::failures(&portal.pool, "email", &email).await? >= accounts::EMAIL_FAILURES
-                || accounts::failures(&portal.pool, "ip", &ip).await? >= accounts::IP_FAILURES,
-        )
-    };
-    match throttled.await {
-        Ok(false) => {}
-        Ok(true) => {
+    let checks = [
+        ("email", email.clone(), accounts::EMAIL_FAILURES),
+        ("ip", ip, accounts::IP_FAILURES),
+    ];
+    let attempt = match accounts::attempt(&portal.pool, &checks).await {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
             let view = SigninView::Form {
                 error: Some(THROTTLED),
                 notice: None,
@@ -354,7 +387,7 @@ pub(crate) async fn signin(
             );
         }
         Err(err) => return unavailable(err),
-    }
+    };
     let method = match accounts::password_method(&portal.pool, &email).await {
         Ok(method) => method,
         Err(err) => return unavailable(err),
@@ -362,13 +395,8 @@ pub(crate) async fn signin(
     let hash = method.as_ref().and_then(|method| method.hash.clone());
     let matches = portal.passwords.verify_blocking(form.password, hash).await;
     let Some(method) = method.filter(|_| matches) else {
-        let recorded = async {
-            accounts::record_failure(&portal.pool, "email", &email).await?;
-            accounts::record_failure(&portal.pool, "ip", &ip).await
-        };
-        if let Err(err) = recorded.await {
-            return unavailable(err);
-        }
+        // A failure keeps its recorded attempt.
+        attempt.keep();
         let view = SigninView::Form {
             error: Some(WRONG_PASSWORD),
             notice: None,
@@ -379,18 +407,47 @@ pub(crate) async fn signin(
             &signin_page(&portal, session.csrf(), view),
         );
     };
+    if let Err(err) = attempt.release(&portal.pool).await {
+        return unavailable(err);
+    }
     match accounts::login_state(&portal.pool, method.login_id).await {
         Ok(accounts::LoginState::Live) => {}
+        // A deleted login with an authenticator asks for its code before it offers the
+        // choice, which can erase it (R1).
         Ok(accounts::LoginState::Deleted { .. }) => {
-            return deleted_choice(
-                &portal,
-                &session,
-                method.login_id,
-                method.method_id,
-                true,
-                None,
-            )
-            .await;
+            return match accounts::has_totp(&portal.pool, method.login_id).await {
+                Ok(true) => {
+                    let pending = serde_json::json!({
+                        "totp": method.login_id,
+                        "then_deleted": method.method_id,
+                    });
+                    match accounts::rotate_session(
+                        &portal.pool,
+                        &session,
+                        None,
+                        false,
+                        None,
+                        Some(pending),
+                    )
+                    .await
+                    {
+                        Ok((_, token)) => {
+                            with_cookie(redirect("/totp"), Some(session_cookie(&token)))
+                        }
+                        Err(err) => unavailable(err),
+                    }
+                }
+                Ok(false) => {
+                    let choice = DeletedChoice {
+                        by_password: true,
+                        second_factor_done: false,
+                        scope: None,
+                    };
+                    deleted_choice(&portal, &session, method.login_id, method.method_id, choice)
+                        .await
+                }
+                Err(err) => unavailable(err),
+            };
         }
         // Past its 30 days: erased now, and the address is free (C94).
         Ok(accounts::LoginState::Expired) => {
@@ -458,19 +515,83 @@ async fn deleted_choice(
     session: &accounts::Session,
     login: i32,
     method: i32,
-    by_password: bool,
-    scope_org_id: Option<i32>,
+    choice: DeletedChoice,
 ) -> Response {
     let pending = serde_json::json!({
         "deleted": login,
         "method": method,
-        "by_password": by_password,
-        "scope": scope_org_id,
+        "by_password": choice.by_password,
+        "second_factor": choice.second_factor_done,
+        "scope": choice.scope,
     });
     match accounts::rotate_session(&portal.pool, session, None, false, None, Some(pending)).await {
         Ok((_, token)) => with_cookie(redirect("/deleted"), Some(session_cookie(&token))),
         Err(err) => unavailable(err),
     }
+}
+
+/// How a session reached the deleted-login choice.
+struct DeletedChoice {
+    by_password: bool,
+    /// The login's authenticator code was given first (R1).
+    second_factor_done: bool,
+    scope: Option<i32>,
+}
+
+impl DeletedChoice {
+    /// The session's choice, or `None` when a password reached it without the code of a
+    /// login that has an authenticator (R1).
+    async fn of(
+        portal: &super::Portal,
+        session: &accounts::Session,
+        login: i32,
+    ) -> Result<Option<DeletedChoice>, sqlx::Error> {
+        let pending = session.pending.clone().unwrap_or_default();
+        let choice = DeletedChoice {
+            by_password: pending["by_password"].as_bool().unwrap_or(true),
+            second_factor_done: pending["second_factor"].as_bool().unwrap_or(false),
+            scope: pending["scope"]
+                .as_i64()
+                .and_then(|id| i32::try_from(id).ok()),
+        };
+        if choice.by_password
+            && !choice.second_factor_done
+            && accounts::has_totp(&portal.pool, login).await?
+        {
+            return Ok(None);
+        }
+        Ok(Some(choice))
+    }
+
+    /// Signs `login` in; a code given before the choice counts as its TOTP step.
+    async fn sign_in(
+        &self,
+        portal: &super::Portal,
+        session: &accounts::Session,
+        login: i32,
+    ) -> Response {
+        if !self.second_factor_done {
+            return sign_in_as(portal, session, login, self.by_password, self.scope).await;
+        }
+        match accounts::rotate_session(&portal.pool, session, Some(login), true, self.scope, None)
+            .await
+        {
+            Ok((_, token)) => with_cookie(redirect("/account"), Some(session_cookie(&token))),
+            Err(err) => unavailable(err),
+        }
+    }
+}
+
+fn refused_choice(portal: &super::Portal, session: &accounts::Session) -> Response {
+    let view = SigninView::Form {
+        error: Some("Sign in again and enter your authenticator code first."),
+        notice: None,
+        email: "",
+    };
+    render(
+        StatusCode::FORBIDDEN,
+        &signin_page(portal, session.csrf(), view),
+    )
 }
 
 pub(crate) async fn deleted_form(State(portal): State<Shared>, headers: HeaderMap) -> Response {
@@ -512,17 +633,17 @@ pub(crate) async fn deleted_restore(
     let Some(login) = session.pending_login("deleted") else {
         return redirect("/signin");
     };
+    let choice = match DeletedChoice::of(&portal, &session, login).await {
+        Ok(Some(choice)) => choice,
+        Ok(None) => return refused_choice(&portal, &session),
+        Err(err) => return unavailable(err),
+    };
     match accounts::restore_login(&portal.pool, login).await {
         Ok(true) => {}
         Ok(false) => return redirect("/signin"),
         Err(err) => return unavailable(err),
     }
-    let pending = session.pending.clone().unwrap_or_default();
-    let by_password = pending["by_password"].as_bool().unwrap_or(true);
-    let scope = pending["scope"]
-        .as_i64()
-        .and_then(|id| i32::try_from(id).ok());
-    sign_in_as(&portal, &session, login, by_password, scope).await
+    choice.sign_in(&portal, &session, login).await
 }
 
 /// "Start a new login instead" (C94): the old login is erased now, and a new one with
@@ -542,13 +663,13 @@ pub(crate) async fn deleted_new(
     ) else {
         return redirect("/signin");
     };
-    let pending = session.pending.clone().unwrap_or_default();
-    let by_password = pending["by_password"].as_bool().unwrap_or(true);
-    let scope = pending["scope"]
-        .as_i64()
-        .and_then(|id| i32::try_from(id).ok());
+    let choice = match DeletedChoice::of(&portal, &session, login).await {
+        Ok(Some(choice)) => choice,
+        Ok(None) => return refused_choice(&portal, &session),
+        Err(err) => return unavailable(err),
+    };
     match accounts::start_new_login(&portal.pool, login, method).await {
-        Ok(Some(new_login)) => sign_in_as(&portal, &session, new_login, by_password, scope).await,
+        Ok(Some(new_login)) => choice.sign_in(&portal, &session, new_login).await,
         Ok(None) => redirect("/signin"),
         Err(err) => unavailable(err),
     }
@@ -596,29 +717,39 @@ pub(crate) async fn totp(
     let Some(login) = session.pending_login("totp") else {
         return redirect("/signin");
     };
-    let subject = login.to_string();
-    match accounts::failures(&portal.pool, "totp", &subject).await {
-        Ok(count) if count >= accounts::TOTP_FAILURES => {
+    let checks = [("totp", login.to_string(), accounts::TOTP_FAILURES)];
+    let attempt = match accounts::attempt(&portal.pool, &checks).await {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
             return render(
                 StatusCode::TOO_MANY_REQUESTS,
                 &totp_step(session.csrf(), Some(THROTTLED)),
             );
         }
-        Ok(_) => {}
         Err(err) => return unavailable(err),
-    }
+    };
     match accounts::second_factor(&portal.pool, &portal.secrets, login, &form.code).await {
         Ok(true) => {}
         Ok(false) => {
-            if let Err(err) = accounts::record_failure(&portal.pool, "totp", &subject).await {
-                return unavailable(err);
-            }
+            attempt.keep();
             return render(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 &totp_step(session.csrf(), Some(WRONG_CODE)),
             );
         }
         Err(err) => return unavailable(err),
+    }
+    if let Err(err) = attempt.release(&portal.pool).await {
+        return unavailable(err);
+    }
+    // A deleted login's code leads on to its choice (R1, C94).
+    if let Some(method) = session.pending_login("then_deleted") {
+        let choice = DeletedChoice {
+            by_password: true,
+            second_factor_done: true,
+            scope: None,
+        };
+        return deleted_choice(&portal, &session, login, method, choice).await;
     }
     match accounts::rotate_session(&portal.pool, &session, Some(login), true, None, None).await {
         Ok((_, token)) => with_cookie(redirect("/account"), Some(session_cookie(&token))),
@@ -671,6 +802,7 @@ pub(crate) struct ResetForm {
 /// Sends a reset link; the answer is the same whether or not the address has a login.
 pub(crate) async fn reset(
     State(portal): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Form(form): Form<ResetForm>,
 ) -> Response {
@@ -678,7 +810,12 @@ pub(crate) async fn reset(
         Ok(session) => session,
         Err(refused) => return refused,
     };
-    if let Some(email) = accounts::normal_email(&form.email)
+    let allowed = match mail_ip_allowed(&portal, peer, &headers).await {
+        Ok(allowed) => allowed,
+        Err(err) => return unavailable(err),
+    };
+    if allowed
+        && let Some(email) = accounts::normal_email(&form.email)
         && let Err(err) =
             accounts::request_reset(&portal.pool, &portal.config.base_url, &email).await
     {
@@ -908,7 +1045,12 @@ pub(crate) async fn finish_flow(
     };
     match accounts::login_state(&portal.pool, login).await {
         Ok(accounts::LoginState::Deleted { .. }) => {
-            deleted_choice(portal, &session, login, method, false, identity.org).await
+            let choice = DeletedChoice {
+                by_password: false,
+                second_factor_done: false,
+                scope: identity.org,
+            };
+            deleted_choice(portal, &session, login, method, choice).await
         }
         Ok(_) => sign_in_as(portal, &session, login, false, identity.org).await,
         Err(err) => unavailable(err),

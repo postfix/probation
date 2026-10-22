@@ -83,6 +83,9 @@ pub(crate) fn token_hash(token: &str) -> Vec<u8> {
 #[derive(Clone)]
 pub struct Passwords {
     argon: Argon2<'static>,
+    /// Argon2id runs at most one per CPU at a time, so a burst queues instead of
+    /// exhausting memory and the blocking pool (R2).
+    permits: Arc<tokio::sync::Semaphore>,
     /// Verified against when the email has no password, so an unknown email costs the
     /// same as a wrong password (T32).
     dummy: String,
@@ -95,7 +98,12 @@ impl Passwords {
             .hash_password(b"no such login")
             .expect("argon2 hashes")
             .to_string();
-        Passwords { argon, dummy }
+        let cpus = std::thread::available_parallelism().map_or(2, usize::from);
+        Passwords {
+            argon,
+            permits: Arc::new(tokio::sync::Semaphore::new(cpus)),
+            dummy,
+        }
     }
 
     pub(crate) fn hash(&self, password: &str) -> String {
@@ -107,6 +115,11 @@ impl Passwords {
 
     /// `hash` off the async runtime: Argon2id is deliberately slow.
     pub(crate) async fn hash_blocking(&self, password: String) -> String {
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .expect("the semaphore is never closed");
         let passwords = self.clone();
         tokio::task::spawn_blocking(move || passwords.hash(&password))
             .await
@@ -115,6 +128,11 @@ impl Passwords {
 
     /// `verify` off the async runtime.
     pub(crate) async fn verify_blocking(&self, password: String, hash: Option<String>) -> bool {
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .expect("the semaphore is never closed");
         let passwords = self.clone();
         tokio::task::spawn_blocking(move || passwords.verify(&password, hash.as_deref()))
             .await
@@ -350,8 +368,10 @@ pub async fn sign_up(
     .fetch_one(&mut *tx)
     .await?;
     if taken {
-        let (subject, body) = already_mail(base);
-        enqueue(&mut tx, email, "already", &subject, &body).await?;
+        if mail_allowed(pool, email).await? {
+            let (subject, body) = already_mail(base);
+            enqueue(&mut tx, email, "already", &subject, &body).await?;
+        }
         return tx.commit().await;
     }
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
@@ -372,7 +392,9 @@ pub async fn sign_up(
         drop(tx);
         return Box::pin(sign_up(pool, base, email, password_hash, kind)).await;
     };
-    send_verify(&mut tx, base, method, email, kind.payload()).await?;
+    if mail_allowed(pool, email).await? {
+        send_verify(&mut tx, base, method, email, kind.payload()).await?;
+    }
     tx.commit().await
 }
 
@@ -416,7 +438,9 @@ pub async fn resend_verification(
     .bind(email)
     .fetch_optional(&mut *tx)
     .await?;
-    if let Some((method, payload)) = pending {
+    if let Some((method, payload)) = pending
+        && mail_allowed(pool, email).await?
+    {
         let payload = payload.unwrap_or_else(|| json!({}));
         send_verify(&mut tx, base, method, email, payload).await?;
     }
@@ -1121,11 +1145,7 @@ pub(crate) const EMAIL_FAILURES: i64 = 10;
 pub(crate) const IP_FAILURES: i64 = 100;
 pub(crate) const TOTP_FAILURES: i64 = 5;
 
-pub(crate) async fn failures(
-    pool: &PgPool,
-    scope: &str,
-    subject: &str,
-) -> Result<i64, sqlx::Error> {
+async fn failures(pool: &PgPool, scope: &str, subject: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*) FROM sign_in_failures
          WHERE scope = $1 AND subject = $2 AND at > now() - interval '15 minutes'",
@@ -1136,17 +1156,96 @@ pub(crate) async fn failures(
     .await
 }
 
-pub(crate) async fn record_failure(
+/// At most this many mails to one address in 15 minutes (sign-up, "send the link
+/// again", reset), and this many mail-sending requests from one client IP.
+pub(crate) const MAIL_PER_ADDRESS: i64 = 5;
+pub(crate) const MAIL_PER_IP: i64 = 20;
+
+/// One attempt, recorded in `sign_in_failures` before it is checked, so a concurrent
+/// burst cannot all see the count from before it (R2): the n-th attempt to be recorded
+/// counts at least n rows. A failed check keeps its rows; `release` removes them.
+#[must_use]
+pub(crate) struct Attempt {
+    rows: Vec<(&'static str, String, String)>,
+}
+
+/// Records one attempt against each `(scope, subject, limit)`; `None`, with nothing
+/// left recorded, when any count including it is over its limit.
+pub(crate) async fn attempt(
     pool: &PgPool,
-    scope: &str,
-    subject: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO sign_in_failures (scope, subject) VALUES ($1, $2)")
-        .bind(scope)
+    checks: &[(&'static str, String, i64)],
+) -> Result<Option<Attempt>, sqlx::Error> {
+    let mut attempt = Attempt { rows: Vec::new() };
+    for (scope, subject, _) in checks {
+        let at: String = sqlx::query_scalar(
+            "INSERT INTO sign_in_failures (scope, subject) VALUES ($1, $2) RETURNING at::text",
+        )
+        .bind(*scope)
         .bind(subject)
-        .execute(pool)
-        .await
-        .map(drop)
+        .fetch_one(pool)
+        .await?;
+        attempt.rows.push((*scope, subject.clone(), at));
+    }
+    for (scope, subject, limit) in checks {
+        if failures(pool, scope, subject).await? > *limit {
+            attempt.release(pool).await?;
+            return Ok(None);
+        }
+    }
+    Ok(Some(attempt))
+}
+
+impl Attempt {
+    /// Removes this attempt's rows: it succeeded, or it was refused unchecked.
+    pub(crate) async fn release(self, pool: &PgPool) -> Result<(), sqlx::Error> {
+        for (scope, subject, at) in &self.rows {
+            sqlx::query(
+                "DELETE FROM sign_in_failures
+                 WHERE ctid = (SELECT ctid FROM sign_in_failures
+                               WHERE scope = $1 AND subject = $2 AND at = $3::timestamptz LIMIT 1)",
+            )
+            .bind(*scope)
+            .bind(subject)
+            .bind(at)
+            .execute(pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Keeps this attempt's rows: a failure, or a mail that counts against its cap.
+    pub(crate) fn keep(self) {}
+}
+
+/// Whether one more mail may go to `email` now (R3); counted when it may.
+async fn mail_allowed(pool: &PgPool, email: &str) -> Result<bool, sqlx::Error> {
+    let checks = [("email", format!("mail:{email}"), MAIL_PER_ADDRESS)];
+    Ok(match attempt(pool, &checks).await? {
+        Some(sent) => {
+            sent.keep();
+            true
+        }
+        None => false,
+    })
+}
+
+/// Ends every session of the login, signed in or waiting at its TOTP step or its
+/// deleted-login choice (R5), except `keep`.
+async fn end_sessions(
+    conn: &mut PgConnection,
+    login_id: i32,
+    keep: Option<&[u8]>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM sessions
+         WHERE (login_id = $1 OR pending->>'totp' = $1::text OR pending->>'deleted' = $1::text)
+           AND ($2::bytea IS NULL OR id_hash <> $2)",
+    )
+    .bind(login_id)
+    .bind(keep)
+    .execute(conn)
+    .await
+    .map(drop)
 }
 
 pub(crate) async fn password_hash_of(
@@ -1178,10 +1277,7 @@ pub(crate) async fn change_password(
     .bind(new_hash)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, None).await?;
     let (_, token) = open_session_in(
         &mut tx,
         Some(login_id),
@@ -1221,7 +1317,9 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
     .bind(email)
     .fetch_optional(&mut *tx)
     .await?;
-    if let Some(method) = method {
+    if let Some(method) = method
+        && mail_allowed(pool, email).await?
+    {
         let token = random_token();
         sqlx::query(
             "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
@@ -1276,10 +1374,7 @@ pub(crate) async fn reset_password(
     let Some(login_id) = login else {
         return Ok(false);
     };
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, None).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -2011,11 +2106,7 @@ pub(crate) async fn unlink_method(
         .bind(method_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1 AND id_hash <> $2")
-        .bind(login_id)
-        .bind(&session.id_hash)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, Some(&session.id_hash)).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -2340,10 +2431,7 @@ async fn mark_login_deleted(conn: &mut PgConnection, login_id: i32) -> Result<()
     .bind(RESTORE_DAYS)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *conn)
-        .await?;
+    end_sessions(conn, login_id, None).await?;
     change_owned_keys(conn, login_id).await?;
     let actor = login_actor(conn, login_id).await?;
     audit::record(
