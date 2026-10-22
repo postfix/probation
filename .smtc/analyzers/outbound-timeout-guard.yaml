@@ -46,9 +46,9 @@
 # see `.smtc/analyzers/consumer-identity-extension-read.yaml`.
 #
 # Validated against (last re-validated 2026-10-22, batcher.rs sha256
-# 93047ad815b45485890e1b459ef866b9bedcdee19a48eb533e17371a7a5f7b7a: the
-# uncommitted slice-3 tree on 6ac2e36, after deviation S3-1 threaded the
-# OSV reachability tracker into `batcher::run`; same classes, lines shifted):
+# 61b2f848bc3f61737de757277e6159af8b5450b757c6a9d19438bce7d01ebffa: as of
+# dc8cf53, which changed one line inside the test module (line 291) with
+# no line shift; same classes, same lines):
 #   - docs/plans/osv-intel/controls/unsafe/unwrapped_outbound_send.rs:
 #     fires, 1 finding at line 16 (the outer `send(client).await` has no
 #     `timeout` in its own function).

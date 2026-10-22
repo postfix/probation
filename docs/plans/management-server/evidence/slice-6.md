@@ -25,3 +25,4 @@ Confirmed and sent to slice 6: the admin TOTP gate for every admin action (F1/S6
 | security S6-SEC-4 | crates/probation-server/src/tenancy.rs:898 | A removed or demoted org admin's pending invitations still grant their role, and accepting one clears the removal |
 | adversarial S6-ADV-5 | crates/probation-server/src/portal/policy.rs:244 | An exception that still partly applies is labelled entirely 'not in effect' |
 | adversarial S6-ADV-6 | crates/probation-server/src/portal/activity.rs:121 | A group admin's activity view follows current group membership, so a member's history moves with them between groups |
+| S6-5 | backlog | tests/content_store.rs `an_open_during_eviction_is_refused_and_a_second_eviction_stands_aside` failed once in a loaded full run, then passed alone and in the full rerun. Firewall test, not slice 6. | Backlog: find the race by reading the code; no load loops. |

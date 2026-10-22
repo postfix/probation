@@ -43,3 +43,11 @@ Built in parallel with slice 3, in worktree ../probation-slice4 (branch `managem
 
 ## Re-verification (2026-10-22, on 2b7b55c)
 UNCERTAIN on one item: the C126 layers-epoch clause has no executed witness (the mutant removing it survives). Slice 3 is adding the test (S3-8 V3); slice 4 becomes VERIFIED once that test is merged. Verified: the C126 server side (killed mutant), the B2 OSV flake fix, F7, the dedupe, the override clamp, and T-firewall-token-source still detecting a missing rate limit (killed mutant). Row-4 witness: sync_api 6, policy_edit 8, tenancy 3, propagation 3 (p99 5.026 s and 4.970 s), doctest 1; cargo package gives the 2 crates. Nits sent: i64::MAX cursor bound; stale R3 comment. Open: the bootstrap audit row is still scoped to the new org (lib.rs:193). Other tests still use pooled wiremock servers (backlog). The reference shape sync.rs.txt still names raise_invalidation_floor (no control uses it).
+
+## Final verification (2026-10-22, on 7d9dda9 = 08f804a + slice 3 08b6d69): VERIFIED
+- The C126 layers clause is witnessed: the store_layers epoch mutant fails t_sync_reset_to_a_lower_revision (200 vs 403), and the file was restored byte-identically.
+- i64::MAX cursor accepted; u64::MAX → 422.
+- Row-4 witness: sync_api 6, policy_edit 8, tenancy 3, propagation 3 (edits p99 5.002 s, revocations p99 4.954 s at a 10 s interval), doctest 1.
+- molecule-check PASS; molecule-verify --slice 4 PASS 12/12.
+- Workspace: 609 passed, 0 failed. clippy and fmt clean.
+- Optional gap: no test at exactly i64::MAX+1.
