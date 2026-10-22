@@ -25,7 +25,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use probation_policy::PlaceRef;
 use probation_policy::api::{
     ActivityEvent, ActivityLayer, ActivityResult, ChainLink, FirewallReport, KeyHash, KeyId,
-    KeyLookup, LimitSource, OrgId, ReportStatus, Upstreams,
+    KeyLookup, LayersResponse, LimitSource, OrgId, ReportStatus, Upstreams,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -384,14 +384,18 @@ impl Managed {
         if !self.budget.take(client, has_entry) {
             return Err(Failed::Busy);
         }
+        // The reset epoch each call starts in: an answer from before a reset is never
+        // kept (C126).
+        let mut epoch = self.cache.epoch();
         let mut answer = self
             .client
             .lookup(*hash)
             .await
             .map_err(|e| self.failed(e))?;
-        if !self.cache.is_current(&answer) {
+        if !self.cache.is_current(&answer) || self.cache.epoch() != epoch {
             // Read before an invalidation this firewall has already applied: dropped,
             // and asked once more (H6).
+            epoch = self.cache.epoch();
             answer = self
                 .client
                 .lookup(*hash)
@@ -424,7 +428,7 @@ impl Managed {
             ),
             KeyLookup::Unknown { .. } => {
                 self.cache
-                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read);
+                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch);
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
             KeyLookup::Revoked {
@@ -450,7 +454,7 @@ impl Managed {
                 };
                 if !self
                     .cache
-                    .refuse_current(*hash, None, Some(known.clone()), &read)
+                    .refuse_current(*hash, None, Some(known.clone()), &read, epoch)
                 {
                     // A `key` or `place` row since may have restored it: asked again.
                     return Err(Failed::Busy);
@@ -473,7 +477,10 @@ impl Managed {
             org,
             chain: chain.iter().map(|link| link.place).collect(),
         };
-        match self.cache.insert_current(*hash, found.clone(), &read) {
+        match self
+            .cache
+            .insert_current(*hash, found.clone(), &read, epoch)
+        {
             Insert::Done => {}
             // Invalidated while its layers were fetched (H6), or the cache is full while
             // the server is down, when nothing is evicted.
@@ -580,26 +587,36 @@ impl Managed {
         {
             return Err(Failed::Busy);
         }
+        let epoch = self.cache.epoch();
         let answer = self
             .client
             .layers(places.clone())
             .await
             .map_err(|e| self.failed(e))?;
-        if self.policies.store(answer, self.cache.floor()) {
+        if self.store_layers(answer, epoch) {
             return Ok(());
         }
         // Read before a `layer` row or a reset this firewall has applied: asked once
         // more (H6).
+        let epoch = self.cache.epoch();
         let answer = self
             .client
             .layers(places)
             .await
             .map_err(|e| self.failed(e))?;
-        if self.policies.store(answer, self.cache.floor()) {
+        if self.store_layers(answer, epoch) {
             Ok(())
         } else {
             Err(Failed::Busy)
         }
+    }
+
+    /// Keeps a `layers` answer unless a reset happened since its call started (C126) or
+    /// it was read before an invalidation (H6).
+    fn store_layers(&self, answer: LayersResponse, epoch: u64) -> bool {
+        let floor = self.cache.floor();
+        self.cache
+            .in_epoch(epoch, || self.policies.store(answer, floor))
     }
 
     /// What a failed call to the server means for this firewall.

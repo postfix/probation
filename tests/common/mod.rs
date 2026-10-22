@@ -1738,6 +1738,8 @@ pub mod sync {
         delivered: Mutex<Vec<ChangesRequest>>,
         /// The revision of the last `changes` answer sent.
         answered: AtomicU64,
+        /// How many `changes` answers were resets.
+        resets: AtomicUsize,
     }
 
     impl State_ {
@@ -1965,6 +1967,28 @@ pub mod sync {
         pub fn prune(&self) {
             let revision = self.state.revision.load(Ordering::SeqCst);
             self.state.pruned_through.store(revision, Ordering::SeqCst);
+        }
+
+        /// Sets the change-log revision, as a burst of writes or a database restore does.
+        pub fn set_revision(&self, revision: u64) {
+            self.state.revision.store(revision, Ordering::SeqCst);
+        }
+
+        /// A database restored from a backup taken at `revision`: the change log and its
+        /// pruning mark are back where they were then.
+        pub fn restore_to(&self, revision: u64) {
+            self.state.revision.store(revision, Ordering::SeqCst);
+            self.state.pruned_through.store(0, Ordering::SeqCst);
+            self.state
+                .log
+                .lock()
+                .unwrap()
+                .retain(|(at, _)| *at <= revision);
+        }
+
+        /// How many `changes` answers were resets.
+        pub fn resets(&self) -> usize {
+            self.state.resets.load(Ordering::SeqCst)
         }
 
         /// Takes the server down (every route answers `503`) or brings it back.
@@ -2316,7 +2340,10 @@ pub mod sync {
             ..ChangesResponse::default()
         };
         let ranges = state.ranges.lock().unwrap().clone();
-        if request.since < state.pruned_through.load(Ordering::SeqCst) {
+        // C126: a cursor below the pruned log, or above this server's revision (after
+        // a database restore), is answered with a reset at the server's own revision.
+        if request.since < state.pruned_through.load(Ordering::SeqCst) || request.since > revision {
+            state.resets.fetch_add(1, Ordering::SeqCst);
             answer.reset = true;
             answer.network_lock = Some(ranges);
         } else {

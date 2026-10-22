@@ -73,6 +73,10 @@ pub(super) enum Standing {
 #[derive(Default)]
 struct Invalidations {
     floor: u64,
+    /// Raised by every reset: an answer from an ask that started before one is dropped,
+    /// whatever its revision, since a server restored from a backup answers lower
+    /// revisions than before (C126).
+    epoch: u64,
     keys: HashMap<KeyId, Seen>,
     places: HashMap<PlaceRef, Seen>,
     limits: HashMap<(AccountKind, Option<u32>), Seen>,
@@ -283,9 +287,29 @@ impl KeyCache {
     }
 
     /// A reset: every lookup answer read below `revision` is dropped.
-    pub(super) fn raise_invalidation_floor(&self, revision: u64) {
+    /// A reset: the answered revision becomes the floor, even when it is lower than
+    /// before, every record goes, and every ask in flight is from an older epoch (C126).
+    pub(super) fn reset_invalidations(&self, revision: u64) {
         let mut invalidations = self.invalidations();
-        invalidations.floor = invalidations.floor.max(revision);
+        let epoch = invalidations.epoch + 1;
+        *invalidations = Invalidations {
+            floor: revision,
+            epoch,
+            ..Invalidations::default()
+        };
+    }
+
+    /// The reset epoch an ask starts in.
+    pub(super) fn epoch(&self) -> u64 {
+        self.invalidations().epoch
+    }
+
+    /// Runs `keep` if no reset has happened since `epoch`, under the invalidations lock,
+    /// so a reset cannot land between the check and what `keep` stores. False when one
+    /// has, or when `keep` refuses.
+    pub(super) fn in_epoch(&self, epoch: u64, keep: impl FnOnce() -> bool) -> bool {
+        let invalidations = self.invalidations();
+        invalidations.epoch == epoch && keep()
     }
 
     pub(super) fn floor(&self) -> u64 {
@@ -401,9 +425,10 @@ impl KeyCache {
         hash: KeyHash,
         principal: Principal,
         answer: &KeyLookup,
+        epoch: u64,
     ) -> Insert {
         let invalidations = self.invalidations();
-        if !current(&invalidations, answer) {
+        if invalidations.epoch != epoch || !current(&invalidations, answer) {
             return Insert::Late;
         }
         if self.insert(hash, principal) {
@@ -420,9 +445,10 @@ impl KeyCache {
         unknown_for: Option<Duration>,
         known: Option<KnownRefusal>,
         answer: &KeyLookup,
+        epoch: u64,
     ) -> bool {
         let invalidations = self.invalidations();
-        if !current(&invalidations, answer) {
+        if invalidations.epoch != epoch || !current(&invalidations, answer) {
             return false;
         }
         self.refuse(hash, unknown_for, known);
@@ -1209,7 +1235,7 @@ mod tests {
         cache.update_limits(&[change(Some(10))], 11);
         assert!(!cache.is_current(&known(3, acme, 10)), "its own limit");
         assert!(cache.is_current(&known(3, acme, 11)));
-        cache.raise_invalidation_floor(20);
+        cache.reset_invalidations(20);
         assert!(
             !cache.is_current(&KeyLookup::Unknown { revision: 19 }),
             "the floor"

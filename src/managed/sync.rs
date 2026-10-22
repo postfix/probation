@@ -107,7 +107,7 @@ impl KeySync {
             Answer::Changes(delta) => self.apply_changes(&delta),
             Answer::Reset(full) => {
                 self.reset_cursor(full.revision);
-                self.cache.raise_invalidation_floor(full.revision);
+                self.cache.reset_invalidations(full.revision);
                 self.drop_cache();
                 self.network_lock.adopt(full.network_lock.as_deref());
                 self.offer(full.settings);

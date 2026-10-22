@@ -2541,3 +2541,81 @@ async fn t_sync_record_outlives_a_held_ask() {
     assert_eq!(held.await.unwrap(), 401, "the late Known answer is dropped");
     h.server.shutdown().await;
 }
+
+/// C126: after a database restore the server answers a firewall that is ahead with a
+/// reset at its own, lower revision. The firewall empties its cache and adopts that
+/// revision as cursor and floor; a lookup from before the reset, carrying a revision
+/// above the new floor, is not cached; a fresh one is; nothing is locked out.
+#[tokio::test]
+async fn t_sync_reset_to_a_lower_revision() {
+    let h = harness(|sync, config| {
+        sync.known_key(&key(96), &[PLATFORM, org(ACME)]);
+        sync.known_key(&key(97), &[PLATFORM, org(ACME)]);
+        let management = config.management.as_mut().unwrap();
+        management.request_timeout_seconds = NonZeroU64::new(5).unwrap();
+        management.sync_margin_seconds = NonZeroU64::new(5).unwrap();
+        config.sync_interval_seconds = NonZeroU64::new(6).unwrap();
+    })
+    .await;
+    h.sync.set_revision(1_000);
+    h.sync.applied(1_000).await;
+    // A first reset, at 1000 (the log pruned past the cursor), puts the floor there: a
+    // floor kept at the highest ever seen would lock out every answer from the restored
+    // database.
+    h.sync.set_revision(1_001);
+    h.sync.prune();
+    h.sync.set_revision(1_000);
+    wait_for("a reset at 1000", Duration::from_secs(5), || {
+        h.sync.resets() == 1
+    })
+    .await;
+    h.sync.restore_to(1_000);
+    h.sync.sync_rounds(1).await;
+    assert_eq!(h.sync.changes_requests().last().unwrap().since, 1_000);
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+
+    // A lookup read at 1000, held while the database is restored to 900.
+    let lookups = h.sync.hold_lookups();
+    let held = h.spawn_get("/npm/left-pad", &key(96));
+    lookups.wait_until_reached().await;
+    h.sync.restore_to(900);
+    // The restored database predates key 96.
+    h.sync.answer(
+        &key(96),
+        probation_policy::api::KeyLookup::Unknown { revision: 0 },
+    );
+    wait_for("a reset at 900", Duration::from_secs(5), || {
+        h.sync.resets() == 2
+    })
+    .await;
+    h.sync.sync_rounds(1).await;
+    h.sync.release_holds();
+    assert_eq!(
+        held.await.unwrap(),
+        401,
+        "the answer read at 1000 is dropped; the one asked again says unknown"
+    );
+    let sinces: Vec<u64> = h
+        .sync
+        .changes_requests()
+        .iter()
+        .map(|request| request.since)
+        .collect();
+    assert_eq!(
+        sinces.last(),
+        Some(&900),
+        "the cursor is the reset's revision: {sinces:?}"
+    );
+
+    // Nothing from before the reset is cached, and nothing is locked out.
+    h.clock.advance_seconds(1);
+    for key in [acme_key(), key(97)] {
+        let lookups = h.sync.lookups();
+        assert_eq!(h.get("/npm/left-pad", &key).await.status(), 200);
+        assert_eq!(h.sync.lookups() - lookups, 1, "looked up afresh");
+        assert_eq!(h.get("/npm/left-pad", &key).await.status(), 200);
+        assert_eq!(h.sync.lookups() - lookups, 1, "then cached");
+    }
+    assert_eq!(h.sync.resets(), 2, "then ordinary deltas");
+    h.server.shutdown().await;
+}
