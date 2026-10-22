@@ -1,8 +1,14 @@
 //! The self-service portal: server-rendered pages (askama, autoescaped) behind a
 //! session cookie, with a CSRF token on every form (C101) and the CSP header on every
-//! answer (T13). One route group per mockup: sign-in and account in slice 5.
+//! answer (T13). One route group per mockup: sign-in and account in slice 5; keys, policy,
+//! activity, organisation and audit log in slice 6.
 
 mod account;
+mod activity;
+mod audit;
+mod keys;
+mod organisation;
+mod policy;
 mod signin;
 
 use std::net::{IpAddr, SocketAddr};
@@ -10,17 +16,19 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Form, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 use ipnet::IpNet;
+use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 use sqlx::PgPool;
 use url::Url;
 
 use crate::accounts::{self, Mailer, Outbound, Passwords};
+use crate::tenancy::{self, Authorized, Place, Tenancy};
 
 /// `[portal]` in the server's settings file. Client secrets come from the environment
 /// (02 § External), never from this file.
@@ -184,6 +192,55 @@ fn routes() -> Routes {
     .post("/account/totp/enable", post(account::totp_enable))
     .post("/account/totp/disable", post(account::totp_disable))
     .get("/account/totp/qr.svg", get(account::totp_qr))
+    .post("/place", post(choose_place))
+    .get("/keys", get(keys::show))
+    .post("/keys", post(keys::create))
+    .post("/keys/service", post(keys::create_service))
+    .post("/keys/{id}/revoke", post(keys::revoke))
+    .get("/policy", get(policy::start))
+    .get("/policy/{id}", get(policy::show))
+    .post("/policy/{id}", post(policy::edit))
+    .get("/activity", get(activity::show))
+    .get("/audit", get(audit::show))
+    .get("/org", get(organisation::start))
+    .get("/org/{org}", get(organisation::show))
+    .post("/org/members/{id}/group", post(organisation::move_member))
+    .post("/org/members/{id}/role", post(organisation::set_role))
+    .post(
+        "/org/members/{id}/remove",
+        post(organisation::remove_member),
+    )
+    .post(
+        "/org/members/{id}/totp-reset",
+        post(organisation::reset_totp),
+    )
+    .post("/org/{id}/leave", post(organisation::ask_to_leave))
+    .post("/org/{id}/leave/cancel", post(organisation::cancel_leave))
+    .post("/org/leave/{id}/approve", post(organisation::approve_leave))
+    .post("/org/leave/{id}/refuse", post(organisation::refuse_leave))
+    .post("/org/{id}/invitations", post(organisation::invite))
+    .post(
+        "/org/invitations/{id}/cancel",
+        post(organisation::cancel_invitation),
+    )
+    .post("/org/{id}/sso", post(organisation::save_sso))
+    .post("/org/{id}/ranges", post(organisation::add_range))
+    .post("/org/ranges/{id}/delete", post(organisation::delete_range))
+    .post(
+        "/org/ranges/{id}/resubmit",
+        post(organisation::resubmit_range),
+    )
+    .post("/org/{id}/delete", post(organisation::delete_org))
+    .post("/org/{id}/restore", post(organisation::restore_org))
+    .get("/invite", get(organisation::invitation))
+    .post("/invite", post(organisation::accept_invitation))
+    .post("/org/{id}/groups", post(organisation::create_group))
+    .post("/org/groups/{id}/rename", post(organisation::rename_group))
+    .get(
+        "/org/groups/{id}/delete",
+        get(organisation::confirm_delete_group),
+    )
+    .post("/org/groups/{id}/delete", post(organisation::delete_group))
 }
 
 /// Every portal route as (method, path pattern).
@@ -279,8 +336,13 @@ async fn stylesheet() -> Response {
 /// The top bar of a signed-in page.
 pub(crate) struct Top {
     pub name: String,
+    /// The switcher's places (C29), the session's own first, so a browser shows it
+    /// selected. Each is posted as its label: organisation names are unique.
     pub places: Vec<String>,
     pub csrf: String,
+    /// The page the navigation marks current: "account", "keys", "policy", "activity",
+    /// "org" or "audit".
+    pub page: &'static str,
 }
 
 pub(crate) fn render(status: StatusCode, page: &impl Template) -> Response {
@@ -468,16 +530,125 @@ pub(crate) struct SignedIn {
 
 impl SignedIn {
     pub(crate) async fn top(&self, portal: &Portal) -> Result<Top, sqlx::Error> {
-        let (name, places) = accounts::top_bar(&portal.pool, self.login_id).await?;
+        let (name, places) =
+            accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
+        let chosen = self.chosen(&places);
+        let (first, rest): (Vec<_>, Vec<_>) = places
+            .into_iter()
+            .partition(|(_, value)| Some(value) == chosen.as_ref());
         Ok(Top {
             name,
-            places,
+            places: first
+                .into_iter()
+                .chain(rest)
+                .map(|(label, _)| label)
+                .collect(),
             csrf: self.session.csrf().to_owned(),
+            page: "account",
         })
+    }
+
+    /// The switcher value of the session's place: the one chosen when it is still
+    /// listed, else the first.
+    fn chosen(&self, places: &[(String, String)]) -> Option<String> {
+        places
+            .iter()
+            .find(|(_, value)| Some(value) == self.session.place.as_ref())
+            .or(places.first())
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn tenancy_session(&self) -> tenancy::Session {
+        tenancy::Session::new(self.login_id, self.session.scope_org_id)
+    }
+
+    /// The account the session works in: its chosen organisation or personal account,
+    /// checked by `authorized_place`; `None` when it has no place.
+    pub(crate) async fn account(
+        &self,
+        portal: &Portal,
+    ) -> Result<Option<Authorized<Place>>, sqlx::Error> {
+        let (_, places) =
+            accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
+        let Some(place) = self.chosen(&places).as_deref().and_then(parse_place) else {
+            return Ok(None);
+        };
+        Ok(portal
+            .tenancy()
+            .authorized_place(&self.tenancy_session(), place)
+            .await
+            .ok())
+    }
+}
+
+/// A switcher value: "org:<id>" or "personal:<id>".
+fn parse_place(value: &str) -> Option<PlaceRef> {
+    let (kind, id) = value.split_once(':')?;
+    let kind = match kind {
+        "org" => LayerKind::Org,
+        "personal" => LayerKind::Personal,
+        _ => return None,
+    };
+    Some(PlaceRef {
+        kind,
+        id: id.parse().ok()?,
+    })
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct PlaceForm {
+    csrf: String,
+    /// The chosen place's label in the switcher.
+    to: String,
+}
+
+/// The switcher (C29): remembers the chosen place, one of the session's own, once
+/// `authorized_place` admits it.
+async fn choose_place(
+    State(portal): State<Shared>,
+    headers: HeaderMap,
+    Form(form): Form<PlaceForm>,
+) -> Response {
+    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+        Ok(signed_in) => signed_in,
+        Err(answer) => return answer,
+    };
+    let places = match accounts::top_bar(
+        &portal.pool,
+        signed_in.login_id,
+        signed_in.session.scope_org_id,
+    )
+    .await
+    {
+        Ok((_, places)) => places,
+        Err(err) => return unavailable(err),
+    };
+    let Some((_, value)) = places.into_iter().find(|(label, _)| *label == form.to) else {
+        return not_found();
+    };
+    let Some(place) = parse_place(&value) else {
+        return not_found();
+    };
+    if portal
+        .tenancy()
+        .authorized_place(&signed_in.tenancy_session(), place)
+        .await
+        .is_err()
+    {
+        return not_found();
+    }
+    match accounts::choose_place(&portal.pool, &signed_in.session, &value).await {
+        Ok(()) => redirect("/keys"),
+        Err(err) => unavailable(err),
     }
 }
 
 impl Portal {
+    pub(crate) fn tenancy(&self) -> Tenancy {
+        Tenancy::new(self.pool.clone())
+    }
+
     /// The signed-in session of a page, or a redirect to sign-in.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<SignedIn, Response> {
         match self.session(headers).await.map_err(unavailable)? {

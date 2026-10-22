@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% macro leaving_section(leaving) %}
+<section aria-labelledby="leaving-heading">
+<h2 id="leaving-heading">Leave {{ leaving.name }}</h2>
+{% if let Some(asked) = leaving.asked %}
+<p>You asked to leave on {{ asked }}. Your request is waiting for an org admin.</p>
+<form method="post" action="/org/{{ leaving.id }}/leave/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Cancel my request</button></form>
+{% else %}
+<p>To leave {{ leaving.name }}, ask its org admins. Until one approves, you stay a member; you can cancel while it waits.</p>
+<form method="post" action="/org/{{ leaving.id }}/leave"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Ask to leave {{ leaving.name }}</button></form>
+{% endif %}
+</section>
+{% endmacro %}
+{% block content %}
+{% match view %}
+{% when OrgView::None { restorable, current } %}
+<h1>Organisation</h1>
+{% match current %}
+{% when Some(org) %}<p><a href="/org/{{ org }}">Your organisation's page</a></p>
+{% when None %}<p>The place selected at the top is not an organisation. Switch to one of your organisations, or create one in <a href="/account">Account settings</a>.</p>
+{% endmatch %}
+{% for (id, name, on, until) in restorable %}
+<section aria-labelledby="restore-{{ id }}">
+<h2 id="restore-{{ id }}">{{ name }} (deleted)</h2>
+<p class="err">{{ name }} was deleted on {{ on }}. It will be erased for good on {{ until }}.</p>
+<form method="post" action="/org/{{ id }}/restore"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri">Restore {{ name }}</button></form>
+<p class="mut">Any {{ name }} org admin can restore it until then. All of {{ name }}'s keys work again within about 1 minute after a restore.</p>
+</section>
+{% endfor %}
+{% when OrgView::Member(leaving) %}
+<h1>Organisation: {{ leaving.name }}</h1>
+<p>You are a member of {{ leaving.name }}. Only its org admins manage its members, groups and settings.</p>
+{% call leaving_section(leaving) %}{% endcall %}
+{% when OrgView::Admin(org) %}
+<h1>Organisation: {{ org.name }}</h1>
+<p class="mut">Only {{ org.name }}'s org admins see this page. {{ org.name }} can have several org admins and always keeps at least one. "Reset authenticator" helps a member who lost theirs and has no backup codes; you can reset it only for a member whose login belongs to {{ org.name }} alone. Everyone else's, and any org admin's, is reset by the service operator.</p>
+{% if let Some(error) = org.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+
+<section aria-labelledby="members-heading">
+<h2 id="members-heading">Members</h2>
+<div class="wrap"><table>
+<caption class="mut">Members of {{ org.name }}</caption>
+<thead><tr><th scope="col">Email</th><th scope="col">Role</th><th scope="col">Group</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for member in org.members %}
+<tr><td>{{ member.email }}{% if member.via_sso %} <span class="mut">joined through company SSO</span>{% endif %}</td>
+<td><form method="post" action="/org/members/{{ member.id }}/role" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="role-{{ member.id }}">Role of {{ member.email }}</label>
+<select id="role-{{ member.id }}" name="role">{% for (value, label) in [("org_admin", "Org admin"), ("group_admin", "Group admin"), ("member", "Member")] %}<option value="{{ value }}"{% if member.role == *value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+<button type="submit">Change role</button></form></td>
+<td><form method="post" action="/org/members/{{ member.id }}/group" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="group-{{ member.id }}">Group of {{ member.email }}</label>
+<select id="group-{{ member.id }}" name="group"><option value="none"{% if member.group.is_none() %} selected{% endif %}>No group</option>{% for group in org.groups %}<option value="{{ group.id }}"{% if member.group == Some(*group.id) %} selected{% endif %}>{{ group.name }}</option>{% endfor %}</select>
+<button type="submit">Move</button></form></td>
+<td class="row">{% if member.org_only && member.role != "org_admin" %}<form method="post" action="/org/members/{{ member.id }}/totp-reset"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Reset authenticator of {{ member.email }}">Reset authenticator</button></form>{% else %}<span class="mut">Authenticator: ask the service operator</span>{% endif %}
+<form method="post" action="/org/members/{{ member.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove {{ member.email }} from {{ org.name }}">Remove</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% if !org.invitations.is_empty() %}
+<div class="wrap"><table>
+<caption class="mut">Invitations waiting to be accepted</caption>
+<thead><tr><th scope="col">Email</th><th scope="col">Role</th><th scope="col">Link expires</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for (id, email, role, expires) in org.invitations %}
+<tr><td>{{ email }}</td><td>{% if role == "org_admin" %}Org admin{% else if role == "group_admin" %}Group admin{% else %}Member{% endif %}</td><td>{{ expires }}</td>
+<td><form method="post" action="/org/invitations/{{ id }}/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Cancel invitation to {{ email }}">Cancel invitation</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/org/{{ org.id }}/invitations">
+<fieldset><legend>Invite someone</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="row">
+<label for="invite-email">Email address</label>
+<input id="invite-email" name="email" type="email" required autocomplete="off">
+<label for="invite-role">Role</label>
+<select id="invite-role" name="role"><option value="member">Member</option><option value="group_admin">Group admin</option><option value="org_admin">Org admin</option></select>
+<label for="invite-group">Group</label>
+<select id="invite-group" name="group"><option value="none">No group</option>{% for group in org.groups %}<option value="{{ group.id }}">{{ group.name }}</option>{% endfor %}</select>
+<button type="submit" class="pri">Send invitation</button>
+</div>
+<p class="mut">Invitations go out by email. The link works once, for 7 days, for whoever signs in and opens it.</p>
+</fieldset>
+</form>
+<p class="mut">A person is in at most one group. "No group" means they get the {{ org.name }} organisation policy directly. A group admin manages their group's policy and service keys; only org admins move people between groups.</p>
+</section>
+
+<section aria-labelledby="groups-heading">
+<h2 id="groups-heading">Groups</h2>
+{% if org.groups.is_empty() %}
+<p class="mut">{{ org.name }} has no groups yet. Everyone gets the {{ org.name }} organisation policy.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Groups of {{ org.name }}</caption>
+<thead><tr><th scope="col">Group</th><th scope="col">Members</th><th scope="col">Service keys</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for group in org.groups %}
+<tr><td>{{ group.name }}</td><td>{{ group.members }}</td><td>{{ group.service_keys }}</td>
+<td class="row"><form method="post" action="/org/groups/{{ group.id }}/rename" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="rename-{{ group.id }}">New name for {{ group.name }}</label>
+<input id="rename-{{ group.id }}" name="name" required maxlength="100" autocomplete="off">
+<button type="submit">Rename</button></form>
+<a href="/policy/group-{{ group.id }}" aria-label="Policy of the {{ group.name }} group">Policy</a>
+<a href="/org/groups/{{ group.id }}/delete" aria-label="Delete the {{ group.name }} group">Delete</a></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/org/{{ org.id }}/groups" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="group-name">Group name</label>
+<input id="group-name" name="name" required maxlength="100" autocomplete="off">
+<button type="submit" class="pri">Create group</button>
+</form>
+<p class="mut">To move people between groups, change their group in the members list.</p>
+</section>
+
+<section aria-labelledby="sso-heading">
+<h2 id="sso-heading">Company SSO (OIDC)</h2>
+<p>Connect Microsoft Entra ID, Google Workspace, Okta or another OIDC provider. Anyone who signs in through it joins {{ org.name }} automatically as a member with no group.</p>
+<form method="post" action="/org/{{ org.id }}/sso">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label><input type="checkbox" name="enabled"{% if org.sso.is_some() %} checked{% endif %}> Company SSO is on</label>
+{% match org.sso %}
+{% when Some((issuer, client_id, tenant)) %}
+<label for="sso-issuer">Issuer URL</label>
+<input id="sso-issuer" name="issuer" size="50" value="{{ issuer }}" autocomplete="off">
+<label for="sso-client">Client ID</label>
+<input id="sso-client" name="client_id" size="40" value="{{ client_id }}" autocomplete="off">
+<label for="sso-tenant">Required tenant <span class="mut">(Google Workspace domain or Microsoft tenant id; needed for a shared issuer)</span></label>
+<input id="sso-tenant" name="allowed_tenant" value="{{ tenant.as_deref().unwrap_or_default() }}" autocomplete="off">
+<label for="sso-secret">Client secret <span class="mut">stored, never shown again; leave empty to keep it</span></label>
+<input id="sso-secret" name="client_secret" type="password" autocomplete="new-password">
+{% when None %}
+<label for="sso-issuer">Issuer URL</label>
+<input id="sso-issuer" name="issuer" size="50" autocomplete="off">
+<label for="sso-client">Client ID</label>
+<input id="sso-client" name="client_id" size="40" autocomplete="off">
+<label for="sso-tenant">Required tenant <span class="mut">(Google Workspace domain or Microsoft tenant id; needed for a shared issuer)</span></label>
+<input id="sso-tenant" name="allowed_tenant" autocomplete="off">
+<label for="sso-secret">Client secret <span class="mut">stored, never shown again</span></label>
+<input id="sso-secret" name="client_secret" type="password" autocomplete="new-password">
+{% endmatch %}
+<p>Give your provider this redirect address: <code>{{ org.sso_callback }}</code></p>
+<button type="submit" class="pri">Save</button>
+</form>
+<p class="mut">If you turn SSO off, people who joined through it stay members. They can sign in by setting a password from a reset email. If their address already has a password on another login, invite that other login instead.</p>
+</section>
+
+<section aria-labelledby="lock-heading">
+<h2 id="lock-heading">Network lock</h2>
+<p>From the addresses listed here, Probation refuses every key that does not belong to {{ org.name }} (for example someone's personal account key or another organisation's key).</p>
+{% if org.ranges.is_empty() %}
+<p class="mut">The network lock is off: no IP ranges are registered. Add your office and VPN ranges to turn it on; each range works once the service operator approves it.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Network-lock ranges of {{ org.name }}</caption>
+<thead><tr><th scope="col">IP range</th><th scope="col">Status</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for range in org.ranges %}
+<tr><td><code>{{ range.cidr }}</code></td>
+<td>{% if range.approved %}<span class="good">Approved</span>{% else if let Some(reason) = range.refused %}<span class="err">Refused by operator: {{ reason }}</span>{% else %}Waiting for operator approval{% endif %}</td>
+<td class="row"><form method="post" action="/org/ranges/{{ range.id }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove the range {{ range.cidr }}">Remove</button></form>
+{% if range.refused.is_some() %}<form method="post" action="/org/ranges/{{ range.id }}/resubmit"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Resubmit the range {{ range.cidr }}">Resubmit</button></form>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/org/{{ org.id }}/ranges" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="range-cidr">IP range</label>
+<input id="range-cidr" name="cidr" required autocomplete="off" aria-describedby="range-help">
+<button type="submit" class="pri">Add range</button>
+</form>
+<p class="mut" id="range-help">For example 192.0.2.0/24. A range you add does nothing until the service operator approves it, so no organisation can lock out another one's people.</p>
+<p class="mut">The network lock is a second line of defence; the main one is a locked device setup. Phone networks and some whole countries put many unrelated people behind one address, so an address cannot identify your company on its own.</p>
+</section>
+
+<section aria-labelledby="leave-heading">
+<h2 id="leave-heading">Leave requests</h2>
+{% if org.leave_requests.is_empty() %}
+<p class="mut">No one has asked to leave {{ org.name }}.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Waiting leave requests</caption>
+<thead><tr><th scope="col">Email</th><th scope="col">Asked</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for (id, email, asked) in org.leave_requests %}
+<tr><td>{{ email }}</td><td>{{ asked }}</td><td class="row">
+<form method="post" action="/org/leave/{{ id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri" aria-label="Approve {{ email }} leaving">Approve</button></form>
+<form method="post" action="/org/leave/{{ id }}/refuse"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Refuse {{ email }} leaving">Refuse</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<p class="mut">Members cannot leave {{ org.name }} on their own; they ask, and an org admin decides. Until then they stay members. Approving ends the membership and their own keys stop working within about 1 minute.</p>
+</section>
+{% call leaving_section(org.leaving) %}{% endcall %}
+
+<section aria-labelledby="delete-org-heading">
+<h2 id="delete-org-heading">Delete {{ org.name }}</h2>
+<p>All {{ org.name }} keys, including service keys, stop working within about 1 minute. Everything else is erased after 30 days; until then any of its org admins can restore it from the Organisation page. The audit log is kept for its normal retention.</p>
+<form method="post" action="/org/{{ org.id }}/delete" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="confirm-org">Type <b>{{ org.name }}</b> to confirm</label>
+<input id="confirm-org" name="confirm" autocomplete="off">
+<button type="submit" class="danger">Delete organisation</button>
+</form>
+</section>
+{% when OrgView::Invitation { token, grant } %}
+<h1>Invitation</h1>
+{% match grant %}
+{% when Some((org, role, group)) %}
+<p>Join {{ org }} as {% if role == "org_admin" %}an org admin{% else if role == "group_admin" %}a group admin{% else %}a member{% endif %}{% if let Some(group) = group %} in the {{ group }} group{% endif %}.</p>
+<p class="mut">Accepting adds the login you are signed in with now. If that is not the right login, sign out and sign in with the right one first.</p>
+<form method="post" action="/invite">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<button type="submit" class="pri">Accept</button>
+</form>
+{% when None %}
+<p class="err" role="alert">This invitation link has expired or was already used. Ask the organisation's org admin for a new one.</p>
+{% endmatch %}
+{% when OrgView::DeleteGroup { id, org, name, members, service_keys } %}
+<h1>Delete the {{ name }} group?</h1>
+<p>This will:</p>
+<ul>
+<li>delete the {{ name }} group policy;</li>
+<li>move its {{ members }} members to "No group", so they get the organisation policy;</li>
+<li>revoke its {{ service_keys.len() }} service keys ({{ service_keys.join(", ") }}): anything using them stops downloading within about 1 minute.</li>
+</ul>
+<form method="post" action="/org/groups/{{ id }}/delete" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="danger">Delete group</button>
+<a href="/org/{{ org }}">Cancel</a>
+</form>
+{% endmatch %}
+{% endblock %}
