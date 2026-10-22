@@ -1,0 +1,21 @@
+# Test-only Postgres for `cargo test -p probation-server` (slice 4 onward). Each test
+# creates its own database in it, so one container serves every test binary at once.
+# Port 55432, not 5432, so it never meets a developer's own Postgres.
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_USER: probation
+      POSTGRES_PASSWORD: probation
+      POSTGRES_DB: probation
+    # Enough connections for several test binaries, each with several pools.
+    command: ["postgres", "-c", "max_connections=500"]
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "probation"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
