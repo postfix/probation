@@ -166,12 +166,27 @@ pub struct Cidr {
 }
 
 impl Cidr {
+    /// An IPv4-mapped IPv6 range (inside `::ffff:0:0/96`) is read as the IPv4 range it
+    /// is, so it holds every address it names (C113). One wider than `/96` mixes IPv4
+    /// and IPv6 and is refused.
     pub fn parse(text: &str) -> Option<Cidr> {
         let (addr, prefix) = text.split_once('/')?;
         let addr: IpAddr = addr.parse().ok()?;
         let prefix: u8 = prefix.parse().ok()?;
+        let (addr, prefix) = Cidr::unmapped(addr, prefix)?;
         let bits = if addr.is_ipv4() { 32 } else { 128 };
         (prefix <= bits).then_some(Cidr { addr, prefix })
+    }
+
+    /// `addr/prefix`, with an IPv4-mapped range as its IPv4 range.
+    pub fn unmapped(addr: IpAddr, prefix: u8) -> Option<(IpAddr, u8)> {
+        match addr {
+            IpAddr::V6(v6) if u128::from(v6) >> 32 == 0xffff => {
+                let v4 = v6.to_ipv4_mapped()?;
+                Some((IpAddr::V4(v4), prefix.checked_sub(96)?))
+            }
+            _ => Some((addr, prefix)),
+        }
     }
 }
 
@@ -985,6 +1000,11 @@ impl Config {
         config.siem_url = self.siem_url.clone();
         config.management = self.management.clone();
         config.local = self.local.clone();
+        // `check_delivery` leaves the log file out, and opening it is what start-up does
+        // next: a file that cannot be opened is refused here, not in a crash loop (B2).
+        if let Some(path) = &config.log_file_path {
+            openable(path).map_err(|err| format!("`log_file_path` cannot be opened: {err}"))?;
+        }
         Ok(config)
     }
 
@@ -1023,6 +1043,20 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Whether start-up can open `path` to append to it, creating nothing.
+fn openable(path: &Path) -> io::Result<()> {
+    if path.exists() {
+        return std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map(drop);
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("a file with no directory"))?;
+    tempfile::NamedTempFile::new_in(dir).map(drop)
 }
 
 /// What `<data_dir>/managed-settings.state` keeps across restarts, so the server never

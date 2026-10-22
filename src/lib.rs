@@ -479,7 +479,6 @@ pub async fn with_settings_overlay(config: Config) -> Config {
     }
     let dir = config.data_dir.clone();
     let overlay = dir.join(config::SETTINGS_OVERLAY);
-    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
     loop {
         let Ok(text) = std::fs::read_to_string(&overlay) else {
             return config;
@@ -495,22 +494,63 @@ pub async fn with_settings_overlay(config: Config) -> Config {
             Ok(merged) => return merged,
             Err(reason) => reason,
         };
-        tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
-        let mut state = config::SettingsState::load(&dir);
-        state.failed_revision = Some(state.settings_revision);
-        state.settings_revision = state.previous_revision;
-        state.previous_revision = 0;
-        state.last_apply_error = Some(reason);
-        let restored = if previous.exists() {
-            std::fs::rename(&previous, &overlay)
-        } else {
-            std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
-        };
-        if let Err(err) = restored.and_then(|()| state.save(&dir)) {
-            tracing::error!(error = %err, "the failed settings could not be set aside");
+        if roll_back_settings(&dir, reason).is_err() {
             return config;
         }
     }
+}
+
+/// Swaps the settings overlay in `dir` for the previous one, or sets it aside when
+/// there is none, and records `reason` and the failed revision for the next report
+/// (C71). The failed revision is never applied again.
+fn roll_back_settings(dir: &std::path::Path, reason: String) -> std::io::Result<()> {
+    tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
+    let overlay = dir.join(config::SETTINGS_OVERLAY);
+    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
+    let mut state = config::SettingsState::load(dir);
+    state.failed_revision = Some(state.settings_revision);
+    state.settings_revision = state.previous_revision;
+    state.previous_revision = 0;
+    state.last_apply_error = Some(reason);
+    let restored = if previous.exists() {
+        std::fs::rename(&previous, &overlay)
+    } else {
+        std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
+    };
+    let rolled = restored.and_then(|()| state.save(dir));
+    if let Err(err) = &rolled {
+        tracing::error!(error = %err, "the failed settings could not be set aside");
+    }
+    rolled
+}
+
+/// [`App::start`] on `local` with its settings overlay (C105). A start that fails while
+/// an overlay is in force rolls it back (C71) and is tried once more, so a push that
+/// passed every check and still breaks the start cannot hold the firewall in a crash
+/// loop.
+pub async fn start_with_settings(
+    local: Config,
+    deps: impl Fn(Config) -> AppDeps,
+) -> Result<Running, StartupError> {
+    let overlay = local.data_dir.join(config::SETTINGS_OVERLAY);
+    let config = with_settings_overlay(local.clone()).await;
+    let overlaid = local.management.is_some() && overlay.exists();
+    let err = match App::start(deps(config)).await {
+        Err(err) if overlaid => err,
+        started => return started,
+    };
+    if roll_back_settings(&local.data_dir, err.to_string()).is_err() {
+        return Err(err);
+    }
+    let config = with_settings_overlay(local).await;
+    // The failed start's store lets go of the data directory's lock as it winds down.
+    for _ in 0..100 {
+        match App::start(deps(config.clone())).await {
+            Err(StartupError::DataDir(_)) => tokio::time::sleep(Duration::from_millis(20)).await,
+            started => return started,
+        }
+    }
+    App::start(deps(config)).await
 }
 
 /// Publishes the last accepted snapshot when it is still valid (SPEC §8: "Persist

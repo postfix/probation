@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::activity::ActivityQueue;
 use self::cache::{
-    Budget, KeyCache, KnownRefusal, Policies, Snapshot, Standing, UNKNOWN_FOR, Unresolved,
+    Budget, Insert, KeyCache, KnownRefusal, Policies, Snapshot, Standing, UNKNOWN_FOR, Unresolved,
 };
 use self::client::{CallError, SyncClient};
 use self::lock::{NetworkLock, TrustedProxies};
@@ -117,6 +117,7 @@ pub struct Managed {
     data_dir: PathBuf,
     ttl: Duration,
     period: Duration,
+    clock: Arc<dyn Clock>,
 }
 
 /// The longest `Authorization` value decoded. A key is 36 characters; anything this
@@ -204,6 +205,7 @@ impl Managed {
             period: sync_interval
                 .saturating_sub(margin)
                 .max(Duration::from_secs(1)),
+            clock,
         }
     }
 
@@ -213,6 +215,13 @@ impl Managed {
     #[cfg(feature = "test-support")]
     pub fn waiting_on(&self, hash: &KeyHash) -> usize {
         self.lookups.waiting_on(hash)
+    }
+
+    /// How many requests share the `layers` call in flight for `place`. **Compiled only
+    /// under `test-support`.**
+    #[cfg(feature = "test-support")]
+    pub fn waiting_on_layer(&self, place: PlaceRef) -> usize {
+        self.layer_fetches.waiting_on(&place)
     }
 
     /// Whether requests may be authenticated: a cache snapshot was loaded or a sync
@@ -382,6 +391,9 @@ impl Managed {
             }
         }
         let suspended = matches!(answer, KeyLookup::Suspended { .. });
+        // Checked again where it is cached: an invalidation can land while the layers
+        // are fetched.
+        let read = answer.clone();
         let (key_id, org, account, chain, rate_limit, rate_limit_source) = match answer {
             KeyLookup::Known {
                 key_id,
@@ -400,7 +412,8 @@ impl Managed {
                 rate_limit_source,
             ),
             KeyLookup::Unknown { .. } => {
-                self.cache.refuse(*hash, Some(UNKNOWN_FOR), None);
+                self.cache
+                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read);
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
             KeyLookup::Revoked {
@@ -424,8 +437,14 @@ impl Managed {
                     chain,
                     suspended,
                 };
+                if !self
+                    .cache
+                    .refuse_current(*hash, None, Some(known.clone()), &read)
+                {
+                    // A `key` or `place` row since may have restored it: asked again.
+                    return Err(Failed::Busy);
+                }
                 self.record_refusal(&known);
-                self.cache.refuse(*hash, None, Some(known));
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
         };
@@ -443,9 +462,22 @@ impl Managed {
             org,
             chain: chain.iter().map(|link| link.place).collect(),
         };
-        if !self.cache.insert(*hash, found.clone()) {
-            // The cache is full while the server is down, and nothing is evicted then.
-            return Err(Failed::Busy);
+        match self.cache.insert_current(*hash, found.clone(), &read) {
+            Insert::Done => {}
+            // Invalidated while its layers were fetched (H6), or the cache is full while
+            // the server is down, when nothing is evicted.
+            Insert::Late | Insert::Full => return Err(Failed::Busy),
+        }
+        // Retired, or a `layer` row for its chain, since the policy was built: its own
+        // invalidation already ran, so the entry it would have cleared goes now.
+        let retired = self.retired.load(Ordering::Acquire);
+        if retired || self.policies.any_stale(&found.chain) {
+            self.cache.remove_live(hash, key_id);
+            return Err(if retired {
+                Failed::Refused(Refusal::Unauthenticated)
+            } else {
+                Failed::Busy
+            });
         }
         Ok(found)
     }
@@ -591,7 +623,10 @@ impl Managed {
         );
     }
 
-    fn record(&self, account: PlaceRef, event: ActivityEvent) {
+    /// Queues `event`, stamped with when it happened (M3): a batch re-sent after an
+    /// outage keeps its time.
+    fn record(&self, account: PlaceRef, mut event: ActivityEvent) {
+        event.at = Some(crate::delivery::rfc3339(self.clock.now_utc_micros()));
         self.activity.record_activity(account, event);
     }
 
@@ -737,6 +772,7 @@ fn row(
         layer,
         client_ip: None,
         eligible_at: None,
+        at: None,
     }
 }
 

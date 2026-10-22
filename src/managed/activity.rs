@@ -174,6 +174,7 @@ mod tests {
             layer: ActivityLayer::Layer(LayerKind::Org),
             client_ip: None,
             eligible_at: None,
+            at: None,
         }
     }
 
