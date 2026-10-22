@@ -88,7 +88,7 @@ async fn mail_ip_allowed(
 ) -> Result<bool, sqlx::Error> {
     let ip = client_ip(peer, headers, &portal.trusted_proxies)
         .map_or_else(|| "unparsable".to_owned(), |ip| ip.to_string());
-    let checks = [("ip", format!("mail:{ip}"), accounts::MAIL_PER_IP)];
+    let checks = [("ip", format!("mail {ip}"), accounts::MAIL_PER_IP)];
     Ok(match accounts::attempt(&portal.pool, &checks).await? {
         Some(counted) => {
             counted.keep();
@@ -148,15 +148,6 @@ pub(crate) async fn signup(
     } else {
         SignupKind::Personal
     };
-    // Over the cap the page is the one a sent link shows (C91), with nothing done.
-    match mail_ip_allowed(&portal, peer, &headers).await {
-        Ok(true) => {}
-        Ok(false) => {
-            let view = SignupView::CheckEmail { email: &email };
-            return render(StatusCode::OK, &signup_page(&portal, session.csrf(), view));
-        }
-        Err(err) => return unavailable(err),
-    }
     if let Err(problem) = accounts::check_new_password(
         portal.outbound.as_ref(),
         &portal.config.leaked_password_url,
@@ -165,6 +156,16 @@ pub(crate) async fn signup(
     .await
     {
         return again(problem.message());
+    }
+    // Counted only for a request that would send mail, so form errors show as usual
+    // (N5); over the cap the page is the one a sent link shows (C91), with nothing done.
+    match mail_ip_allowed(&portal, peer, &headers).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let view = SignupView::CheckEmail { email: &email };
+            return render(StatusCode::OK, &signup_page(&portal, session.csrf(), view));
+        }
+        Err(err) => return unavailable(err),
     }
     let hash = portal.passwords.hash_blocking(form.password.clone()).await;
     match accounts::sign_up(&portal.pool, &portal.config.base_url, &email, &hash, kind).await {

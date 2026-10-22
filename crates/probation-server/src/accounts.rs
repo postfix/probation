@@ -93,15 +93,19 @@ pub struct Passwords {
 
 impl Passwords {
     pub fn new(params: Params) -> Passwords {
+        let cpus = std::thread::available_parallelism().map_or(2, usize::from);
+        Passwords::with_permits(params, cpus)
+    }
+
+    fn with_permits(params: Params, permits: usize) -> Passwords {
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let dummy = argon
             .hash_password(b"no such login")
             .expect("argon2 hashes")
             .to_string();
-        let cpus = std::thread::available_parallelism().map_or(2, usize::from);
         Passwords {
             argon,
-            permits: Arc::new(tokio::sync::Semaphore::new(cpus)),
+            permits: Arc::new(tokio::sync::Semaphore::new(permits)),
             dummy,
         }
     }
@@ -113,30 +117,38 @@ impl Passwords {
             .to_string()
     }
 
+    /// The permit for one Argon2id run. It moves into the blocking closure, so it is
+    /// held until the hash finishes even when the caller is cancelled (N1).
+    async fn permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.permits
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the semaphore is never closed")
+    }
+
     /// `hash` off the async runtime: Argon2id is deliberately slow.
     pub(crate) async fn hash_blocking(&self, password: String) -> String {
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .expect("the semaphore is never closed");
+        let permit = self.permit().await;
         let passwords = self.clone();
-        tokio::task::spawn_blocking(move || passwords.hash(&password))
-            .await
-            .expect("hashing does not panic")
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            passwords.hash(&password)
+        })
+        .await
+        .expect("hashing does not panic")
     }
 
     /// `verify` off the async runtime.
     pub(crate) async fn verify_blocking(&self, password: String, hash: Option<String>) -> bool {
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .expect("the semaphore is never closed");
+        let permit = self.permit().await;
         let passwords = self.clone();
-        tokio::task::spawn_blocking(move || passwords.verify(&password, hash.as_deref()))
-            .await
-            .expect("verifying does not panic")
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            passwords.verify(&password, hash.as_deref())
+        })
+        .await
+        .expect("verifying does not panic")
     }
 
     /// Whether `password` matches `hash`; `None` runs the same work and answers false.
@@ -360,42 +372,47 @@ pub async fn sign_up(
     password_hash: &str,
     kind: SignupKind,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM sign_in_methods WHERE kind = 'password' AND lower(email) = $1)",
-    )
-    .bind(email)
-    .fetch_one(&mut *tx)
-    .await?;
-    if taken {
-        if mail_allowed(pool, email).await? {
-            let (subject, body) = already_mail(base);
-            enqueue(&mut tx, email, "already", &subject, &body).await?;
+    // Every sign-up mails the address once; counted before the transaction, so the cap
+    // never needs a second connection (N3).
+    let allowed = mail_allowed(pool, email).await?;
+    loop {
+        let mut tx = pool.begin().await?;
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sign_in_methods WHERE kind = 'password' AND lower(email) = $1)",
+        )
+        .bind(email)
+        .fetch_one(&mut *tx)
+        .await?;
+        if taken {
+            if allowed {
+                let (subject, body) = already_mail(base);
+                enqueue(&mut tx, email, "already", &subject, &body).await?;
+            }
+            return tx.commit().await;
+        }
+        let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
+            .fetch_one(&mut *tx)
+            .await?;
+        let inserted: Option<i32> = sqlx::query_scalar(
+            "INSERT INTO sign_in_methods (login_id, kind, subject, email, password_hash)
+             VALUES ($1, 'password', $2, $2, $3)
+             ON CONFLICT DO NOTHING RETURNING id",
+        )
+        .bind(login)
+        .bind(email)
+        .bind(password_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        // `None`: a concurrent sign-up took the address first; this one rolls back and
+        // answers as for a taken address.
+        let Some(method) = inserted else {
+            continue;
+        };
+        if allowed {
+            send_verify(&mut tx, base, method, email, kind.payload()).await?;
         }
         return tx.commit().await;
     }
-    let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
-        .fetch_one(&mut *tx)
-        .await?;
-    let inserted: Option<i32> = sqlx::query_scalar(
-        "INSERT INTO sign_in_methods (login_id, kind, subject, email, password_hash)
-         VALUES ($1, 'password', $2, $2, $3)
-         ON CONFLICT DO NOTHING RETURNING id",
-    )
-    .bind(login)
-    .bind(email)
-    .bind(password_hash)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(method) = inserted else {
-        // A concurrent sign-up took the address first.
-        drop(tx);
-        return Box::pin(sign_up(pool, base, email, password_hash, kind)).await;
-    };
-    if mail_allowed(pool, email).await? {
-        send_verify(&mut tx, base, method, email, kind.payload()).await?;
-    }
-    tx.commit().await
 }
 
 async fn send_verify(
@@ -427,7 +444,6 @@ pub async fn resend_verification(
     base: &Url,
     email: &str,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
     let pending: Option<(i32, Option<Value>)> = sqlx::query_as(
         "SELECT m.id, (SELECT t.payload FROM email_tokens AS t
                        WHERE t.method_id = m.id AND t.purpose = 'verify'
@@ -436,14 +452,24 @@ pub async fn resend_verification(
          WHERE m.kind = 'password' AND lower(m.email) = $1 AND m.verified_at IS NULL",
     )
     .bind(email)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(pool)
     .await?;
-    if let Some((method, payload)) = pending
-        && mail_allowed(pool, email).await?
-    {
-        let payload = payload.unwrap_or_else(|| json!({}));
-        send_verify(&mut tx, base, method, email, payload).await?;
+    // Counted only when a mail would go, and before the transaction (N3).
+    let Some((method, payload)) = pending else {
+        return Ok(());
+    };
+    if !mail_allowed(pool, email).await? {
+        return Ok(());
     }
+    let mut tx = pool.begin().await?;
+    send_verify(
+        &mut tx,
+        base,
+        method,
+        email,
+        payload.unwrap_or_else(|| json!({})),
+    )
+    .await?;
     tx.commit().await
 }
 
@@ -1219,7 +1245,7 @@ impl Attempt {
 
 /// Whether one more mail may go to `email` now (R3); counted when it may.
 async fn mail_allowed(pool: &PgPool, email: &str) -> Result<bool, sqlx::Error> {
-    let checks = [("email", format!("mail:{email}"), MAIL_PER_ADDRESS)];
+    let checks = [("email", format!("mail {email}"), MAIL_PER_ADDRESS)];
     Ok(match attempt(pool, &checks).await? {
         Some(sent) => {
             sent.keep();
@@ -1309,33 +1335,36 @@ const RESET_MINUTES: i32 = 60;
 /// Mails a reset link when the address has an email-and-password method on a live
 /// login; nothing otherwise. The link is built from the configured base URL (T14).
 pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
     let method: Option<i32> = sqlx::query_scalar(
         "SELECT m.id FROM sign_in_methods AS m JOIN logins AS l ON l.id = m.login_id
          WHERE m.kind = 'password' AND lower(m.email) = $1 AND l.deleted_at IS NULL",
     )
     .bind(email)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(pool)
     .await?;
-    if let Some(method) = method
-        && mail_allowed(pool, email).await?
-    {
-        let token = random_token();
-        sqlx::query(
-            "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
-             VALUES ($1, $2, 'reset', now() + make_interval(mins => $3))",
-        )
-        .bind(token_hash(&token))
-        .bind(method)
-        .bind(RESET_MINUTES)
-        .execute(&mut *tx)
-        .await?;
-        let body = format!(
-            "Open this link to choose a new password for Probation:\n\n{}reset/confirm?token={token}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n",
-            base_path(base)
-        );
-        enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
+    // Counted only when a mail would go, and before the transaction (N3).
+    let Some(method) = method else {
+        return Ok(());
+    };
+    if !mail_allowed(pool, email).await? {
+        return Ok(());
     }
+    let mut tx = pool.begin().await?;
+    let token = random_token();
+    sqlx::query(
+        "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
+         VALUES ($1, $2, 'reset', now() + make_interval(mins => $3))",
+    )
+    .bind(token_hash(&token))
+    .bind(method)
+    .bind(RESET_MINUTES)
+    .execute(&mut *tx)
+    .await?;
+    let body = format!(
+        "Open this link to choose a new password for Probation:\n\n{}reset/confirm?token={token}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n",
+        base_path(base)
+    );
+    enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
     tx.commit().await
 }
 
@@ -2308,6 +2337,30 @@ pub(crate) fn is_public(ip: std::net::IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    /// N1: a hash whose caller is cancelled keeps its permit until Argon2id finishes, so
+    /// cancelled requests never let more hashes run than there are permits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_hash_keeps_its_permit_until_it_finishes() {
+        let params = argon2::Params::new(16 * 1024, 2, 1, None).unwrap();
+        let passwords = super::Passwords::with_permits(params, 2);
+        for _ in 0..6 {
+            let verify = passwords.verify_blocking("a guess".to_owned(), None);
+            let _ = tokio::time::timeout(Duration::from_millis(5), verify).await;
+        }
+        assert_eq!(
+            passwords.permits.available_permits(),
+            0,
+            "both permits still held"
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while passwords.permits.available_permits() < 2 {
+            assert!(Instant::now() < deadline, "the permits never came back");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     use super::is_public;
 
     #[test]

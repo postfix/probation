@@ -746,6 +746,15 @@ async fn t_portal_signup_duplicate_email() {
     let flooded = "SELECT count(*) FROM sign_in_methods WHERE email LIKE 'flood%'";
     let made = fx.db.count(flooded).await;
     assert!(made < 25, "{made} sign-ups from one IP");
+
+    // N5: past the cap, a weak password still shows its own error.
+    let weak = [
+        ("email", "weak@spam.test"),
+        ("password", "short"),
+        ("kind", "personal"),
+    ];
+    let page = flood.submit("/signup", "/signup", &weak).await;
+    assert!(page.has("Use at least 12 characters."), "{}", page.body);
 }
 
 /// `path` with every `{…}` segment replaced by `with`.
@@ -1402,6 +1411,49 @@ async fn t_portal_auth_links() {
     let sent = fx.mail.to("lu@home.test").len() - before;
     assert!(sent < 5, "{sent} reset mails in a row");
     assert!(fx.mail.to("nobody@home.test").is_empty());
+
+    // N2: failed sign-ins under an address shaped like the mail cap's key do not count
+    // against that address's mail.
+    member(fx, "vic@home.test", &[("kind", "personal")]).await;
+    let mut odd = fx.browser();
+    for _ in 0..5 {
+        sign_in(&mut odd, "mail:vic@home.test", "wrong password!").await;
+    }
+    fx.deliver().await;
+    let before = fx.mail.to("vic@home.test").len();
+    fx.browser()
+        .submit("/reset", "/reset", &[("email", "vic@home.test")])
+        .await;
+    fx.deliver().await;
+    assert_eq!(
+        fx.mail.to("vic@home.test").len(),
+        before + 1,
+        "vic's reset mail"
+    );
+
+    // N3: the mail paths need one connection at a time.
+    let single = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect(&fx.db.app_url)
+        .await
+        .unwrap();
+    let base = url::Url::parse(BASE_URL).unwrap();
+    accounts::request_reset(&single, &base, "vic@home.test")
+        .await
+        .expect("a reset on one connection");
+    accounts::sign_up(
+        &single,
+        &base,
+        "solo@home.test",
+        "not-a-hash",
+        accounts::SignupKind::Personal,
+    )
+    .await
+    .expect("a sign-up on one connection");
+    accounts::resend_verification(&single, &base, "solo@home.test")
+        .await
+        .expect("a resend on one connection");
 }
 
 /// The place switcher's options on `page`.
@@ -1670,6 +1722,12 @@ async fn t_portal_unlink_last_refused() {
     )
     .await;
     assert_eq!(methods_of(&fx.db, login).await.len(), 2);
+    // N4: a session waiting at the TOTP step ends when a method is unlinked.
+    let (secret, _) = turn_totp_on(&mut ana).await;
+    let mut waiting = fx.browser();
+    let first = sign_in(&mut waiting, "ana@acme.test", PASSWORD).await;
+    assert_eq!(first.location.as_deref(), Some("/totp"));
+    let waiting_csrf = waiting.get("/totp").await.csrf();
     let github = method_id(&fx.db, login, "github").await;
     let removed = ana
         .submit(
@@ -1686,6 +1744,16 @@ async fn t_portal_unlink_last_refused() {
     assert_eq!(
         other.get("/account").await.location.as_deref(),
         Some("/signin")
+    );
+    let code = totp_code(&secret, now_unix());
+    let late = waiting
+        .post_raw("/totp", &[("code", &code), ("csrf", &waiting_csrf)])
+        .await;
+    assert_eq!(
+        late.status,
+        StatusCode::FORBIDDEN,
+        "ended by the unlink: {}",
+        late.body
     );
     assert_eq!(
         ana.get("/account").await.status,
@@ -2497,6 +2565,61 @@ async fn t_portal_delete_restore() {
         back.body
     );
     assert_eq!(deleted(&fx.db, tess_login).await, Some(false));
+
+    // N4: a session waiting at the deleted-login choice ends when the login is deleted
+    // again, and when its password changes.
+    let mut val = member(&fx, "val@home.test", &[("kind", "personal")]).await;
+    let val_login = login_of(&fx.db, "val@home.test").await;
+    val.submit("/account", "/account/personal/delete", &DELETE)
+        .await;
+    let mut waiting = fx.browser();
+    let first = sign_in(&mut waiting, "val@home.test", PASSWORD).await;
+    assert_eq!(first.location.as_deref(), Some("/deleted"));
+    let waiting_csrf = waiting.get("/deleted").await.csrf();
+    sign_in(&mut val, "val@home.test", PASSWORD).await;
+    val.submit("/deleted", "/deleted/restore", &[]).await;
+    val.submit("/account", "/account/personal/delete", &DELETE)
+        .await;
+    assert_eq!(deleted(&fx.db, val_login).await, Some(true));
+    let late = waiting
+        .post_raw("/deleted/restore", &[("csrf", &waiting_csrf)])
+        .await;
+    assert_eq!(
+        late.status,
+        StatusCode::FORBIDDEN,
+        "ended by the re-delete: {}",
+        late.body
+    );
+    assert_eq!(deleted(&fx.db, val_login).await, Some(true));
+
+    let mut waiting = fx.browser();
+    sign_in(&mut waiting, "val@home.test", PASSWORD).await;
+    let waiting_csrf = waiting.get("/deleted").await.csrf();
+    let mut owner = fx.browser();
+    sign_in(&mut owner, "val@home.test", PASSWORD).await;
+    owner.submit("/deleted", "/deleted/restore", &[]).await;
+    let change = [
+        ("current", PASSWORD),
+        ("new", NEW_PASSWORD),
+        ("again", NEW_PASSWORD),
+    ];
+    let changed = owner.submit("/account", "/account/password", &change).await;
+    assert_eq!(
+        changed.location.as_deref(),
+        Some("/account"),
+        "{}",
+        changed.body
+    );
+    let late = waiting
+        .post_raw("/deleted/new", &[("csrf", &waiting_csrf)])
+        .await;
+    assert_eq!(
+        late.status,
+        StatusCode::FORBIDDEN,
+        "ended by the password change: {}",
+        late.body
+    );
+    assert_eq!(deleted(&fx.db, val_login).await, Some(false), "not erased");
 }
 
 async fn personal_deleted(db: &Db, login: i32) -> Option<bool> {
