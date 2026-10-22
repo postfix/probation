@@ -25,6 +25,8 @@ pub struct Config {
     pub listen: SocketAddr,
     pub public_url: Url,
     pub data_dir: PathBuf,
+    /// Empty in managed mode when the file leaves it out: a managed firewall ignores
+    /// its local blocklist (C109).
     pub blocklist_file: PathBuf,
     pub cooldown_seconds: u64,
     pub metadata_ttl_seconds: u64,
@@ -92,6 +94,25 @@ pub struct Config {
     /// Present only in managed mode: every key's policy comes from the management
     /// server. A broken section refuses to start rather than run standalone (T20).
     pub management: Option<ManagementConfig>,
+    /// The three upstream origins, each replacing SPEC §11's fixed one when set (C35):
+    /// `https`, no credentials, query, fragment or path, and never a private address.
+    pub npm_upstream_url: Option<Url>,
+    pub pypi_upstream_url: Option<Url>,
+    pub pypi_artifacts_url: Option<Url>,
+    /// The file this configuration was read from, as written: a settings push is
+    /// validated merged over it (C105).
+    pub local: LocalText,
+}
+
+/// A configuration file's text. Its `Debug` prints nothing, because `Config` is
+/// printed whole.
+#[derive(Clone, Default)]
+pub struct LocalText(pub std::sync::Arc<str>);
+
+impl fmt::Debug for LocalText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LocalText(..)")
+    }
 }
 
 /// `[management]`. None of it can be pushed from the portal (C35).
@@ -101,6 +122,8 @@ pub struct ManagementConfig {
     pub url: Url,
     /// Read from `token_file` at load, never from configuration text.
     pub token: FirewallToken,
+    /// Kept so a settings push can never write over it (T5).
+    pub token_file: PathBuf,
     pub key_cache_ttl_seconds: NonZeroU64,
     pub key_cache_max_entries: NonZeroUsize,
     /// Lookups a second this firewall may send for keys it has no live entry for (T10).
@@ -208,12 +231,12 @@ struct RawConfig {
     listen: String,
     public_url: String,
     data_dir: PathBuf,
-    blocklist_file: PathBuf,
+    blocklist_file: Option<PathBuf>,
     cooldown_seconds: u64,
     metadata_ttl_seconds: u64,
     #[serde(default = "default_metadata_max_age_seconds")]
     metadata_max_age_seconds: u64,
-    blocklist_poll_seconds: u64,
+    blocklist_poll_seconds: Option<u64>,
     cache_max_bytes: u64,
     memory_cache_max_bytes: u64,
     max_artifact_bytes: u64,
@@ -239,6 +262,9 @@ struct RawConfig {
     tls_key_path: Option<PathBuf>,
     sync_interval_seconds: Option<u64>,
     management: Option<RawManagement>,
+    npm_upstream_url: Option<String>,
+    pypi_upstream_url: Option<String>,
+    pypi_artifacts_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -308,7 +334,18 @@ const OPTIONAL_KEYS: &[&str] = &[
     "tls_key_path",
     "sync_interval_seconds",
     "management",
+    "npm_upstream_url",
+    "pypi_upstream_url",
+    "pypi_artifacts_url",
 ];
+
+/// The keys a managed firewall may leave out, because it ignores its local blocklist
+/// (C109).
+const STANDALONE_ONLY_KEYS: &[&str] = &["blocklist_file", "blocklist_poll_seconds"];
+
+/// What `blocklist_poll_seconds` is when a managed firewall leaves it out. Never read:
+/// the poller does not run in managed mode.
+const IGNORED_POLL_SECONDS: NonZeroU64 = NonZeroU64::new(60).unwrap();
 
 impl Config {
     pub fn from_toml_str(text: &str) -> Result<Config, ConfigError> {
@@ -317,7 +354,9 @@ impl Config {
         let table: toml::Table = toml::from_str(text).map_err(ConfigError::Syntax)?;
         check_keys(&table)?;
         let raw: RawConfig = toml::from_str(text).map_err(ConfigError::Syntax)?;
-        raw.validate()
+        let mut config = raw.validate()?;
+        config.local = LocalText(text.into());
+        Ok(config)
     }
 
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
@@ -368,12 +407,21 @@ impl RawConfig {
         if !self.data_dir.is_absolute() {
             return Err(invalid("data_dir", "must be an absolute path".to_owned()));
         }
-        if !self.blocklist_file.is_absolute() {
+        // `check_keys` let these two be absent only in managed mode.
+        let blocklist_file = self.blocklist_file.unwrap_or_default();
+        if self.management.is_none() && !blocklist_file.is_absolute() {
             return Err(invalid(
                 "blocklist_file",
                 "must be an absolute path".to_owned(),
             ));
         }
+        let blocklist_poll_seconds = match self.blocklist_poll_seconds {
+            Some(value) => nonzero_u64("blocklist_poll_seconds", value)?,
+            None => IGNORED_POLL_SECONDS,
+        };
+        let npm_upstream_url = upstream_origin("npm_upstream_url", self.npm_upstream_url)?;
+        let pypi_upstream_url = upstream_origin("pypi_upstream_url", self.pypi_upstream_url)?;
+        let pypi_artifacts_url = upstream_origin("pypi_artifacts_url", self.pypi_artifacts_url)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -515,14 +563,11 @@ impl RawConfig {
             listen,
             public_url,
             data_dir: self.data_dir,
-            blocklist_file: self.blocklist_file,
+            blocklist_file,
             cooldown_seconds: self.cooldown_seconds,
             metadata_ttl_seconds: self.metadata_ttl_seconds,
             metadata_max_age_seconds: self.metadata_max_age_seconds,
-            blocklist_poll_seconds: nonzero_u64(
-                "blocklist_poll_seconds",
-                self.blocklist_poll_seconds,
-            )?,
+            blocklist_poll_seconds,
             cache_max_bytes,
             memory_cache_max_bytes: nonzero_u64(
                 "memory_cache_max_bytes",
@@ -587,8 +632,47 @@ impl RawConfig {
             tls_key_path: self.tls_key_path,
             sync_interval_seconds,
             management,
+            npm_upstream_url,
+            pypi_upstream_url,
+            pypi_artifacts_url,
+            local: LocalText::default(),
         })
     }
+}
+
+/// One of the three upstream origin keys (C35, TEST-01 as amended): an `https` origin
+/// with no credentials, query, fragment or path prefix. An address literal must be a
+/// public one: no DNS answer is checked for it at connect time, so it is checked here.
+fn upstream_origin(key: &'static str, text: Option<String>) -> Result<Option<Url>, ConfigError> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let url = Url::parse(&text).map_err(|_| invalid(key, "must be a valid URL".to_owned()))?;
+    if url.scheme() != "https" {
+        return Err(invalid(key, "must use https".to_owned()));
+    }
+    if has_userinfo(&url) || url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid(
+            key,
+            "must not carry a username, password, query or fragment".to_owned(),
+        ));
+    }
+    if url.path() != "/" {
+        return Err(invalid(key, "must not carry a path prefix".to_owned()));
+    }
+    let literal = match url.host() {
+        Some(Host::Ipv4(addr)) => Some(IpAddr::V4(addr)),
+        Some(Host::Ipv6(addr)) => Some(IpAddr::V6(addr)),
+        Some(Host::Domain(_)) => None,
+        None => return Err(invalid(key, "must name a host".to_owned())),
+    };
+    if literal.is_some_and(|addr| !crate::upstream::resolver::is_public(addr)) {
+        return Err(invalid(
+            key,
+            "must not be a private, loopback or link-local address".to_owned(),
+        ));
+    }
+    Ok(Some(url))
 }
 
 impl RawManagement {
@@ -668,6 +752,7 @@ impl RawManagement {
         Ok(ManagementConfig {
             url,
             token: FirewallToken(token.to_owned()),
+            token_file,
             key_cache_ttl_seconds: bounded_seconds(
                 "management.key_cache_ttl_seconds",
                 self.key_cache_ttl_seconds.unwrap_or(300),
@@ -734,8 +819,10 @@ fn check_keys(table: &toml::Table) -> Result<(), ConfigError> {
             return Err(ConfigError::UnknownKey(key.clone()));
         }
     }
+    let managed = table.contains_key("management");
     for key in REQUIRED_KEYS {
-        if !table.contains_key(*key) {
+        let optional = managed && STANDALONE_ONLY_KEYS.contains(key);
+        if !optional && !table.contains_key(*key) {
             return Err(ConfigError::MissingKey(key));
         }
     }
@@ -837,4 +924,154 @@ impl std::error::Error for ConfigError {
             | ConfigError::Invalid { .. } => None,
         }
     }
+}
+
+/// The keys a settings push may never set. They stay local, so a bad value cannot cut
+/// the firewall off from its server, move its state, or redirect its download links
+/// and decision records (C35, C118, T5).
+const LOCAL_ONLY_KEYS: &[&str] = &[
+    "management",
+    "listen",
+    "data_dir",
+    "tls_cert_path",
+    "tls_key_path",
+    "public_url",
+    "siem_url",
+    "siem_auth_header",
+];
+
+/// The path keys a push may set, each confined under `data_dir`.
+const PUSHED_PATH_KEYS: &[&str] = &["log_file_path", "blocklist_file"];
+
+/// The pushed settings in effect, merged over `config.toml` at start (C105).
+pub const SETTINGS_OVERLAY: &str = "managed-settings.toml";
+/// The overlay before the last push, restored when that push fails at start (C71).
+pub const PREVIOUS_SETTINGS_OVERLAY: &str = "managed-settings.prev.toml";
+const SETTINGS_STATE: &str = "managed-settings.state";
+
+impl Config {
+    /// `pushed` merged over this firewall's own file and checked as start-up checks it,
+    /// every path confined under `data_dir`. The local-only settings are this
+    /// configuration's whatever the push says, so they are byte-equal after any push.
+    pub fn with_overlay(&self, pushed: &str) -> Result<Config, String> {
+        let overlay: toml::Table = toml::from_str(pushed)
+            .map_err(|err| format!("the pushed settings are not TOML: {err}"))?;
+        if let Some(key) = overlay
+            .keys()
+            .find(|key| LOCAL_ONLY_KEYS.contains(&key.as_str()))
+        {
+            return Err(format!(
+                "`{key}` is set on the firewall only and cannot be pushed"
+            ));
+        }
+        for key in PUSHED_PATH_KEYS {
+            if let Some(value) = overlay.get(*key) {
+                let path = value
+                    .as_str()
+                    .ok_or_else(|| format!("`{key}` must be a path"))?;
+                self.confined(key, Path::new(path))?;
+            }
+        }
+        let mut merged: toml::Table = toml::from_str(&self.local.0)
+            .map_err(|err| format!("the local configuration is not TOML: {err}"))?;
+        merged.extend(overlay);
+        let text = toml::to_string(&merged).map_err(|err| err.to_string())?;
+        let mut config = Config::from_toml_str(&text).map_err(|err| err.to_string())?;
+        config.listen = self.listen;
+        config.public_url = self.public_url.clone();
+        config.data_dir = self.data_dir.clone();
+        config.tls_cert_path = self.tls_cert_path.clone();
+        config.tls_key_path = self.tls_key_path.clone();
+        config.siem_url = self.siem_url.clone();
+        config.management = self.management.clone();
+        config.local = self.local.clone();
+        Ok(config)
+    }
+
+    /// A pushed path: absolute, under `data_dir` once resolved, and none of the files
+    /// this firewall keeps there itself or its token (T5).
+    fn confined(&self, key: &str, path: &Path) -> Result<(), String> {
+        let refused = || format!("`{key}` must name a file of its own under data_dir");
+        let resolved = match path.parent().map(std::fs::canonicalize) {
+            Some(Ok(parent)) => parent.join(path.file_name().ok_or_else(refused)?),
+            _ => path.to_path_buf(),
+        };
+        let data_dir =
+            std::fs::canonicalize(&self.data_dir).unwrap_or_else(|_| self.data_dir.clone());
+        let walks = path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+        if !path.is_absolute() || walks || !resolved.starts_with(&data_dir) {
+            return Err(refused());
+        }
+        let name = resolved
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let token_file = self.management.as_ref().map(|management| {
+            std::fs::canonicalize(&management.token_file)
+                .unwrap_or_else(|_| management.token_file.clone())
+        });
+        if name.starts_with("firewall.db")
+            || name.starts_with("managed-")
+            || std::fs::canonicalize(&resolved)
+                .unwrap_or_else(|_| resolved.clone())
+                .is_symlink()
+            || token_file.is_some_and(|token_file| token_file == resolved)
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+}
+
+/// What `<data_dir>/managed-settings.state` keeps across restarts, so the server never
+/// re-sends an applied push and a failed one is never applied again (C105, C71).
+#[derive(Clone, Default, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct SettingsState {
+    /// The push the overlay holds; `0` before the first.
+    pub settings_revision: u64,
+    /// The push the previous overlay held.
+    pub previous_revision: u64,
+    pub failed_revision: Option<u64>,
+    pub last_apply_error: Option<String>,
+}
+
+impl SettingsState {
+    pub fn load(data_dir: &Path) -> SettingsState {
+        std::fs::read(data_dir.join(SETTINGS_STATE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, data_dir: &Path) -> io::Result<()> {
+        let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
+        write_atomically(&data_dir.join(SETTINGS_STATE), &bytes, None)
+    }
+}
+
+/// Writes `bytes` to a temporary file beside `path`, syncs it and renames it over
+/// `path`, so a crash leaves the old file or the new one and never half of either. The
+/// file it replaces becomes `previous` when one is named.
+pub(crate) fn write_atomically(
+    path: &Path,
+    bytes: &[u8],
+    previous: Option<&Path>,
+) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("a file with no directory"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    if let Some(previous) = previous
+        && path.exists()
+    {
+        std::fs::rename(path, previous)?;
+    }
+    temp.persist(path).map_err(|err| err.error)?;
+    std::fs::File::open(dir)?.sync_all()
 }

@@ -53,6 +53,7 @@ use crate::App;
 use crate::artifacts::content::{ContentError, ContentKey};
 use crate::concurrency::{Resolution, SingleFlight, Slot};
 use crate::http::error::ApiError;
+use crate::managed::report::Call;
 use crate::policy::{Candidate, Decision, Digest, Ecosystem, HashAlgorithm};
 use crate::store::cache::{CachedProject, ProjectKey};
 use crate::store::rows::{ReferenceId, ReferenceRow};
@@ -221,14 +222,20 @@ async fn transfer(
         .ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
-    let body = app
+    let opened = app
         .transport
         .open_artifact(ArtifactRequest {
             url: row.reference.upstream_url.clone(),
             max_bytes: cap,
         })
-        .await
-        .map_err(DownloadError::Upstream)?;
+        .await;
+    // Recorded under the ecosystem of the request, never by the URL (C69).
+    let call = match row.reference.ecosystem {
+        Ecosystem::Npm => Call::Npm,
+        Ecosystem::PyPi => Call::PypiArtifacts,
+    };
+    app.upstreams.record_upstream(call, &opened);
+    let body = opened.map_err(DownloadError::Upstream)?;
 
     // A declared length over the cap is refused before a byte is transferred. The
     // counted loop below is what refuses one that never declares a length at all.

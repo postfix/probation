@@ -266,8 +266,8 @@ async fn t_auth_missing_401() {
     assert_eq!(h.server.status("/health/live").await, 200);
     assert_eq!(
         h.server.status("/health/ready").await,
-        503,
-        "not ready until a first sync, which arrives in slice 3"
+        200,
+        "ready once the first sync is applied (C109)"
     );
 }
 
@@ -323,7 +323,13 @@ async fn t_auth_unknown_401() {
         let response = server
             .get_with_headers("/npm/left-pad", &[("authorization", &bearer(&key_b()))])
             .await;
-        assert_unauthenticated(response, what).await;
+        if what == "unreachable" {
+            // It never applied a first sync, so it serves nothing (T1, C109).
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{what}");
+            assert_eq!(body_error(response).await, "NOT_READY", "{what}");
+        } else {
+            assert_unauthenticated(response, what).await;
+        }
     }
 }
 

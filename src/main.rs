@@ -145,18 +145,19 @@ async fn serve(config_path: &Path) -> ExitCode {
     };
 
     let config = match Config::load(config_path) {
-        Ok(config) => config,
+        Ok(config) => probation::with_settings_overlay(config).await,
         Err(err) => {
             tracing::error!(path = %config_path.display(), error = %err, "invalid configuration");
             return ExitCode::FAILURE;
         }
     };
 
+    let origins = OriginSet::configured(&config);
     let running = match App::start(AppDeps {
         config,
         clock: Arc::new(SystemClock),
-        transport: Arc::new(ReqwestTransport::production()),
-        origins: OriginSet::production(),
+        transport: Arc::new(ReqwestTransport::for_origins(origins.clone())),
+        origins,
         osv_client: reqwest::Client::new(),
         osv_base_url: None,
     })
@@ -171,17 +172,30 @@ async fn serve(config_path: &Path) -> ExitCode {
 
     tracing::info!(addr = %running.local_addr, "listening");
 
-    let signal = signals.received().await;
-    tracing::info!(signal, "shutting down");
+    // A managed firewall that wrote a settings push drains and exits 75, for its
+    // supervisor to start it again on the new settings (C105).
+    let exit = tokio::select! {
+        signal = signals.received() => {
+            tracing::info!(signal, "shutting down");
+            ExitCode::SUCCESS
+        }
+        () = running.restart_requested() => {
+            tracing::info!("restarting to apply pushed settings");
+            ExitCode::from(RESTART_FOR_SETTINGS)
+        }
+    };
 
     match running.shutdown().await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => exit,
         Err(err) => {
             tracing::error!(error = %err, "unclean shutdown");
             ExitCode::FAILURE
         }
     }
 }
+
+/// The exit code that asks the supervisor for a restart after a settings push: EX_TEMPFAIL.
+const RESTART_FOR_SETTINGS: u8 = 75;
 
 /// `SIGTERM` is what a service manager sends — systemd's `stop` and a container
 /// runtime's `stop` both do — so it must reach the same graceful path as `SIGINT`.

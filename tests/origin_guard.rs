@@ -422,6 +422,37 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         );
     }
 
+    //    The three origin keys (C35) name an origin and nothing more: an `https` one
+    //    with no credentials, path or private address literal, and the set built from
+    //    them keeps both gates closed.
+    for key in [
+        "npm_upstream_url",
+        "pypi_upstream_url",
+        "pypi_artifacts_url",
+    ] {
+        for refused in [
+            "http://127.0.0.1:1",
+            "https://127.0.0.1",
+            "https://user:pw@registry.example",
+            "https://registry.example/prefix",
+        ] {
+            let relaxed = format!("{sample}\n{key} = \"{refused}\"\n");
+            assert!(
+                Config::from_toml_str(&relaxed).is_err(),
+                "`{key} = {refused}` must be refused"
+            );
+        }
+        let configured = format!("{sample}\n{key} = \"https://registry.example\"\n");
+        let config = Config::from_toml_str(&configured).expect("an https origin");
+        let origins = OriginSet::configured(&config);
+        assert!(!origins.allows_private_addresses(), "{key} opens no gate");
+        assert_eq!(
+            origins.admit(&parse("http://registry.example/x"), OriginKind::NpmMetadata),
+            Err(UrlRejection::Scheme),
+            "{key}: http stays refused"
+        );
+    }
+
     // 2. No environment variable reaches it either. These are set for real, around
     //    the assertions, with every other client-building test held off meanwhile.
     let guard = ENVIRONMENT.lock().await;

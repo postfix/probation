@@ -265,6 +265,15 @@ impl TestServer {
         }
     }
 
+    /// A server already started, with the directory it runs in kept alive by the test.
+    pub fn from_running(running: Running) -> TestServer {
+        TestServer {
+            running,
+            client: downstream_client(),
+            _data_dir: None,
+        }
+    }
+
     /// The running application, for a test that has to read state the HTTP surface
     /// does not expose — a persisted reference row, say.
     pub fn running(&self) -> &Running {
@@ -530,7 +539,29 @@ pub fn body_bytes(response: &[u8]) -> &[u8] {
     }
 }
 
+/// A managed firewall is not ready until its first sync is applied (T1), so a server
+/// started here is handed back once it is, or once it gives up after a few seconds: a
+/// test that wants it not ready uses [`start_unready`] instead.
 async fn start(
+    config: Config,
+    clock: Arc<dyn Clock>,
+    transport: Arc<dyn Transport>,
+    origins: OriginSet,
+    osv_client: reqwest::Client,
+    osv_base_url: Option<Url>,
+) -> Running {
+    let running = start_unready(config, clock, transport, origins, osv_client, osv_base_url).await;
+    if let Some(managed) = running.app().managed() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !managed.ready() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    running
+}
+
+/// [`start`] without the wait for a managed firewall's first sync.
+pub async fn start_unready(
     config: Config,
     clock: Arc<dyn Clock>,
     transport: Arc<dyn Transport>,
@@ -1588,7 +1619,8 @@ impl TestServer {
 pub mod sync {
     use std::collections::HashMap;
     use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use axum::Json;
@@ -1599,8 +1631,9 @@ pub mod sync {
     use axum::routing::post;
     use probation::config::{Config, FirewallToken, ManagementConfig};
     use probation_policy::api::{
-        ChainLink, KeyHash, KeyId, KeyLookup, KeyLookupRequest, LayersRequest, LayersResponse,
-        LimitSource, OrgId, PlaceLayer,
+        ChainLink, ChangesRequest, ChangesResponse, KeyHash, KeyId, KeyLookup, KeyLookupRequest,
+        LayersRequest, LayersResponse, LimitChange, LimitSource, LockRange, OrgId, PlaceLayer,
+        SettingsPush,
     };
     use probation_policy::{Layer, LayerKind, PlaceRef};
     use url::Url;
@@ -1617,6 +1650,13 @@ pub mod sync {
     pub const fn org(id: u32) -> PlaceRef {
         PlaceRef {
             kind: LayerKind::Org,
+            id,
+        }
+    }
+
+    pub const fn personal(id: u32) -> PlaceRef {
+        PlaceRef {
+            kind: LayerKind::Personal,
             id,
         }
     }
@@ -1658,6 +1698,16 @@ pub mod sync {
         format!("prb_{n:032}")
     }
 
+    /// One `change_log` row, as the fake keeps it.
+    #[derive(Clone, Debug)]
+    enum Row {
+        Key(KeyId),
+        Layer(PlaceRef),
+        Place(PlaceRef),
+        Limits(LimitChange),
+        Ranges,
+    }
+
     #[derive(Default)]
     struct State_ {
         keys: Mutex<HashMap<KeyHash, KeyLookup>>,
@@ -1666,10 +1716,37 @@ pub mod sync {
         layer_calls: AtomicUsize,
         next_key_id: AtomicU64,
         lookup_gate: Mutex<Option<Arc<Gate>>>,
+        layers_gate: Mutex<Option<Arc<Gate>>>,
+        changes_gate: Mutex<Option<Arc<Gate>>>,
         lookup_status: Mutex<Option<StatusCode>>,
         layers_status: Mutex<Option<StatusCode>>,
+        /// A status, and the `x-probation-error` code it carries, for every `changes`.
+        changes_status: Mutex<Option<(StatusCode, Option<&'static str>)>>,
         /// Every request body, as sent, with the path it was sent to.
         bodies: Mutex<Vec<(&'static str, String)>>,
+        /// The change log: the current revision and every row.
+        revision: AtomicU64,
+        log: Mutex<Vec<(u64, Row)>>,
+        pruned_through: AtomicU64,
+        ranges: Mutex<Vec<LockRange>>,
+        settings: Mutex<Option<SettingsPush>>,
+        retired: AtomicBool,
+        /// Every route answers `503`, as a server that is down behind its proxy does.
+        down: AtomicBool,
+        changes: Mutex<Vec<ChangesRequest>>,
+        /// The `changes` requests answered with a change log, so delivered.
+        delivered: Mutex<Vec<ChangesRequest>>,
+        /// The revision of the last `changes` answer sent.
+        answered: AtomicU64,
+    }
+
+    impl State_ {
+        /// The next revision, with its row.
+        fn write(&self, row: Row) -> u64 {
+            let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
+            self.log.lock().unwrap().push((revision, row));
+            revision
+        }
     }
 
     pub struct FakeSyncServer {
@@ -1680,9 +1757,12 @@ pub mod sync {
     impl FakeSyncServer {
         pub async fn start() -> FakeSyncServer {
             let state = Arc::new(State_::default());
+            state.revision.store(1, Ordering::SeqCst);
+            state.next_key_id.store(1, Ordering::SeqCst);
             let router = Router::new()
                 .route("/api/v1/sync/lookup", post(lookup))
                 .route("/api/v1/sync/layers", post(layers))
+                .route("/api/v1/sync/changes", post(changes))
                 .with_state(Arc::clone(&state));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
@@ -1697,39 +1777,67 @@ pub mod sync {
             }
         }
 
-        /// `place`'s own layer, at revision 1.
+        /// `place`'s own layer, at the current revision, with no change-log row.
         pub fn layer(&self, place: PlaceRef, layer: Layer) {
-            self.state.layers.lock().unwrap().insert(place, (layer, 1));
+            let revision = self.state.revision.load(Ordering::SeqCst);
+            self.state
+                .layers
+                .lock()
+                .unwrap()
+                .insert(place, (layer, revision));
         }
 
-        /// A live key whose chain is `chain`, platform first.
-        pub fn known_key(&self, key: &str, chain: &[PlaceRef]) {
+        /// An edit of `place`'s layer: a new revision, and a `layer` row.
+        pub fn edit_layer(&self, place: PlaceRef, layer: Layer) -> u64 {
+            let mut layers = self.state.layers.lock().unwrap();
+            let revision = self.state.write(Row::Layer(place));
+            layers.insert(place, (layer, revision));
+            revision
+        }
+
+        /// A live key whose chain is `chain`, platform first, with no rate limit.
+        pub fn known_key(&self, key: &str, chain: &[PlaceRef]) -> KeyId {
+            self.known_key_limited(key, chain, None)
+        }
+
+        /// A live key whose account (the second place of `chain`) may send `rate_limit`
+        /// requests a minute.
+        pub fn known_key_limited(
+            &self,
+            key: &str,
+            chain: &[PlaceRef],
+            rate_limit: Option<u32>,
+        ) -> KeyId {
             let org = chain
                 .iter()
                 .find(|place| place.kind == LayerKind::Org)
                 .map(|place| OrgId(place.id));
+            let key_id = KeyId(self.state.next_key_id.fetch_add(1, Ordering::SeqCst));
             let answer = KeyLookup::Known {
-                key_id: KeyId(self.state.next_key_id.fetch_add(1, Ordering::SeqCst)),
+                key_id,
                 org,
                 account: chain[1],
-                place_chain: self.links(chain),
-                rate_limit: NonZeroU32::new(6_000),
+                place_chain: links(chain),
+                rate_limit: rate_limit.and_then(NonZeroU32::new),
                 rate_limit_source: LimitSource::Default,
-                revision: 1,
+                revision: 0,
             };
             self.answer(key, answer);
+            key_id
         }
 
         pub fn revoked_key(&self, key: &str, chain: &[PlaceRef]) {
             let answer = KeyLookup::Revoked {
                 key_id: KeyId(self.state.next_key_id.fetch_add(1, Ordering::SeqCst)),
                 place: *chain.last().expect("a chain"),
-                place_chain: self.links(chain),
-                revision: 1,
+                place_chain: links(chain),
+                revision: 0,
             };
             self.answer(key, answer);
         }
 
+        /// The answer for `key`. Its revision and its chain's layer revisions are filled
+        /// in when it is read.
         pub fn answer(&self, key: &str, answer: KeyLookup) {
             self.state
                 .keys
@@ -1738,15 +1846,135 @@ pub mod sync {
                 .insert(KeyHash::of(key), answer);
         }
 
-        fn links(&self, chain: &[PlaceRef]) -> Vec<ChainLink> {
-            let layers = self.state.layers.lock().unwrap();
-            chain
+        /// Revokes `key`: its answer becomes `Revoked`, with a `key` row.
+        pub fn revoke(&self, key: &str) -> u64 {
+            let mut keys = self.state.keys.lock().unwrap();
+            let hash = KeyHash::of(key);
+            let Some(KeyLookup::Known {
+                key_id,
+                place_chain,
+                ..
+            }) = keys.get(&hash).cloned()
+            else {
+                panic!("revoke a known key");
+            };
+            let revision = self.state.write(Row::Key(key_id));
+            keys.insert(
+                hash,
+                KeyLookup::Revoked {
+                    key_id,
+                    place: place_chain.last().expect("a chain").place,
+                    place_chain,
+                    revision: 0,
+                },
+            );
+            revision
+        }
+
+        /// Suspends `place`: every key whose chain holds it answers `Suspended`, with a
+        /// `place` row.
+        pub fn suspend(&self, place: PlaceRef) -> u64 {
+            let mut keys = self.state.keys.lock().unwrap();
+            let revision = self.state.write(Row::Place(place));
+            for answer in keys.values_mut() {
+                if let KeyLookup::Known {
+                    key_id,
+                    place_chain,
+                    ..
+                } = answer.clone()
+                    && place_chain.iter().any(|link| link.place == place)
+                {
+                    *answer = KeyLookup::Suspended {
+                        key_id,
+                        place: place_chain.last().expect("a chain").place,
+                        place_chain,
+                        revision: 0,
+                    };
+                }
+            }
+            revision
+        }
+
+        /// A `place` row and nothing else, as an organisation's suspension looks to a
+        /// key whose answer is not changed yet.
+        pub fn touch_place(&self, place: PlaceRef) -> u64 {
+            self.state.write(Row::Place(place))
+        }
+
+        /// A `limits` row, applied to every answer it covers.
+        pub fn set_limit(&self, change: LimitChange) -> u64 {
+            let mut keys = self.state.keys.lock().unwrap();
+            let revision = self.state.write(Row::Limits(change));
+            for answer in keys.values_mut() {
+                if let KeyLookup::Known {
+                    account,
+                    rate_limit,
+                    rate_limit_source,
+                    ..
+                } = answer
+                {
+                    let kind = match account.kind {
+                        LayerKind::Org => probation_policy::api::AccountKind::Org,
+                        _ => probation_policy::api::AccountKind::Personal,
+                    };
+                    if kind != change.scope_kind {
+                        continue;
+                    }
+                    match change.scope_id {
+                        None if *rate_limit_source == LimitSource::Default => {
+                            *rate_limit = change.rate_per_min;
+                        }
+                        Some(id) if id == account.id => {
+                            *rate_limit = change.rate_per_min;
+                            *rate_limit_source = change.source;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            revision
+        }
+
+        /// Replaces the approved network-lock ranges, with a `ranges` row.
+        pub fn set_ranges(&self, ranges: &[(&str, u32)]) -> u64 {
+            *self.state.ranges.lock().unwrap() = ranges
                 .iter()
-                .map(|place| ChainLink {
-                    place: *place,
-                    layer_revision: layers.get(place).map_or(0, |(_, revision)| *revision),
+                .map(|(cidr, org)| LockRange {
+                    cidr: (*cidr).to_owned(),
+                    org: OrgId(*org),
                 })
-                .collect()
+                .collect();
+            self.state.write(Row::Ranges)
+        }
+
+        /// This firewall's settings, sent while its report names another revision.
+        pub fn push_settings(&self, revision: u64, toml: &str) {
+            *self.state.settings.lock().unwrap() = Some(SettingsPush {
+                revision,
+                toml: toml.to_owned(),
+            });
+        }
+
+        /// Every later `changes` answer says the firewall is retired.
+        pub fn retire(&self) {
+            self.state.retired.store(true, Ordering::SeqCst);
+        }
+
+        /// Prunes the change log through the current revision, so a firewall behind it
+        /// is answered with a reset.
+        pub fn prune(&self) {
+            let revision = self.state.revision.load(Ordering::SeqCst);
+            self.state.pruned_through.store(revision, Ordering::SeqCst);
+        }
+
+        /// Takes the server down (every route answers `503`) or brings it back.
+        pub fn go_down(&self, down: bool) {
+            self.state.down.store(down, Ordering::SeqCst);
+        }
+
+        /// The change-log revision now.
+        pub fn revision(&self) -> u64 {
+            self.state.revision.load(Ordering::SeqCst)
         }
 
         /// How many `lookup` calls reached this server.
@@ -1759,11 +1987,79 @@ pub mod sync {
             self.state.layer_calls.load(Ordering::SeqCst)
         }
 
+        /// Every `changes` request that reached this server, in order, whatever it was
+        /// answered.
+        pub fn changes_requests(&self) -> Vec<ChangesRequest> {
+            self.state.changes.lock().unwrap().clone()
+        }
+
+        /// The `changes` requests answered with the change log: what was delivered.
+        pub fn delivered(&self) -> Vec<ChangesRequest> {
+            self.state.delivered.lock().unwrap().clone()
+        }
+
+        /// Waits until a `changes` answer at `revision` or later has been sent, and a
+        /// moment for the firewall to apply it.
+        pub async fn applied(&self, revision: u64) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while self.state.answered.load(Ordering::SeqCst) < revision {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no changes answer at revision {revision} within 10 s"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        /// Waits for `count` more `changes` calls than have reached this server now.
+        pub async fn sync_rounds(&self, count: usize) {
+            let target = self.changes_requests().len() + count;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while self.changes_requests().len() < target {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{count} sync rounds did not happen within 15 s"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         /// Every later lookup waits at the returned gate until the test releases it.
         pub fn hold_lookups(&self) -> Arc<Gate> {
             let gate = Gate::new();
             *self.state.lookup_gate.lock().unwrap() = Some(Arc::clone(&gate));
             gate
+        }
+
+        /// Every later `layers` call waits at the returned gate.
+        pub fn hold_layers(&self) -> Arc<Gate> {
+            let gate = Gate::new();
+            *self.state.layers_gate.lock().unwrap() = Some(Arc::clone(&gate));
+            gate
+        }
+
+        /// Every later `changes` call waits at the returned gate.
+        pub fn hold_changes(&self) -> Arc<Gate> {
+            let gate = Gate::new();
+            *self.state.changes_gate.lock().unwrap() = Some(Arc::clone(&gate));
+            gate
+        }
+
+        /// No later call waits.
+        pub fn release_holds(&self) {
+            for gate in [
+                &self.state.lookup_gate,
+                &self.state.layers_gate,
+                &self.state.changes_gate,
+            ] {
+                if let Some(gate) = gate.lock().unwrap().take() {
+                    for _ in 0..64 {
+                        gate.release();
+                    }
+                }
+            }
         }
 
         /// Every later lookup answers `status`, or its table again with `None`.
@@ -1773,6 +2069,12 @@ pub mod sync {
 
         pub fn answer_layers_with(&self, status: Option<StatusCode>) {
             *self.state.layers_status.lock().unwrap() = status;
+        }
+
+        /// Every later `changes` call answers `status`, carrying `code` as its
+        /// `x-probation-error`, or the change log again with `None`.
+        pub fn answer_changes_with(&self, status: Option<(StatusCode, Option<&'static str>)>) {
+            *self.state.changes_status.lock().unwrap() = status;
         }
 
         /// Every body sent to this server, as `(path, body)`, in order.
@@ -1789,6 +2091,7 @@ pub mod sync {
             ManagementConfig {
                 url: self.url.clone(),
                 token: FirewallToken::new(TOKEN.to_owned()),
+                token_file: PathBuf::from("/nonexistent/firewall.token"),
                 key_cache_ttl_seconds: NonZeroU64::new(300).unwrap(),
                 key_cache_max_entries: NonZeroUsize::new(100_000).unwrap(),
                 lookup_budget_per_second: NonZeroU32::new(50).unwrap(),
@@ -1804,6 +2107,16 @@ pub mod sync {
             config.management = Some(self.management());
             config
         }
+    }
+
+    fn links(chain: &[PlaceRef]) -> Vec<ChainLink> {
+        chain
+            .iter()
+            .map(|place| ChainLink {
+                place: *place,
+                layer_revision: 0,
+            })
+            .collect()
     }
 
     /// A fake server whose one key decides exactly as a standalone instance with this
@@ -1846,6 +2159,39 @@ pub mod sync {
             == Some(&format!("Bearer {TOKEN}"))
     }
 
+    /// `answer` as read now: at the current revision, naming each chain place's current
+    /// layer revision.
+    fn as_read(state: &State_, answer: &KeyLookup) -> KeyLookup {
+        let now = state.revision.load(Ordering::SeqCst);
+        let layers = state.layers.lock().unwrap();
+        let mut answer = answer.clone();
+        let (chain, revision) = match &mut answer {
+            KeyLookup::Known {
+                place_chain,
+                revision,
+                ..
+            }
+            | KeyLookup::Revoked {
+                place_chain,
+                revision,
+                ..
+            }
+            | KeyLookup::Suspended {
+                place_chain,
+                revision,
+                ..
+            } => (Some(place_chain), revision),
+            KeyLookup::Unknown { revision } => (None, revision),
+        };
+        *revision = now;
+        for link in chain.into_iter().flatten() {
+            if link.layer_revision == 0 {
+                link.layer_revision = layers.get(&link.place).map_or(0, |(_, at)| *at);
+            }
+        }
+        answer
+    }
+
     async fn lookup(
         State(state): State<Arc<State_>>,
         headers: HeaderMap,
@@ -1862,21 +2208,24 @@ pub mod sync {
         if !authorized(&headers) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
+        if state.down.load(Ordering::SeqCst) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         state.lookups.fetch_add(1, Ordering::SeqCst);
+        // Read before any hold, as a server reads its snapshot first.
+        let status = *state.lookup_status.lock().unwrap();
+        let stored = state.keys.lock().unwrap().get(&request.key_hash).cloned();
+        let answer = as_read(
+            &state,
+            &stored.unwrap_or(KeyLookup::Unknown { revision: 0 }),
+        );
         let gate = state.lookup_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.arrive().await;
         }
-        if let Some(status) = *state.lookup_status.lock().unwrap() {
+        if let Some(status) = status {
             return status.into_response();
         }
-        let answer = state
-            .keys
-            .lock()
-            .unwrap()
-            .get(&request.key_hash)
-            .cloned()
-            .unwrap_or(KeyLookup::Unknown { revision: 1 });
         Json(answer).into_response()
     }
 
@@ -1896,26 +2245,109 @@ pub mod sync {
         if !authorized(&headers) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
+        if state.down.load(Ordering::SeqCst) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         state.layer_calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(status) = *state.layers_status.lock().unwrap() {
+        let status = *state.layers_status.lock().unwrap();
+        let answer = {
+            let revision = state.revision.load(Ordering::SeqCst);
+            let table = state.layers.lock().unwrap();
+            let layers = request
+                .places
+                .iter()
+                .filter_map(|place| {
+                    table.get(place).map(|(layer, revision)| PlaceLayer {
+                        place: *place,
+                        layer: layer.clone(),
+                        revision: *revision,
+                    })
+                })
+                .collect();
+            LayersResponse { layers, revision }
+        };
+        let gate = state.layers_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.arrive().await;
+        }
+        if let Some(status) = status {
             return status.into_response();
         }
-        let table = state.layers.lock().unwrap();
-        let layers = request
-            .places
-            .iter()
-            .filter_map(|place| {
-                table.get(place).map(|(layer, revision)| PlaceLayer {
-                    place: *place,
-                    layer: layer.clone(),
-                    revision: *revision,
-                })
-            })
-            .collect();
-        Json(LayersResponse {
-            layers,
-            revision: 1,
-        })
-        .into_response()
+        Json(answer).into_response()
+    }
+
+    async fn changes(
+        State(state): State<Arc<State_>>,
+        headers: HeaderMap,
+        body: String,
+    ) -> Response {
+        state
+            .bodies
+            .lock()
+            .unwrap()
+            .push(("/api/v1/sync/changes", body.clone()));
+        let Ok(request) = serde_json::from_str::<ChangesRequest>(&body) else {
+            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        };
+        if !authorized(&headers) {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        state.changes.lock().unwrap().push(request.clone());
+        if state.down.load(Ordering::SeqCst) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        let gate = state.changes_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.arrive().await;
+        }
+        if let Some((status, code)) = *state.changes_status.lock().unwrap() {
+            let mut response = status.into_response();
+            if let Some(code) = code {
+                response
+                    .headers_mut()
+                    .insert("x-probation-error", code.parse().unwrap());
+            }
+            return response;
+        }
+        let revision = state.revision.load(Ordering::SeqCst);
+        let mut answer = ChangesResponse {
+            revision,
+            retired: state.retired.load(Ordering::SeqCst),
+            ..ChangesResponse::default()
+        };
+        let ranges = state.ranges.lock().unwrap().clone();
+        if request.since < state.pruned_through.load(Ordering::SeqCst) {
+            answer.reset = true;
+            answer.network_lock = Some(ranges);
+        } else {
+            let mut sent_ranges = request.since == 0;
+            for (_, row) in state
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, _)| *at > request.since)
+            {
+                match row {
+                    Row::Key(key) => answer.changed_keys.push(*key),
+                    Row::Layer(place) => answer.changed_layers.push(*place),
+                    Row::Place(place) => answer.changed_places.push(*place),
+                    Row::Limits(change) => answer.changed_limits.push(*change),
+                    Row::Ranges => sent_ranges = true,
+                }
+            }
+            if sent_ranges {
+                answer.network_lock = Some(ranges);
+            }
+        }
+        answer.settings = state
+            .settings
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|settings| settings.revision != request.report.settings_revision);
+        state.answered.fetch_max(revision, Ordering::SeqCst);
+        state.delivered.lock().unwrap().push(request);
+        Json(answer).into_response()
     }
 }

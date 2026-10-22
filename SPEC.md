@@ -12,7 +12,7 @@ Five features were specified later, each in its own `docs/plans/<name>/` folder,
 - **OSV vulnerability checks** (`docs/plans/osv-intel/`). §8's "No remote intelligence request is made during an installation" no longer holds: a candidate the blocklist allows is also checked against `https://api.osv.dev/v1/querybatch`, failing open. Config keys `osv_cache_ttl_seconds`, `osv_request_timeout_ms`, `osv_mode`.
 - **Decision log delivery** (`docs/plans/decision-log-delivery/`): optional file and SIEM sinks. Config keys `log_file_path`, `log_file_max_bytes`, `log_queue_max_bytes`, `siem_url`, `siem_auth_header`, `siem_queue_max_bytes`, `log_consumer_identification`.
 - **Rated-load guard** (`docs/plans/rated-load-guard/`): bounded queue budgets for those sinks and `GET /health/delivery`.
-- **Managed mode** (`docs/plans/management-server/`), in progress and not released before that plan's last slice. With a `[management]` section a firewall serves each request under the policy of the API key it carries, looked up from a management server; it amends §3, §9 and §11 where marked "Managed mode". Config: `[management]` (`url`, `token_file`, `key_cache_ttl_seconds`, `key_cache_max_entries`, `lookup_budget_per_second`, `client_lookup_allowance_per_second`, `request_timeout_seconds`, `sync_margin_seconds`, `trusted_proxies`) and `sync_interval_seconds`.
+- **Managed mode** (`docs/plans/management-server/`), in progress and not released before that plan's last slice. With a `[management]` section a firewall serves each request under the policy of the API key it carries, looked up from a management server, keeps that policy in sync with the server, ignores its local blocklist, and applies settings the server pushes; it amends §3, §4, §9, §11 and §13 where marked "Managed mode". Config: `[management]` (`url`, `token_file`, `key_cache_ttl_seconds`, `key_cache_max_entries`, `lookup_budget_per_second`, `client_lookup_allowance_per_second`, `request_timeout_seconds`, `sync_margin_seconds`, `trusted_proxies`) and `sync_interval_seconds`. The upstream origins are configurable in any mode: `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`.
 - **Built-in TLS**: `serve` terminates TLS when `tls_cert_path` and `tls_key_path` are both set (§3 already says so). `SIGTERM` is handled like `SIGINT`.
 
 `max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is Apache-2.0.
@@ -103,7 +103,9 @@ max_artifact_downloads = 8
 max_active_requests = 1024
 ```
 
-Public upstreams are fixed in this release: `https://registry.npmjs.org` and `https://pypi.org`. PyPI artifact downloads use `https://files.pythonhosted.org`. The public URL has no query, fragment, or path prefix. Configuration changes require a restart; blocklist changes do not.
+Public upstreams default to `https://registry.npmjs.org` and `https://pypi.org`, and PyPI artifact downloads to `https://files.pythonhosted.org`. Exactly three keys replace them: `npm_upstream_url`, `pypi_upstream_url` and `pypi_artifacts_url`, each an `https` origin with no credentials, query, fragment or path prefix, and never a private, loopback or link-local address; every rule of §11 still applies to what they name. No other key or environment variable reaches the upstream boundary. The public URL has no query, fragment, or path prefix. Configuration changes require a restart; blocklist changes do not.
+
+Managed mode: `blocklist_file` and `blocklist_poll_seconds` may be left out and are ignored. The management server may push settings. A push may set any key except `[management]`, `listen`, `data_dir`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url` and `siem_auth_header`, and a pushed path must name a file of its own under `data_dir`. A push is validated as start-up validates and written to `<data_dir>/managed-settings.toml`, which is merged over the configuration file at start. Then the firewall drains and exits with code 75 for its supervisor to restart it. An invalid push changes nothing and is reported to the server. A pushed file that fails at the next start is replaced by the previous one, and the failure is reported. The configuration file itself is never written.
 
 Reject invalid configuration, including an artifact limit larger than the total cache budget, a public URL or collector URL carrying a username or password, and a cooldown above ten years (315360000 seconds), past which an eligibility deadline cannot be represented. Durations are nonnegative integers; zero cooldown explicitly disables only the age rule. Zero polling intervals and zero capacity limits are invalid. A nonzero `metadata_max_age_seconds` below `metadata_ttl_seconds` is invalid, because a ceiling beneath the revalidation interval would expire every copy before it could be revalidated; zero explicitly disables the ceiling and restores unbounded revalidation.
 
@@ -358,7 +360,7 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | `GET, HEAD /npm/{package}/-/{filename}` | The same delivery, at upstream's tarball path, for lockfiles. |
 | `GET, HEAD /pypi/artifacts/{reference_id}/{filename}` | Verified artifact delivery for a PyPI reference. |
 | `GET /health/live` | Process liveness. |
-| `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. |
+| `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. Managed mode: a cache snapshot loaded or a sync applied, not retired, usable storage, and the management server not refusing the firewall's sync. |
 
 `{package}` denotes npm's validated logical package name, including scoped names; implement explicit routes rather than a catch-all proxy. Reject request methods outside the supported set, including `HEAD` on every route not listed with it.
 
@@ -371,13 +373,16 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | Missing/expired blocklist, local capacity exhausted, overloaded | `503`. |
 | Managed mode: missing, malformed, unknown, revoked or suspended API key | `401 AUTHENTICATION_REQUIRED`, one fixed reason naming no account. |
 | Managed mode: the key cannot be checked now (lookup budget spent, server busy) | `503 LOOKUP_BUSY` with `Retry-After: 1`; a valid key is never answered `401` for it. |
+| Managed mode: no cache snapshot loaded and no sync applied yet, or no peer address | `503 NOT_READY` with `Retry-After: 1`. |
+| Managed mode: another organisation's approved network range holds the client address | `403 NETWORK_NOT_ALLOWED`, showing the address and nothing else. |
+| Managed mode: the key's account is over its requests per minute on this firewall | `429 TOO_MANY_REQUESTS`. |
 | Upstream failure, invalid upstream metadata, integrity failure | `502`; timeout is `504`. |
 
 Policy errors include `error`, `reason`, `request_id`, and, for cooldown, `eligible_at`. Include a numeric `Retry-After` on cooldown responses. Do not require clients to recognize custom error fields for correctness. Log exclusions that cannot be represented in an ecosystem listing.
 
 Use a pooled upstream HTTP client. Set connect timeout to 5 seconds, metadata total timeout to 30 seconds, artifact idle timeout to 30 seconds, and artifact total timeout to 15 minutes. Do not add automatic application-level retries in the MVP; clients can retry failed requests.
 
-Allow only the fixed upstream HTTPS origins. Reject cross-origin redirects, URL credentials, unexpected ports, and addresses resolving to loopback/private/link-local networks. Never forward a client's authorization, cookies, or proxy credentials upstream. Treat package names, filenames, upstream JSON, and HTML attributes as untrusted data.
+Allow only the configured upstream HTTPS origins (§4). Reject cross-origin redirects, URL credentials, unexpected ports, and addresses resolving to loopback/private/link-local networks. Never forward a client's authorization, cookies, or proxy credentials upstream. Treat package names, filenames, upstream JSON, and HTML attributes as untrusted data.
 
 Example client configuration:
 
@@ -418,7 +423,7 @@ Test both the representative fixture and large real-shaped metadata. Size limits
 
 ## 13. Verification and completion criteria
 
-Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no origin override or private-address bypass. Test the pure policy first, then protocol behavior, then real package-manager installations.
+Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no private-address bypass, and no origin override beyond §4's three origin keys. Test the pure policy first, then protocol behavior, then real package-manager installations.
 
 Required behavior tests:
 

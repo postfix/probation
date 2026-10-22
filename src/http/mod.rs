@@ -101,35 +101,40 @@ pub fn router(app: Arc<App>) -> Router {
 /// With no valid policy in force the handler's own `POLICY_UNAVAILABLE` answers
 /// instead: SPEC §5 puts that check first, and it is the more fundamental refusal.
 ///
-/// In managed mode it then authenticates the request's key, once, and answers with
-/// the principal whose policy the request is decided under. Until slice 3 a managed
-/// firewall is still gated by its local blocklist file (C109).
+/// In managed mode the local blocklist is not consulted (C109): the request waits for
+/// the first sync or a loaded cache snapshot, then its key is authenticated, once, and
+/// the principal whose policy the request is decided under is handed on.
 async fn admit(
     app: &App,
     headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Option<Principal>), ApiError> {
     let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
-    let policy_valid = || {
-        app.blocklist()
-            .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()))
-    };
-    if !app.store().is_healthy() && policy_valid() {
-        return Err(ApiError::StorageUnusable);
-    }
     let Some(managed) = app.managed() else {
+        let policy_valid = app
+            .blocklist()
+            .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()));
+        if !app.store().is_healthy() && policy_valid {
+            return Err(ApiError::StorageUnusable);
+        }
         return Ok((permit, None));
     };
-    if !policy_valid() {
-        return Err(ApiError::PolicyUnavailable);
+    // Until then the network lock would run on an empty table (T1).
+    if !managed.ready() {
+        return Err(ApiError::NotReady);
+    }
+    if !app.store().is_healthy() {
+        return Err(ApiError::StorageUnusable);
     }
     // Managed mode always builds the server with connect-info, so a missing address
-    // is a fault: fail closed.
-    let peer = logging::peer().ok_or(ApiError::InternalFailure)?;
+    // is a fault: fail closed, as not ready.
+    let peer = logging::peer().ok_or(ApiError::NotReady)?;
     let principal = managed
         .authenticate(headers, peer)
         .await
         .map_err(|refusal| match refusal {
             Refusal::Unauthenticated => ApiError::Unauthenticated,
+            Refusal::Network(client) => ApiError::NetworkNotAllowed(client),
+            Refusal::RateLimited => ApiError::TooManyRequests,
             Refusal::Busy => ApiError::LookupBusy,
         })?;
     logging::record_place(principal.place.id);
