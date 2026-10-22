@@ -67,9 +67,9 @@ WHERE id = (SELECT login_id FROM seed_logins WHERE email = 'del@home.test');
 UPDATE personal_accounts SET deleted_at = l.deleted_at
 FROM logins AS l WHERE l.id = personal_accounts.login_id AND l.deleted_at IS NOT NULL;
 
--- Slice 6. Oli is the org admin the slice 6 run turns an authenticator on for (C24), so
--- the slice 5 run's logins stay as they are; run the slice 6 run once per seeded
--- database.
+-- Slice 6. Oli is an org admin only the slice 6 run uses. That run turns on Oli's and
+-- Bob's authenticators (admin roles need one, C24), so run it once per seeded database,
+-- after the slice 5 run.
 UPDATE policy_layers SET freeze_seconds = 2 * 86400
 WHERE place_kind = 'org' AND place_id = (SELECT id FROM orgs WHERE name = 'Acme');
 INSERT INTO leave_requests (login_id, org_id)

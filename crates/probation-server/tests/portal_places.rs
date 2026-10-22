@@ -968,7 +968,7 @@ async fn t_portal_service_key_group() {
     block(&fx.db, world.ana, world.frontend, "left-pad").await;
     let firewall = fx.firewall().await;
     let http = common::client();
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
 
     let page = ana.get("/keys").await;
     assert!(page.has("Service keys"), "{}", page.body);
@@ -1021,12 +1021,12 @@ async fn t_portal_service_key_group() {
 async fn t_portal_group_admin_revoke_service_key() {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
     create_service_key(&mut ana, "Frontend devices", &world.frontend.id.to_string()).await;
     create_service_key(&mut ana, "Data boxes", &world.data.id.to_string()).await;
     create_service_key(&mut ana, "All laptops", "org").await;
 
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     let page = bob.get("/keys").await;
     assert!(page.has("Frontend devices"), "{}", page.body);
     assert!(
@@ -1101,7 +1101,7 @@ async fn t_portal_key_limits() {
     let mut max = fx.signed_in("max@acme.test").await;
     create_key(&mut max, "max's").await;
 
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
     let service = create_service_key(&mut ana, "All laptops", "org").await;
     assert_eq!(service.status, StatusCode::OK, "{}", service.body);
     let past = create_service_key(&mut ana, "More laptops", "org").await;
@@ -1199,7 +1199,7 @@ async fn t_portal_edit_refusal() {
         .await
         .unwrap();
     let before = layer_row(&fx.db, world.frontend).await;
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     for (fields, switch) in [
         (
             save("1", "days", "inherit").to_vec(),
@@ -1247,7 +1247,7 @@ async fn t_portal_edit_refusal() {
 async fn t_portal_edit_conflict() {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     let path = policy_path(world.frontend);
     let first = bob.get(&path).await;
     let second = bob.get(&path).await;
@@ -1384,7 +1384,7 @@ async fn t_portal_not_in_effect() {
         }
     };
     acme_switch(true).await;
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     let saved = policy_action(&mut bob, world.frontend, &save("1", "days", "inherit")).await;
     assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
     assert!(!bob.get(&policy_path(world.frontend)).await.has(LABEL));
@@ -1448,7 +1448,7 @@ async fn t_portal_not_in_effect() {
 async fn t_portal_freeze_range() {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
     for (freeze, unit, want) in [
         ("0", "hours", Some(0)),
         ("365", "days", Some(365 * DAY as i64)),
@@ -1480,7 +1480,7 @@ async fn t_portal_freeze_range() {
 async fn t_portal_block_ecosystem() {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
     let before = layer_row(&fx.db, world.acme).await;
     for fields in [
         vec![
@@ -1653,6 +1653,22 @@ async fn t_portal_admin_totp_required() {
     let world = World::new(&fx).await;
     let routes = org_admin_routes(&fx.db, &world).await;
     assert!(routes.len() >= 19, "{routes:?}");
+    // A member's key, and what a firewall reported for another member's.
+    let mut mia = fx.signed_in("mia@acme.test").await;
+    create_key(&mut mia, "mia key").await;
+    let mut max = fx.signed_in("max@acme.test").await;
+    create_key(&mut max, "max key").await;
+    let firewall = registered_firewall(&fx.db).await;
+    activity(
+        &fx.db,
+        firewall,
+        "max key",
+        "pkg-max",
+        "blocked",
+        "org",
+        "NULL, NULL",
+    )
+    .await;
     let mut ana = fx.signed_in("ana@acme.test").await;
     let csrf = ana.get("/keys").await.csrf();
     let before = state(&fx.db).await;
@@ -1680,9 +1696,51 @@ async fn t_portal_admin_totp_required() {
             page.body
         );
     }
+    // Every other admin action is held back the same way: the organisation's and a
+    // group's policy, a service key, revoking another member's key (B1).
+    let to_setup = (StatusCode::SEE_OTHER, Some("/account#totp-heading"));
+    for place in [world.acme, world.frontend] {
+        let saved = policy_action(&mut ana, place, &save("9", "days", "on")).await;
+        assert_eq!(
+            (saved.status, saved.location.as_deref()),
+            to_setup,
+            "{place:?}: {}",
+            saved.body
+        );
+    }
+    let service = create_service_key(&mut ana, "laptops", "org").await;
+    assert_eq!(
+        (service.status, service.location.as_deref()),
+        to_setup,
+        "{}",
+        service.body
+    );
+    let mia_key = key_id(&fx.db, "mia key").await;
+    let revoke = ana
+        .submit("/keys", &format!("/keys/{mia_key}/revoke"), &[])
+        .await;
+    assert_eq!(
+        (revoke.status, revoke.location.as_deref()),
+        to_setup,
+        "{}",
+        revoke.body
+    );
     assert_eq!(state(&fx.db).await, before, "nothing written");
+    // Activity and the audit log fall back to what a member sees.
+    let activity_page = ana.get("/activity").await;
+    assert!(!activity_page.has("pkg-max"), "{}", activity_page.body);
+    let audit_page = ana.get("/audit").await;
+    assert!(audit_page.has("Only org admins"), "{}", audit_page.body);
+
     let org_page = format!("/org/{}", world.acme.id);
     turn_totp_on(&mut ana).await;
+    assert!(
+        ana.get("/activity").await.has("pkg-max"),
+        "with the authenticator, all of Acme"
+    );
+    let saved = policy_action(&mut ana, world.acme, &save("9", "days", "on")).await;
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert_eq!(saved.location, Some(policy_path(world.acme)));
     let page = ana.get(&org_page).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.has("Members"), "{}", page.body);
@@ -1889,9 +1947,18 @@ async fn t_portal_last_org_admin() {
         format!("/org/leave/{ana_leave}/approve"),
     );
     let (ana_fields, max_fields) = ([("csrf", ana_csrf.as_str())], [("csrf", max_csrf.as_str())]);
-    let (by_ana, by_max) = tokio::join!(
+    // Both memberships are held locked until both approvals wait on a lock, so the two
+    // run at the same moment every time (T21).
+    let hold = hold_rows(
+        &fx.db,
+        "SELECT 1 FROM memberships WHERE id IN ($1, $2) FOR UPDATE",
+        &[world.places[&world.ana].id as i32, max_place.id as i32],
+    )
+    .await;
+    let (by_ana, by_max, ()) = tokio::join!(
         ana.post_raw(&ana_approves, &ana_fields),
         max.post_raw(&max_approves, &max_fields),
+        release_when_waiting(&fx.db, hold, 2),
     );
     let mut statuses = [by_ana.status, by_max.status];
     statuses.sort();
@@ -1907,6 +1974,49 @@ async fn t_portal_last_org_admin() {
         "one is refused: {statuses:?}"
     );
     assert_eq!(org_admins(&fx.db, world.acme).await, 1, "one admin remains");
+}
+
+/// Locks the rows `sql` selects (with `ids` as $1, $2, …) in an owner transaction.
+async fn hold_rows(
+    db: &Db,
+    sql: &'static str,
+    ids: &[i32],
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut hold = db.owner.begin().await.unwrap();
+    let mut query = sqlx::query(sql);
+    for id in ids {
+        query = query.bind(*id);
+    }
+    query.execute(&mut *hold).await.unwrap();
+    hold
+}
+
+/// Commits `hold` once `waiting` other backends of this database wait on a lock, so
+/// concurrent requests reach their locks before any of them goes on.
+async fn release_when_waiting(
+    db: &Db,
+    hold: sqlx::Transaction<'static, sqlx::Postgres>,
+    waiting: i64,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&db.owner)
+        .await
+        .unwrap();
+        if count >= waiting {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{count} of {waiting} requests wait on a lock"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    hold.commit().await.unwrap();
 }
 
 /// T-portal-leave-approval (C85, C88): a member can cancel while waiting; on approval
@@ -2144,9 +2254,21 @@ async fn t_grant_by_invitation() {
         [("token", token.clone()), ("csrf", eve_page.csrf())],
     );
     let eve_fields: Vec<(&str, &str)> = eve_fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let (by_erin, by_eve) = tokio::join!(
+    // The invitation row is held locked until both accepts wait on it (T3).
+    let invitation: i32 = sqlx::query_scalar("SELECT id FROM invitations")
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap();
+    let hold = hold_rows(
+        &fx.db,
+        "SELECT 1 FROM invitations WHERE id = $1 FOR UPDATE",
+        &[invitation],
+    )
+    .await;
+    let (by_erin, by_eve, ()) = tokio::join!(
         erin_browser.post_raw("/invite", &erin_fields),
         eve.post_raw("/invite", &eve_fields),
+        release_when_waiting(&fx.db, hold, 2),
     );
     let joined: Vec<i32> = memberships_in(&fx.db, world.acme)
         .await
@@ -2424,6 +2546,30 @@ async fn t_portal_totp_reset_scope() {
             .await,
         audits + 1
     );
+
+    // Demoting Oli does not open the way: a login that held org admin here in the last
+    // 30 days is reset only by a global admin (S6-4, C39).
+    let demoted = ana
+        .submit(
+            &org_page,
+            &format!("/org/members/{}/role", oli_place.id),
+            &[("role", "member")],
+        )
+        .await;
+    assert_eq!(demoted.status, StatusCode::SEE_OTHER, "{}", demoted.body);
+    let refused = ana.submit(&org_page, &reset(oli_place), &[]).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(totp_rows(&fx.db, oli).await, 1);
+    let root = fx.person("root@probation.test").await;
+    sqlx::query("INSERT INTO memberships (login_id, role) VALUES ($1, 'global_admin')")
+        .bind(root)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    let mut root_browser = admin_browser(&fx, "root@probation.test").await;
+    let by_root = root_browser.submit(&org_page, &reset(oli_place), &[]).await;
+    assert_eq!(by_root.status, StatusCode::SEE_OTHER, "{}", by_root.body);
+    assert_eq!(totp_rows(&fx.db, oli).await, 0);
 }
 
 /// Saves `org`'s company SSO on its organisation page.
@@ -2486,6 +2632,68 @@ async fn t_portal_sso_secret() {
             .await
             .has(SECRET),
         "never shown again"
+    );
+
+    // An empty secret keeps the stored one only while the issuer and client stay the
+    // same: it never goes to a new issuer (M2).
+    let stored = |db: &Db| {
+        let pool = db.owner.clone();
+        async move {
+            sqlx::query_as::<_, (String, Vec<u8>)>(
+                "SELECT sso_issuer, sso_client_secret_enc FROM orgs WHERE id = $1",
+            )
+            .bind(world.acme.id as i32)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = stored(&fx.db).await;
+    for (issuer, client) in [
+        ("https://evil.test", "acme-client"),
+        ("https://idp.acme.test", "other-client"),
+    ] {
+        let moved = save_sso(
+            &mut ana,
+            world.acme,
+            &[
+                ("enabled", "on"),
+                ("issuer", issuer),
+                ("client_id", client),
+                ("client_secret", ""),
+            ],
+        )
+        .await;
+        assert_eq!(
+            moved.status,
+            StatusCode::CONFLICT,
+            "{issuer} {client}: {}",
+            moved.body
+        );
+        assert!(
+            moved.has("Enter the client secret your provider gave you."),
+            "{}",
+            moved.body
+        );
+        assert_eq!(stored(&fx.db).await, before);
+    }
+    let kept = save_sso(
+        &mut ana,
+        world.acme,
+        &[
+            ("enabled", "on"),
+            ("issuer", "https://idp.acme.test"),
+            ("client_id", "acme-client"),
+            ("client_secret", ""),
+            ("allowed_tenant", "acme.test"),
+        ],
+    )
+    .await;
+    assert_eq!(kept.status, StatusCode::SEE_OTHER, "{}", kept.body);
+    assert_eq!(
+        stored(&fx.db).await.1,
+        before.1,
+        "the same issuer keeps its secret"
     );
 }
 
@@ -2630,6 +2838,49 @@ async fn t_portal_sso_off_members_stay() {
         "relinking SSO does not bring a removed member back"
     );
 
+    // Nor does a new login with the same SSO identity: Rob deletes his login, the purge
+    // erases it after 30 days, and his next SSO sign-in makes a new login (B2).
+    let deleted = rob_browser
+        .submit("/account", "/account/delete", &[("confirm", "delete")])
+        .await;
+    assert_eq!(
+        deleted.location.as_deref(),
+        Some("/signin"),
+        "{}",
+        deleted.body
+    );
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
+         WHERE id = $1",
+    )
+    .bind(rob)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    accounts::purge(&fx.db.app).await.expect("the purge runs");
+    let mut again = fx.browser();
+    let back = oauth(
+        &fx,
+        &mut again,
+        &format!("/sso/{}/start", world.acme.id),
+        serde_json::json!({"sub": "acme-rob"}),
+    )
+    .await;
+    assert_eq!(back.location.as_deref(), Some("/account"), "{}", back.body);
+    let new_rob: i32 =
+        sqlx::query_scalar("SELECT login_id FROM sign_in_methods WHERE subject = 'acme-rob'")
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    assert_ne!(new_rob, rob, "a new login");
+    assert!(
+        memberships_in(&fx.db, world.acme)
+            .await
+            .iter()
+            .all(|(login, _)| *login != new_rob),
+        "a new login with a removed member's SSO identity does not join"
+    );
+
     let off = save_sso(
         &mut ana,
         world.acme,
@@ -2744,9 +2995,21 @@ async fn t_sso_session_scope() {
         );
     }
     let switched = scoped
-        .submit("/keys", "/place", &[("to", "Personal account")])
+        .submit("/keys", "/place", &[("to", "personal")])
         .await;
-    assert_eq!(switched.status, StatusCode::NOT_FOUND);
+    assert_eq!(switched.status, StatusCode::NOT_FOUND, "{}", switched.body);
+    for to in [
+        format!("org:{}", world.acme.id),
+        format!("org:{}", world.globex.id),
+    ] {
+        let switched = scoped.submit("/keys", "/place", &[("to", &to)]).await;
+        let want = if to.ends_with(&world.globex.id.to_string()) {
+            StatusCode::SEE_OTHER
+        } else {
+            StatusCode::NOT_FOUND
+        };
+        assert_eq!(switched.status, want, "{to}: {}", switched.body);
+    }
     assert!(scoped.get("/keys").await.has("Your keys in Globex"));
     let globex = scoped.get(&format!("/org/{}", world.globex.id)).await;
     assert_eq!(globex.status, StatusCode::OK, "{}", globex.body);
@@ -2947,6 +3210,39 @@ async fn t_portal_org_delete_restore() {
     age_org_deletion(&fx.db, world.acme, 31).await;
     let late = max.submit("/org", &restore, &[]).await;
     assert_eq!(late.status, StatusCode::NOT_FOUND, "{}", late.body);
+
+    // A restore that commits while the purge is on its way does not lose Acme: the
+    // purge waits on the organisation's row, then finds it restored (M3).
+    let mut restoring = hold_rows(
+        &fx.db,
+        "SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE",
+        &[world.acme.id as i32],
+    )
+    .await;
+    sqlx::query("UPDATE orgs SET deleted_at = NULL, restore_until = NULL WHERE id = $1")
+        .bind(world.acme.id as i32)
+        .execute(&mut *restoring)
+        .await
+        .unwrap();
+    let (purged, ()) = tokio::join!(
+        accounts::purge(&fx.db.app),
+        release_when_waiting(&fx.db, restoring, 1),
+    );
+    assert_eq!(purged.expect("the purge runs").2, 0, "nothing erased");
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM orgs WHERE name = 'Acme' AND deleted_at IS NULL")
+            .await,
+        1
+    );
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM keys WHERE kind = 'service' AND revoked_at IS NULL")
+            .await,
+        1,
+        "its keys are kept"
+    );
+    age_org_deletion(&fx.db, world.acme, 31).await;
     let ranges = fx
         .db
         .count("SELECT count(*) FROM change_log WHERE kind = 'ranges'")
@@ -3066,7 +3362,7 @@ async fn t_portal_activity_scope() {
     create_key(&mut mia, "mia key").await;
     let mut max = fx.signed_in("max@acme.test").await;
     create_key(&mut max, "max key").await;
-    let mut ana = fx.signed_in("ana@acme.test").await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
     create_service_key(&mut ana, "frontend devices", &world.frontend.id.to_string()).await;
     create_service_key(&mut ana, "all laptops", "org").await;
     let mut gus = fx.signed_in("gus@globex.test").await;
@@ -3089,7 +3385,7 @@ async fn t_portal_activity_scope() {
         )
         .await;
     }
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     for (browser, sees) in [
         (&mut mia, vec!["pkg-mia"]),
         (&mut bob, vec!["pkg-mia", "pkg-frontend"]),
@@ -3234,7 +3530,7 @@ async fn t_portal_audit_scope() {
         assert!(!page.has(unseen), "Ana does not see {unseen}");
     }
 
-    let mut bob = fx.signed_in("bob@acme.test").await;
+    let mut bob = admin_browser(&fx, "bob@acme.test").await;
     let page = bob.get("/audit").await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.has(&frontend), "{}", page.body);
@@ -3246,7 +3542,7 @@ async fn t_portal_audit_scope() {
         );
     }
 
-    let mut admin = fx.signed_in("root@probation.test").await;
+    let mut admin = admin_browser(&fx, "root@probation.test").await;
     let page = admin.get("/audit").await;
     for seen in [&frontend, &globex, "platform:1", "gus@globex.test"] {
         assert!(
@@ -3616,18 +3912,27 @@ async fn t_cross_tenant_routes_places() {
             sent += 1;
         }
     }
-    // Forms that carry an id: the switcher, a service key's group, a member's new group.
+    // Forms that carry an id: the switcher (by value; Ana has no personal account), a
+    // service key's group, a member's new group. The switcher's positive control first.
+    let own = ana
+        .submit(
+            "/keys",
+            "/place",
+            &[("to", &format!("org:{}", world.acme.id))],
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::SEE_OTHER, "{}", own.body);
     let ops_id = ops.id.to_string();
     for (page, path, fields) in [
         (
             "/keys",
             "/place".to_owned(),
-            vec![("to", "Globex (organisation)".to_owned())],
+            vec![("to", format!("org:{}", world.globex.id))],
         ),
         (
             "/keys",
             "/place".to_owned(),
-            vec![("to", "Personal account".to_owned())],
+            vec![("to", "personal".to_owned())],
         ),
         (
             "/keys",

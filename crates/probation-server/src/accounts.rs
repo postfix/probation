@@ -1113,8 +1113,8 @@ pub(crate) async fn totp_disable(pool: &PgPool, login_id: i32) -> Result<bool, s
 }
 
 /// An org admin resets the authenticator of a member whose login belongs to their
-/// organisation alone; any other login's, and any org admin's, is reset by a global
-/// admin (C39, C76). The authenticator, its backup codes and every session of the login
+/// organisation alone; any other login's, and any org admin's or one who was an org
+/// admin there in the last 30 days (S6-4), is reset by a global admin (C39, C76). The authenticator, its backup codes and every session of the login
 /// go in one transaction, with the audit row; a refusal writes nothing.
 pub(crate) async fn reset_totp(
     pool: &PgPool,
@@ -1131,10 +1131,14 @@ pub(crate) async fn reset_totp(
         return Err(ChangeError::Denied);
     };
     let mut tx = pool.begin().await?;
+    // Under the organisation's lock, so no role change slips in between (S6-4).
+    tenancy::lock_org(&mut tx, org).await?;
     let (org_only, org_admin): (bool, bool) = sqlx::query_as(
         "SELECT NOT EXISTS (SELECT 1 FROM personal_accounts WHERE login_id = $1)
                     AND NOT EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id IS DISTINCT FROM $2),
-                EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id = $2 AND role = 'org_admin')",
+                EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id = $2 AND role = 'org_admin')
+                    OR EXISTS (SELECT 1 FROM former_org_admins
+                               WHERE login_id = $1 AND org_id = $2 AND until > now() - interval '30 days')",
     )
     .bind(login)
     .bind(org)
@@ -1946,7 +1950,8 @@ pub(crate) async fn identity_login(
 }
 
 /// A login that signs in through, or links, an organisation's SSO joins it (C5), unless
-/// an org admin removed it there; only an invitation brings it back (C128).
+/// an org admin removed it, or the SSO identity it holds, there; only an invitation
+/// brings it back (C128).
 async fn join_through_sso(
     conn: &mut PgConnection,
     login: i32,
@@ -1956,6 +1961,9 @@ async fn join_through_sso(
         "INSERT INTO memberships (login_id, org_id, role)
          SELECT $1, $2, 'member'
          WHERE NOT EXISTS (SELECT 1 FROM org_removals WHERE login_id = $1 AND org_id = $2)
+           AND NOT EXISTS (SELECT 1 FROM org_sso_removals AS r JOIN sign_in_methods AS m
+                             ON m.org_id = r.org_id AND m.issuer = r.issuer AND m.subject = r.subject
+                           WHERE m.login_id = $1 AND r.org_id = $2)
          ON CONFLICT DO NOTHING",
     )
     .bind(login)
@@ -2091,7 +2099,14 @@ pub(crate) async fn save_sso(
     .await?;
     let sealed = match (form.enabled, form.client_secret.trim()) {
         (false, _) => None,
-        (true, "") if before.3 => Some(None),
+        // The stored secret stays only with the issuer and client it was given for.
+        (true, "")
+            if before.3
+                && before.0.as_deref() == Some(issuer)
+                && before.1.as_deref() == Some(client_id) =>
+        {
+            Some(None)
+        }
         (true, "") => return refuse("Enter the client secret your provider gave you."),
         (true, secret) => Some(Some(
             secrets.seal(&sso_secret_aad(org_id), secret.as_bytes()),
@@ -3036,11 +3051,12 @@ pub async fn purge(pool: &PgPool) -> Result<(u64, u64, u64), sqlx::Error> {
     for org in orgs {
         let erase = async {
             let mut tx = pool.begin().await?;
-            tenancy::erase_org(&mut tx, org).await?;
-            tx.commit().await
+            let erased = tenancy::erase_org(&mut tx, org).await?;
+            tx.commit().await.map(|()| erased)
         };
         match erase.await {
-            Ok(()) => erased.2 += 1,
+            Ok(true) => erased.2 += 1,
+            Ok(false) => {}
             Err(err) => tracing::error!(org, error = %err, "purge could not erase an organisation"),
         }
     }

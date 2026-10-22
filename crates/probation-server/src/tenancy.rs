@@ -58,13 +58,26 @@ pub(crate) async fn create_org(conn: &mut PgConnection, name: &str) -> Result<Or
 pub struct Session {
     login_id: i32,
     scope_org_id: Option<i32>,
+    /// The session passed a second factor: its provider's (OAuth, SSO) or the login's
+    /// authenticator. Without it, no admin role is held (C24, C60).
+    second_factor: bool,
 }
 
 impl Session {
+    /// A session that passed its second factor (the CLI and tests act this way).
     pub fn new(login_id: i32, scope_org_id: Option<i32>) -> Session {
         Session {
             login_id,
             scope_org_id,
+            second_factor: true,
+        }
+    }
+
+    /// The portal's session: an admin role needs `passed` (C24, C60).
+    pub fn with_second_factor(self, passed: bool) -> Session {
+        Session {
+            second_factor: passed,
+            ..self
         }
     }
 }
@@ -174,6 +187,8 @@ pub struct LoginActor {
     /// Its role on the one place `Tenancy::actor` loaded it for, so a permit or a key
     /// action is bound to that `Authorized<Place>`.
     roles: Vec<(PlaceRef, Role)>,
+    /// An admin role there was held back because the session has no second factor.
+    withheld: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +206,7 @@ impl Actor {
             login_id,
             global_admin,
             roles: Vec::new(),
+            withheld: false,
         })
     }
 
@@ -217,6 +233,12 @@ impl Actor {
             Actor::Automation(token) => Some(token.token_id),
             _ => None,
         }
+    }
+
+    /// Whether an admin role was held back because the session has no second factor:
+    /// the portal sends it to set up an authenticator (C24, C60).
+    pub fn needs_second_factor(&self) -> bool {
+        matches!(self, Actor::Login(login) if login.withheld)
     }
 
     /// The actor's role on `place`: on the place it was loaded for only.
@@ -289,7 +311,7 @@ impl Tenancy {
         let in_scope = session
             .scope_org_id
             .is_none_or(|scope| place.org == Some(scope));
-        let global_admin = memberships.iter().any(|m| m.org.is_none());
+        let global_admin = session.second_factor && memberships.iter().any(|m| m.org.is_none());
         let admitted = match place.place.kind {
             LayerKind::Personal => place.owner_login == Some(session.login_id),
             _ => place
@@ -355,14 +377,15 @@ impl Tenancy {
     }
 
     /// Whether the session acts as a global admin: never one opened through an
-    /// organisation's SSO (T2). A store error answers no (fail closed).
+    /// organisation's SSO (T2), nor one without a second factor (C24). A store error
+    /// answers no (fail closed).
     pub async fn global_admin(&self, session: &Session) -> bool {
         let found = async {
             let mut conn = self.pool.acquire().await?;
             memberships(&mut conn, session).await
         };
         match found.await {
-            Ok(memberships) => memberships.iter().any(|m| m.org.is_none()),
+            Ok(memberships) => session.second_factor && memberships.iter().any(|m| m.org.is_none()),
             Err(err) => {
                 tracing::error!(error = %err, "global_admin could not read the store");
                 false
@@ -410,12 +433,20 @@ impl Tenancy {
     ) -> Result<Actor, sqlx::Error> {
         let mut conn = self.pool.acquire().await?;
         let memberships = memberships(&mut conn, session).await?;
-        let global_admin = memberships.iter().any(|m| m.org.is_none());
-        let role = role_for(session.login_id, &memberships, &place.0);
+        let role = role_for(
+            session.login_id,
+            &memberships,
+            &place.0,
+            session.second_factor,
+        );
+        // An admin role held back for want of a second factor (C24, C60).
+        let withheld = !session.second_factor
+            && role_for(session.login_id, &memberships, &place.0, true) != role;
         Ok(Actor::Login(LoginActor {
             login_id: session.login_id,
-            global_admin,
+            global_admin: session.second_factor && memberships.iter().any(|m| m.org.is_none()),
             roles: role.map(|role| (place.0.place, role)).into_iter().collect(),
+            withheld,
         }))
     }
 }
@@ -614,8 +645,10 @@ fn at(place: PlaceRef, (org, group, owner_login, status, org_name, group_name): 
 
 /// The login's role on `place` (C4, C27); none in a suspended organisation or personal
 /// account except for a global admin (C78).
-fn role_for(login_id: i32, memberships: &[Membership], place: &Place) -> Option<Role> {
-    if memberships.iter().any(|m| m.org.is_none()) {
+/// `admin`: whether the session may hold an admin role (it passed a second factor);
+/// without it, an admin gets the role a plain member has there.
+fn role_for(login_id: i32, memberships: &[Membership], place: &Place, admin: bool) -> Option<Role> {
+    if admin && memberships.iter().any(|m| m.org.is_none()) {
         return Some(Role::GlobalAdmin);
     }
     if place.suspended {
@@ -628,8 +661,10 @@ fn role_for(login_id: i32, memberships: &[Membership], place: &Place) -> Option<
         .iter()
         .find(|m| m.org.is_some() && m.org == place.org)?;
     Some(match place.place.kind {
-        _ if membership.role == "org_admin" => Role::OrgAdmin,
-        LayerKind::Group if membership.role == "group_admin" && membership.group == place.group => {
+        _ if admin && membership.role == "org_admin" => Role::OrgAdmin,
+        LayerKind::Group
+            if admin && membership.role == "group_admin" && membership.group == place.group =>
+        {
             Role::GroupAdmin
         }
         LayerKind::User if place.place.id as i32 == membership.id => Role::Owner,
@@ -718,7 +753,7 @@ fn runs_org(actor: &Actor, place: &Authorized<Place>) -> bool {
     )
 }
 
-async fn lock_org(conn: &mut PgConnection, org: i32) -> Result<(), sqlx::Error> {
+pub(crate) async fn lock_org(conn: &mut PgConnection, org: i32) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE")
         .bind(org)
         .execute(conn)
@@ -849,6 +884,7 @@ pub async fn set_role(
             "That person is in no group. Put them in a group first: a group admin runs the group they are in.".to_owned(),
         ));
     }
+    stopped_admin(&mut tx, org, id).await?;
     sqlx::query("UPDATE memberships SET role = $2 WHERE id = $1")
         .bind(id)
         .bind(role)
@@ -885,6 +921,22 @@ async fn last_org_admin(conn: &mut PgConnection, org: i32, id: i32) -> Result<bo
     .await
 }
 
+/// Records, when membership `id` is an org admin's, that its login stops being one now
+/// (S6-4). Called before the role changes or the membership ends.
+async fn stopped_admin(conn: &mut PgConnection, org: i32, id: i32) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO former_org_admins (org_id, login_id, until)
+         SELECT org_id, login_id, now() FROM memberships
+         WHERE id = $1 AND org_id = $2 AND role = 'org_admin'
+         ON CONFLICT (org_id, login_id) DO UPDATE SET until = now()",
+    )
+    .bind(id)
+    .bind(org)
+    .execute(conn)
+    .await
+    .map(drop)
+}
+
 fn last_admin_refusal() -> ChangeError {
     ChangeError::Refused(
         "Not done: the organisation must always have at least one org admin. Make someone else an org admin first.".to_owned(),
@@ -910,6 +962,7 @@ async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<()
     if last_org_admin(conn, org, id).await? {
         return Err(last_admin_refusal());
     }
+    stopped_admin(conn, org, id).await?;
     let revoked: Vec<i64> = sqlx::query_scalar(
         "UPDATE keys SET revoked_at = now()
          WHERE place_kind = 'user' AND place_id = $1 AND revoked_at IS NULL RETURNING id",
@@ -925,12 +978,22 @@ async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<()
         .bind(org)
         .execute(&mut *conn)
         .await?;
-    // The organisation's SSO does not add them back; an invitation does (C128).
+    // The organisation's SSO does not add them back, under this login or another one
+    // with the same SSO identity; an invitation does (C128).
     sqlx::query(
         "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
     .bind(org)
     .bind(login)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO org_sso_removals (org_id, issuer, subject)
+         SELECT org_id, issuer, subject FROM sign_in_methods WHERE login_id = $1 AND org_id = $2
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(login)
+    .bind(org)
     .execute(&mut *conn)
     .await?;
     sqlx::query("DELETE FROM memberships WHERE id = $1")
@@ -1403,6 +1466,15 @@ pub async fn accept_invitation(
         .bind(login)
         .execute(&mut *tx)
         .await?;
+    sqlx::query(
+        "DELETE FROM org_sso_removals AS r USING sign_in_methods AS m
+         WHERE r.org_id = $1 AND m.login_id = $2 AND m.org_id = r.org_id
+           AND m.issuer = r.issuer AND m.subject = r.subject",
+    )
+    .bind(org)
+    .bind(login)
+    .execute(&mut *tx)
+    .await?;
     let actor = crate::accounts::login_actor(&mut tx, login).await?;
     let () = audit::record(
         &mut tx,
@@ -1706,6 +1778,9 @@ pub async fn restorable_orgs(
 /// there is checked here, under the row's lock; another tenant's, an unknown and an
 /// expired one are all `NotFound` (C1). Its keys work again within one interval.
 pub async fn restore_org(pool: &PgPool, session: &Session, org: i32) -> Result<(), ChangeError> {
+    if !session.second_factor {
+        return Err(ChangeError::Denied);
+    }
     let mut tx = pool.begin().await?;
     let restorable: Option<String> = sqlx::query_scalar(
         "SELECT o.name FROM orgs AS o
@@ -1754,7 +1829,20 @@ pub async fn restore_org(pool: &PgPool, session: &Session, org: i32) -> Result<(
 /// with their activity, its layers, and the organisation with everything that hangs off
 /// it. When it held an approved range, `ranges` sends every firewall the smaller table
 /// in the same transaction (C63, C87). The audit log keeps its rows.
-pub(crate) async fn erase_org(conn: &mut PgConnection, org: i32) -> Result<(), sqlx::Error> {
+/// `false`, with nothing touched, when the organisation is no longer deleted and past
+/// its 30 days: a restore committed after the purge listed it (the row's lock orders
+/// the two).
+pub(crate) async fn erase_org(conn: &mut PgConnection, org: i32) -> Result<bool, sqlx::Error> {
+    let due: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM orgs WHERE id = $1 AND deleted_at IS NOT NULL AND restore_until <= now()
+         FOR UPDATE",
+    )
+    .bind(org)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if due.is_none() {
+        return Ok(false);
+    }
     let held_range: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM org_ip_ranges WHERE org_id = $1 AND approved_by IS NOT NULL)",
     )
@@ -1791,7 +1879,7 @@ pub(crate) async fn erase_org(conn: &mut PgConnection, org: i32) -> Result<(), s
     if held_range {
         record_change(conn, ChangeKind::Ranges, &org).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A group's name: 1 to 100 characters.

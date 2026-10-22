@@ -8,7 +8,25 @@ CREATE TABLE org_removals (
     login_id integer NOT NULL REFERENCES logins (id) ON DELETE CASCADE,
     PRIMARY KEY (org_id, login_id)
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON org_removals TO probation_app;
+-- The same by the SSO identity the member signed in with, so a new login holding that
+-- identity (after the old one was erased, say) is not added back either.
+CREATE TABLE org_sso_removals (
+    org_id integer NOT NULL REFERENCES orgs (id) ON DELETE CASCADE,
+    issuer text NOT NULL,
+    subject text NOT NULL,
+    PRIMARY KEY (org_id, issuer, subject)
+);
+-- When a login stopped being an org admin of an organisation (demoted, removed or left).
+-- For 30 days after, only a global admin resets its authenticator, so an org admin cannot
+-- demote another admin, reset them and promote them back (C39, S6-4).
+CREATE TABLE former_org_admins (
+    org_id integer NOT NULL REFERENCES orgs (id) ON DELETE CASCADE,
+    login_id integer NOT NULL REFERENCES logins (id) ON DELETE CASCADE,
+    until timestamptz NOT NULL,
+    PRIMARY KEY (org_id, login_id)
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON org_removals, org_sso_removals, former_org_admins
+    TO probation_app;
 
 -- The purge erases a login past its 30 days (C33). An erased login's invitation links go
 -- with it, sent or accepted: a spent link is deleted, never reopened by a NULL.

@@ -524,6 +524,9 @@ impl Portal {
 pub(crate) struct SignedIn {
     pub session: accounts::Session,
     pub login_id: i32,
+    /// The session passed a second factor: its provider's (an OAuth or SSO sign-in) or
+    /// the login's authenticator. Every admin role depends on it (C24, C60, T15).
+    pub second_factor: bool,
 }
 
 impl SignedIn {
@@ -558,6 +561,7 @@ impl SignedIn {
 
     pub(crate) fn tenancy_session(&self) -> tenancy::Session {
         tenancy::Session::new(self.login_id, self.session.scope_org_id)
+            .with_second_factor(self.second_factor)
     }
 
     /// The account the session works in: its chosen organisation or personal account,
@@ -636,10 +640,7 @@ impl Portal {
     /// The signed-in session of a page, or a redirect to sign-in.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<SignedIn, Response> {
         match self.session(headers).await.map_err(unavailable)? {
-            Some(session) => match session.login_id {
-                Some(login_id) => Ok(SignedIn { session, login_id }),
-                None => Err(redirect("/signin")),
-            },
+            Some(session) => self.signed_in_as(session).await,
             None => Err(redirect("/signin")),
         }
     }
@@ -647,11 +648,31 @@ impl Portal {
     /// The signed-in session of a POST carrying its CSRF token.
     async fn signed_in_post(&self, headers: &HeaderMap, csrf: &str) -> Result<SignedIn, Response> {
         let session = self.posted(headers, csrf).await?;
-        match session.login_id {
-            Some(login_id) => Ok(SignedIn { session, login_id }),
-            None => Err(redirect("/signin")),
-        }
+        self.signed_in_as(session).await
     }
+
+    /// A password session counts as second-factor checked once its login has an
+    /// authenticator: it passed the code at sign-in, or proved one turning it on.
+    async fn signed_in_as(&self, session: accounts::Session) -> Result<SignedIn, Response> {
+        let Some(login_id) = session.login_id else {
+            return Err(redirect("/signin"));
+        };
+        let second_factor = session.totp_ok
+            || accounts::has_totp(&self.pool, login_id)
+                .await
+                .map_err(unavailable)?;
+        Ok(SignedIn {
+            session,
+            login_id,
+            second_factor,
+        })
+    }
+}
+
+/// Where an admin action goes when its role was held back for want of a second factor:
+/// setting up the authenticator (C24, C60).
+pub(crate) fn second_factor_first() -> Response {
+    redirect("/account#totp-heading")
 }
 
 /// The client's address: the peer, or behind a proxy in `trusted_proxies` the rightmost
