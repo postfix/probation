@@ -111,6 +111,11 @@ pub async fn serve(
         // SPEC §11 asks the decision line to carry a cache status, and this branch is
         // the one that defines "warm" for metadata (SPEC §10).
         logging::record_cache(logging::CacheStatus::Hit);
+        if let (Some(verdict), Some(principal), Some(managed)) =
+            (rendered.refused, principal, app.managed())
+        {
+            managed.record_decision(principal, Ecosystem::PyPi, name.as_str(), None, &verdict);
+        }
         return Ok(Rendered {
             body: Arc::clone(&rendered.body),
             content_type: rendered.content_type,
@@ -119,6 +124,10 @@ pub async fn serve(
     logging::record_cache(logging::CacheStatus::Miss);
 
     let resolved = resolve(app, name, &policy, snapshot, now, monotonic).await?;
+    let refused = principal.and_then(|_| refused_listing(&policy, now, name, &resolved));
+    if let (Some(verdict), Some(principal), Some(managed)) = (refused, principal, app.managed()) {
+        managed.record_decision(principal, Ecosystem::PyPi, name.as_str(), None, &verdict);
+    }
     let (body, content_type) = render(app, name, &resolved, &representation);
     let body: Arc<[u8]> = Arc::from(body);
 
@@ -133,6 +142,7 @@ pub async fn serve(
                 digest_generation: resolved.digest_generation,
                 deadline_utc_micros: resolved.deadline_utc_micros,
                 deadline_monotonic: resolved.deadline_monotonic,
+                refused,
             }),
             body.len() as u64 + 256,
         );
@@ -190,6 +200,8 @@ struct Resolved {
     digest_generation: u64,
     deadline_utc_micros: i64,
     deadline_monotonic: Instant,
+    /// What the decisions were made from, for an activity row's candidate.
+    cached: Arc<CachedProject>,
 }
 
 /// The project snapshot a decision must be made from: the cached one while it is
@@ -374,6 +386,7 @@ async fn resolve(
         decisions,
         deadline_utc_micros,
         deadline_monotonic,
+        cached,
     })
 }
 
@@ -626,6 +639,54 @@ async fn refresh(
         pins,
         advertised: OnceLock::new(),
     }))
+}
+
+/// Managed mode (S3-8): a listing with no eligible file left is PyPI's refusal (SPEC §7
+/// answers it with an empty listing). Its verdict is the one for the file a block is
+/// reported for first, else the earliest hold; each request it is served to records a
+/// row with no version, and the cached listing keeps the verdict for the next. A
+/// listing that still serves a file is no refusal.
+fn refused_listing(
+    policy: &CompiledPolicy,
+    now: i64,
+    name: &ProjectName,
+    resolved: &Resolved,
+) -> Option<crate::policy::PolicyVerdict> {
+    if resolved.decisions.contains(&Decision::Allow) {
+        return None;
+    }
+    let blocked = resolved
+        .decisions
+        .iter()
+        .position(|decision| matches!(decision, Decision::Deny(_)));
+    let held = || {
+        resolved
+            .decisions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, decision)| match decision {
+                Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, index)),
+                _ => None,
+            })
+            .min()
+            .map(|(_, index)| index)
+    };
+    let index = blocked.or_else(held)?;
+    let file = &resolved.files[index];
+    let candidate = Candidate {
+        ecosystem: Ecosystem::PyPi,
+        name: name.as_str(),
+        version: &file.identity.version,
+        publication: publication_of(file, &resolved.cached.first_seen),
+        advertised_digests: &file.reference.expected,
+        pinned_digests: resolved.cached.pins_of(&file.id),
+    };
+    Some(crate::managed::refused_verdict(
+        policy,
+        now,
+        &candidate,
+        resolved.decisions[index],
+    ))
 }
 
 fn render(
