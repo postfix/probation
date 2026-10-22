@@ -987,6 +987,7 @@ impl Config {
                 self.confined(key, Path::new(path))?;
             }
         }
+        let overlay_sets_log_file = overlay.contains_key("log_file_path");
         let mut merged: toml::Table = toml::from_str(&self.local.0)
             .map_err(|err| format!("the local configuration is not TOML: {err}"))?;
         merged.extend(overlay);
@@ -1000,9 +1001,12 @@ impl Config {
         config.siem_url = self.siem_url.clone();
         config.management = self.management.clone();
         config.local = self.local.clone();
-        // `check_delivery` leaves the log file out, and opening it is what start-up does
-        // next: a file that cannot be opened is refused here, not in a crash loop (B2).
-        if let Some(path) = &config.log_file_path {
+        // `check_delivery` leaves the log file out. Start-up refuses one it cannot open
+        // only with consumer identification on, and otherwise warns and drops records:
+        // the same rule here, and a log file the push itself names is checked too (B2).
+        if let Some(path) = &config.log_file_path
+            && (config.log_consumer_identification || overlay_sets_log_file)
+        {
             openable(path).map_err(|err| format!("`log_file_path` cannot be opened: {err}"))?;
         }
         Ok(config)

@@ -525,32 +525,62 @@ fn roll_back_settings(dir: &std::path::Path, reason: String) -> std::io::Result<
 }
 
 /// [`App::start`] on `local` with its settings overlay (C105). A start that fails while
-/// an overlay is in force rolls it back (C71) and is tried once more, so a push that
-/// passed every check and still breaks the start cannot hold the firewall in a crash
-/// loop.
+/// an overlay is in force, in a way a pushed setting can cause (delivery), rolls the
+/// overlay back (C71) and is tried once more, so a push that passed every check and
+/// still breaks the start cannot hold the firewall in a crash loop. The overlay is read
+/// and rolled back only while this process holds the data directory, so a second
+/// instance on a held directory changes nothing.
 pub async fn start_with_settings(
     local: Config,
     deps: impl Fn(Config) -> AppDeps,
 ) -> Result<Running, StartupError> {
-    let overlay = local.data_dir.join(config::SETTINGS_OVERLAY);
+    if local.management.is_none() {
+        return App::start(deps(local)).await;
+    }
+    let held = hold_data_dir(&local.data_dir, false).await?;
     let config = with_settings_overlay(local.clone()).await;
-    let overlaid = local.management.is_some() && overlay.exists();
+    let overlaid = local.data_dir.join(config::SETTINGS_OVERLAY).exists();
+    drop(held);
     let err = match App::start(deps(config)).await {
-        Err(err) if overlaid => err,
+        // The data directory, the listener and the TLS files are this host's: a push
+        // cannot set them, so their failures leave the overlay alone.
+        Err(err @ StartupError::Delivery(_)) if overlaid => err,
         started => return started,
     };
+    // The failed start's store lets go of the lock as it winds down.
+    let held = hold_data_dir(&local.data_dir, true).await?;
     if roll_back_settings(&local.data_dir, err.to_string()).is_err() {
         return Err(err);
     }
     let config = with_settings_overlay(local).await;
-    // The failed start's store lets go of the data directory's lock as it winds down.
-    for _ in 0..100 {
-        match App::start(deps(config.clone())).await {
-            Err(StartupError::DataDir(_)) => tokio::time::sleep(Duration::from_millis(20)).await,
-            started => return started,
+    drop(held);
+    App::start(deps(config)).await
+}
+
+/// The data directory's lock, held by this process; with `wait`, for up to two seconds.
+async fn hold_data_dir(
+    dir: &std::path::Path,
+    wait: bool,
+) -> Result<store::lock::DataDirLock, StartupError> {
+    std::fs::create_dir_all(dir).map_err(|source| {
+        StartupError::DataDir(store::startup::StartupError::Directory {
+            path: dir.to_path_buf(),
+            source,
+        })
+    })?;
+    let mut attempts = if wait { 100 } else { 1 };
+    loop {
+        attempts -= 1;
+        match store::lock::acquire(dir) {
+            Ok(held) => return Ok(held),
+            Err(_) if attempts > 0 => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(err) => {
+                return Err(StartupError::DataDir(store::startup::StartupError::Lock(
+                    err,
+                )));
+            }
         }
     }
-    App::start(deps(config)).await
 }
 
 /// Publishes the last accepted snapshot when it is still valid (SPEC §8: "Persist
