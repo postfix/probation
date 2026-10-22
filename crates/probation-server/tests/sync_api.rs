@@ -82,6 +82,7 @@ fn event(n: usize, key_id: KeyId, place: PlaceRef) -> ActivityEvent {
         layer: ActivityLayer::Layer(LayerKind::Org),
         client_ip: None,
         eligible_at: None,
+        at: None,
     }
 }
 
@@ -695,5 +696,79 @@ async fn t_activity_place_from_key() {
                 Some("192.0.2.7".into())
             ),
         ]
+    );
+
+    // The firewall's time of each event (S4-11): kept when it is within the activity
+    // retention (Acme: the platform's 90 days), clamped to it when older, and now when
+    // it is in the future, missing or no RFC 3339 time.
+    let rfc3339 = |interval: &'static str| {
+        let db = &db;
+        async move {
+            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(format!(
+                "SELECT to_char((now() + interval '{interval}') AT TIME ZONE 'UTC',
+                                'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"
+            )))
+            .fetch_one(&db.owner)
+            .await
+            .unwrap()
+        }
+    };
+    let ten_minutes_ago = rfc3339("-10 minutes").await;
+    let timed = |n: usize, at: Option<String>| ActivityEvent {
+        at,
+        ..event(n, key.id, acme)
+    };
+    let batch = changes_body(
+        0,
+        vec![
+            timed(4, Some(ten_minutes_ago.clone())),
+            timed(5, Some(rfc3339("1 hour").await)),
+            timed(6, None),
+            timed(7, Some("yesterday".to_owned())),
+            timed(8, Some(rfc3339("-200 days").await)),
+        ],
+        Vec::new(),
+    );
+    let clock = || async {
+        sqlx::query_scalar::<_, String>("SELECT clock_timestamp()::text")
+            .fetch_one(&db.owner)
+            .await
+            .unwrap()
+    };
+    let before = clock().await;
+    let answer = post(
+        &client(),
+        url.join("api/v1/sync/changes").unwrap(),
+        Some(&firewall.token),
+        &[],
+        batch,
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::OK);
+    let after = clock().await;
+    let stored: Vec<(String, bool, bool, bool)> = sqlx::query_as(
+        "SELECT event_id,
+                at = $1::timestamptz,
+                at BETWEEN $2::timestamptz AND $3::timestamptz,
+                at BETWEEN $2::timestamptz - interval '90 days' AND $3::timestamptz - interval '90 days'
+         FROM activity WHERE event_id IN ('event-4', 'event-5', 'event-6', 'event-7', 'event-8')
+         ORDER BY event_id",
+    )
+    .bind(&ten_minutes_ago)
+    .bind(&before)
+    .bind(&after)
+    .fetch_all(&db.owner)
+    .await
+    .unwrap();
+    assert_eq!(
+        stored,
+        vec![
+            ("event-4".into(), true, false, false),
+            ("event-5".into(), false, true, false),
+            ("event-6".into(), false, true, false),
+            ("event-7".into(), false, true, false),
+            ("event-8".into(), false, false, true),
+        ],
+        "(event, at the firewall's time, at now, at the retention bound)"
     );
 }

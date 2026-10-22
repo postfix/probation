@@ -415,19 +415,38 @@ async fn record_report(
     sqlx::query(
         "INSERT INTO activity (event_id, at, firewall_id, place_kind, place_id, key_id, layer,
                                ecosystem, package, version, result, rule, client_ip, eligible_at)
-         SELECT e.event_id, now(), $1, k.place_kind, k.place_id, k.id, e.layer,
+         SELECT e.event_id,
+                -- The firewall's time, within [now - activity retention, now] (S4-11).
+                LEAST(now(), GREATEST(COALESCE(e.at::timestamptz, now()),
+                    now() - make_interval(days => COALESCE(
+                        (SELECT o.activity_retention_days FROM orgs AS o
+                         WHERE o.id = place_org(k.place_kind, k.place_id)),
+                        (SELECT p.activity_retention_days FROM platform_settings AS p
+                         WHERE p.id = 1))))),
+                $1, k.place_kind, k.place_id, k.id, e.layer,
                 e.ecosystem, e.package, e.version, e.result, e.rule,
                 CASE WHEN e.result = 'refused_network' THEN e.client_ip END,
                 e.eligible_at::timestamptz
          FROM unnest($2::text[], $3::bigint[], $4::text[], $5::text[], $6::text[], $7::text[],
-                     $8::text[], $9::text[], $10::inet[], $11::text[])
-              AS e(event_id, key_id, layer, ecosystem, package, version, result, rule, client_ip, eligible_at)
+                     $8::text[], $9::text[], $10::inet[], $11::text[], $12::text[])
+              AS e(event_id, key_id, layer, ecosystem, package, version, result, rule, client_ip,
+                   eligible_at, at)
          JOIN keys AS k ON k.id = e.key_id AND k.kind IN ('user', 'service')
          ON CONFLICT (firewall_id, event_id) DO NOTHING",
     )
     .bind(firewall)
-    .bind(events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.key_id.0 as i64).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.key_id.0 as i64)
+            .collect::<Vec<_>>(),
+    )
     .bind(
         events
             .iter()
@@ -440,17 +459,53 @@ async fn record_report(
             .map(|event| event.ecosystem.map(|ecosystem| ecosystem.as_tag()))
             .collect::<Vec<_>>(),
     )
-    .bind(events.iter().map(|event| event.package.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.version.clone()).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.package.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.version.clone())
+            .collect::<Vec<_>>(),
+    )
     .bind(
         events
             .iter()
             .map(|event| word(serde_json::to_value(event.result).expect("a result encodes")))
             .collect::<Vec<_>>(),
     )
-    .bind(events.iter().map(|event| event.rule.clone()).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.client_ip).collect::<Vec<_>>())
-    .bind(events.iter().map(|event| event.eligible_at.clone()).collect::<Vec<_>>())
+    .bind(
+        events
+            .iter()
+            .map(|event| event.rule.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.client_ip)
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        events
+            .iter()
+            .map(|event| event.eligible_at.clone())
+            .collect::<Vec<_>>(),
+    )
+    // Parsed here, so a time that is no RFC 3339 falls back to now instead of failing
+    // the batch; what goes to Postgres is jiff's own rendering.
+    .bind(
+        events
+            .iter()
+            .map(|event| {
+                let at = event.at.as_deref()?.parse::<jiff::Timestamp>().ok()?;
+                Some(at.to_string())
+            })
+            .collect::<Vec<_>>(),
+    )
     .execute(&mut *tx)
     .await?;
     let () = tx.commit().await?;
