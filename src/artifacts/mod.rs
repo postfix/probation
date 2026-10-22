@@ -226,8 +226,6 @@ fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {
 
 /// The error for a refused artifact. In managed mode the refusal is also an activity
 /// row for the key's owner, naming the rule and the layer behind it (C23, C92).
-/// `osv::evaluate` hands back only the decision, so the layer is the one `decide` names
-/// for the same inputs: an OSV denial is the one decided with a match.
 fn refused(
     app: &App,
     principal: Option<&Principal>,
@@ -238,10 +236,14 @@ fn refused(
     decision: Decision,
 ) -> ApiError {
     if let (Some(principal), Some(managed)) = (principal, app.managed()) {
-        let candidate = candidate(row, pinned);
-        let osv_matched = decision == Decision::Deny(DenyReason::BlockedByOsv);
-        let verdict = crate::policy::decide(policy, &candidate, now, osv_matched);
-        managed.record_decision(principal, &candidate, &verdict);
+        managed.record_refused(
+            principal,
+            policy,
+            now,
+            &candidate(row, pinned),
+            decision,
+            true,
+        );
     }
     decision_error(decision, now)
 }
@@ -272,7 +274,13 @@ async fn record_would_block(
         return;
     }
     let verdict = crate::policy::decide(policy, &candidate, now, true);
-    managed.record_decision(principal, &candidate, &verdict);
+    managed.record_decision(
+        principal,
+        candidate.ecosystem,
+        candidate.name,
+        Some(candidate.version),
+        &verdict,
+    );
 }
 
 /// The reference record, from memory where possible. SPEC §9: the record is

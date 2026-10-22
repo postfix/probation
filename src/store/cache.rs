@@ -91,6 +91,10 @@ pub struct RenderedResponse {
     /// The same deadline on the monotonic clock, so a backward wall-clock jump
     /// cannot extend an entry's life (SPEC §5).
     pub deadline_monotonic: Instant,
+    /// Managed mode: a PyPI listing with no eligible file left is a refusal, and each
+    /// request it is served to, from here too, records an activity row with this
+    /// verdict (S3-8). `None` for everything else.
+    pub refused: Option<crate::policy::PolicyVerdict>,
 }
 
 impl RenderedResponse {
@@ -628,6 +632,7 @@ mod tests {
             digest_generation: 2,
             deadline_utc_micros: now + 1,
             deadline_monotonic: monotonic + std::time::Duration::from_secs(60),
+            refused: None,
         };
 
         assert!(rendered.is_reusable(Generation(4), 7, 2, now, monotonic));

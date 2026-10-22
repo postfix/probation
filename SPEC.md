@@ -423,7 +423,7 @@ Test both the representative fixture and large real-shaped metadata. Size limits
 
 ## 13. Verification and completion criteria
 
-Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no private-address bypass, and no origin override beyond §4's three origin keys. Test the pure policy first, then protocol behavior, then real package-manager installations.
+Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no private-address bypass and no origin override. Managed mode: §4's three origin keys, added with it, are the one exception, and apply to every instance. Test the pure policy first, then protocol behavior, then real package-manager installations.
 
 Required behavior tests:
 

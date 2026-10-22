@@ -10,3 +10,14 @@ Started 2026-10-22 at the user's request ("start slice 5 in parallel too"), in w
 | S5-3 | decision C128 | SSO join timing. | User: an SSO user joins at sign-in; a removed member is not re-added by SSO (current behaviour). |
 | S5-4 | to slice 6 | T-portal-unverified-blocked holds only structurally: an unconfirmed login has no place. If slice 6 lets an unconfirmed login gain a place (for example by invitation), add a verification check in tenancy.rs. | Sent to slice 6. |
 | S5-5 | for review | Deviations: OIDC through `jsonwebtoken` with hand-written discovery, PKCE, state, nonce and issuer checks, and GitHub OAuth by hand (not `openidconnect`); the portal's client-IP code copies `sync::source_address` (merge after slices land); PROBATION_SERVER_SESSION_KEY unused (sessions are random ids stored hashed); backup codes are HMAC-SHA256 under a key derived from SECRET_KEY, not Argon2; a sent mail's body is wiped; TOTP throttle is 5 failures per 15 min, and a throttled sign-in answers 429 identically for known and unknown emails; `GuardedClient::allowing_loopback_for_tests()` is hidden-public; axum `form`/`query` features added; purge runs one transaction per login, and erasing a global admin who owns slice 6/7 rows will fail (slices 6/7 decide); the place switcher does nothing until slice 6; the A11Y-keyboard checklist is in tdd-slice-5.md; tests/a11y/node_modules must not be committed (needs a .gitignore entry). | Reviewers judge. |
+
+## Review (2026-10-22)
+Confirmed and sent to slice 5: TOTP before the deleted-login choice (D1/F1/ADV-3); throttle races (D3/ADV-4); OIDC nonce/state/tid tests (D4); mail and sign-up rate limits (D5); SSO-scoped /account escape (F2); pending sessions surviving password changes (ADV-2). Already fixed on slice 6's branch: C128 rejoin (D2/ADV-1) and the purge foreign keys (ADV-5; check the fifth key at the merge).
+
+### Backlog (minor or refuted)
+| Finding | Where | Title |
+|---|---|---|
+| security F3 | crates/probation-server/src/portal/signin.rs:600 | Sign-in and TOTP throttles check then record in separate statements, so concurrent attempts get past the 10/100/5 limits |
+| security F4 | crates/probation-server/src/portal/signin.rs:871 | OAuth callback does not bind the flow's organisation to the callback's IdP, and SSO/OAuth start is an unauthenticated GET (login CSRF via an attacker-controlled org IdP) |
+| security F5 | crates/probation-server/src/accounts.rs:1799 | C128 (removed members not re-added by SSO) has no hook: every new-method path joins the org unconditionally; org-admin TOTP reset (C76/C39) promised for slice 5 is absent |
+| adversarial S5-ADV-6 | crates/probation-server/src/accounts.rs:1587 | SSO callback does not check the flow's organisation, so an IdP mix-up is possible |
