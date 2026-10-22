@@ -30,9 +30,11 @@ tdd: T-firewall-token-source — red (mutant: `X-Forwarded-For` believed from an
 
 ## propagation.rs (written before slice 3's sync loop; green after the slice-3 merge)
 
-tdd: T-revoke-end-to-end — red (slice-2 firewall, no sync loop and no `changes` route): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready` — green: pending the slice-3 merge
-tdd: T-lookup-burst — red (same tree): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready` — green: pending the slice-3 merge
-tdd: M-propagation — red (same tree): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready` — green: pending the slice-3 merge
+After the merge, `ManagementConfig` gained `token_file`; the harness sets a placeholder path.
+
+tdd: T-revoke-end-to-end — red (slice-2 firewall, no sync loop and no `changes` route): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready` — green (after the slice-3 merge, 207c7a9): `cargo test -p probation-server --test propagation -- --nocapture` passed (3 passed)
+tdd: T-lookup-burst — red (same tree): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready`; then, after the merge, a test fault: `propagation.rs:223:9: key 40 answered 200 after 2.49384338s` (60 reqwest clients built inside the timed window loading TLS roots; built before the clock now) — green: `cargo test -p probation-server --test propagation -- --nocapture` passed
+tdd: M-propagation — red (same tree): `panicked at crates/probation-server/tests/common/mod.rs:423:13: the firewall never became ready`; then, after the merge, a test fault: `propagation.rs:276:13: left: 503 right: 200` (the warm-up sent 50 new keys faster than the firewall's lookup budget; it now waits out `Retry-After`) — green: `cargo test -p probation-server --test propagation -- --nocapture` passed, `propagation edits p99 <= interval (4.958 s, interval 10 s)`, `propagation revocations p99 <= interval (5.041 s, interval 10 s)`
 
 ## sync_api.rs, `changes` (test first, after api.rs arrived)
 

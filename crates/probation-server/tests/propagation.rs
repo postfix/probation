@@ -179,17 +179,23 @@ async fn t_lookup_burst() {
     let firewall = Arc::new(Firewall::start(world.url.clone(), &registered.token, 2, 1).await);
     firewall.ready(Duration::from_secs(10)).await;
 
+    // One client per address, built before the clock starts: building one loads the
+    // TLS roots, which is slow enough to skew the two-second bound.
+    let clients: Vec<reqwest::Client> = (0..12u8)
+        .map(|n| {
+            reqwest::Client::builder()
+                .no_proxy()
+                .local_address(IpAddr::V4(Ipv4Addr::new(127, 0, 1, 1 + n)))
+                .build()
+                .unwrap()
+        })
+        .collect();
     let started = Instant::now();
     let mut tasks = Vec::new();
     for (n, key) in keys.into_iter().enumerate() {
-        let from = IpAddr::V4(Ipv4Addr::new(127, 0, 1, 1 + (n / 5) as u8));
+        let http = clients[n / 5].clone();
         let firewall = Arc::clone(&firewall);
         tasks.push(tokio::spawn(async move {
-            let http = reqwest::Client::builder()
-                .no_proxy()
-                .local_address(from)
-                .build()
-                .unwrap();
             let mut answers = Vec::new();
             for _ in 0..2 {
                 let answer = firewall.get(&http, "/npm/left-pad", &key.secret).await;
@@ -225,6 +231,19 @@ async fn t_lookup_burst() {
             "key {n} answered 200 after {at:?}"
         );
     }
+}
+
+/// `GET path` until it answers 200, waiting out each `503 LOOKUP_BUSY`.
+async fn warm(firewall: &Firewall, http: &reqwest::Client, path: &str, key: &str) {
+    for _ in 0..10 {
+        let answer = firewall.get(http, path, key).await;
+        match answer.status() {
+            StatusCode::OK => return,
+            StatusCode::SERVICE_UNAVAILABLE => tokio::time::sleep(Duration::from_secs(1)).await,
+            other => panic!("{path}: {other}"),
+        }
+    }
+    panic!("{path} never answered 200");
 }
 
 /// When each firewall first showed each change.
@@ -269,26 +288,21 @@ async fn m_propagation() {
         firewalls.push(Arc::new(firewall));
     }
     let package = |n: usize| format!("pkg-{n:02}");
-    // Warm: every key cached and every package fetched, on both firewalls.
+    // Warm: every key cached and every package fetched, on both firewalls. New keys
+    // share the firewall's lookup budget, so a 503 is retried after `Retry-After`.
     let http = client();
     for firewall in &firewalls {
         for key in &keys {
-            assert_eq!(
-                firewall
-                    .get(&http, "/npm/probe", &key.secret)
-                    .await
-                    .status(),
-                StatusCode::OK
-            );
+            warm(firewall, &http, "/npm/probe", &key.secret).await;
         }
         for n in 0..CHANGES {
-            assert_eq!(
-                firewall
-                    .get(&http, &format!("/npm/{}", package(n)), &probe.secret)
-                    .await
-                    .status(),
-                StatusCode::OK
-            );
+            warm(
+                firewall,
+                &http,
+                &format!("/npm/{}", package(n)),
+                &probe.secret,
+            )
+            .await;
         }
     }
 
@@ -315,6 +329,18 @@ async fn m_propagation() {
             }
         })
     };
+    // A revoked key is looked up again on its next request, and one client address gets
+    // 5 such lookups a second (C120): each key polls from its own address, so the
+    // pollers measure propagation, not that allowance.
+    let per_key: Vec<reqwest::Client> = (0..CHANGES)
+        .map(|n| {
+            reqwest::Client::builder()
+                .no_proxy()
+                .local_address(IpAddr::V4(Ipv4Addr::new(127, 0, 2, 1 + n as u8)))
+                .build()
+                .unwrap()
+        })
+        .collect();
     let mut pollers = Vec::new();
     for (f, firewall) in firewalls.iter().enumerate() {
         let firewall = Arc::clone(firewall);
@@ -322,6 +348,7 @@ async fn m_propagation() {
         let (edits_applied, revocations_applied) =
             (Arc::clone(&edits_applied), Arc::clone(&revocations_applied));
         let secrets: Vec<String> = keys.iter().map(|key| key.secret.clone()).collect();
+        let per_key = per_key.clone();
         let probe = probe.secret.clone();
         pollers.push(tokio::spawn(async move {
             let http = client();
@@ -358,7 +385,7 @@ async fn m_propagation() {
                 };
                 for n in pending_revocations {
                     let status = firewall
-                        .get(&http, "/npm/probe", &secrets[n])
+                        .get(&per_key[n], "/npm/probe", &secrets[n])
                         .await
                         .status();
                     if status == StatusCode::UNAUTHORIZED {

@@ -329,6 +329,7 @@ pub fn management(url: url::Url, token: &str) -> probation::config::ManagementCo
     probation::config::ManagementConfig {
         url,
         token: probation::config::FirewallToken::new(token.to_owned()),
+        token_file: std::path::PathBuf::from("/nonexistent/firewall.token"),
         key_cache_ttl_seconds: NonZeroU64::new(300).unwrap(),
         key_cache_max_entries: NonZeroUsize::new(100_000).unwrap(),
         lookup_budget_per_second: NonZeroU32::new(50).unwrap(),
