@@ -118,6 +118,9 @@ pub(super) struct KeyCache {
     ttl: Duration,
     clock: Arc<dyn Clock>,
     invalidations: Mutex<Invalidations>,
+    /// How long an invalidation is remembered: as long as an answer read before it can
+    /// still arrive (X4), and at least one TTL.
+    records_for: Duration,
     /// Set by a failed call to the server, cleared by the next answered sync.
     down: AtomicBool,
 }
@@ -130,8 +133,21 @@ impl KeyCache {
             ttl,
             clock,
             invalidations: Mutex::new(Invalidations::default()),
+            records_for: ttl,
             down: AtomicBool::new(false),
         }
+    }
+
+    /// Remembers each invalidation for at least `longest_ask`, the longest a lookup and
+    /// its `layers` calls can be in flight.
+    pub(super) fn keeping_records_for(mut self, longest_ask: Duration) -> KeyCache {
+        self.records_for = self.ttl.max(longest_ask);
+        self
+    }
+
+    /// How long an invalidation is remembered.
+    pub(super) fn records_for(&self) -> Duration {
+        self.records_for
     }
 
     fn shard(&self, hash: &KeyHash) -> MutexGuard<'_, HashMap<KeyHash, Entry>> {
@@ -444,11 +460,11 @@ impl KeyCache {
                 Entry::Refused { expires_at, .. } => now < *expires_at,
             });
         });
-        // An answer can only be late by the length of one call; a record older than a
-        // TTL guards nothing.
+        // An answer can only be late by as long as an ask can be in flight; a record
+        // older than that guards nothing.
         let mut invalidations = self.invalidations();
-        let ttl = self.ttl;
-        let young = |seen: &mut Seen| seen.at.elapsed() < ttl;
+        let kept = self.records_for;
+        let young = |seen: &mut Seen| seen.at.elapsed() < kept;
         invalidations.keys.retain(|_, seen| young(seen));
         invalidations.places.retain(|_, seen| young(seen));
         invalidations.limits.retain(|_, seen| young(seen));

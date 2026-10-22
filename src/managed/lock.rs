@@ -28,13 +28,18 @@ impl NetworkLock {
         let Some(ranges) = ranges else {
             return;
         };
-        let mut parsed = Vec::new();
+        let mut parsed: Vec<(Cidr, OrgId)> = Vec::new();
         for range in ranges {
             let read = lock_ranges(&range.cidr);
             if read.is_empty() {
                 tracing::error!(cidr = %range.cidr, "the server sent a network-lock range this firewall cannot read; leaving it out");
             }
-            parsed.extend(read.into_iter().map(|cidr| (cidr, range.org)));
+            for cidr in read {
+                // One entry a range: the snapshot of this table is read back through here.
+                if !parsed.contains(&(cidr, range.org)) {
+                    parsed.push((cidr, range.org));
+                }
+            }
         }
         self.ranges.store(Arc::new(parsed));
     }
@@ -266,5 +271,28 @@ mod tests {
             proxies.client(ip("10.9.9.9"), &headers),
             Some(ip("192.0.2.7"))
         );
+    }
+
+    /// X5: the table read back from its own snapshot is the same table, however many
+    /// restarts it goes through.
+    #[test]
+    fn a_snapshot_round_trip_adds_no_range() {
+        let lock = NetworkLock::default();
+        lock.adopt(Some(&[
+            LockRange {
+                cidr: "::ffff:0:0/80".to_owned(),
+                org: OrgId(10),
+            },
+            LockRange {
+                cidr: "0.0.0.0/0".to_owned(),
+                org: OrgId(10),
+            },
+        ]));
+        let first = lock.ranges();
+        for _ in 0..3 {
+            lock.adopt(Some(&lock.ranges()));
+        }
+        assert_eq!(lock.ranges(), first);
+        assert_eq!(first.len(), 2, "{first:?}");
     }
 }

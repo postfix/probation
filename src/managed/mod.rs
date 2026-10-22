@@ -115,7 +115,6 @@ pub struct Managed {
     /// Cancelled once a settings push is written: the process drains and exits 75.
     restart: CancellationToken,
     data_dir: PathBuf,
-    ttl: Duration,
     period: Duration,
     clock: Arc<dyn Clock>,
 }
@@ -123,6 +122,9 @@ pub struct Managed {
 /// The longest `Authorization` value decoded. A key is 36 characters; anything this
 /// long is refused before a byte of it is decoded (T19).
 const MAX_CREDENTIALS_BYTES: usize = 1024;
+
+/// The most calls one ask makes: two lookups, and two rounds of two `layers` calls.
+const ASK_CALLS: u32 = 6;
 
 /// The longest `last_apply_error` a report carries, below the server's cap.
 const MAX_APPLY_ERROR_BYTES: usize = 2048;
@@ -137,11 +139,13 @@ impl Managed {
         data_dir: &Path,
     ) -> Managed {
         let ttl = Duration::from_secs(config.key_cache_ttl_seconds.get());
-        let cache = Arc::new(KeyCache::new(
-            config.key_cache_max_entries.get(),
-            ttl,
-            Arc::clone(&clock),
-        ));
+        let request_timeout = Duration::from_secs(config.request_timeout_seconds.get());
+        // An ask is at most two lookups and two rounds of two `layers` calls, each
+        // within the request timeout; an invalidation outlives any answer read before it.
+        let cache = Arc::new(
+            KeyCache::new(config.key_cache_max_entries.get(), ttl, Arc::clone(&clock))
+                .keeping_records_for(request_timeout * ASK_CALLS),
+        );
         let policies = Arc::new(Policies::default());
         let network_lock = Arc::new(NetworkLock::default());
         let retired = Arc::new(AtomicBool::new(false));
@@ -201,7 +205,6 @@ impl Managed {
             settings: Mutex::new(SettingsState::load(data_dir)),
             restart: CancellationToken::new(),
             data_dir: data_dir.to_path_buf(),
-            ttl,
             period: sync_interval
                 .saturating_sub(margin)
                 .max(Duration::from_secs(1)),
@@ -357,7 +360,15 @@ impl Managed {
         };
         let answer = self.ask_server(hash, client, invalidated.is_some()).await;
         match (answer, invalidated) {
-            (Err(Failed::Unreachable), Some(_)) | (Err(Failed::Busy), Some(false)) => {
+            (Err(Failed::Unreachable), Some(_)) => self.cache.stale(hash).ok_or(Failed::Busy),
+            // Read again: a `place` row may have expired the entry while it was asked
+            // about, and a place-expired entry is never served for a busy server.
+            (Err(Failed::Busy), Some(false))
+                if matches!(
+                    self.cache.standing(hash),
+                    Standing::Expired { invalidated: false }
+                ) =>
+            {
                 self.cache.stale(hash).ok_or(Failed::Busy)
             }
             (answer, _) => answer,
@@ -679,7 +690,7 @@ impl Managed {
                 .rebuild(&stale, |chain| policies.compile_places(chain));
         }
         let used = self.cache.prune_idle();
-        self.policies.retain(&used, self.ttl);
+        self.policies.retain(&used, self.cache.records_for());
         self.rates.prune();
     }
 

@@ -20,3 +20,4 @@
 | adversarial F2 | src/config.rs:1070 | Settings overlay write is not crash-atomic, and state is saved after the overlay, so pushed settings can be silently lost or written twice |
 
 Correction to S3-1: `evaluate_verdict` was not written. The activity verdict comes from re-running `decide` and the OSV check in src/artifacts/mod.rs (implementer deviation 2), so in log-only mode an artifact can wait on OSV twice (backlog: code-review F4).
+| S3-7 | backlog | Fix re-check minors: (F3) the post-insert retired/stale-layer branch is untested and only partly closes the layer race; the M1 mapped-base address under /96 loses its IPv6 part. | backlog | slice-3 re-check, 2026-10-22 |

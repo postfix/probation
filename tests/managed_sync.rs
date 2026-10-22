@@ -396,6 +396,8 @@ async fn t_sync_late_answer_dropped() {
             sync.layer(org(n), org_layer(Vec::new()));
             sync.known_key(&key(n + 1), &[PLATFORM, org(n)]);
         }
+        sync.layer(org(90), org_layer(Vec::new()));
+        sync.known_key(&key(91), &[PLATFORM, org(90)]);
         let management = config.management.as_mut().unwrap();
         management.request_timeout_seconds = NonZeroU64::new(5).unwrap();
         management.sync_margin_seconds = NonZeroU64::new(5).unwrap();
@@ -491,6 +493,28 @@ async fn t_sync_late_answer_dropped() {
         assert_status(response, 401, "AUTHENTICATION_REQUIRED", what).await;
         assert_eq!(h.sync.lookups() - lookups, 1, "{what}: it was not cached");
     }
+
+    // X2: a TTL-expired entry is looked up again; its layers are fetched; a `place` row
+    // (a suspension) lands meanwhile. The late answer is busy, and the entry, now
+    // place-expired, is never served stale for it.
+    h.clock.advance_seconds(1);
+    assert_eq!(h.get("/npm/left-pad", &key(91)).await.status(), 200);
+    h.clock.advance_seconds(200);
+    assert_eq!(h.get("/npm/left-pad", &key(91)).await.status(), 200);
+    h.clock.advance_seconds(101);
+    let changes = h.sync.hold_changes();
+    changes.wait_until_reached().await;
+    h.sync.edit_layer(org(90), org_layer(Vec::new()));
+    let layers = h.sync.hold_layers();
+    let held = h.spawn_get("/npm/left-pad", &key(91));
+    layers.wait_until_reached().await;
+    let suspended = h.sync.suspend(org(90));
+    for _ in 0..8 {
+        changes.release();
+    }
+    h.sync.applied(suspended).await;
+    h.sync.release_holds();
+    assert_eq!(held.await.unwrap(), 503, "busy, never the stale entry");
     h.server.shutdown().await;
 }
 
@@ -1760,8 +1784,13 @@ async fn t_settings_push() {
     // is never applied again, even once it would pass (L).
     let missing = h.data_dir.join("missing");
     let log = missing.join("decisions.ndjson");
-    h.sync
-        .push_settings(5, &format!("log_file_path = \"{}\"\n", log.display()));
+    h.sync.push_settings(
+        5,
+        &format!(
+            "log_file_path = \"{}\"\nlog_consumer_identification = true\n",
+            log.display()
+        ),
+    );
     h.sync.sync_rounds(2).await;
     assert!(!overlay.exists(), "an unopenable log file writes nothing");
     let report = h.sync.changes_requests().last().unwrap().report.clone();
@@ -1817,6 +1846,25 @@ async fn t_settings_push() {
         delivered, 3,
         "every queued event went out before the restart"
     );
+
+    // X3: a local log file start-up cannot open does not stop a push that leaves it
+    // alone, with consumer identification off: start-up only warns about it then.
+    let h = harness(|_, config| {
+        let local = format!(
+            "{}\nlog_file_path = \"/nonexistent-probation-dir/decisions.ndjson\"\n",
+            config.local.0
+        );
+        config.local = probation::config::LocalText(local.into());
+    })
+    .await;
+    h.sync.push_settings(6, "max_active_requests = 64\n");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        h.server.running().restart_requested(),
+    )
+    .await
+    .expect("the push is applied");
+    h.server.shutdown().await;
 }
 
 /// T-settings-push-allowlist (T5, C35, C118): local-only keys, paths outside the data
@@ -1987,8 +2035,9 @@ async fn t_settings_rollback() {
     server.shutdown().await;
 
     // B2: an overlay that passes every check and still fails `App::start` is rolled
-    // back and the start tried again once. Here the failure is staged: the address the
-    // overlay's start is given is taken.
+    // back and the start tried again once. Here the failure is staged: the overlay's
+    // start is given a log file it cannot open with consumer identification on, a
+    // delivery failure, which is the kind a push can cause.
     std::fs::write(
         h.data_dir.join("managed-settings.toml"),
         "max_active_requests = 64\n",
@@ -2007,13 +2056,12 @@ async fn t_settings_rollback() {
         "max_active_requests = 7\n",
     )
     .unwrap();
-    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let taken_at = taken.local_addr().unwrap();
     let clock = h.clock.shared();
     let registry = Arc::clone(&h.registry);
     let running = probation::start_with_settings(h.config.clone(), move |mut config| {
         if config.max_active_requests.get() == 64 {
-            config.listen = taken_at;
+            config.log_file_path = Some(PathBuf::from("/nonexistent-probation-dir/x.ndjson"));
+            config.log_consumer_identification = true;
         }
         probation::AppDeps {
             config,
@@ -2032,9 +2080,37 @@ async fn t_settings_rollback() {
         (state.settings_revision, state.failed_revision),
         (1, Some(3))
     );
-    assert!(state.last_apply_error.unwrap().contains("bind"));
+    assert!(state.last_apply_error.unwrap().contains("log_file_path"));
+
+    // X1: a second instance on the data directory this one holds fails to start, and
+    // changes neither the overlay nor the state: only a failure the overlay can cause
+    // rolls it back, and never before this process holds the directory.
+    std::fs::write(
+        h.data_dir.join("managed-settings.toml"),
+        "max_active_requests = 64\n",
+    )
+    .unwrap();
+    let held_state = SettingsState::load(&h.data_dir);
+    let second = probation::start_with_settings(h.config.clone(), |config| probation::AppDeps {
+        config,
+        clock: h.clock.shared(),
+        transport: Arc::clone(&h.registry) as Arc<dyn Transport>,
+        origins: fake_origins(),
+        osv_client: probation::osv::unreachable_client(),
+        osv_base_url: None,
+    })
+    .await;
+    assert!(
+        matches!(second, Err(probation::StartupError::DataDir(_))),
+        "{:?}",
+        second.err()
+    );
+    assert_eq!(SettingsState::load(&h.data_dir), held_state);
+    assert_eq!(
+        std::fs::read_to_string(h.data_dir.join("managed-settings.toml")).unwrap(),
+        "max_active_requests = 64\n"
+    );
     TestServer::from_running(running).shutdown().await;
-    drop(taken);
 }
 
 /// T-settings-revision-no-loop (C105, C115): after the restart a push asked for, the
@@ -2436,5 +2512,32 @@ async fn t_layer_fetch_single_flight_and_budget() {
         "a layers call past the budget",
     )
     .await;
+    h.server.shutdown().await;
+}
+
+/// X4 (H6): an invalidation is remembered as long as an ask can be in flight, not one
+/// TTL: a lookup held past the TTL and answered after the key's revocation is not
+/// cached.
+#[tokio::test]
+async fn t_sync_record_outlives_a_held_ask() {
+    let h = harness(|sync, config| {
+        sync.known_key(&key(95), &[PLATFORM, org(ACME)]);
+        let management = config.management.as_mut().unwrap();
+        management.key_cache_ttl_seconds = NonZeroU64::new(1).unwrap();
+        management.request_timeout_seconds = NonZeroU64::new(5).unwrap();
+        management.sync_margin_seconds = NonZeroU64::new(5).unwrap();
+        config.sync_interval_seconds = NonZeroU64::new(6).unwrap();
+    })
+    .await;
+    let lookups = h.sync.hold_lookups();
+    let held = h.spawn_get("/npm/left-pad", &key(95));
+    lookups.wait_until_reached().await;
+    let revoked = h.sync.revoke(&key(95));
+    h.sync.applied(revoked).await;
+    // Past the TTL, and a sync answered since, which is when records are pruned.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    h.sync.sync_rounds(1).await;
+    h.sync.release_holds();
+    assert_eq!(held.await.unwrap(), 401, "the late Known answer is dropped");
     h.server.shutdown().await;
 }
