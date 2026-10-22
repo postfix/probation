@@ -361,8 +361,8 @@ async fn changes(
         return Err(SyncError::TooLarge);
     }
     // Every revision the server hands out is a Postgres bigint; only a cursor that
-    // cannot be one is refused (N2).
-    if asked.since > i64::MAX as u64 - 1 {
+    // cannot be one is refused (C126).
+    if asked.since > i64::MAX as u64 {
         return Err(SyncError::Unprocessable);
     }
     let () = record_report(&state.pool, firewall, &asked).await?;

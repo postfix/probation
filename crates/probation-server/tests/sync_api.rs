@@ -305,9 +305,6 @@ async fn t_sync_api_contract() {
     assert_eq!(changes(&url, token, 2).await, reset);
     assert!(!changes(&url, token, 3).await.reset);
 
-    // A cursor above the log, as after the database was restored from a backup: the
-    // reset is answered at or above the cursor, so the firewall's invalidation floor
-    // never outruns the server and the next lookup is still served (R3).
     // C126: a cursor above the server's revision (the database was restored from a
     // backup) is reset at the server's current revision, and a `changes` call never
     // moves the revision or `pruned_through`.
@@ -327,6 +324,7 @@ async fn t_sync_api_contract() {
         (others[0].token.as_str(), revision + 50),
         (others[1].token.as_str(), revision + 100),
         (token.as_str(), i64::MAX as u64 - 1),
+        (token.as_str(), i64::MAX as u64),
     ] {
         assert_eq!(changes(&url, token, cursor).await, reset, "cursor {cursor}");
     }
