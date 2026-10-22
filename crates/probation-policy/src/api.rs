@@ -204,6 +204,10 @@ pub struct ActivityEvent {
     pub client_ip: Option<IpAddr>,
     /// RFC 3339, holds only (C56).
     pub eligible_at: Option<String>,
+    /// RFC 3339 UTC: when the firewall saw it, so a batch re-sent after an outage keeps
+    /// its time. Left out by older firewalls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -404,6 +408,7 @@ mod tests {
                 layer: ActivityLayer::Network,
                 client_ip: Some([192, 0, 2, 7].into()),
                 eligible_at: None,
+                at: None,
             }],
             activity_dropped: vec![DroppedCount {
                 account: acme,
@@ -422,6 +427,18 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ChangesRequest>(&text).unwrap(),
             request
+        );
+        assert!(
+            !text.contains("\"at\""),
+            "an event with no time leaves it out"
+        );
+        let mut timed = request.activity[0].clone();
+        timed.at = Some("2026-04-06T12:00:10.000000Z".to_owned());
+        let timed_text = serde_json::to_string(&timed).unwrap();
+        assert!(timed_text.contains(r#""at":"2026-04-06T12:00:10.000000Z""#));
+        assert_eq!(
+            serde_json::from_str::<ActivityEvent>(&timed_text).unwrap(),
+            timed
         );
         for (layer, word) in [
             (ActivityLayer::Layer(LayerKind::Personal), "\"personal\""),

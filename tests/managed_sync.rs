@@ -392,6 +392,10 @@ async fn t_sync_late_answer_dropped() {
         sync.known_key(&key(41), &[PLATFORM, org(40)]);
         sync.layer(org(40), org_layer(Vec::new()));
         sync.known_key(&key(42), &[PLATFORM, org(ACME)]);
+        for n in 60..63 {
+            sync.layer(org(n), org_layer(Vec::new()));
+            sync.known_key(&key(n + 1), &[PLATFORM, org(n)]);
+        }
         let management = config.management.as_mut().unwrap();
         management.request_timeout_seconds = NonZeroU64::new(5).unwrap();
         management.sync_margin_seconds = NonZeroU64::new(5).unwrap();
@@ -447,9 +451,46 @@ async fn t_sync_late_answer_dropped() {
     );
     assert_eq!(
         held_layers.await.unwrap(),
-        403,
-        "a layer older than the reset floor"
+        503,
+        "a lookup older than the reset floor is not cached when its layers arrive"
     );
+    h.clock.advance_seconds(1);
+    assert_eq!(
+        h.get("/npm/left-pad", &key(41)).await.status(),
+        403,
+        "the new layer"
+    );
+
+    // B1: a lookup is answered, then its `layers` call is held while a `key` row, a
+    // `place` row and a reset are applied. None of the three is cached.
+    let cases: [(u32, &str); 3] = [(61, "a key row"), (62, "a place row"), (63, "a reset")];
+    for (n, what) in cases {
+        h.clock.advance_seconds(1);
+        let layers = h.sync.hold_layers();
+        let held = h.spawn_get("/npm/left-pad", &key(n));
+        layers.wait_until_reached().await;
+        let applied = match n {
+            61 => h.sync.revoke(&key(n)),
+            62 => h.sync.suspend(org(n - 1)),
+            _ => {
+                let gate = h.sync.hold_changes();
+                gate.wait_until_reached().await;
+                h.sync.revoke(&key(n));
+                h.sync.prune();
+                let floor = h.sync.revision();
+                gate.release();
+                floor
+            }
+        };
+        h.sync.applied(applied).await;
+        h.sync.release_holds();
+        assert_ne!(held.await.unwrap(), 200, "{what}: not served");
+        h.clock.advance_seconds(1);
+        let lookups = h.sync.lookups();
+        let response = h.get("/npm/left-pad", &key(n)).await;
+        assert_status(response, 401, "AUTHENTICATION_REQUIRED", what).await;
+        assert_eq!(h.sync.lookups() - lookups, 1, "{what}: it was not cached");
+    }
     h.server.shutdown().await;
 }
 
@@ -539,11 +580,17 @@ async fn t_upstream_configured() {
 #[tokio::test]
 async fn t_auth_network_403() {
     let h = harness(|sync, config| {
-        sync.set_ranges(&[("192.0.2.0/24", ACME), ("127.0.3.0/24", ACME)]);
+        sync.set_ranges(&[
+            ("192.0.2.0/24", ACME),
+            ("127.0.3.0/24", ACME),
+            // An IPv4 range written in its IPv4-mapped IPv6 form (M1).
+            ("::ffff:198.51.100.0/120", ACME),
+        ]);
         sync.layer(personal(5), Layer::empty(LayerKind::Personal));
         sync.known_key(&key(3), &[PLATFORM, personal(5)]);
-        // The only way an address outside loopback reaches a test: a listed proxy.
-        config.management.as_mut().unwrap().trusted_proxies = vec![cidr("127.0.9.0/24")];
+        // The only way an address outside loopback reaches a test: a listed proxy, here
+        // also written in the mapped form.
+        config.management.as_mut().unwrap().trusted_proxies = vec![cidr("::ffff:127.0.9.0/120")];
         log_to_file(config);
         assert!(!config.log_consumer_identification);
     })
@@ -578,7 +625,19 @@ async fn t_auth_network_403() {
     )
     .await;
 
-    for forwarded in ["198.51.100.1", "::ffff:192.0.2.7", "192.0.2.7"] {
+    // Every address of the mapped-form range, not only its first.
+    let response = h
+        .get_from(proxy, "/npm/left-pad", &globex_key(), Some("198.51.100.77"))
+        .await;
+    assert_status(
+        response,
+        403,
+        "NETWORK_NOT_ALLOWED",
+        "inside a range written in mapped form",
+    )
+    .await;
+
+    for forwarded in ["203.0.113.1", "::ffff:192.0.2.7", "192.0.2.7"] {
         let response = h
             .get_from(proxy, "/npm/left-pad", &acme_key(), Some(forwarded))
             .await;
@@ -1000,7 +1059,15 @@ async fn t_sync_unreachable_keeps_cache() {
             Some(answer) => h.sync.answer_changes_with(Some(answer)),
         }
         h.sync.sync_rounds(1).await;
+        // M3: the row keeps the time it was made at, however long the outage.
+        h.clock.advance_seconds(10);
+        let made_at = jiff::Timestamp::from_microsecond(probation::clock::Clock::now_utc_micros(
+            h.clock.as_ref(),
+        ))
+        .map(|at| format!("{at:.6}"))
+        .unwrap();
         assert_eq!(h.get("/npm/left-pad", &key(9)).await.status(), 401);
+        h.clock.advance_seconds(20);
         h.sync.sync_rounds(2).await;
         let lookups = h.sync.lookups();
         assert_eq!(
@@ -1018,6 +1085,13 @@ async fn t_sync_unreachable_keeps_cache() {
             || revoked() == round + 2,
         )
         .await;
+        let delivered = activity(&h.sync);
+        let row = delivered
+            .iter()
+            .rev()
+            .find(|event| event.result == ActivityResult::RefusedRevoked)
+            .unwrap();
+        assert_eq!(row.at.as_deref(), Some(made_at.as_str()), "{what}");
     }
     let ids: Vec<String> = activity(&h.sync)
         .into_iter()
@@ -1206,6 +1280,14 @@ async fn t_sync_retired_stops() {
             let response = h.get("/npm/left-pad", &key).await;
             assert_status(response, 401, "AUTHENTICATION_REQUIRED", how).await;
         }
+        if how == "retired" {
+            // P: retirement empties the cache, so its snapshot holds no key either, before
+            // any entry could have aged out.
+            h.sync.sync_rounds(1).await;
+            let snapshot = std::fs::read_to_string(h.data_dir.join("managed-cache.json")).unwrap();
+            let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+            assert_eq!(snapshot["keys"], json!([]), "{how}: {snapshot}");
+        }
         h.clock.advance_seconds(400);
         let response = h.get("/npm/left-pad", &acme_key()).await;
         assert_eq!(response.status(), 401, "{how}: not served stale");
@@ -1350,6 +1432,7 @@ fn event(key_id: KeyId, result: ActivityResult) -> ActivityEvent {
         layer: ActivityLayer::Layer(LayerKind::Org),
         client_ip: None,
         eligible_at: None,
+        at: None,
     }
 }
 
@@ -1567,6 +1650,16 @@ async fn t_activity_refusals() {
     let suspended = h.sync.suspend(org(30));
     h.sync.applied(suspended).await;
     assert_eq!(h.get("/npm/left-pad", &key(31)).await.status(), 401);
+    // C: re-activating the organisation (a `place` row) clears its keys' refusal.
+    h.sync.known_key(&key(31), &[PLATFORM, org(30)]);
+    let reactivated = h.sync.touch_place(org(30));
+    h.sync.applied(reactivated).await;
+    h.clock.advance_seconds(1);
+    assert_eq!(
+        h.get("/npm/left-pad", &key(31)).await.status(),
+        200,
+        "re-activated"
+    );
     let response = h
         .get_from(
             loopback(9, 1),
@@ -1662,6 +1755,32 @@ async fn t_settings_push() {
     )
     .await;
     assert!(restart.is_err(), "no restart for an invalid push");
+
+    // B2: a log file start-up could not open is refused at push time. And a failed push
+    // is never applied again, even once it would pass (L).
+    let missing = h.data_dir.join("missing");
+    let log = missing.join("decisions.ndjson");
+    h.sync
+        .push_settings(5, &format!("log_file_path = \"{}\"\n", log.display()));
+    h.sync.sync_rounds(2).await;
+    assert!(!overlay.exists(), "an unopenable log file writes nothing");
+    let report = h.sync.changes_requests().last().unwrap().report.clone();
+    assert!(
+        report
+            .last_apply_error
+            .as_deref()
+            .is_some_and(|error| error.contains("log_file_path")),
+        "{report:?}"
+    );
+    std::fs::create_dir(&missing).unwrap();
+    h.sync.sync_rounds(2).await;
+    assert!(!overlay.exists(), "a failed push is not tried again");
+    let restart = tokio::time::timeout(
+        Duration::from_millis(100),
+        h.server.running().restart_requested(),
+    )
+    .await;
+    assert!(restart.is_err(), "no restart for a push that failed once");
 
     let gate = h.sync.hold_changes();
     gate.wait_until_reached().await;
@@ -1796,6 +1915,15 @@ async fn t_settings_push_allowlist() {
     assert!(!h.data_dir.join("managed-settings.toml").exists());
     let report = h.sync.changes_requests().last().unwrap().report.clone();
     assert!(report.last_apply_error.unwrap().contains("listen"));
+
+    // E: however long the reason, the report carries at most 2 KiB of it.
+    h.sync
+        .push_settings(4, &format!("{} = 1\n", "x".repeat(5_000)));
+    h.sync.sync_rounds(2).await;
+    let report = h.sync.changes_requests().last().unwrap().report.clone();
+    let error = report.last_apply_error.expect("an error");
+    assert!(error.contains("xxxx"), "{error}");
+    assert!(error.len() <= 2_048, "{} bytes", error.len());
     h.server.shutdown().await;
 }
 
@@ -1857,6 +1985,56 @@ async fn t_settings_rollback() {
             .contains("max_active_requests")
     );
     server.shutdown().await;
+
+    // B2: an overlay that passes every check and still fails `App::start` is rolled
+    // back and the start tried again once. Here the failure is staged: the address the
+    // overlay's start is given is taken.
+    std::fs::write(
+        h.data_dir.join("managed-settings.toml"),
+        "max_active_requests = 64\n",
+    )
+    .unwrap();
+    SettingsState {
+        settings_revision: 3,
+        previous_revision: 1,
+        failed_revision: None,
+        last_apply_error: None,
+    }
+    .save(&h.data_dir)
+    .unwrap();
+    std::fs::write(
+        h.data_dir.join("managed-settings.prev.toml"),
+        "max_active_requests = 7\n",
+    )
+    .unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken_at = taken.local_addr().unwrap();
+    let clock = h.clock.shared();
+    let registry = Arc::clone(&h.registry);
+    let running = probation::start_with_settings(h.config.clone(), move |mut config| {
+        if config.max_active_requests.get() == 64 {
+            config.listen = taken_at;
+        }
+        probation::AppDeps {
+            config,
+            clock: Arc::clone(&clock),
+            transport: Arc::clone(&registry) as Arc<dyn Transport>,
+            origins: fake_origins(),
+            osv_client: probation::osv::unreachable_client(),
+            osv_base_url: None,
+        }
+    })
+    .await
+    .expect("started again on the previous overlay");
+    assert_eq!(running.app().config.max_active_requests.get(), 7);
+    let state = SettingsState::load(&h.data_dir);
+    assert_eq!(
+        (state.settings_revision, state.failed_revision),
+        (1, Some(3))
+    );
+    assert!(state.last_apply_error.unwrap().contains("bind"));
+    TestServer::from_running(running).shutdown().await;
+    drop(taken);
 }
 
 /// T-settings-revision-no-loop (C105, C115): after the restart a push asked for, the
@@ -2189,4 +2367,74 @@ async fn t_report_upstream_unreachable() {
         (Reachability::Ok, Reachability::Ok, Reachability::Ok)
     );
     server.shutdown().await;
+}
+
+/// S2-8 (M2): a `layers` call on the request path is made once per place however many
+/// new keys need it at once, and is charged to the lookup budget.
+#[tokio::test]
+async fn t_layer_fetch_single_flight_and_budget() {
+    let h = harness(|sync, _| {
+        sync.layer(org(70), org_layer(Vec::new()));
+        for n in 0..20 {
+            sync.known_key(&key(700 + n), &[PLATFORM, org(70)]);
+        }
+    })
+    .await;
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    let layers = h.sync.layer_calls();
+    let gate = h.sync.hold_layers();
+    let burst: Vec<_> = (0..20u8)
+        .map(|n| {
+            let request = reqwest::Client::builder()
+                .no_proxy()
+                .local_address(loopback(40, n + 1))
+                .build()
+                .unwrap()
+                .get(h.server.url("/npm/left-pad"))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", key(700 + u32::from(n))),
+                )
+                .send();
+            tokio::spawn(async move { request.await.expect("a response").status().as_u16() })
+        })
+        .collect();
+    gate.wait_until_reached().await;
+    let app = h.server.app();
+    let managed = app.managed().expect("managed");
+    wait_for(
+        "20 requests on one layers call",
+        Duration::from_secs(5),
+        || managed.waiting_on_layer(org(70)) == 20,
+    )
+    .await;
+    h.sync.release_holds();
+    for request in burst {
+        assert_eq!(request.await.unwrap(), 200);
+    }
+    assert_eq!(
+        h.sync.layer_calls() - layers,
+        1,
+        "one layers call for the burst"
+    );
+    drop(app);
+    h.server.shutdown().await;
+
+    // A budget of one a second: the new key's lookup takes it, so its layers call is
+    // past the budget and the key is told to retry.
+    let h = harness(|sync, config| {
+        config.management.as_mut().unwrap().lookup_budget_per_second = NonZeroU32::new(1).unwrap();
+        sync.layer(org(71), org_layer(Vec::new()));
+        sync.known_key(&key(800), &[PLATFORM, org(71)]);
+    })
+    .await;
+    let response = h.get("/npm/left-pad", &key(800)).await;
+    assert_status(
+        response,
+        503,
+        "LOOKUP_BUSY",
+        "a layers call past the budget",
+    )
+    .await;
+    h.server.shutdown().await;
 }

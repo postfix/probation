@@ -417,6 +417,9 @@ async fn t_key_canary_sync() {
     let log_file = dir.path().join("decisions.ndjson");
     let mut config = sync.managed(config_with_open_blocklist(dir.path()));
     config.log_file_path = Some(log_file.clone());
+    // T2: every channel a slice-3 path could leak through, the SIEM sink included.
+    let collector = siem_collector().await;
+    config.siem_url = Some(collector.uri().parse().expect("the collector's URL"));
     config.sync_interval_seconds = NonZeroU64::new(2).unwrap();
     let management = config.management.as_mut().unwrap();
     management.sync_margin_seconds = NonZeroU64::new(1).unwrap();
@@ -447,7 +450,7 @@ async fn t_key_canary_sync() {
     }
     assert_eq!(statuses, [403, 200, 200, 429]);
 
-    // The network lock: a 403 and a row naming the address.
+    // The network lock: a 403 and a row naming the address, the key sent as Basic (T2).
     clock.advance_seconds(61);
     let inside = reqwest::Client::builder()
         .no_proxy()
@@ -456,7 +459,10 @@ async fn t_key_canary_sync() {
         .unwrap();
     let response = inside
         .get(server.url("/npm/left-pad"))
-        .header("authorization", format!("Bearer {SENTINEL}"))
+        .header(
+            "authorization",
+            format!("Basic {}", base64(format!("u:{SENTINEL}"))),
+        )
         .send()
         .await
         .unwrap();
@@ -469,9 +475,16 @@ async fn t_key_canary_sync() {
     clock.advance_seconds(2);
     // The first is asked about and served when the lookup fails; the server is then
     // marked down, and the second is served with no lookup.
-    for _ in 0..2 {
-        let response = client
+    for authorization in [
+        format!("Bearer {SENTINEL}"),
+        format!("Basic {}", base64(format!("__token__:{SENTINEL}"))),
+    ] {
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .get(server.url("/pypi/simple/"))
+            .header("authorization", authorization)
             .send()
             .await
             .unwrap();
@@ -519,8 +532,20 @@ async fn t_key_canary_sync() {
     );
     let ndjson = std::fs::read_to_string(&log_file).expect("the decision log");
     let logs = captured.text();
+    let siem: String = collector
+        .received_requests()
+        .await
+        .expect("the collector records requests")
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .collect();
+    assert!(
+        siem.matches("request_decided").count() >= 7,
+        "the SIEM sink got every decision"
+    );
     for secret in secrets() {
         for (what, text) in [
+            ("a SIEM body", &siem),
             ("a log line", &logs),
             ("an NDJSON record", &ndjson),
             ("a response", &seen),
