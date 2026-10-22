@@ -173,15 +173,6 @@ impl Actor {
         }
     }
 
-    /// The global admin `admin bootstrap` has just created.
-    pub(crate) fn bootstrap(login_id: i32) -> Actor {
-        Actor::Login {
-            login_id,
-            global_admin: true,
-            roles: Vec::new(),
-        }
-    }
-
     /// Creating and revoking keys: the place's owner, its organisation's or group's
     /// admin, or a global admin.
     pub fn may_manage_keys(&self, place: PlaceRef) -> bool {

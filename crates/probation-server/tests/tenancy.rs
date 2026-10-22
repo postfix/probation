@@ -362,6 +362,13 @@ async fn t_grant_bootstrap() {
         after_first.push(db.count(sql).await);
     }
     assert_eq!(after_first, [1, 1, 1, 1, 2, 1, 1]);
+    // The host operator ran it, not the admin it created (F7).
+    let actor: (Option<i32>, bool, String) =
+        sqlx::query_as("SELECT actor_login, actor_is_global_admin, action FROM audit_log")
+            .fetch_one(&db.owner)
+            .await
+            .unwrap();
+    assert_eq!(actor, (None, true, "admin.bootstrap".to_owned()));
 
     let second = bootstrap(&db);
     assert!(!second.status.success());

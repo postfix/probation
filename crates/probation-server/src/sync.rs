@@ -2,7 +2,8 @@
 //! (02-architecture.md § Endpoints), and the change log every state change a firewall
 //! caches is written to (02 § Change propagation).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -43,11 +44,6 @@ pub const MAX_LAYER_PLACES: usize = 1_000;
 /// The most activity events, and `activity_dropped` entries, one `changes` call may
 /// carry: the firewall's `ACTIVITY_BATCH_MAX` (02 § Endpoints).
 pub const MAX_ACTIVITY_ENTRIES: usize = 1_000;
-
-/// The highest cursor a `changes` call can raise the change counter to (a restore, R3):
-/// half the counter's range, so a forged cursor still leaves room for every later
-/// revision. Cursors above it are still served; they only raise nothing.
-pub const MAX_CURSOR: u64 = i64::MAX as u64 / 2;
 
 /// The longest `last_apply_error` a report may carry.
 pub const MAX_APPLY_ERROR_BYTES: usize = 2 * 1024;
@@ -378,29 +374,14 @@ async fn changes(
 
 /// The firewall's check-in and its activity, in one transaction. Each event is stored
 /// under its key's place, whatever place the firewall named (T9, T18); an event for no
-/// known API key is not stored, and a batch sent again is not duplicated.
-///
-/// A cursor above the change counter (the database was restored from a backup) raises
-/// the counter and `pruned_through` just past it, so every firewall still holding the
-/// lost history is reset at or above its invalidation floor, and later lookups are not
-/// dropped as old. Raising stops at `MAX_CURSOR`.
+/// known API key is not stored, and a batch sent again is not duplicated. It never
+/// touches the change counter (C126).
 async fn record_report(
     pool: &PgPool,
     firewall: i32,
     asked: &ChangesRequest,
 ) -> Result<(), SyncError> {
     let mut tx = pool.begin().await?;
-    // Locks the counter row only when it is behind the cursor.
-    // Locks the counter row only when it is behind the cursor. `pruned_through` moves
-    // with it, so every firewall from the lost history is reset, not only this one.
-    sqlx::query(
-        "UPDATE change_counter SET value = $1 + 1, pruned_through = $1 + 1
-         WHERE id = 1 AND value < $1 AND $1 <= $2",
-    )
-    .bind(asked.since as i64)
-    .bind(MAX_CURSOR as i64)
-    .execute(&mut *tx)
-    .await?;
     let report = serde_json::json!({
         "report": asked.report,
         "activity_dropped": asked.activity_dropped,
@@ -513,7 +494,8 @@ async fn record_report(
 }
 
 /// What changed after `asked.since`, read at `revision`. A cursor below
-/// `pruned_through`, or above the log, is answered with a reset.
+/// `pruned_through`, or above the log (a database restored from a backup), is answered
+/// with a reset at the server's current revision: only that firewall resets (C126).
 async fn delta(
     conn: &mut PgConnection,
     firewall: i32,
@@ -557,18 +539,23 @@ async fn delta(
         ..ChangesResponse::default()
     };
     let mut ranges = since == 0;
+    // A long delta repeats subjects; each list names one once, in first-seen order.
+    let (mut keys, mut layers, mut places) = (HashSet::new(), HashSet::new(), HashSet::new());
     for (kind, subject) in rows {
         match kind.as_str() {
             "key" => push_new(
                 &mut answer.changed_keys,
+                &mut keys,
                 serde_json::from_value::<KeyId>(subject).map_err(subject_error("key"))?,
             ),
             "layer" => push_new(
                 &mut answer.changed_layers,
+                &mut layers,
                 serde_json::from_value::<PlaceRef>(subject).map_err(subject_error("layer"))?,
             ),
             "place" => push_new(
                 &mut answer.changed_places,
+                &mut places,
                 serde_json::from_value::<PlaceRef>(subject).map_err(subject_error("place"))?,
             ),
             "limits" => answer.changed_limits.push(
@@ -593,8 +580,8 @@ fn subject_error(what: &'static str) -> impl Fn(serde_json::Error) -> SyncError 
     }
 }
 
-fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) {
-    if !list.contains(&item) {
+fn push_new<T: Copy + Eq + Hash>(list: &mut Vec<T>, seen: &mut HashSet<T>, item: T) {
+    if seen.insert(item) {
         list.push(item);
     }
 }
