@@ -307,15 +307,63 @@ async fn t_sync_api_contract() {
     // A cursor above the log, as after the database was restored from a backup: the
     // reset is answered at or above the cursor, so the firewall's invalidation floor
     // never outruns the server and the next lookup is still served (R3).
+    // Every firewall from the lost history is reset, not only the first to report (N1).
     let ahead = revision + 100;
+    let others = [
+        register(&db, &["127.0.0.0/8"]).await,
+        register(&db, &["127.0.0.0/8"]).await,
+    ];
+    for (token, cursor) in [
+        (token.as_str(), ahead),
+        (others[0].token.as_str(), revision + 50),
+        (others[1].token.as_str(), ahead),
+    ] {
+        let restored = changes(&url, token, cursor).await;
+        assert!(restored.reset, "cursor {cursor}: {restored:?}");
+        assert!(restored.revision >= cursor, "cursor {cursor}: {restored:?}");
+    }
     let restored = changes(&url, token, ahead).await;
-    assert!(restored.reset, "{restored:?}");
-    assert!(restored.revision >= ahead, "{restored:?}");
     match sync.lookup(KeyHash::of(&live.secret)).await.unwrap() {
         KeyLookup::Known { revision, .. } => assert!(revision >= ahead, "read at {revision}"),
         other => panic!("{other:?}"),
     }
     assert!(!changes(&url, token, restored.revision).await.reset);
+
+    // A revision the server handed out is always accepted, however high (N2): a cursor
+    // at the raise bound, then a change past it.
+    let bound = probation_server::sync::MAX_CURSOR;
+    let raised = changes(&url, token, bound).await;
+    assert!(raised.reset && raised.revision >= bound, "{raised:?}");
+    let mut tx = db.app.begin().await.unwrap();
+    record_change(&mut tx, ChangeKind::Ranges, &acme)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let past = changes(&url, token, raised.revision).await;
+    assert!(!past.reset && past.revision > bound, "{past:?}");
+    assert!(!changes(&url, token, past.revision).await.reset);
+    // A cursor above the raise bound is answered but raises nothing, so the revisions
+    // after it still fit in a bigint.
+    let forged = changes(&url, token, i64::MAX as u64 - 1).await;
+    assert!(
+        forged.reset && forged.revision < i64::MAX as u64 - 1,
+        "{forged:?}"
+    );
+    let mut tx = db.app.begin().await.unwrap();
+    record_change(&mut tx, ChangeKind::Ranges, &acme)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Only a cursor that is no Postgres bigint is refused.
+    let answer = post(
+        &client(),
+        url.join("api/v1/sync/changes").unwrap(),
+        Some(token),
+        &[],
+        changes_body(u64::MAX, Vec::new(), Vec::new()),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// T-firewall-token-required: no token, an unknown token and a retired firewall's

@@ -32,6 +32,8 @@ pub enum SaveError {
     Conflict,
     /// The permit was granted for another place than the edit's.
     WrongPlace,
+    /// The permit was granted to another actor than the one saving.
+    WrongActor,
     Db(sqlx::Error),
 }
 
@@ -89,10 +91,13 @@ impl PolicyStore {
         permit: EditPermit,
         checked: CheckedEdit,
     ) -> Result<i64, SaveError> {
-        // A permit allows one place: a member's permit for their own layer never saves
-        // the organisation's.
+        // A permit allows one place and one actor: a member's permit for their own layer
+        // never saves the organisation's, nor another login's save.
         if permit.place() != checked.place() {
             return Err(SaveError::WrongPlace);
+        }
+        if permit.login_id() != actor.login_id() {
+            return Err(SaveError::WrongActor);
         }
         let mut tx = self.pool.begin().await?;
         let revision = update_layer(&mut tx, &checked).await?;

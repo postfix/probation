@@ -199,6 +199,23 @@ async fn t_authz_matrix() {
     assert_eq!(db.store().layer(&org).await.unwrap(), before);
     assert_eq!(db.count("SELECT count(*) FROM audit_log").await, audits);
     assert_eq!(db.count("SELECT count(*) FROM change_log").await, changes);
+    // …and it is for one actor: m2 saving m1's own layer with m1's permit writes
+    // nothing either (N3).
+    let own_edit = db.check(&own, stricter).await.unwrap();
+    let permit = authorize(&actor, &own_edit).unwrap();
+    let m2_session = Session::new(m2, None);
+    let m2_own = db
+        .tenancy()
+        .authorized_place(&m2_session, m2_place)
+        .await
+        .unwrap();
+    let m2_actor = db.tenancy().actor(&m2_session, &m2_own).await.unwrap();
+    let own_before = db.store().layer(&own).await.unwrap();
+    let saved = db.store().save_edit(&m2_actor, permit, own_edit).await;
+    assert!(saved.is_err(), "m2 saved with m1's permit: {saved:?}");
+    assert_eq!(db.store().layer(&own).await.unwrap(), own_before);
+    assert_eq!(db.count("SELECT count(*) FROM audit_log").await, audits);
+    assert_eq!(db.count("SELECT count(*) FROM change_log").await, changes);
 
     db.suspend_org(acme).await;
     for (login, want) in [(global, E), (org_admin, R), (group_admin, R), (m1, R)] {

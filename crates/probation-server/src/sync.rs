@@ -44,8 +44,9 @@ pub const MAX_LAYER_PLACES: usize = 1_000;
 /// carry: the firewall's `ACTIVITY_BATCH_MAX` (02 § Endpoints).
 pub const MAX_ACTIVITY_ENTRIES: usize = 1_000;
 
-/// The highest `since` a `changes` call may send: half the counter's range, so a
-/// counter raised to it (a restore, R3) still has room for every later revision.
+/// The highest cursor a `changes` call can raise the change counter to (a restore, R3):
+/// half the counter's range, so a forged cursor still leaves room for every later
+/// revision. Cursors above it are still served; they only raise nothing.
 pub const MAX_CURSOR: u64 = i64::MAX as u64 / 2;
 
 /// The longest `last_apply_error` a report may carry.
@@ -363,14 +364,14 @@ async fn changes(
     {
         return Err(SyncError::TooLarge);
     }
-    // A cursor this far out is no revision any server handed out; raising the counter
-    // to it would leave no room for the revisions after it.
-    if asked.since > MAX_CURSOR {
+    // Every revision the server hands out is a Postgres bigint; only a cursor that
+    // cannot be one is refused (N2).
+    if asked.since > i64::MAX as u64 - 1 {
         return Err(SyncError::Unprocessable);
     }
-    let ahead = record_report(&state.pool, firewall, &asked).await?;
+    let () = record_report(&state.pool, firewall, &asked).await?;
     let (mut tx, revision) = snapshot(&state.pool).await?;
-    let answer = delta(&mut tx, firewall, &asked, revision, ahead).await?;
+    let answer = delta(&mut tx, firewall, &asked, revision).await?;
     let () = tx.commit().await?;
     Ok(Json(answer))
 }
@@ -380,21 +381,26 @@ async fn changes(
 /// known API key is not stored, and a batch sent again is not duplicated.
 ///
 /// A cursor above the change counter (the database was restored from a backup) raises
-/// the counter to it, so the reset answered next is at or above the firewall's
-/// invalidation floor and later lookups are not dropped as old. Returns whether it did.
+/// the counter and `pruned_through` just past it, so every firewall still holding the
+/// lost history is reset at or above its invalidation floor, and later lookups are not
+/// dropped as old. Raising stops at `MAX_CURSOR`.
 async fn record_report(
     pool: &PgPool,
     firewall: i32,
     asked: &ChangesRequest,
-) -> Result<bool, SyncError> {
+) -> Result<(), SyncError> {
     let mut tx = pool.begin().await?;
     // Locks the counter row only when it is behind the cursor.
-    let ahead = sqlx::query("UPDATE change_counter SET value = $1 WHERE id = 1 AND value < $1")
-        .bind(asked.since as i64)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-        == 1;
+    // Locks the counter row only when it is behind the cursor. `pruned_through` moves
+    // with it, so every firewall from the lost history is reset, not only this one.
+    sqlx::query(
+        "UPDATE change_counter SET value = $1 + 1, pruned_through = $1 + 1
+         WHERE id = 1 AND value < $1 AND $1 <= $2",
+    )
+    .bind(asked.since as i64)
+    .bind(MAX_CURSOR as i64)
+    .execute(&mut *tx)
+    .await?;
     let report = serde_json::json!({
         "report": asked.report,
         "activity_dropped": asked.activity_dropped,
@@ -448,18 +454,16 @@ async fn record_report(
     .execute(&mut *tx)
     .await?;
     let () = tx.commit().await?;
-    Ok(ahead)
+    Ok(())
 }
 
 /// What changed after `asked.since`, read at `revision`. A cursor below
-/// `pruned_through`, or one `record_report` found `ahead` of the log (a restore), is
-/// answered with a reset.
+/// `pruned_through`, or above the log, is answered with a reset.
 async fn delta(
     conn: &mut PgConnection,
     firewall: i32,
     asked: &ChangesRequest,
     revision: u64,
-    ahead: bool,
 ) -> Result<ChangesResponse, SyncError> {
     let pruned_through: i64 =
         sqlx::query_scalar("SELECT pruned_through FROM change_counter WHERE id = 1")
@@ -476,7 +480,7 @@ async fn delta(
             toml: settings.1,
         });
     let since = asked.since;
-    if ahead || since < pruned_through as u64 || since > revision {
+    if since < pruned_through as u64 || since > revision {
         return Ok(ChangesResponse {
             revision,
             network_lock: Some(network_lock(conn).await?),
