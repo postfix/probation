@@ -28,6 +28,7 @@ use url::Url;
 
 use probation_policy::OsvSetting;
 
+use crate::managed::report::UpstreamHealth;
 use crate::policy::{self, Candidate, CompiledPolicy, Decision, Ecosystem};
 
 /// The production OSV endpoint. Fixed rather than configurable (D4): only the cache
@@ -147,15 +148,17 @@ pub struct OsvClient {
 impl OsvClient {
     /// Spawns the batcher once and returns the client handle plus the batcher's
     /// `JoinHandle`. `App::start` calls this with its `drain` token and puts the
-    /// handle in the task set `Running::shutdown` joins.
+    /// handle in the task set `Running::shutdown` joins. Every batch's outcome is
+    /// recorded in `upstreams` (C69).
     pub fn new(
         client: Client,
         cache_ttl: Duration,
         request_timeout: Duration,
         shutdown: CancellationToken,
+        upstreams: Arc<UpstreamHealth>,
     ) -> (OsvClient, JoinHandle<()>) {
         let url = Url::parse(OSV_QUERYBATCH_URL).expect("a fixed, valid URL");
-        OsvClient::spawn_with(client, url, cache_ttl, request_timeout, shutdown)
+        OsvClient::spawn_with(client, url, cache_ttl, request_timeout, shutdown, upstreams)
     }
 
     /// The constructor behind [`OsvClient::new`], parameterised over the endpoint —
@@ -172,6 +175,7 @@ impl OsvClient {
         cache_ttl: Duration,
         request_timeout: Duration,
         shutdown: CancellationToken,
+        upstreams: Arc<UpstreamHealth>,
     ) -> (OsvClient, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(OSV_CHANNEL_CAPACITY);
         let cache = Arc::new(OsvCache::new(cache_ttl));
@@ -182,6 +186,7 @@ impl OsvClient {
             request_timeout,
             Arc::clone(&cache),
             shutdown,
+            upstreams,
         ));
         (
             OsvClient {
@@ -361,6 +366,7 @@ mod tests {
             StdDuration::from_secs(60),
             StdDuration::from_millis(50),
             shutdown.clone(),
+            Arc::default(),
         );
         assert!(!handle.is_finished(), "the batcher is running");
         // Without a shutdown signal: dropping the last client is enough to end it.
@@ -431,6 +437,7 @@ mod tests {
             cache_ttl,
             request_timeout,
             shutdown.clone(),
+            Arc::default(),
         );
         (client, handle, shutdown)
     }

@@ -4,24 +4,30 @@
 //! firewall wrote or sent is searched for the key, its Basic form and its hash.
 //!
 //! Its own test binary, so the trace level it captures at is the one it asserts.
-//! Slice 3 adds T-key-canary-sync here for the paths that arrive with the sync loop.
+//! T-key-canary-sync covers the paths that arrive with the sync loop (slice 3). The two
+//! take turns, because T-key-canary points the process's proxy variables at a listener
+//! that must see nothing.
 
 mod common;
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::http::StatusCode;
-use common::sync::{FakeSyncServer, PLATFORM, base64, org, siem_collector};
+use common::sync::{FakeSyncServer, PLATFORM, base64, client_with_key, org, siem_collector};
 use common::{TestClock, TestServer, WiremockUpstream, config_with_open_blocklist};
 use probation_policy::api::{ChainLink, KeyId, KeyLookup, LimitSource, OrgId};
-use probation_policy::{Layer, LayerKind, OsvSetting};
+use probation_policy::{Block, Ecosystem, Layer, LayerKind, OsvSetting, Switches};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 const SENTINEL: &str = "prb_CANARY0123456789abcdefghijklmnop";
+
+/// The two tests take turns (see the module comment).
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const NOW: &str = "2026-04-06T12:00:00Z";
 const PUBLISHED: &str = "2026-01-01T00:00:00Z";
 const TARBALL: &str = "left-pad-1.0.0.tgz";
@@ -111,6 +117,7 @@ async fn shown(response: reqwest::Response) -> (StatusCode, String) {
 
 #[tokio::test]
 async fn t_key_canary() {
+    let _turn = ONE_AT_A_TIME.lock().await;
     let captured = common::logs::capture_trace();
     assert!(
         tracing::enabled!(target: "probation::managed", tracing::Level::TRACE),
@@ -364,6 +371,160 @@ async fn t_key_canary() {
             ("a SIEM body", &siem),
             ("a response", &seen),
             ("an upstream request", &upstream_text),
+        ] {
+            assert!(!text.contains(&secret), "{what} carries {secret}");
+        }
+    }
+}
+
+/// T-key-canary-sync (C123): the paths the sync loop brings — a network-lock 403, a
+/// per-account 429, an answer served stale while the server is down, and the activity
+/// rows and reports sent to the server — carry no form of the key.
+#[tokio::test]
+async fn t_key_canary_sync() {
+    let _turn = ONE_AT_A_TIME.lock().await;
+    let captured = common::logs::capture_trace();
+    assert!(tracing::enabled!(target: "probation::managed", tracing::Level::TRACE));
+
+    let upstream = WiremockUpstream::start().await;
+    mount(&upstream).await;
+    let sync = FakeSyncServer::start().await;
+    sync.layer(
+        PLATFORM,
+        Layer {
+            freeze_seconds: Some(0),
+            osv: Some(OsvSetting::Off),
+            allow: Switches::ALL,
+            ..Layer::empty(LayerKind::Platform)
+        },
+    );
+    sync.layer(
+        org(20),
+        Layer {
+            blocks: vec![Block::Package {
+                ecosystem: Ecosystem::Npm,
+                name: "left-pad".to_owned(),
+            }],
+            ..Layer::empty(LayerKind::Org)
+        },
+    );
+    // The sentinel is a Globex key, refused inside Acme's range and limited to 3 a
+    // minute.
+    sync.known_key_limited(SENTINEL, &[PLATFORM, org(20)], Some(3));
+    sync.set_ranges(&[("127.0.7.0/24", 10)]);
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let log_file = dir.path().join("decisions.ndjson");
+    let mut config = sync.managed(config_with_open_blocklist(dir.path()));
+    config.log_file_path = Some(log_file.clone());
+    config.sync_interval_seconds = NonZeroU64::new(2).unwrap();
+    let management = config.management.as_mut().unwrap();
+    management.sync_margin_seconds = NonZeroU64::new(1).unwrap();
+    management.request_timeout_seconds = NonZeroU64::new(1).unwrap();
+    management.key_cache_ttl_seconds = NonZeroU64::new(1).unwrap();
+    let clock = TestClock::at_rfc3339(NOW);
+    let server = TestServer::start_with_upstream(
+        config,
+        clock.shared(),
+        Arc::clone(&upstream.transport),
+        upstream.origins.clone(),
+    )
+    .await;
+
+    let mut seen = String::new();
+    let client = client_with_key(SENTINEL);
+    let mut statuses = Vec::new();
+    // Blocked (an activity row), then served twice, then over the rate (429).
+    for route in [
+        format!("/npm/left-pad/-/{TARBALL}"),
+        "/pypi/simple/alpha/".to_owned(),
+        "/pypi/simple/".to_owned(),
+        "/npm/left-pad".to_owned(),
+    ] {
+        let (status, text) = shown(client.get(server.url(&route)).send().await.unwrap()).await;
+        statuses.push(status.as_u16());
+        seen.push_str(&text);
+    }
+    assert_eq!(statuses, [403, 200, 200, 429]);
+
+    // The network lock: a 403 and a row naming the address.
+    clock.advance_seconds(61);
+    let inside = reqwest::Client::builder()
+        .no_proxy()
+        .local_address(std::net::IpAddr::from([127, 0, 7, 1]))
+        .build()
+        .unwrap();
+    let response = inside
+        .get(server.url("/npm/left-pad"))
+        .header("authorization", format!("Bearer {SENTINEL}"))
+        .send()
+        .await
+        .unwrap();
+    let (status, text) = shown(response).await;
+    assert_eq!(status, 403);
+    seen.push_str(&text);
+
+    // Served stale while the server is down.
+    sync.go_down(true);
+    clock.advance_seconds(2);
+    // The first is asked about and served when the lookup fails; the server is then
+    // marked down, and the second is served with no lookup.
+    for _ in 0..2 {
+        let response = client
+            .get(server.url("/pypi/simple/"))
+            .send()
+            .await
+            .unwrap();
+        let (status, text) = shown(response).await;
+        assert_eq!(status, 200, "served stale");
+        seen.push_str(&text);
+    }
+    sync.go_down(false);
+    sync.sync_rounds(2).await;
+    server.shutdown().await;
+
+    let delivered: Vec<_> = sync.delivered();
+    let rows: Vec<_> = delivered
+        .iter()
+        .flat_map(|request| &request.activity)
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.rule == "blocked_package"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.rule == "network_lock"),
+        "{rows:?}"
+    );
+    let [key, basic_form, token_form, hash, ..] = <[String; 7]>::try_from(secrets()).unwrap();
+    for (at, body) in sync.bodies() {
+        assert!(
+            !body.contains(&key) && !body.contains(&basic_form) && !body.contains(&token_form),
+            "{at}: {body}"
+        );
+        assert!(
+            at.ends_with("/lookup") || !body.contains(&hash),
+            "{at}: {body}"
+        );
+    }
+    let changes: String = sync
+        .bodies()
+        .into_iter()
+        .filter(|(at, _)| at.ends_with("/changes"))
+        .map(|(_, body)| body)
+        .collect();
+    assert!(
+        changes.contains("\"activity\":[{"),
+        "activity went out: {changes}"
+    );
+    let ndjson = std::fs::read_to_string(&log_file).expect("the decision log");
+    let logs = captured.text();
+    for secret in secrets() {
+        for (what, text) in [
+            ("a log line", &logs),
+            ("an NDJSON record", &ndjson),
+            ("a response", &seen),
+            ("a changes body", &changes),
         ] {
             assert!(!text.contains(&secret), "{what} carries {secret}");
         }

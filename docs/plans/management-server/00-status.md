@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":7,"boundary":{"kind":"slice","number":3},"reopened":false,"history":[{"from":"hand","reason":"start","to":"engineering"}]}
+{"generation":7,"boundary":{"kind":"slice","number":3},"reopened":false,"history":[{"from":"hand","reason":"start","to":"engineering"},{"from":"hand","reason":"start","to":"engineering"},{"from":"engineering","reason":"start","to":"sf-spec-authoring"},{"from":"sf-spec-authoring","reason":"complete","to":"engineering"}]}
 
 ## Gate 1 progress
 

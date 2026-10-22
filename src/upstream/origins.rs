@@ -1,4 +1,4 @@
-//! The three fixed upstream origins, the URL builder, and the admission check.
+//! The three upstream origins, the URL builder, and the admission check.
 //!
 //! Two independent defences, deliberately not one. [`OriginSet::url_for`] builds a
 //! URL by cloning an origin and appending each name-derived segment with
@@ -21,14 +21,16 @@
 //! configuration key, command-line flag or environment variable reaches it, and
 //! nothing under `src/` outside this file names `for_tests` — that is invariant
 //! TEST-01, and `origin_guard::no_config_key_or_env_var_relaxes_origins` is what
-//! says so.
+//! says so. Three configuration keys may replace the origins themselves (C35,
+//! [`OriginSet::configured`]); every rule here still applies to what they name.
 
 use std::fmt;
 
 use url::Url;
 
-/// SPEC §11's fixed origins. Registry and artifact hosts are separate because PyPI
-/// serves its files from a different host than its index.
+/// SPEC §11's origins, used unless configuration names another. Registry and artifact
+/// hosts are separate because PyPI serves its files from a different host than its
+/// index.
 const NPM_METADATA: &str = "https://registry.npmjs.org";
 const PYPI_METADATA: &str = "https://pypi.org";
 const PYPI_ARTIFACTS: &str = "https://files.pythonhosted.org";
@@ -89,6 +91,21 @@ impl OriginSet {
             npm_metadata: parse_origin(NPM_METADATA),
             pypi_metadata: parse_origin(PYPI_METADATA),
             pypi_artifacts: parse_origin(PYPI_ARTIFACTS),
+            allow_private_addresses: false,
+        }
+    }
+
+    /// The production rules with each origin `config` names in place of the default
+    /// one (C35). `config` validated each as an `https` origin with no credentials,
+    /// query, fragment or path, and no private address literal; a DNS answer in a
+    /// private range is still refused at connect time.
+    pub fn configured(config: &crate::config::Config) -> OriginSet {
+        let production = OriginSet::production();
+        let pick = |configured: &Option<Url>, default: Url| configured.clone().unwrap_or(default);
+        OriginSet {
+            npm_metadata: pick(&config.npm_upstream_url, production.npm_metadata),
+            pypi_metadata: pick(&config.pypi_upstream_url, production.pypi_metadata),
+            pypi_artifacts: pick(&config.pypi_artifacts_url, production.pypi_artifacts),
             allow_private_addresses: false,
         }
     }

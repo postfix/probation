@@ -1,0 +1,9 @@
+# Slice 3 evidence — sync, network lock, readiness, stale serving, activity, settings push
+
+## Decisions and deviations
+| ID | Status | Item | Decision | Source |
+|---|---|---|---|---|
+| S3-1 | deviation (scope) | `src/osv/mod.rs` is not in the slice-3 file list. It needs (1) an OSV reachability tracker threaded from `OsvClient::new`/`spawn_with` to `batcher::run` (C69, per-App, because a process-global tracker makes T-report-upstream-unreachable flaky), and (2) `evaluate_verdict` returning `PolicyVerdict` for activity rows, with `evaluate` kept as a wrapper. | Approved as plumbing only. OSV order (C110) and decisions are unchanged, and the existing OSV analyzers must still pass. | implementer scope report, 2026-10-22 |
+| S3-2 | deviation (scope) | `tests/managed_mode.rs` is not in the slice-3 file list, but two of its slice-2 assertions pin temporary behaviour that slice 3 ends (04 § Slice 2, Temporary behavior): `t_auth_missing_401` expects `/health/ready` 503 before any sync, and the unreachable case of `t_auth_unknown_401` expects 401. | Approved: exactly two edits. Ready becomes 200 after the first sync (C109); the unreachable server becomes 503 `NOT_READY` (T1, C109). The token-refused case keeps 401. | implementer conflict report, 2026-10-22 |
+| S3-3 | spec re-validation | S3-1 moved the lines in `src/osv/batcher.rs` that `outbound-timeout-guard.yaml` pins: the target moved 175→179 and the ten findings moved to 234, 329, 370, 413, 439, 483, 484, 509, 510, 549. | sf-spec-authoring: KEEP. Header only; the rules block is byte-identical; the unsafe control fires and the safe control gives 0. batcher.rs sha256 93047ad8…. Re-validate again if batcher.rs changes. | 2026-10-22 |
+| S3-4 | process | Slice 3's product code was written before its acceptance tests; every red line comes from a named, reverted mutant. | Accepted because it is recorded (same as S4-10). | implementer report |

@@ -31,6 +31,7 @@ use crate::concurrency::Resolution;
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::managed::Principal;
+use crate::managed::report::Call;
 use crate::policy::{
     BlocklistSnapshot, Candidate, CompiledPolicy, Decision, Digest, Ecosystem, HashAlgorithm,
     PublicationTime,
@@ -148,10 +149,12 @@ pub async fn index(
     principal: Option<&Principal>,
     representation: &Representation,
 ) -> Result<Rendered, ApiError> {
-    let now = app.clock.now_utc_micros();
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(now) {
-        return Err(ApiError::PolicyUnavailable);
+    // A managed firewall ignores its local blocklist (C109).
+    if principal.is_none() {
+        let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+        if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
+            return Err(ApiError::PolicyUnavailable);
+        }
     }
 
     // Every known project is listed, including one the blocklist denies outright:
@@ -511,6 +514,7 @@ async fn refresh(
             max_bytes: app.config.max_metadata_bytes.get(),
         })
         .await;
+    app.upstreams.record_upstream(Call::PypiMetadata, &fetched);
 
     let (payload, validators, fetched_at_micros): (Arc<[u8]>, _, i64) = match fetched {
         Ok(MetadataResponse::Fresh { body, validators }) => {

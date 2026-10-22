@@ -92,6 +92,7 @@ use crate::artifacts::download::DownloadCoordinator;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::http::limits::Limits;
+use crate::managed::report::UpstreamHealth;
 use crate::managed::{Managed, Principal};
 use crate::policy::{BlocklistSnapshot, CompiledPolicy};
 use crate::store::StoreHandle;
@@ -167,6 +168,9 @@ pub struct App {
     osv: osv::OsvClient,
     /// Present only when `[management]` is set: each request's key names its policy.
     managed: Option<Managed>,
+    /// Whether each upstream answered this sync period, for the managed report (C69).
+    /// Recorded in standalone too, where nothing reads it.
+    pub(crate) upstreams: Arc<UpstreamHealth>,
 }
 
 impl App {
@@ -215,7 +219,12 @@ impl App {
         self.policy.store(Some(Arc::new(policy)));
     }
 
+    /// The revision of the blocklist file in force. A managed firewall ignores its file
+    /// (C109), so it has none, and its decision lines never name one.
     pub fn blocklist_revision(&self) -> Option<u64> {
+        if self.managed.is_some() {
+            return None;
+        }
         self.policy
             .load()
             .as_ref()
@@ -291,6 +300,7 @@ impl App {
         let osv_cache_ttl = std::time::Duration::from_secs(deps.config.osv_cache_ttl_seconds.get());
         let osv_request_timeout =
             std::time::Duration::from_millis(deps.config.osv_request_timeout_ms.get());
+        let upstreams = Arc::new(UpstreamHealth::default());
         let (osv, osv_task) = match deps.osv_base_url {
             Some(url) => osv::OsvClient::spawn_with(
                 deps.osv_client,
@@ -298,21 +308,26 @@ impl App {
                 osv_cache_ttl,
                 osv_request_timeout,
                 drain.clone(),
+                Arc::clone(&upstreams),
             ),
             None => osv::OsvClient::new(
                 deps.osv_client,
                 osv_cache_ttl,
                 osv_request_timeout,
                 drain.clone(),
+                Arc::clone(&upstreams),
             ),
         };
         delivery_tasks.push(osv_task);
 
-        let managed = deps
-            .config
-            .management
-            .as_ref()
-            .map(|management| Managed::new(management, Arc::clone(&deps.clock)));
+        let managed = deps.config.management.as_ref().map(|management| {
+            Managed::new(
+                management,
+                Duration::from_secs(deps.config.sync_interval_seconds.get()),
+                Arc::clone(&deps.clock),
+                &deps.config.data_dir,
+            )
+        });
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
             // injected. Ahead of `config`, which the next field moves.
@@ -331,15 +346,19 @@ impl App {
             delivery,
             osv,
             managed,
+            upstreams,
         });
 
-        restore_blocklist(&app).await;
-
-        // One pass before the listener accepts anything, so an instance with a valid
-        // blocklist file is ready on its first request rather than one poll interval
-        // later. The poll loop continues from the state this pass leaves behind.
+        // A managed firewall ignores its local blocklist (C109): nothing is restored or
+        // read, and the poller does not run.
         let mut watcher = Watcher::new();
-        blocklist_poller::poll_once(&app, &mut watcher).await;
+        if app.managed.is_none() {
+            restore_blocklist(&app).await;
+            // One pass before the listener accepts anything, so an instance with a valid
+            // blocklist file is ready on its first request rather than one poll interval
+            // later. The poll loop continues from the state this pass leaves behind.
+            blocklist_poller::poll_once(&app, &mut watcher).await;
+        }
 
         let addr = app.config.listen;
 
@@ -367,7 +386,13 @@ impl App {
         let local_addr = std_listener.local_addr().map_err(StartupError::Serve)?;
 
         let shutdown = CancellationToken::new();
-        let tasks = tasks::spawn(Arc::clone(&app), shutdown.clone(), watcher, delivery_tasks);
+        let tasks = tasks::spawn(
+            Arc::clone(&app),
+            shutdown.clone(),
+            drain.clone(),
+            watcher,
+            delivery_tasks,
+        );
 
         // `axum_server` on both paths, because its `Handle` is the one shutdown that
         // takes a deadline: past it, the connections still open are closed rather
@@ -442,6 +467,50 @@ pub async fn check_delivery(config: &Config) -> Result<(), StartupError> {
         let _ = task.await;
     }
     Ok(())
+}
+
+/// `config` with its settings overlay, `<data_dir>/managed-settings.toml`, in managed
+/// mode (C105). An overlay that fails start-up validation, `check_delivery` included,
+/// is swapped back for the previous one and the failure recorded for the next report
+/// (C71); one with no previous one is set aside. Standalone is returned as it is.
+pub async fn with_settings_overlay(config: Config) -> Config {
+    if config.management.is_none() {
+        return config;
+    }
+    let dir = config.data_dir.clone();
+    let overlay = dir.join(config::SETTINGS_OVERLAY);
+    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
+    loop {
+        let Ok(text) = std::fs::read_to_string(&overlay) else {
+            return config;
+        };
+        let merged = match config.with_overlay(&text) {
+            Ok(merged) => check_delivery(&merged)
+                .await
+                .map(|()| merged)
+                .map_err(|err| err.to_string()),
+            Err(reason) => Err(reason),
+        };
+        let reason = match merged {
+            Ok(merged) => return merged,
+            Err(reason) => reason,
+        };
+        tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
+        let mut state = config::SettingsState::load(&dir);
+        state.failed_revision = Some(state.settings_revision);
+        state.settings_revision = state.previous_revision;
+        state.previous_revision = 0;
+        state.last_apply_error = Some(reason);
+        let restored = if previous.exists() {
+            std::fs::rename(&previous, &overlay)
+        } else {
+            std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
+        };
+        if let Err(err) = restored.and_then(|()| state.save(&dir)) {
+            tracing::error!(error = %err, "the failed settings could not be set aside");
+            return config;
+        }
+    }
 }
 
 /// Publishes the last accepted snapshot when it is still valid (SPEC §8: "Persist
@@ -520,6 +589,15 @@ impl Running {
     #[cfg(feature = "test-support")]
     pub fn background_task_count(&self) -> usize {
         self.tasks.count()
+    }
+
+    /// Resolves when a managed firewall has written a settings push and should drain
+    /// and exit with code 75 for its supervisor to restart it (C105). Never, otherwise.
+    pub async fn restart_requested(&self) {
+        match self.app.managed() {
+            Some(managed) => managed.restart_requested().await,
+            None => std::future::pending().await,
+        }
     }
 
     /// Asks the server to stop accepting and waits for in-flight requests to finish.

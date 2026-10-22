@@ -109,7 +109,7 @@ pub async fn serve_artifact(
     let pinned = row.pinned_digests();
     match evaluate(app, &policy, now, &row, &pinned).await {
         Decision::Allow => {}
-        other => return Err(decision_error(other, now)),
+        other => return Err(refused(app, principal, &policy, now, &row, &pinned, other)),
     }
 
     // Only now, with every locally conclusive answer already given (PERF-01), does
@@ -146,8 +146,11 @@ pub async fn serve_artifact(
     let revision = policy.snapshot.as_ref().map(|snapshot| snapshot.revision);
     let Some(auth) = Authorized::from_decision(decision, revision) else {
         // No witness, no body — and not because a caller remembered to check.
-        return Err(decision_error(decision, now));
+        return Err(refused(
+            app, principal, &policy, now, &row, &pinned, decision,
+        ));
     };
+    record_would_block(app, principal, &policy, now, &row, &pinned).await;
 
     if method == Method::HEAD {
         // SPEC §9: HEAD runs every check, including a cold verification, and returns
@@ -207,20 +210,69 @@ async fn evaluate(
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
-    osv::evaluate(
-        &app.osv,
-        policy,
-        now,
-        &Candidate {
-            ecosystem: row.reference.ecosystem,
-            name: &row.reference.name,
-            version: &row.reference.version,
-            publication: row.publication_time(),
-            advertised_digests: &row.reference.expected,
-            pinned_digests: pinned,
-        },
-    )
-    .await
+    osv::evaluate(&app.osv, policy, now, &candidate(row, pinned)).await
+}
+
+fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {
+    Candidate {
+        ecosystem: row.reference.ecosystem,
+        name: &row.reference.name,
+        version: &row.reference.version,
+        publication: row.publication_time(),
+        advertised_digests: &row.reference.expected,
+        pinned_digests: pinned,
+    }
+}
+
+/// The error for a refused artifact. In managed mode the refusal is also an activity
+/// row for the key's owner, naming the rule and the layer behind it (C23, C92).
+/// `osv::evaluate` hands back only the decision, so the layer is the one `decide` names
+/// for the same inputs: an OSV denial is the one decided with a match.
+fn refused(
+    app: &App,
+    principal: Option<&Principal>,
+    policy: &CompiledPolicy,
+    now: i64,
+    row: &ReferenceRow,
+    pinned: &[Digest],
+    decision: Decision,
+) -> ApiError {
+    if let (Some(principal), Some(managed)) = (principal, app.managed()) {
+        let candidate = candidate(row, pinned);
+        let osv_matched = decision == Decision::Deny(DenyReason::BlockedByOsv);
+        let verdict = crate::policy::decide(policy, &candidate, now, osv_matched);
+        managed.record_decision(principal, &candidate, &verdict);
+    }
+    decision_error(decision, now)
+}
+
+/// A served artifact whose OSV setting is log-only and which OSV flags is recorded as
+/// "would have blocked" (C81). The OSV answer is the one `osv::evaluate` just cached.
+async fn record_would_block(
+    app: &App,
+    principal: Option<&Principal>,
+    policy: &CompiledPolicy,
+    now: i64,
+    row: &ReferenceRow,
+    pinned: &[Digest],
+) {
+    let (Some(principal), Some(managed)) = (principal, app.managed()) else {
+        return;
+    };
+    let candidate = candidate(row, pinned);
+    let rules = policy
+        .policy
+        .rules_for(candidate.ecosystem, candidate.name, candidate.version);
+    if rules.osv != probation_policy::OsvSetting::LogOnly
+        || !app
+            .osv
+            .check(candidate.ecosystem, candidate.name, candidate.version)
+            .await
+    {
+        return;
+    }
+    let verdict = crate::policy::decide(policy, &candidate, now, true);
+    managed.record_decision(principal, &candidate, &verdict);
 }
 
 /// The reference record, from memory where possible. SPEC §9: the record is

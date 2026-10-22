@@ -15,6 +15,7 @@
 //! needs them can see them and the client cannot.
 
 use std::borrow::Borrow;
+use std::net::IpAddr;
 
 use axum::Json;
 use axum::extract::rejection::PathRejection;
@@ -88,6 +89,15 @@ pub enum ApiError {
     /// spent or the server is busy. `Retry-After: 1`, because a valid key must never be
     /// told it is wrong (T10).
     LookupBusy,
+    /// Managed mode: another organisation's network lock covers the client's address
+    /// (C30, C92). The body shows the address and nothing else; the decision line's
+    /// reason does not carry it (C12).
+    NetworkNotAllowed(IpAddr),
+    /// Managed mode: the key's account is over its rate on this firewall (C66).
+    TooManyRequests,
+    /// Managed mode: no cache snapshot is loaded and no sync applied yet, so nothing is
+    /// served (T1, C109).
+    NotReady,
 }
 
 impl ApiError {
@@ -105,7 +115,10 @@ impl ApiError {
 
     pub fn status(&self) -> StatusCode {
         match self {
-            ApiError::Held { .. } | ApiError::Blocked { .. } => StatusCode::FORBIDDEN,
+            ApiError::Held { .. } | ApiError::Blocked { .. } | ApiError::NetworkNotAllowed(_) => {
+                StatusCode::FORBIDDEN
+            }
+            ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
@@ -115,7 +128,8 @@ impl ApiError {
             | ApiError::CapacityExhausted
             | ApiError::StorageUnusable
             | ApiError::InternalFailure
-            | ApiError::LookupBusy => StatusCode::SERVICE_UNAVAILABLE,
+            | ApiError::LookupBusy
+            | ApiError::NotReady => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::UpstreamFailure | ApiError::UpstreamInvalid | ApiError::IntegrityMismatch => {
                 StatusCode::BAD_GATEWAY
@@ -144,6 +158,9 @@ impl ApiError {
             ApiError::UpstreamTimeout => "UPSTREAM_TIMEOUT",
             ApiError::Unauthenticated => "AUTHENTICATION_REQUIRED",
             ApiError::LookupBusy => "LOOKUP_BUSY",
+            ApiError::NetworkNotAllowed(_) => "NETWORK_NOT_ALLOWED",
+            ApiError::TooManyRequests => "TOO_MANY_REQUESTS",
+            ApiError::NotReady => "NOT_READY",
         }
     }
 
@@ -185,6 +202,26 @@ impl ApiError {
             ApiError::LookupBusy => {
                 "the API key could not be checked right now; retry shortly".to_owned()
             }
+            ApiError::NetworkNotAllowed(_) => {
+                "this API key may not be used from this network".to_owned()
+            }
+            ApiError::TooManyRequests => {
+                "this account has sent too many requests; retry later".to_owned()
+            }
+            ApiError::NotReady => {
+                "the firewall has not loaded its policies yet; retry shortly".to_owned()
+            }
+        }
+    }
+
+    /// The reason a client is shown: [`ApiError::reason`], except that a network-lock
+    /// refusal names the address it refused (C92). Only the response carries it.
+    fn shown_reason(&self) -> String {
+        match self {
+            ApiError::NetworkNotAllowed(client) => {
+                format!("this API key may not be used from {client}")
+            }
+            _ => self.reason(),
         }
     }
 
@@ -216,7 +253,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
             error: self.error_code(),
-            reason: self.reason(),
+            reason: self.shown_reason(),
             // The ID this request already has, so the one a client is told and the one
             // its decision line carries are the same string rather than two counters
             // that happen to agree.
@@ -234,7 +271,7 @@ impl IntoResponse for ApiError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         match self {
-            ApiError::LookupBusy => {
+            ApiError::LookupBusy | ApiError::NotReady => {
                 response
                     .headers_mut()
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));

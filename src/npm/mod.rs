@@ -27,6 +27,7 @@ use crate::concurrency::Resolution;
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
 use crate::managed::Principal;
+use crate::managed::report::Call;
 use crate::npm::document::{PackageDocument, VersionEntry};
 use crate::policy::{
     BlocklistSnapshot, Candidate, CompiledPolicy, Decision, DenyReason, Ecosystem, PublicationTime,
@@ -277,9 +278,12 @@ pub async fn reference_for_file(
     name: &PackageName,
     filename: &str,
 ) -> Result<ReferenceId, ApiError> {
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
-        return Err(ApiError::PolicyUnavailable);
+    // A managed firewall ignores its local blocklist (C109): its key's policy decides.
+    if app.managed().is_none() {
+        let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+        if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
+            return Err(ApiError::PolicyUnavailable);
+        }
     }
 
     let key = ProjectKey::new(Ecosystem::Npm, name.as_str());
@@ -568,6 +572,7 @@ async fn refresh(
             max_bytes: app.config.max_metadata_bytes.get(),
         })
         .await;
+    app.upstreams.record_upstream(Call::Npm, &fetched);
 
     let (payload, validators, fetched_at_micros): (Arc<[u8]>, _, i64) = match fetched {
         Ok(MetadataResponse::Fresh { body, validators }) => {

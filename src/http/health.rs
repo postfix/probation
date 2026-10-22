@@ -28,16 +28,22 @@ pub async fn live() -> StatusCode {
 /// again." `StoreHandle::is_healthy` is that flag, and it goes back to true when a
 /// command succeeds again.
 ///
-/// A managed firewall is ready once its first sync is applied, and the sync loop
-/// arrives in slice 3 (C109). Until then it reports not ready.
+/// A managed firewall ignores its local blocklist (C109): it is ready once a cache
+/// snapshot is loaded or a sync applied, while it is not retired and its store is
+/// healthy — the condition `admit` serves under — and not while the management server
+/// refuses even an empty sync.
 pub async fn ready(State(app): State<Arc<App>>) -> StatusCode {
-    if app.managed().is_some() {
-        return StatusCode::SERVICE_UNAVAILABLE;
-    }
-    let now = app.clock.now_utc_micros();
     if !app.store().is_healthy() {
         return StatusCode::SERVICE_UNAVAILABLE;
     }
+    if let Some(managed) = app.managed() {
+        return if managed.healthy() {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+    }
+    let now = app.clock.now_utc_micros();
     match app.blocklist() {
         Some(snapshot) if snapshot.is_valid_at(now) => StatusCode::OK,
         _ => StatusCode::SERVICE_UNAVAILABLE,
