@@ -210,13 +210,28 @@ pub(crate) fn normal_email(email: &str) -> Option<String> {
     .then_some(email)
 }
 
-/// Whether an organisation of that name exists (names are unique case-insensitively, so
-/// `/o/<name>` and the typed name on `/signin` find one organisation, C37).
+/// An organisation name as it is stored: inner whitespace collapsed to one space, none
+/// at the ends.
+pub(crate) fn org_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether an organisation of that name exists. Names are unique ignoring case and
+/// whitespace, so `/o/<name>` and the typed name on `/signin` find one organisation
+/// (C37), and two places in the switcher never read alike.
 pub(crate) async fn org_name_taken(pool: &PgPool, name: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-        .bind(name)
-        .fetch_one(pool)
-        .await
+    let mut conn = pool.acquire().await?;
+    name_taken(&mut conn, name).await
+}
+
+async fn name_taken(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM orgs
+                        WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower($1))",
+    )
+    .bind(org_name(name))
+    .fetch_one(conn)
+    .await
 }
 
 /// Writes one mail to the outbox in the caller's transaction; the outbox job sends it.
@@ -462,16 +477,11 @@ pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::
     let actor = Actor::own_account(login_id, false);
     match payload["kind"].as_str() {
         Some("org") => {
-            let name = payload["org_name"].as_str().unwrap_or_default();
-            let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))",
-            )
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
+            let name = org_name(payload["org_name"].as_str().unwrap_or_default());
+            let taken = name_taken(&mut tx, &name).await?;
             // Taken meanwhile: the login is confirmed and creates one from Account settings.
             if !taken && !name.is_empty() {
-                create_org(&mut tx, &actor, name).await?;
+                create_org(&mut tx, &actor, &name).await?;
             }
         }
         Some("personal") => create_personal(&mut tx, &actor).await?,
@@ -702,6 +712,20 @@ pub(crate) async fn password_method(
     }))
 }
 
+/// Whether the login has an email-and-password address it has not confirmed (C41).
+pub(crate) async fn unconfirmed(
+    conn: &mut PgConnection,
+    login_id: i32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sign_in_methods
+                        WHERE login_id = $1 AND kind = 'password' AND verified_at IS NULL)",
+    )
+    .bind(login_id)
+    .fetch_one(conn)
+    .await
+}
+
 /// A login whose email-and-password address is not confirmed yet can do nothing but
 /// confirm it (C41). Answers that address.
 pub(crate) async fn unconfirmed_email(
@@ -718,26 +742,25 @@ pub(crate) async fn unconfirmed_email(
 }
 
 /// What the top bar shows for a login: a name (its first method's email) and its live
-/// places as (label, switcher value), personal account first; only the organisation of
-/// a session opened through that organisation's SSO (T2).
+/// places, personal account first; only the organisation of a session opened through
+/// that organisation's SSO (T2).
 pub(crate) async fn top_bar(
     pool: &PgPool,
     login_id: i32,
     scope_org_id: Option<i32>,
-) -> Result<(String, Vec<(String, String)>), sqlx::Error> {
+) -> Result<(String, Vec<SwitcherPlace>), sqlx::Error> {
     let name: Option<String> = sqlx::query_scalar(
         "SELECT email FROM sign_in_methods WHERE login_id = $1 AND email IS NOT NULL ORDER BY id LIMIT 1",
     )
     .bind(login_id)
     .fetch_optional(pool)
     .await?;
-    let places: Vec<(String, String)> = sqlx::query_as(
-        "SELECT label, value FROM (
-             SELECT 0 AS rank, 'Personal account' AS label, 'personal:' || id AS value, 0 AS id
-             FROM personal_accounts
+    let rows: Vec<(bool, String, i32)> = sqlx::query_as(
+        "SELECT rank = 0, label, id FROM (
+             SELECT 0 AS rank, 'Personal account' AS label, id FROM personal_accounts
              WHERE login_id = $1 AND deleted_at IS NULL AND $2::integer IS NULL
              UNION ALL
-             SELECT 1, o.name || ' (organisation)', 'org:' || o.id, o.id FROM memberships AS m
+             SELECT 1, o.name || ' (organisation)', o.id FROM memberships AS m
              JOIN orgs AS o ON o.id = m.org_id
              WHERE m.login_id = $1 AND o.deleted_at IS NULL AND ($2::integer IS NULL OR o.id = $2)
          ) AS places ORDER BY rank, id",
@@ -746,7 +769,33 @@ pub(crate) async fn top_bar(
     .bind(scope_org_id)
     .fetch_all(pool)
     .await?;
+    let places = rows
+        .into_iter()
+        .map(|(personal, label, id)| {
+            let (value, kind) = if personal {
+                ("personal".to_owned(), LayerKind::Personal)
+            } else {
+                (format!("org:{id}"), LayerKind::Org)
+            };
+            SwitcherPlace {
+                label,
+                value,
+                place: PlaceRef {
+                    kind,
+                    id: id as u32,
+                },
+            }
+        })
+        .collect();
     Ok((name.unwrap_or_else(|| format!("Login {login_id}")), places))
+}
+
+/// One of a login's places in the switcher: its label, the value the form posts
+/// ("personal" or "org:<id>"), and the place itself.
+pub(crate) struct SwitcherPlace {
+    pub label: String,
+    pub value: String,
+    pub place: PlaceRef,
 }
 
 /// Remembers the place chosen with the switcher; every page checks it again.
@@ -1436,21 +1485,16 @@ pub(crate) async fn add_org(
     login_id: i32,
     name: &str,
 ) -> Result<Result<(), &'static str>, sqlx::Error> {
-    let name = name.trim();
-    if let Some(problem) = org_name_problem(name) {
+    let name = org_name(name);
+    if let Some(problem) = org_name_problem(&name) {
         return Ok(Err(problem));
     }
     let mut tx = pool.begin().await?;
-    let taken: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
-    if taken {
+    if name_taken(&mut tx, &name).await? {
         return Ok(Err(ORG_NAME_TAKEN));
     }
     let actor = login_actor(&mut tx, login_id).await?;
-    create_org(&mut tx, &actor, name).await?;
+    create_org(&mut tx, &actor, &name).await?;
     let () = tx.commit().await?;
     Ok(Ok(()))
 }
@@ -1901,14 +1945,17 @@ pub(crate) async fn identity_login(
     Ok((login, method))
 }
 
-/// A login that signs in through, or links, an organisation's SSO joins it (C5).
+/// A login that signs in through, or links, an organisation's SSO joins it (C5), unless
+/// an org admin removed it there; only an invitation brings it back (C128).
 async fn join_through_sso(
     conn: &mut PgConnection,
     login: i32,
     org: i32,
 ) -> Result<(), sqlx::Error> {
     let joined = sqlx::query(
-        "INSERT INTO memberships (login_id, org_id, role) VALUES ($1, $2, 'member')
+        "INSERT INTO memberships (login_id, org_id, role)
+         SELECT $1, $2, 'member'
+         WHERE NOT EXISTS (SELECT 1 FROM org_removals WHERE login_id = $1 AND org_id = $2)
          ON CONFLICT DO NOTHING",
     )
     .bind(login)
@@ -2895,10 +2942,23 @@ pub(crate) async fn start_new_login(
     let Some((kind, issuer, subject, org, email, hash, verified)) = method else {
         return Ok(None);
     };
+    // Starting over does not undo a removal (C128).
+    let removed_from: Vec<i32> =
+        sqlx::query_scalar("SELECT org_id FROM org_removals WHERE login_id = $1")
+            .bind(old_login)
+            .fetch_all(&mut *tx)
+            .await?;
     erase_login(&mut tx, old_login).await?;
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
         .await?;
+    for org in removed_from {
+        sqlx::query("INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2)")
+            .bind(org)
+            .bind(login)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query(
         "INSERT INTO sign_in_methods (login_id, kind, issuer, subject, org_id, email, password_hash, verified_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN now() END)",

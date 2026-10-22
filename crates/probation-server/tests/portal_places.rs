@@ -763,7 +763,7 @@ async fn t_portal_place_switch() {
     let world = World::new(&fx).await;
     let personal = fx.db.personal(world.ana).await;
     let in_globex = fx.db.member(world.ana, world.globex, None, "member").await;
-    fx.db.org("Initech").await;
+    let initech = fx.db.org("Initech").await;
     let mut ana = fx.signed_in("ana@acme.test").await;
 
     // The personal account comes first.
@@ -779,11 +779,20 @@ async fn t_portal_place_switch() {
         ("personal".to_owned(), personal.id as i32)
     );
 
-    for (to, name, place) in [
-        ("Globex (organisation)", "globex box", in_globex),
-        ("Acme (organisation)", "acme box", world.places[&world.ana]),
+    // Two of Ana's organisations whose names differ only in inner whitespace, as rows
+    // written before names were normalised: each is chosen by its id, never its label.
+    let spaced = fx.db.org("Initrode  Inc").await;
+    let single = fx.db.org("Initrode Inc").await;
+    let in_spaced = fx.db.member(world.ana, spaced, None, "member").await;
+    let in_single = fx.db.member(world.ana, single, None, "member").await;
+    for (org, name, place) in [
+        (world.globex, "globex box", in_globex),
+        (spaced, "spaced box", in_spaced),
+        (single, "single box", in_single),
+        (world.acme, "acme box", world.places[&world.ana]),
     ] {
-        let switched = ana.submit("/keys", "/place", &[("to", to)]).await;
+        let to = format!("org:{}", org.id);
+        let switched = ana.submit("/keys", "/place", &[("to", &to)]).await;
         assert_eq!(
             switched.location.as_deref(),
             Some("/keys"),
@@ -792,8 +801,8 @@ async fn t_portal_place_switch() {
         );
         let page = ana.get("/keys").await;
         assert!(
-            page.has(&format!("name=\"to\"><option>{to}</option>")),
-            "the chosen place is listed first: {}",
+            page.has(&format!("<option value=\"{to}\" selected>")),
+            "the chosen place is selected: {}",
             page.body
         );
         create_key(&mut ana, name).await;
@@ -802,13 +811,89 @@ async fn t_portal_place_switch() {
             ("user".to_owned(), place.id as i32)
         );
     }
+    let back = ana.submit("/keys", "/place", &[("to", "personal")]).await;
+    assert_eq!(back.location.as_deref(), Some("/keys"), "{}", back.body);
+    assert!(
+        ana.get("/keys")
+            .await
+            .has("<option value=\"personal\" selected>")
+    );
+    ana.submit(
+        "/keys",
+        "/place",
+        &[("to", &format!("org:{}", world.acme.id))],
+    )
+    .await;
 
-    // A place the login is not in is not found, and the choice stays.
-    let foreign = ana
-        .submit("/keys", "/place", &[("to", "Initech (organisation)")])
-        .await;
-    assert_eq!(foreign.status, StatusCode::NOT_FOUND);
+    // A place the login is not in, and a value that names none, are not found, and the
+    // choice stays.
+    for to in [
+        format!("org:{}", initech.id),
+        "Acme (organisation)".to_owned(),
+        "org:x".to_owned(),
+    ] {
+        let foreign = ana.submit("/keys", "/place", &[("to", &to)]).await;
+        assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{to}");
+    }
     assert!(ana.get("/keys").await.has("Your keys in Acme"));
+
+    // Organisation names are stored with inner whitespace collapsed, and a name that
+    // differs from a taken one only in whitespace or case is taken (C40).
+    let created = ana
+        .submit(
+            "/account",
+            "/account/org",
+            &[("name", " Wayne   Enterprises ")],
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.body);
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM orgs WHERE name = 'Wayne Enterprises'")
+            .await,
+        1
+    );
+    let taken = ana
+        .submit(
+            "/account",
+            "/account/org",
+            &[("name", "wayne\tenterprises")],
+        )
+        .await;
+    assert_eq!(
+        taken.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        taken.body
+    );
+    assert!(
+        taken.has("That organisation name is taken"),
+        "{}",
+        taken.body
+    );
+    // The same at sign-up.
+    let mut stark = fx.browser();
+    stark
+        .submit(
+            "/signup",
+            "/signup",
+            &[
+                ("email", "tony@stark.test"),
+                ("password", PASSWORD),
+                ("kind", "org"),
+                ("org_name", "Stark \t  Industries"),
+            ],
+        )
+        .await;
+    fx.deliver().await;
+    let link = fx.mail.link("tony@stark.test", "/verify-email?token=");
+    stark.get(&link).await;
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM orgs WHERE name = 'Stark Industries'")
+            .await,
+        1
+    );
 }
 
 /// T-portal-key-revoke (C14): the owner revokes a key on /keys and it answers 401 within
@@ -2083,6 +2168,41 @@ async fn t_grant_by_invitation() {
     // The link works once.
     let again = accept(&mut erin_browser, &link).await;
     assert!(again.has("expired or was already used"), "{}", again.body);
+
+    // A login whose address is not confirmed gains no place by a link (S5-4, C41): the
+    // portal sends it to /verify-email first, and tenancy refuses it too.
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "nora@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let link = invitation_link(&fx, "nora@acme.test").await;
+    let nora = fx.person("nora@acme.test").await;
+    sqlx::query("UPDATE sign_in_methods SET verified_at = NULL WHERE login_id = $1")
+        .bind(nora)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    let token = link.split("token=").nth(1).unwrap();
+    let refused = probation_server::tenancy::accept_invitation(&fx.db.app, nora, token).await;
+    assert!(
+        matches!(
+            refused,
+            Err(probation_server::tenancy::ChangeError::Refused(_))
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        memberships_in(&fx.db, world.acme)
+            .await
+            .iter()
+            .all(|(login, _)| *login != nora)
+    );
     assert_eq!(
         memberships_in(&fx.db, world.acme).await.len(),
         before.len() + 1
@@ -2131,6 +2251,58 @@ async fn t_portal_invitation_expiry() {
         accepted.body
     );
     assert_eq!(memberships_in(&fx.db, world.acme).await, before);
+
+    // The purge erases the inviter's login past its 30 days: the links it sent go with
+    // it, and a range it approved stays approved and in every firewall's network lock.
+    // (Ana approves here as the global admin's page will in slice 7; the firewall sees
+    // every test request from 127.0.0.1, so Gus's Globex key is refused from it.)
+    let mut gus = fx.signed_in("gus@globex.test").await;
+    let globex_key = create_key(&mut gus, "globex laptop").await;
+    sqlx::query(
+        "INSERT INTO org_ip_ranges (org_id, cidr, approved_by) VALUES ($1, '127.0.0.0/8', $2)",
+    )
+    .bind(world.acme.id as i32)
+    .bind(world.ana)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    let http = common::client();
+    let locked = fx.firewall().await;
+    assert_eq!(
+        locked
+            .get(&http, "/npm/left-pad", &globex_key)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "Acme's approved range refuses a Globex key"
+    );
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
+         WHERE id = $1",
+    )
+    .bind(world.ana)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    let (logins, ..) = accounts::purge(&fx.db.app).await.expect("the purge runs");
+    assert_eq!(logins, 1, "the inviter's login is erased");
+    assert_eq!(fx.db.count("SELECT count(*) FROM invitations").await, 0);
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM org_ip_ranges WHERE approved_by IS NOT NULL")
+            .await,
+        1
+    );
+    // A firewall that loads the network lock after the purge still has the range.
+    let fresh = fx.firewall().await;
+    assert_eq!(
+        fresh
+            .get(&http, "/npm/left-pad", &globex_key)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "the range stays in the network lock"
+    );
 }
 
 /// T-grant-ceiling (C27, T3): an Acme org admin's forged `role=global_admin` and a Globex
@@ -2317,6 +2489,18 @@ async fn t_portal_sso_secret() {
     );
 }
 
+/// Links `org`'s SSO to the signed-in login as the IdP subject `sub`.
+async fn link_sso(fx: &Fixture, browser: &mut Browser, org: &str, sub: &str) -> Page {
+    let started = browser
+        .submit("/account", "/account/link/sso", &[("name", org)])
+        .await;
+    let location = started
+        .location
+        .expect("a redirect to the organisation's IdP");
+    let back = fx.net.authorize(&location, serde_json::json!({"sub": sub}));
+    browser.get(&back).await
+}
+
 /// T-portal-sso-off-members-stay (C62): when SSO is turned off, the members who joined
 /// through it stay, and a reset email lets one set a password and sign in with it.
 #[tokio::test]
@@ -2347,6 +2531,104 @@ async fn t_portal_sso_off_members_stay() {
         joined.body
     );
     let members = memberships_in(&fx.db, world.acme).await.len();
+    let dave_login: i32 =
+        sqlx::query_scalar("SELECT login_id FROM sign_in_methods WHERE subject = 'acme-dave'")
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    let dave_member = || async {
+        memberships_in(&fx.db, world.acme)
+            .await
+            .iter()
+            .any(|(login, _)| *login == dave_login)
+    };
+
+    // C128: an admin removes Dave; a later SSO sign-in does not add him back, a new
+    // invitation does.
+    let place: i32 = sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1")
+        .bind(dave_login)
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap();
+    let org_page = format!("/org/{}", world.acme.id);
+    let removed = ana
+        .submit(&org_page, &format!("/org/members/{place}/remove"), &[])
+        .await;
+    assert_eq!(removed.status, StatusCode::SEE_OTHER, "{}", removed.body);
+    sign_out(&mut dave).await;
+    let again = oauth(
+        &fx,
+        &mut dave,
+        &format!("/sso/{}/start", world.acme.id),
+        serde_json::json!({"sub": "acme-dave", "email": "dave@acme.test"}),
+    )
+    .await;
+    assert_eq!(
+        again.location.as_deref(),
+        Some("/account"),
+        "{}",
+        again.body
+    );
+    assert!(
+        !dave_member().await,
+        "a removed member is not added back by SSO"
+    );
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "dave@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let link = invitation_link(&fx, "dave@acme.test").await;
+    let accepted = accept(&mut dave, &link).await;
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert!(dave_member().await, "the invitation brings him back");
+    sign_out(&mut dave).await;
+    oauth(
+        &fx,
+        &mut dave,
+        &format!("/sso/{}/start", world.acme.id),
+        serde_json::json!({"sub": "acme-dave", "email": "dave@acme.test"}),
+    )
+    .await;
+    assert_eq!(memberships_in(&fx.db, world.acme).await.len(), members);
+
+    // Nor does unlinking Acme's SSO and linking it again bring a removed member back:
+    // Rob signs in with a password and links Acme's SSO, which adds him (C5).
+    let rob = fx.person("rob@acme.test").await;
+    let mut rob_browser = fx.signed_in("rob@acme.test").await;
+    link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
+    let rob_place: i32 = sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1")
+        .bind(rob)
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap();
+    ana.submit(&org_page, &format!("/org/members/{rob_place}/remove"), &[])
+        .await;
+    let sso_method: i32 =
+        sqlx::query_scalar("SELECT id FROM sign_in_methods WHERE subject = 'acme-rob'")
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    rob_browser
+        .submit(
+            "/account",
+            &format!("/account/methods/{sso_method}/remove"),
+            &[],
+        )
+        .await;
+    link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
+    assert!(
+        memberships_in(&fx.db, world.acme)
+            .await
+            .iter()
+            .all(|(login, _)| *login != rob),
+        "relinking SSO does not bring a removed member back"
+    );
 
     let off = save_sso(
         &mut ana,

@@ -22,7 +22,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 use ipnet::IpNet;
-use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 use sqlx::PgPool;
 use url::Url;
@@ -336,9 +335,8 @@ async fn stylesheet() -> Response {
 /// The top bar of a signed-in page.
 pub(crate) struct Top {
     pub name: String,
-    /// The switcher's places (C29), the session's own first, so a browser shows it
-    /// selected. Each is posted as its label: organisation names are unique.
-    pub places: Vec<String>,
+    /// The switcher's places (C29): (label, value, selected).
+    pub places: Vec<(String, String, bool)>,
     pub csrf: String,
     /// The page the navigation marks current: "account", "keys", "policy", "activity",
     /// "org" or "audit".
@@ -532,30 +530,30 @@ impl SignedIn {
     pub(crate) async fn top(&self, portal: &Portal) -> Result<Top, sqlx::Error> {
         let (name, places) =
             accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
-        let chosen = self.chosen(&places);
-        let (first, rest): (Vec<_>, Vec<_>) = places
-            .into_iter()
-            .partition(|(_, value)| Some(value) == chosen.as_ref());
+        let chosen = self.chosen(&places).map(|choice| choice.value.clone());
         Ok(Top {
             name,
-            places: first
+            places: places
                 .into_iter()
-                .chain(rest)
-                .map(|(label, _)| label)
+                .map(|choice| {
+                    let selected = Some(&choice.value) == chosen.as_ref();
+                    (choice.label, choice.value, selected)
+                })
                 .collect(),
             csrf: self.session.csrf().to_owned(),
             page: "account",
         })
     }
 
-    /// The switcher value of the session's place: the one chosen when it is still
-    /// listed, else the first.
-    fn chosen(&self, places: &[(String, String)]) -> Option<String> {
+    /// The session's place: the one chosen when it is still listed, else the first.
+    fn chosen<'a>(
+        &self,
+        places: &'a [accounts::SwitcherPlace],
+    ) -> Option<&'a accounts::SwitcherPlace> {
         places
             .iter()
-            .find(|(_, value)| Some(value) == self.session.place.as_ref())
+            .find(|choice| Some(&choice.value) == self.session.place.as_ref())
             .or(places.first())
-            .map(|(_, value)| value.clone())
     }
 
     pub(crate) fn tenancy_session(&self) -> tenancy::Session {
@@ -570,7 +568,7 @@ impl SignedIn {
     ) -> Result<Option<Authorized<Place>>, sqlx::Error> {
         let (_, places) =
             accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
-        let Some(place) = self.chosen(&places).as_deref().and_then(parse_place) else {
+        let Some(place) = self.chosen(&places).map(|choice| choice.place) else {
             return Ok(None);
         };
         Ok(portal
@@ -581,25 +579,11 @@ impl SignedIn {
     }
 }
 
-/// A switcher value: "org:<id>" or "personal:<id>".
-fn parse_place(value: &str) -> Option<PlaceRef> {
-    let (kind, id) = value.split_once(':')?;
-    let kind = match kind {
-        "org" => LayerKind::Org,
-        "personal" => LayerKind::Personal,
-        _ => return None,
-    };
-    Some(PlaceRef {
-        kind,
-        id: id.parse().ok()?,
-    })
-}
-
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct PlaceForm {
     csrf: String,
-    /// The chosen place's label in the switcher.
+    /// The chosen place's value: "personal" or "org:<id>".
     to: String,
 }
 
@@ -624,12 +608,12 @@ async fn choose_place(
         Ok((_, places)) => places,
         Err(err) => return unavailable(err),
     };
-    let Some((_, value)) = places.into_iter().find(|(label, _)| *label == form.to) else {
+    // Only one of the session's own places, by its value, never its label; then
+    // `authorized_place` (C1, C29).
+    let Some(choice) = places.into_iter().find(|choice| choice.value == form.to) else {
         return not_found();
     };
-    let Some(place) = parse_place(&value) else {
-        return not_found();
-    };
+    let place = choice.place;
     if portal
         .tenancy()
         .authorized_place(&signed_in.tenancy_session(), place)
@@ -638,7 +622,7 @@ async fn choose_place(
     {
         return not_found();
     }
-    match accounts::choose_place(&portal.pool, &signed_in.session, &value).await {
+    match accounts::choose_place(&portal.pool, &signed_in.session, &choice.value).await {
         Ok(()) => redirect("/keys"),
         Err(err) => unavailable(err),
     }

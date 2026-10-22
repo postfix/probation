@@ -893,7 +893,8 @@ fn last_admin_refusal() -> ChangeError {
 
 /// Ends the membership `id` in `org` under the organisation row's lock: refused for the
 /// last org admin; the member's keys are revoked with a `key` row each (C52), and their
-/// own layer and any leave request go with the membership. Writes no audit row.
+/// own layer and any leave request go with the membership, and the organisation's SSO
+/// will not add them back (C128). Writes no audit row.
 async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<(), ChangeError> {
     lock_org(conn, org).await?;
     let exists: Option<i32> = sqlx::query_scalar(
@@ -924,6 +925,14 @@ async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<()
         .bind(org)
         .execute(&mut *conn)
         .await?;
+    // The organisation's SSO does not add them back; an invitation does (C128).
+    sqlx::query(
+        "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(org)
+    .bind(login)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("DELETE FROM memberships WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)
@@ -1348,13 +1357,19 @@ pub async fn invitation(
 /// Accepts an invitation link for the signed-in `login`: the conditional update takes
 /// the link once, so under concurrent accepts exactly one login gets the grant (T3).
 /// `None` when the link is unknown, used or expired; refused, with the link left unused,
-/// when the login is a member already.
+/// when the login is a member already or its address is not confirmed (C41). Accepting
+/// lifts an earlier removal (C128).
 pub async fn accept_invitation(
     pool: &PgPool,
     login: i32,
     token: &str,
 ) -> Result<Option<i32>, ChangeError> {
     let mut tx = pool.begin().await?;
+    if crate::accounts::unconfirmed(&mut tx, login).await? {
+        return Err(ChangeError::Refused(
+            "Confirm your email address first, then open the link again.".to_owned(),
+        ));
+    }
     let taken: Option<(i32, i32, Option<i32>, String)> = sqlx::query_as(
         "UPDATE invitations SET accepted_by = $2
          WHERE token_hash = $1 AND accepted_by IS NULL AND expires_at > now()
@@ -1383,6 +1398,11 @@ pub async fn accept_invitation(
             "You are a member of this organisation already. The link stays unused.".to_owned(),
         ));
     };
+    sqlx::query("DELETE FROM org_removals WHERE org_id = $1 AND login_id = $2")
+        .bind(org)
+        .bind(login)
+        .execute(&mut *tx)
+        .await?;
     let actor = crate::accounts::login_actor(&mut tx, login).await?;
     let () = audit::record(
         &mut tx,
