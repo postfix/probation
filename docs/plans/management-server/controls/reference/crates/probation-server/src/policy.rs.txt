@@ -1,0 +1,22 @@
+//! Edit and store layer policies.
+
+use probation_policy::CheckedEdit;
+use sqlx::PgPool;
+
+use crate::tenancy::EditPermit;
+
+pub struct PolicyStore {
+    pool: PgPool,
+}
+
+impl PolicyStore {
+    /// Write the layer, its change_log row and its audit_log row in one transaction.
+    pub async fn save_edit(&self, actor: &Actor, permit: EditPermit, checked: CheckedEdit) -> Result<i64, SaveError> {
+        let mut tx = self.pool.begin().await?;
+        let revision = update_layer(&mut tx, &checked).await?;
+        let () = insert_change(&mut tx, checked.place(), revision).await?;
+        let () = insert_audit(&mut tx, actor, &permit, &checked).await?;
+        let () = tx.commit().await?;
+        Ok(revision)
+    }
+}

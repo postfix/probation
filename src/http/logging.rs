@@ -20,7 +20,11 @@
 //! `consumer` is the one value taken from the connection, and only when an operator
 //! sets `log_consumer_identification`: the peer address of the accepted TCP
 //! connection, which this process observes rather than the caller claims — never a
-//! forwarding header, never the port.
+//! forwarding header, never the port. Managed mode reads the same address to count
+//! key lookups per client ([`peer`]) and records it nowhere.
+//!
+//! `place` is the management server's id for the place a managed request's key
+//! belongs to. The key and its hash never reach a record (C107).
 //!
 //! Two retained analyzer specs are tripwires for this, not proofs of it:
 //! `.smtc/analyzers/client-data-reaches-delivery-sink.yaml` passes at zero
@@ -111,6 +115,11 @@ struct RequestContext {
     /// The revision of the last blocklist snapshot this request loaded to judge with.
     /// `None` for a request that never consulted policy.
     blocklist_revision: Mutex<Option<u64>>,
+    /// The connection's peer address, read when consumer identification is on or the
+    /// firewall is managed.
+    peer: Option<IpAddr>,
+    /// The place of the key a managed request was authenticated with.
+    place: Mutex<Option<u32>>,
 }
 
 /// The codes [`RequestContext::ecosystem`] holds. Zero is "nothing recorded".
@@ -161,6 +170,22 @@ pub fn record_blocklist_revision(revision: u64) {
     });
 }
 
+/// The peer address of the connection this request arrived on, when this process was
+/// asked to read it: managed mode and consumer identification. `None` outside a request.
+pub fn peer() -> Option<IpAddr> {
+    CONTEXT.try_with(|context| context.peer).ok().flatten()
+}
+
+/// Records the place of the key this request was authenticated with (C107). Ignored
+/// outside a request.
+pub fn record_place(place: u32) {
+    let _ = CONTEXT.try_with(|context| {
+        if let Ok(mut recorded) = context.place.lock() {
+            *recorded = Some(place);
+        }
+    });
+}
+
 /// The reason substituted for the default `"the request was served"` when
 /// `osv_mode: diagnostic` would have denied the request (C17c).
 pub(crate) const OSV_DIAGNOSTIC_REASON: &str = "the request would be blocked by a known OSV malicious-package advisory (diagnostic mode: not enforced)";
@@ -185,12 +210,10 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
 
     // Read here and nowhere else: `next.run(request)` below consumes the request, so
     // afterwards there is no request left to ask. The extension exists only when the
-    // server was built with connect-info, which happens only when the opt-in is on;
-    // the port is deliberately dropped, because the peer address is the whole of the
-    // consumer identity this product will ever record.
-    let consumer = app
-        .config
-        .log_consumer_identification
+    // server was built with connect-info, which happens only when the opt-in is on or
+    // the firewall is managed; the port is deliberately dropped, because the peer
+    // address is the whole of the consumer identity this product will ever record.
+    let peer = (app.config.log_consumer_identification || app.config.management.is_some())
         .then(|| {
             request
                 .extensions()
@@ -198,6 +221,8 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
                 .map(|ConnectInfo(peer)| peer.ip())
         })
         .flatten();
+    // Recorded only on the operator's opt-in; managed mode alone records no address.
+    let consumer = peer.filter(|_| app.config.log_consumer_identification);
 
     let context = Arc::new(RequestContext {
         id: next_id(),
@@ -205,6 +230,8 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ecosystem: AtomicU8::new(0),
         osv_diagnostic_match: AtomicBool::new(false),
         blocklist_revision: Mutex::new(None),
+        peer,
+        place: Mutex::new(None),
     });
     let response = CONTEXT.scope(Arc::clone(&context), next.run(request)).await;
 
@@ -275,6 +302,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         elapsed.as_micros() as u64,
         bytes,
         consumer,
+        context.place.lock().ok().and_then(|place| *place),
     );
 
     tracing::info!(
@@ -293,6 +321,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         // `Option` records nothing at all when it is `None`, so the line an operator
         // who opted out reads keeps exactly the twelve keys it has always had.
         consumer = decision.consumer.map(tracing::field::display),
+        place = decision.place,
         "request decided"
     );
 
@@ -328,6 +357,7 @@ fn build_decision(
     duration_micros: u64,
     bytes: u64,
     consumer: Option<IpAddr>,
+    place: Option<u32>,
 ) -> Decision {
     Decision {
         timestamp,
@@ -344,6 +374,7 @@ fn build_decision(
         duration_micros,
         bytes,
         consumer,
+        place,
     }
 }
 
@@ -650,6 +681,7 @@ mod tests {
             CacheStatus::Unattempted.as_str(),
             0,
             0,
+            None,
             None,
         )
     }

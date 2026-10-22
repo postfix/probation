@@ -15,6 +15,7 @@
 //!
 //! Sixteen shards is a starting number and a tuning knob; the lock shape is not.
 
+use probation_policy::PolicyFingerprint;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -65,10 +66,14 @@ pub enum Representation {
     PypiJson,
 }
 
+/// A rendered response is reused only under the same effective policy (C103): every
+/// request with that policy shares the entry, and a changed policy has a new
+/// fingerprint, so its stale entries age out under the byte cap.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RenderKey {
     pub project: ProjectKey,
     pub representation: Representation,
+    pub policy: PolicyFingerprint,
 }
 
 /// A response already serialised, with everything needed to decide whether it may be

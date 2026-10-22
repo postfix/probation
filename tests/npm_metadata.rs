@@ -936,6 +936,13 @@ async fn a_second_identical_request_issues_no_query_and_no_upstream_call() {
     let key = RenderKey {
         project: ProjectKey::new(Ecosystem::Npm, WIDGET),
         representation: Representation::NpmFull,
+        policy: harness
+            .server
+            .app()
+            .policy()
+            .expect("a policy")
+            .policy
+            .fingerprint,
     };
     let app = harness.server.running().app();
     let rendered = app
@@ -1328,6 +1335,13 @@ fn projection_of(
         .get(&RenderKey {
             project: ProjectKey::new(Ecosystem::Npm, name),
             representation: Representation::NpmFull,
+            policy: harness
+                .server
+                .app()
+                .policy()
+                .expect("a policy")
+                .policy
+                .fingerprint,
         })
 }
 

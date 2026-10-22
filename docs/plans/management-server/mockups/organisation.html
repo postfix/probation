@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Organisation · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html">API keys</a><a href="activity.html">Activity</a><a href="organisation.html" aria-current="page">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html">Global admin</a><a href="fleet.html">Fleet</a><a href="account.html">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>Organisation: Acme</h1>
+<p class="mut">Only Acme's org admins see this screen. Acme can have several org admins and always keeps at least one. "Reset authenticator" helps a member who lost theirs and has no backup codes. You can reset it only for a member whose login belongs to Acme alone (no personal account, no other organisation). Everyone else's, and any org admin's, is reset by the service operator.</p>
+
+<section class="state"><p class="tag">State: members (default)</p>
+<h2>Members</h2>
+<div class="wrap"><table>
+<tr><th>Email</th><th>Role</th><th>Group</th><th></th></tr>
+<tr><td>alice@acme.com</td><td><select><option selected>Org admin</option><option>Group admin</option><option>Member</option></select></td><td><select><option selected>No group</option><option>Frontend</option><option>Data</option></select></td><td><button>Remove</button></td></tr>
+<tr><td>bob@acme.com</td><td><select><option>Org admin</option><option selected>Group admin</option><option>Member</option></select></td><td><select><option>No group</option><option selected>Frontend</option><option>Data</option></select></td><td><button disabled>Reset authenticator</button> <span class="mut">Belongs to other places — ask the operator</span> <button>Remove</button></td></tr>
+<tr><td>carol@acme.com</td><td><select><option>Org admin</option><option>Group admin</option><option selected>Member</option></select></td><td><select><option>No group</option><option selected>Frontend</option><option>Data</option></select></td><td><button>Reset authenticator</button> <button>Remove</button></td></tr>
+<tr><td>dave@acme.com <span class="mut">joined through company SSO</span></td><td><select><option>Org admin</option><option>Group admin</option><option selected>Member</option></select></td><td><select><option selected>No group</option><option>Frontend</option><option>Data</option></select></td><td><button>Remove</button></td></tr>
+<tr><td>erin@acme.com</td><td colspan="2" class="mut">Invited 18 Oct 2026, link expires 25 Oct 2026</td><td><button>Cancel invitation</button></td></tr>
+</table></div>
+<p class="mut">A person is in at most one group. "No group" means they get the Acme organisation policy directly. A group admin manages their group's policy and service keys; only org admins move people between groups.</p>
+<p class="row"><input type="email" placeholder="email address" value="frank@acme.com"> <select><option>Member</option><option>Group admin</option><option>Org admin</option></select> <button class="pri">Send invitation</button></p>
+<p class="mut">Invitations go out by email. The link works for 7 days.</p>
+<p class="mut">A group admin runs the group they are in, so at most one group.</p>
+</section>
+
+<section class="state"><p class="tag">State: leave requests</p>
+<h2>Leave requests</h2>
+<div class="wrap"><table>
+<tr><th>Email</th><th>Asked</th><th></th></tr>
+<tr><td>dave@acme.com</td><td>20 Oct 2026</td><td><button class="pri">Approve</button> <button>Refuse</button></td></tr>
+</table></div>
+<p class="mut">Members cannot leave Acme on their own; they ask, and an org admin decides. Until then they stay members.</p>
+</section>
+
+<section class="state"><p class="tag">State: leave requests, empty</p>
+<p class="empty">No one has asked to leave Acme.</p>
+</section>
+
+<section class="state"><p class="tag">State: new org admin, and error: last org admin</p>
+<p><b>carol@acme.com is now an org admin.</b> Carol signs in with email and password, so they must set up an authenticator app at their next sign-in before they can use admin features. (People who sign in through Google, GitHub, Microsoft or company SSO skip this step.)</p>
+<p class="err"><b>You cannot remove alice@acme.com.</b> Acme must always have at least one org admin.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, remove a member</p>
+<h2>Remove carol@acme.com from Acme?</h2>
+<p>Carol will lose access to Acme in the portal. Her own keys in Acme stop working within about 1 minute. Service keys she created stay, because they belong to Acme.</p>
+<p class="row"><button class="danger">Remove</button> <button>Cancel</button></p>
+</section>
+
+<section class="state"><p class="tag">State: groups</p>
+<h2>Groups</h2>
+<div class="wrap"><table>
+<tr><th>Group</th><th>Members</th><th>Service keys</th><th></th></tr>
+<tr><td>Frontend</td><td>2</td><td>2</td><td><button>Rename</button> <button>Delete</button> <a href="policy.html">Policy</a></td></tr>
+<tr><td>Data</td><td>0</td><td>0</td><td><button>Rename</button> <button>Delete</button> <a href="policy.html">Policy</a></td></tr>
+</table></div>
+<p class="row"><input placeholder="group name" value="Mobile"> <button class="pri">Create group</button></p>
+<p class="mut">To move people between groups, change their Group in the Members list.</p>
+</section>
+
+<section class="state"><p class="tag">State: groups, empty</p>
+<p class="empty">Acme has no groups yet. Everyone gets the Acme organisation policy. Create a group to give some people different rules.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, delete a group</p>
+<h2>Delete the Frontend group?</h2>
+<p>This will:</p>
+<ul><li>delete the Frontend group policy;</li><li>move its 2 members to "No group", so they get the Acme organisation policy;</li><li>revoke its 2 service keys (Frontend devices, Build servers): anything using them stops downloading within about 1 minute.</li></ul>
+<p class="row"><button class="danger">Delete group</button> <button>Cancel</button></p>
+</section>
+
+<section class="state"><p class="tag">State: company SSO</p>
+<h2>Company SSO (OIDC)</h2>
+<p>Connect Microsoft Entra ID, Google Workspace, Okta or another OIDC provider. Anyone who signs in through it joins Acme automatically as a member with no group.</p>
+<label><input type="checkbox" checked> Company SSO is on</label>
+<label>Issuer URL <input size="50" value="https://login.microsoftonline.com/acme-tenant-id/v2.0"></label>
+<label>Client ID <input size="40" value="5f1c2b7e-93aa-4d1e-a0b2-acme00000001"></label>
+<label>Client secret <input type="password" value="secretsecret"> <span class="mut">stored, never shown again</span></label>
+<p>Give your provider this redirect address: <code>https://portal.example.org/sso/acme/callback</code> <button>Copy</button></p>
+<button class="pri">Save</button>
+<p class="err">Could not reach the issuer URL. Check the address and try again.</p>
+<p class="mut">If you turn SSO off, people who joined through it stay members. They can sign in by setting a password from a reset email. If their address already has a password on another login, invite that other login instead.</p>
+</section>
+
+<section class="state"><p class="tag">State: network lock</p>
+<h2>Network lock</h2>
+<p>From the addresses listed here, Probation refuses every key that does not belong to Acme (for example someone's personal account key or another organisation's key).</p>
+<div class="wrap"><table>
+<tr><th>IP range</th><th>Status</th><th></th></tr>
+<tr><td><code>203.0.113.0/24</code></td><td class="good">Approved</td><td><button>Remove</button></td></tr>
+<tr><td><code>198.51.100.16/28</code></td><td>Waiting for operator approval</td><td><button>Remove</button></td></tr>
+<tr><td><code>0.0.0.0/0</code></td><td class="err">Refused by operator: "covers the whole internet"</td><td><button>Remove</button> <button>Resubmit</button></td></tr>
+</table></div>
+<p class="mut">A range you add does nothing until the service operator approves it, so no organisation can lock out another one's people.</p>
+<p class="row"><input placeholder="e.g. 192.0.2.0/24" value="192.0.2.300/24"> <button class="pri">Add range</button></p>
+<p class="err">"192.0.2.300/24" is not a valid IP range.</p>
+<p class="mut">The network lock is a second line of defence; the main one is a locked device setup. Phone networks and some whole countries put many unrelated people behind one address, so an address cannot identify your company on its own. It also does not stop someone working off the network without a locked device setup.</p>
+</section>
+
+<section class="state"><p class="tag">State: network lock, empty (off, the default)</p>
+<p class="empty">The network lock is off: no IP ranges are registered. Add your office and VPN ranges to turn it on; each range works once the service operator approves it.</p>
+</section>
+
+<section class="state"><p class="tag">State: organisation suspended (banner on every screen)</p>
+<p class="err"><b>Acme is suspended by the service operator.</b> Probation refuses all of Acme's keys until it is made active again. You can still sign in and look around, but nothing can be changed.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, delete the organisation</p>
+<h2>Delete Acme?</h2>
+<p>All Acme keys, including service keys, stop working within about 1 minute. Everything else is erased after 30 days; until then Acme can be restored. The audit log is kept for its normal retention.</p>
+<label>Type <b>Acme</b> to confirm <input></label>
+<p class="row"><button class="danger">Delete organisation</button> <button>Cancel</button></p>
+</section>
+
+<section class="state"><p class="tag">State: deleted, restore possible</p>
+<p class="err">Acme was deleted on 20 Oct 2026. It will be erased for good on 19 Nov 2026.</p>
+<button class="pri">Restore Acme</button>
+<p class="mut">Any Acme org admin can restore it until then. All of Acme's keys work again after a restore.</p>
+</section>
+</main>
+</body>
+</html>

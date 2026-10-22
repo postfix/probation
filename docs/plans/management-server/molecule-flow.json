@@ -1,0 +1,1592 @@
+{
+ "version": 1,
+ "assumptions": [
+  "managed::authenticate is the only reader of the Authorization header and returns a Principal only for a key whose SHA-256 hash maps to a live key of an active place (cache, fresh lookup, or a stale cached entry while the server is unreachable); it refuses with outside_network exactly when the canonical peer IP lies in an approved range of an org other than the key's org (C30, C77).",
+  "policy::effective::decide decides with the EffectivePolicy carried by the Principal it is given (applying exceptions, then calling today's unchanged policy::evaluate) and reads no App-global policy input in managed mode.",
+  "probation_policy::check_edit accepts a proposed layer only when every loosening or grant it adds or widens compared with the stored layer is allowed by the matching switch of the layer above (C8, C11, C45); unchanged kept settings pass and stay not in effect through resolve (C47).",
+  "The server writes the layer, its change_log row and its audit_log row in one PostgreSQL transaction; a failed transaction writes none of them.",
+  "Firewall concurrency on the key cache is modelled as atomic per-entry replacement; interleavings across requests are not modelled. A lookup or layers answer read at a change-log revision older than the entry's last invalidation is dropped, not cached (held by T-sync-late-answer-dropped).",
+  "Each outcome's unknown guard facts are nondeterministic: the model checks that every outcome is routed, not which real inputs select it.",
+  "The server assigns change_log revisions in commit order (one locked counter row), so a firewall cursor never passes an uncommitted change; a changed key's entry is removed, a changed layer is refetched and every interned policy containing it rebuilt with no key lookup, and a changed place (suspension, deletion) expires every cached entry whose chain contains it.",
+  "Every portal policy-edit route first resolves the target place with tenancy::authorized_place, which answers 404 for a place outside the actor's places before any policy is loaded (C1, T9); the policy-edit flow starts after that call (held by T-tenant-isolation).",
+  "http::admit answers 503 NOT_READY before calling authenticate while no snapshot is loaded and no sync is applied, or when the peer address is missing; the managed-request flow starts after that gate (held by T-auth-not-ready-503)."
+ ],
+ "sources": [],
+ "predicates": [
+  {
+   "id": "authenticated",
+   "types": [
+    "Principal"
+   ]
+  },
+  {
+   "id": "stale_entry",
+   "types": [
+    "Principal"
+   ]
+  },
+  {
+   "id": "refused_unauthenticated",
+   "types": [
+    "Request"
+   ]
+  },
+  {
+   "id": "refused_network",
+   "types": [
+    "Request"
+   ]
+  },
+  {
+   "id": "decided_under",
+   "types": [
+    "Decision",
+    "Principal"
+   ]
+  },
+  {
+   "id": "allowed",
+   "types": [
+    "Decision"
+   ]
+  },
+  {
+   "id": "activity_recorded",
+   "types": [
+    "Request"
+   ],
+   "dependsOn": [
+    "activity_queue"
+   ]
+  },
+  {
+   "id": "within_parent",
+   "types": [
+    "CheckedEdit"
+   ]
+  },
+  {
+   "id": "edit_refused",
+   "types": [
+    "Edit"
+   ]
+  },
+  {
+   "id": "may_edit",
+   "types": [
+    "Actor",
+    "CheckedEdit"
+   ]
+  },
+  {
+   "id": "actor_denied",
+   "types": [
+    "Actor"
+   ]
+  },
+  {
+   "id": "layer_unchanged",
+   "types": [],
+   "dependsOn": [
+    "layers"
+   ]
+  },
+  {
+   "id": "saved",
+   "types": [
+    "CheckedEdit"
+   ],
+   "dependsOn": [
+    "layers"
+   ]
+  },
+  {
+   "id": "change_logged",
+   "types": [
+    "CheckedEdit"
+   ],
+   "dependsOn": [
+    "change_log"
+   ]
+  },
+  {
+   "id": "audited",
+   "types": [
+    "Actor",
+    "CheckedEdit"
+   ],
+   "dependsOn": [
+    "audit_log"
+   ]
+  },
+  {
+   "id": "conflict",
+   "types": [
+    "CheckedEdit"
+   ]
+  },
+  {
+   "id": "cache_kept",
+   "types": [],
+   "dependsOn": [
+    "key_cache"
+   ]
+  },
+  {
+   "id": "cache_current",
+   "types": [
+    "Delta"
+   ],
+   "dependsOn": [
+    "key_cache"
+   ]
+  },
+  {
+   "id": "cache_empty",
+   "types": [],
+   "dependsOn": [
+    "key_cache"
+   ]
+  },
+  {
+   "id": "serving_stopped",
+   "types": [],
+   "dependsOn": [
+    "key_cache"
+   ]
+  },
+  {
+   "id": "refused_rate_limited",
+   "types": [
+    "Request"
+   ]
+  },
+  {
+   "id": "refused_busy",
+   "types": [
+    "Request"
+   ]
+  }
+ ],
+ "states": [
+  {
+   "id": "key_cache",
+   "kind": "state"
+  },
+  {
+   "id": "activity_queue",
+   "kind": "state"
+  },
+  {
+   "id": "layers",
+   "kind": "state"
+  },
+  {
+   "id": "change_log",
+   "kind": "state"
+  },
+  {
+   "id": "audit_log",
+   "kind": "state"
+  }
+ ],
+ "molecules": [
+  {
+   "id": "firewall_managed",
+   "owns": [
+    "key_cache",
+    "activity_queue"
+   ]
+  },
+  {
+   "id": "firewall_policy",
+   "owns": []
+  },
+  {
+   "id": "policy_rules",
+   "owns": []
+  },
+  {
+   "id": "server_tenancy",
+   "owns": []
+  },
+  {
+   "id": "server_policy",
+   "owns": [
+    "layers",
+    "change_log",
+    "audit_log"
+   ]
+  }
+ ],
+ "operations": [
+  {
+   "id": "authenticate",
+   "molecule": "firewall_managed",
+   "inputs": {
+    "request": "Request"
+   },
+   "outputs": {
+    "principal": "Principal"
+   },
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "cached",
+     "produces": [
+      "principal"
+     ],
+     "establishes": [
+      {
+       "predicate": "authenticated",
+       "arguments": [
+        "principal"
+       ]
+      }
+     ],
+     "invalidates": [
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "principal"
+       ]
+      }
+     ],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "looked_up",
+     "produces": [
+      "principal"
+     ],
+     "establishes": [
+      {
+       "predicate": "authenticated",
+       "arguments": [
+        "principal"
+       ]
+      }
+     ],
+     "invalidates": [
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "principal"
+       ]
+      }
+     ],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "stale",
+     "produces": [
+      "principal"
+     ],
+     "establishes": [
+      {
+       "predicate": "authenticated",
+       "arguments": [
+        "principal"
+       ]
+      },
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "principal"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "refused",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "refused_unauthenticated",
+       "arguments": [
+        "request"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "refused_known",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "refused_unauthenticated",
+       "arguments": [
+        "request"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "outside_network",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "refused_network",
+       "arguments": [
+        "request"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "rate_limited",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "refused_rate_limited",
+       "arguments": [
+        "request"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "busy",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "refused_busy",
+       "arguments": [
+        "request"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "decide",
+   "molecule": "firewall_policy",
+   "inputs": {
+    "principal": "Principal",
+    "request": "Request"
+   },
+   "outputs": {
+    "decision": "Decision"
+   },
+   "requires": [
+    {
+     "predicate": "authenticated",
+     "arguments": [
+      "principal"
+     ]
+    }
+   ],
+   "outcomes": [
+    {
+     "id": "allow",
+     "produces": [
+      "decision"
+     ],
+     "establishes": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "decision",
+        "principal"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "decision"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "allow_would_block",
+     "produces": [
+      "decision"
+     ],
+     "establishes": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "decision",
+        "principal"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "decision"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "block_or_hold",
+     "produces": [
+      "decision"
+     ],
+     "establishes": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "decision",
+        "principal"
+       ]
+      }
+     ],
+     "invalidates": [
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "decision"
+       ]
+      }
+     ],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "record_activity",
+   "molecule": "firewall_managed",
+   "inputs": {
+    "subject": "Request"
+   },
+   "outputs": {},
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "queued",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "subject"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [
+       "activity_queue"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "check_edit",
+   "molecule": "policy_rules",
+   "inputs": {
+    "edit": "Edit"
+   },
+   "outputs": {
+    "checked": "CheckedEdit"
+   },
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "within",
+     "produces": [
+      "checked"
+     ],
+     "establishes": [
+      {
+       "predicate": "within_parent",
+       "arguments": [
+        "checked"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "loosens",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "edit_refused",
+       "arguments": [
+        "edit"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "authorize",
+   "molecule": "server_tenancy",
+   "inputs": {
+    "actor": "Actor",
+    "checked": "CheckedEdit"
+   },
+   "outputs": {},
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "permitted",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "may_edit",
+       "arguments": [
+        "actor",
+        "checked"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "denied",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "actor_denied",
+       "arguments": [
+        "actor"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "save_edit",
+   "molecule": "server_policy",
+   "inputs": {
+    "actor": "Actor",
+    "checked": "CheckedEdit"
+   },
+   "outputs": {},
+   "requires": [
+    {
+     "predicate": "within_parent",
+     "arguments": [
+      "checked"
+     ]
+    },
+    {
+     "predicate": "may_edit",
+     "arguments": [
+      "actor",
+      "checked"
+     ]
+    }
+   ],
+   "outcomes": [
+    {
+     "id": "committed",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "saved",
+       "arguments": [
+        "checked"
+       ]
+      },
+      {
+       "predicate": "change_logged",
+       "arguments": [
+        "checked"
+       ]
+      },
+      {
+       "predicate": "audited",
+       "arguments": [
+        "actor",
+        "checked"
+       ]
+      }
+     ],
+     "invalidates": [
+      {
+       "predicate": "layer_unchanged",
+       "arguments": []
+      }
+     ],
+     "effects": {
+      "reads": [
+       "layers"
+      ],
+      "writes": [
+       "layers",
+       "change_log",
+       "audit_log"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "revision_conflict",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "conflict",
+       "arguments": [
+        "checked"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "layers"
+      ],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "fetch_changes",
+   "molecule": "firewall_managed",
+   "inputs": {
+    "cursor": "Revision"
+   },
+   "outputs": {
+    "delta": "Delta"
+   },
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "changes",
+     "produces": [
+      "delta"
+     ],
+     "establishes": [],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "reset",
+     "produces": [],
+     "establishes": [],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "unreachable",
+     "produces": [],
+     "establishes": [],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "retired",
+     "produces": [],
+     "establishes": [],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    },
+    {
+     "id": "rejected",
+     "produces": [],
+     "establishes": [],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "apply_changes",
+   "molecule": "firewall_managed",
+   "inputs": {
+    "delta": "Delta"
+   },
+   "outputs": {},
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "applied",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "cache_current",
+       "arguments": [
+        "delta"
+       ]
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [
+       "key_cache"
+      ],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "drop_cache",
+   "molecule": "firewall_managed",
+   "inputs": {},
+   "outputs": {},
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "dropped",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "cache_empty",
+       "arguments": []
+      }
+     ],
+     "invalidates": [],
+     "effects": {
+      "reads": [],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  },
+  {
+   "id": "stop_serving",
+   "molecule": "firewall_managed",
+   "inputs": {},
+   "outputs": {},
+   "requires": [],
+   "outcomes": [
+    {
+     "id": "stopped",
+     "produces": [],
+     "establishes": [
+      {
+       "predicate": "serving_stopped",
+       "arguments": []
+      },
+      {
+       "predicate": "cache_empty",
+       "arguments": []
+      }
+     ],
+     "invalidates": [
+      {
+       "predicate": "cache_kept",
+       "arguments": []
+      }
+     ],
+     "effects": {
+      "reads": [],
+      "writes": [
+       "key_cache"
+      ],
+      "acquires": [],
+      "releases": []
+     }
+    }
+   ]
+  }
+ ],
+ "flows": [
+  {
+   "id": "managed-request",
+   "values": {
+    "req": "Request",
+    "who": "Principal",
+    "verdict": "Decision"
+   },
+   "inputs": [
+    "req"
+   ],
+   "initial": [],
+   "entry": "auth",
+   "nodes": [
+    {
+     "id": "auth",
+     "operation": "authenticate",
+     "bindings": {
+      "request": "req",
+      "principal": "who"
+     },
+     "routes": {
+      "cached": "decide_fresh",
+      "looked_up": "decide_fresh",
+      "stale": "decide_stale",
+      "refused": "auth_refused",
+      "outside_network": "record_network",
+      "refused_known": "record_revoked",
+      "rate_limited": "rate_refused",
+      "busy": "busy_refused"
+     }
+    },
+    {
+     "id": "decide_fresh",
+     "operation": "decide",
+     "bindings": {
+      "principal": "who",
+      "request": "req",
+      "decision": "verdict"
+     },
+     "routes": {
+      "allow": "served",
+      "block_or_hold": "record_fresh",
+      "allow_would_block": "record_wb_fresh"
+     }
+    },
+    {
+     "id": "decide_stale",
+     "operation": "decide",
+     "bindings": {
+      "principal": "who",
+      "request": "req",
+      "decision": "verdict"
+     },
+     "routes": {
+      "allow": "served_stale",
+      "block_or_hold": "record_stale",
+      "allow_would_block": "record_wb_stale"
+     }
+    },
+    {
+     "id": "record_fresh",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "policy_refused"
+     }
+    },
+    {
+     "id": "record_stale",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "policy_refused_stale"
+     }
+    },
+    {
+     "id": "record_revoked",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "auth_refused_recorded"
+     }
+    },
+    {
+     "id": "record_network",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "network_refused"
+     }
+    },
+    {
+     "id": "record_wb_fresh",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "served_would_block"
+     }
+    },
+    {
+     "id": "record_wb_stale",
+     "operation": "record_activity",
+     "bindings": {
+      "subject": "req"
+     },
+     "routes": {
+      "queued": "served_stale_would_block"
+     }
+    }
+   ],
+   "terminals": [
+    {
+     "id": "served",
+     "outcome": "served-under-own-policy",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "who"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "served_stale",
+     "outcome": "served-from-stale-cache",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      },
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "who"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "policy_refused",
+     "outcome": "refused-by-own-policy",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "policy_refused_stale",
+     "outcome": "refused-by-own-policy",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "auth_refused",
+     "outcome": "refused-401",
+     "requires": [
+      {
+       "predicate": "refused_unauthenticated",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "network_refused",
+     "outcome": "refused-403-network-lock",
+     "requires": [
+      {
+       "predicate": "refused_network",
+       "arguments": [
+        "req"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "auth_refused_recorded",
+     "outcome": "refused-401-revoked-recorded",
+     "requires": [
+      {
+       "predicate": "refused_unauthenticated",
+       "arguments": [
+        "req"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "rate_refused",
+     "outcome": "refused-429-rate-limited",
+     "requires": [
+      {
+       "predicate": "refused_rate_limited",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "served_would_block",
+     "outcome": "served-would-block-recorded",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "who"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "served_stale_would_block",
+     "outcome": "served-from-stale-cache",
+     "requires": [
+      {
+       "predicate": "decided_under",
+       "arguments": [
+        "verdict",
+        "who"
+       ]
+      },
+      {
+       "predicate": "allowed",
+       "arguments": [
+        "verdict"
+       ]
+      },
+      {
+       "predicate": "stale_entry",
+       "arguments": [
+        "who"
+       ]
+      },
+      {
+       "predicate": "activity_recorded",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "busy_refused",
+     "outcome": "refused-503-busy",
+     "requires": [
+      {
+       "predicate": "refused_busy",
+       "arguments": [
+        "req"
+       ]
+      }
+     ]
+    }
+   ],
+   "requiredOutcomes": [
+    "served-under-own-policy",
+    "served-from-stale-cache",
+    "refused-by-own-policy",
+    "refused-401",
+    "refused-403-network-lock",
+    "refused-401-revoked-recorded",
+    "refused-429-rate-limited",
+    "served-would-block-recorded",
+    "refused-503-busy"
+   ]
+  },
+  {
+   "id": "policy-edit",
+   "values": {
+    "who": "Actor",
+    "proposal": "Edit",
+    "accepted": "CheckedEdit"
+   },
+   "inputs": [
+    "who",
+    "proposal"
+   ],
+   "initial": [
+    {
+     "predicate": "layer_unchanged",
+     "arguments": []
+    }
+   ],
+   "entry": "rules",
+   "nodes": [
+    {
+     "id": "rules",
+     "operation": "check_edit",
+     "bindings": {
+      "edit": "proposal",
+      "checked": "accepted"
+     },
+     "routes": {
+      "within": "permission",
+      "loosens": "refused_loosening"
+     }
+    },
+    {
+     "id": "permission",
+     "operation": "authorize",
+     "bindings": {
+      "actor": "who",
+      "checked": "accepted"
+     },
+     "routes": {
+      "permitted": "store",
+      "denied": "refused_role"
+     }
+    },
+    {
+     "id": "store",
+     "operation": "save_edit",
+     "bindings": {
+      "actor": "who",
+      "checked": "accepted"
+     },
+     "routes": {
+      "committed": "saved_edit",
+      "revision_conflict": "stale_form"
+     }
+    }
+   ],
+   "terminals": [
+    {
+     "id": "saved_edit",
+     "outcome": "saved-audited-propagated",
+     "requires": [
+      {
+       "predicate": "saved",
+       "arguments": [
+        "accepted"
+       ]
+      },
+      {
+       "predicate": "change_logged",
+       "arguments": [
+        "accepted"
+       ]
+      },
+      {
+       "predicate": "audited",
+       "arguments": [
+        "who",
+        "accepted"
+       ]
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "layer_unchanged",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "refused_loosening",
+     "outcome": "refused-not-allowed-by-parent",
+     "requires": [
+      {
+       "predicate": "edit_refused",
+       "arguments": [
+        "proposal"
+       ]
+      },
+      {
+       "predicate": "layer_unchanged",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "refused_role",
+     "outcome": "refused-no-permission",
+     "requires": [
+      {
+       "predicate": "actor_denied",
+       "arguments": [
+        "who"
+       ]
+      },
+      {
+       "predicate": "layer_unchanged",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "stale_form",
+     "outcome": "refused-changed-meanwhile",
+     "requires": [
+      {
+       "predicate": "conflict",
+       "arguments": [
+        "accepted"
+       ]
+      },
+      {
+       "predicate": "layer_unchanged",
+       "arguments": []
+      }
+     ]
+    }
+   ],
+   "requiredOutcomes": [
+    "saved-audited-propagated",
+    "refused-not-allowed-by-parent",
+    "refused-no-permission",
+    "refused-changed-meanwhile"
+   ]
+  },
+  {
+   "id": "sync-changes",
+   "values": {
+    "since": "Revision",
+    "delta": "Delta"
+   },
+   "inputs": [
+    "since"
+   ],
+   "initial": [
+    {
+     "predicate": "cache_kept",
+     "arguments": []
+    }
+   ],
+   "entry": "fetch",
+   "nodes": [
+    {
+     "id": "fetch",
+     "operation": "fetch_changes",
+     "bindings": {
+      "cursor": "since",
+      "delta": "delta"
+     },
+     "routes": {
+      "changes": "apply",
+      "reset": "drop",
+      "unreachable": "kept",
+      "retired": "stop",
+      "rejected": "kept_rejected"
+     }
+    },
+    {
+     "id": "apply",
+     "operation": "apply_changes",
+     "bindings": {
+      "delta": "delta"
+     },
+     "routes": {
+      "applied": "updated"
+     }
+    },
+    {
+     "id": "drop",
+     "operation": "drop_cache",
+     "bindings": {},
+     "routes": {
+      "dropped": "emptied"
+     }
+    },
+    {
+     "id": "stop",
+     "operation": "stop_serving",
+     "bindings": {},
+     "routes": {
+      "stopped": "stopped_retired"
+     }
+    }
+   ],
+   "terminals": [
+    {
+     "id": "updated",
+     "outcome": "cache-updated",
+     "requires": [
+      {
+       "predicate": "cache_current",
+       "arguments": [
+        "delta"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "emptied",
+     "outcome": "cache-reset",
+     "requires": [
+      {
+       "predicate": "cache_empty",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "kept",
+     "outcome": "cache-kept-server-down",
+     "requires": [
+      {
+       "predicate": "cache_kept",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "stopped_retired",
+     "outcome": "stopped-retired-or-rejected",
+     "requires": [
+      {
+       "predicate": "serving_stopped",
+       "arguments": []
+      }
+     ],
+     "forbids": [
+      {
+       "predicate": "cache_kept",
+       "arguments": []
+      }
+     ]
+    },
+    {
+     "id": "kept_rejected",
+     "outcome": "batch-rejected-cache-kept",
+     "requires": [
+      {
+       "predicate": "cache_kept",
+       "arguments": []
+      }
+     ]
+    }
+   ],
+   "requiredOutcomes": [
+    "cache-updated",
+    "cache-reset",
+    "cache-kept-server-down",
+    "stopped-retired-or-rejected",
+    "batch-rejected-cache-kept"
+   ]
+  }
+ ]
+}

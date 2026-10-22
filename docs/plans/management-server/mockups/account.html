@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Account settings · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html">API keys</a><a href="activity.html">Activity</a><a href="organisation.html">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html">Global admin</a><a href="fleet.html">Fleet</a><a href="account.html" aria-current="page">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>Account settings</h1>
+<p class="mut">Settings for your login, bob@acme.com. They are the same whichever place is selected at the top.</p>
+
+<section class="state"><p class="tag">State: sign-in methods</p>
+<h2>Sign-in methods</h2>
+<p>These are the ways you can sign in to this login.</p>
+<div class="wrap"><table>
+<tr><th>Method</th><th>Email it uses</th><th>Linked</th><th></th></tr>
+<tr><td>Email and password</td><td>bob@acme.com</td><td>5 Oct 2026</td><td><button>Remove</button></td></tr>
+<tr><td>GitHub</td><td>bob.dev@example.net</td><td>12 Oct 2026</td><td><button>Remove</button></td></tr>
+</table></div>
+<p class="mut">You can remove a method while another stays linked. The last one cannot be removed; to remove it, delete your login.</p>
+<h3>Link another sign-in method</h3>
+<div class="row"><button>Link Google</button><button>Link Microsoft</button><button>Link company SSO</button></div>
+<p class="mut">You can link a method only while you are signed in, as you are now. It then joins this login.</p>
+<p class="mut">Matching emails never merge logins. If you sign in with a method you have not linked here, you get a separate login, even when its email is the same as one above.</p>
+</section>
+
+<section class="state"><p class="tag">State: change password</p>
+<h2>Password</h2>
+<label>Current password <input type="password"></label>
+<label>New password <input type="password"> <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<label>New password again <input type="password"></label>
+<button class="pri">Change password</button>
+<p class="err">This password has appeared in a known data leak. Choose a different one.</p>
+<p class="mut">Only for email-and-password logins. If you sign in with Google, GitHub, Microsoft or company SSO, your password is managed there.</p>
+</section>
+
+<section class="state"><p class="tag">State: authenticator off</p>
+<h2>Authenticator app</h2>
+<p>Off. Turn it on to be asked for a 6-digit code from your phone each time you sign in with your email and password.</p>
+<button class="pri">Turn on</button>
+</section>
+
+<section class="state"><p class="tag">State: turning the authenticator on</p>
+<p>Scan this code with an authenticator app, then enter the 6-digit code it shows.</p>
+<div style="width:120px;height:120px;border:1px solid var(--line);display:grid;place-items:center" class="mut">QR code</div>
+<p class="mut">Cannot scan? Type this key instead: <code>JBSW Y3DP EHPK 3PXP</code></p>
+<p><b>Save these 10 backup codes somewhere safe.</b> Each one gets you in once if you lose your authenticator.</p>
+<pre>4f7k-2m9q  8x3n-c6vd  t2b8-p5hw  9r4z-a1ke  m6c3-y8fj
+q1w7-e4tn  h5d2-k9ux  v3p6-z7rb  b8y1-s2mc  n4j9-g6la</pre>
+<p class="row"><button>Copy codes</button> <button>Download codes</button></p>
+<p class="row"><label>Code <input inputmode="numeric" size="8"></label> <button class="pri">Turn on</button></p>
+</section>
+
+<section class="state"><p class="tag">State: authenticator on</p>
+<p class="good">On.</p>
+<p class="row"><button>Turn off</button> <span class="mut">Org admins and the global admin cannot turn it off; for them this button is greyed out.</span></p>
+</section>
+
+<section class="state"><p class="tag">State: your places</p>
+<h2>Where you belong</h2>
+<div class="wrap"><table>
+<tr><th>Place</th><th>Your role</th><th></th></tr>
+<tr><td>Personal account</td><td>Owner</td><td class="mut">see "Delete your personal account" below</td></tr>
+<tr><td>Acme (organisation)</td><td>Group admin of Frontend</td><td><button>Ask to leave</button></td></tr>
+<tr><td>Northwind (organisation)</td><td>Member</td><td><button disabled>Ask to leave</button> <span class="mut">Asked 19 Oct 2026, waiting for a Northwind org admin to approve</span> <button>Cancel request</button></td></tr>
+</table></div>
+<p class="mut">Leaving an organisation is a request. You stay a member until one of its org admins approves it.</p>
+<h3>Create an organisation</h3>
+<p class="row"><input placeholder="organisation name" value="Bob's Consulting"> <button class="pri">Create organisation</button></p>
+<p class="mut">You become its org admin and invite the others.</p>
+</section>
+
+<section class="state"><p class="tag">State: no personal account yet</p>
+<p>You do not have a personal account. It is free, just for you, with your own rules on top of the platform rules.</p>
+<button class="pri">Add a personal account</button>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, delete personal account</p>
+<h2>Delete your personal account?</h2>
+<p>Your personal account's keys stop working within about 1 minute. Everything else in it is erased after 30 days; until then you can restore it here in Account settings. The audit log is kept for its normal retention.</p>
+<p>Your login stays, because it still belongs to Acme and Northwind. A login that belongs to no organisation is deleted together with its personal account; to restore both within the same 30 days, sign in again with any of its old sign-in methods and choose "Restore login".</p>
+<label>Type <b>delete</b> to confirm <input></label>
+<p class="row"><button class="danger">Delete personal account</button> <button>Cancel</button></p>
+</section>
+
+<section class="state"><p class="tag">State: personal account deleted, restore possible</p>
+<p class="err">Your personal account was deleted on 20 Oct 2026. It will be erased for good on 19 Nov 2026.</p>
+<button class="pri">Restore personal account</button>
+<p>After a restore your keys work again within about 1 minute.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm — delete your login (no personal account, no organisation)</p>
+<h2>Delete your login?</h2>
+<p>This login has no personal account and belongs to no organisation. Deleting it stops all its sign-in methods from opening it. To restore it within 30 days, sign in again with any of those methods and choose "Restore login"; after 30 days it is erased for good. The audit log is kept for its normal retention.</p>
+<label>Type <b>delete</b> to confirm <input></label>
+<p class="row"><button class="danger">Delete your login</button> <button>Cancel</button></p>
+</section>
+</main>
+</body>
+</html>

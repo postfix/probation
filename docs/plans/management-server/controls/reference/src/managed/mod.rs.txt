@@ -1,0 +1,69 @@
+//! Managed mode: turn a request's API key into its compiled policy.
+
+pub mod activity;
+mod cache;
+pub mod client;
+mod lock;
+pub mod sync;
+
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, HeaderValue};
+use probation_policy::KeyHash;
+
+use self::cache::KeyCache;
+use self::lock::{NetworkLock, TrustedProxies};
+
+pub struct Managed {
+    cache: Arc<KeyCache>,
+    network_lock: Arc<NetworkLock>,
+    trusted_proxies: TrustedProxies,
+    retired: Arc<AtomicBool>,
+}
+
+/// `admit` answers 503 `NOT_READY` itself before calling `authenticate` (no snapshot or first sync yet, or no peer address).
+pub enum Refusal {
+    Unauthenticated,
+    Network(IpAddr),
+    RateLimited,
+    /// 503 `LOOKUP_BUSY`: the lookup budget is spent or the server answered 429, and no entry may be served.
+    Busy,
+}
+
+impl Managed {
+    /// The only reader of the `Authorization` header. Only the key's SHA-256 leaves.
+    pub async fn authenticate(&self, headers: &HeaderMap, peer: IpAddr) -> Result<Principal, Refusal> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(Refusal::Unauthenticated);
+        }
+        let presented = headers.get(AUTHORIZATION).ok_or(Refusal::Unauthenticated)?;
+        let hash = key_hash(presented)?;
+        let principal = match self.cache.fresh(&hash) {
+            Some(principal) => principal,
+            None => self.look_up(&hash).await?,
+        };
+        let client_ip = self.trusted_proxies.client_ip(headers, peer);
+        if self.network_lock.refuses(client_ip, principal.org) {
+            self.cache.record_refusal(&principal, client_ip);
+            return Err(Refusal::Network(client_ip));
+        }
+        if !self.cache.count_request(&principal) {
+            return Err(Refusal::RateLimited);
+        }
+        Ok(principal)
+    }
+
+    /// Single-flighted lookup. Unknown, revoked and suspended answer `Unauthenticated` (the latter two
+    /// record their refusal row); a spent budget or a server 429 answers `Busy`, never `Unauthenticated`.
+    async fn look_up(&self, hash: &KeyHash) -> Result<Principal, Refusal> {
+        self.cache.single_flight(hash).await
+    }
+}
+
+fn key_hash(presented: &HeaderValue) -> Result<KeyHash, Refusal> {
+    let key = bearer_or_basic_password(presented).ok_or(Refusal::Unauthenticated)?;
+    Ok(KeyHash::of(key))
+}

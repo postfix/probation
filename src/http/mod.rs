@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -20,6 +20,7 @@ use tokio::sync::OwnedSemaphorePermit;
 
 use crate::App;
 use crate::http::error::ApiError;
+use crate::managed::{Principal, Refusal};
 
 /// Routes are registered explicitly; every other path is `404` and every unsupported
 /// method on a route that does exist is `405` (SPEC §11).
@@ -99,16 +100,40 @@ pub fn router(app: Arc<App>) -> Router {
 ///
 /// With no valid policy in force the handler's own `POLICY_UNAVAILABLE` answers
 /// instead: SPEC §5 puts that check first, and it is the more fundamental refusal.
-fn admit(app: &App) -> Result<OwnedSemaphorePermit, ApiError> {
+///
+/// In managed mode it then authenticates the request's key, once, and answers with
+/// the principal whose policy the request is decided under. Until slice 3 a managed
+/// firewall is still gated by its local blocklist file (C109).
+async fn admit(
+    app: &App,
+    headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Option<Principal>), ApiError> {
     let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
-    if !app.store().is_healthy()
-        && app
-            .blocklist()
+    let policy_valid = || {
+        app.blocklist()
             .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()))
-    {
+    };
+    if !app.store().is_healthy() && policy_valid() {
         return Err(ApiError::StorageUnusable);
     }
-    Ok(permit)
+    let Some(managed) = app.managed() else {
+        return Ok((permit, None));
+    };
+    if !policy_valid() {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    // Managed mode always builds the server with connect-info, so a missing address
+    // is a fault: fail closed.
+    let peer = logging::peer().ok_or(ApiError::InternalFailure)?;
+    let principal = managed
+        .authenticate(headers, peer)
+        .await
+        .map_err(|refusal| match refusal {
+            Refusal::Unauthenticated => ApiError::Unauthenticated,
+            Refusal::Busy => ApiError::LookupBusy,
+        })?;
+    logging::record_place(principal.place.id);
+    Ok((permit, Some(principal)))
 }
 
 async fn unknown_route() -> ApiError {

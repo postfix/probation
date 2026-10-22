@@ -17,8 +17,14 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::policy::Ecosystem;
+/// Moved to `probation-policy` so the policy merge and the server compare versions the
+/// way this snapshot does (T6).
+pub use probation_policy::names::{CanonicalVersion, canonical_version};
+
+use probation_policy::{Block, BlockId, BlockSet, DigestAlgorithm};
+
 use crate::policy::digest::{Digest, HashAlgorithm};
+use crate::policy::{Ecosystem, ecosystem_index};
 
 /// The only schema this release understands (SPEC §8).
 const SUPPORTED_SCHEMA_VERSION: u64 = 1;
@@ -46,6 +52,9 @@ pub struct BlocklistSnapshot {
     versions: [HashMap<String, Vec<BlockedVersion>>; ECOSYSTEMS],
     digests: HashSet<Digest>,
     entry_count: usize,
+    /// The policy blocks a snapshot built by `from_blocks` came from, so `without` can
+    /// leave some of them out. `None` for a blocklist file.
+    source: Option<BlockSet>,
 }
 
 const ECOSYSTEMS: usize = 2;
@@ -57,12 +66,6 @@ const ECOSYSTEMS: usize = 2;
 struct BlockedVersion {
     raw: String,
     canonical: Option<CanonicalVersion>,
-}
-
-#[derive(Debug)]
-enum CanonicalVersion {
-    Npm(Box<nodejs_semver::Version>),
-    PyPi(Box<pep440_rs::Version>),
 }
 
 impl BlocklistSnapshot {
@@ -151,7 +154,7 @@ impl BlocklistSnapshot {
             entry_count += 1;
             match &record.version {
                 None => {
-                    packages[ecosystem.index()].insert(name);
+                    packages[ecosystem_index(ecosystem)].insert(name);
                 }
                 Some(version) => {
                     if version.is_empty() || version.trim() != version {
@@ -161,7 +164,7 @@ impl BlocklistSnapshot {
                             "blocked_packages",
                         ));
                     }
-                    versions[ecosystem.index()]
+                    versions[ecosystem_index(ecosystem)]
                         .entry(name)
                         .or_default()
                         .push(BlockedVersion {
@@ -211,7 +214,75 @@ impl BlocklistSnapshot {
             versions,
             digests,
             entry_count,
+            source: None,
         })
+    }
+
+    /// The snapshot of a managed policy's blocks. It has no window: the policy is in
+    /// force until the management server replaces it.
+    pub fn from_blocks(blocks: &BlockSet) -> BlocklistSnapshot {
+        let mut packages: [HashSet<String>; ECOSYSTEMS] = array::from_fn(|_| HashSet::new());
+        let mut versions: [HashMap<String, Vec<BlockedVersion>>; ECOSYSTEMS] =
+            array::from_fn(|_| HashMap::new());
+        let mut digests = HashSet::new();
+        for owned in blocks {
+            match &owned.block {
+                Block::Package { ecosystem, name } => {
+                    packages[ecosystem_index(*ecosystem)].insert(name.clone());
+                }
+                Block::Version {
+                    ecosystem,
+                    name,
+                    version,
+                } => versions[ecosystem_index(*ecosystem)]
+                    .entry(name.clone())
+                    .or_default()
+                    .push(BlockedVersion {
+                        raw: version.clone(),
+                        canonical: canonical_version(*ecosystem, version),
+                    }),
+                Block::File { algorithm, digest } => {
+                    let algorithm = match algorithm {
+                        DigestAlgorithm::Sha256 => HashAlgorithm::Sha256,
+                        DigestAlgorithm::Sha512 => HashAlgorithm::Sha512,
+                    };
+                    // `check_edit` refuses a malformed digest before it is ever stored.
+                    match Digest::parse_hex(algorithm, digest) {
+                        Ok(digest) => {
+                            digests.insert(digest);
+                        }
+                        Err(_) => tracing::error!(digest, "a policy file block is not a digest"),
+                    }
+                }
+            }
+        }
+        BlocklistSnapshot {
+            revision: 0,
+            generated_at_micros: i64::MIN,
+            expires_at_micros: i64::MAX,
+            raw: Arc::from(&[][..]),
+            packages,
+            versions,
+            digests,
+            entry_count: blocks.len(),
+            source: Some(blocks.clone()),
+        }
+    }
+
+    /// This snapshot without the blocks an exception lifted for one candidate. Free when
+    /// nothing is lifted, which is every standalone decision.
+    pub fn without(self: &Arc<Self>, lifted: &[BlockId]) -> Arc<BlocklistSnapshot> {
+        let Some(source) = self.source.as_ref().filter(|_| !lifted.is_empty()) else {
+            return Arc::clone(self);
+        };
+        // ponytail: rebuilds the policy's tables per lifted candidate; index blocks by
+        // id if a managed policy with many blocks and exceptions shows up in profiles.
+        let kept: BlockSet = source
+            .iter()
+            .filter(|owned| !lifted.contains(&owned.id))
+            .cloned()
+            .collect();
+        Arc::new(BlocklistSnapshot::from_blocks(&kept))
     }
 
     /// SPEC §8's window, re-checked on every decision: expiry needs no poller, and a
@@ -221,11 +292,11 @@ impl BlocklistSnapshot {
     }
 
     pub fn blocks_package(&self, ecosystem: Ecosystem, name: &str) -> bool {
-        self.packages[ecosystem.index()].contains(name)
+        self.packages[ecosystem_index(ecosystem)].contains(name)
     }
 
     pub fn blocks_version(&self, ecosystem: Ecosystem, name: &str, version: &str) -> bool {
-        let Some(blocked) = self.versions[ecosystem.index()].get(name) else {
+        let Some(blocked) = self.versions[ecosystem_index(ecosystem)].get(name) else {
             // The common case: no version of this package is blocked at all, answered
             // by one hash lookup.
             return false;
@@ -238,15 +309,7 @@ impl BlocklistSnapshot {
         };
         blocked
             .iter()
-            .any(|entry| match (&entry.canonical, &candidate) {
-                (Some(CanonicalVersion::Npm(blocked)), CanonicalVersion::Npm(candidate)) => {
-                    blocked == candidate
-                }
-                (Some(CanonicalVersion::PyPi(blocked)), CanonicalVersion::PyPi(candidate)) => {
-                    blocked == candidate
-                }
-                _ => false,
-            })
+            .any(|entry| entry.canonical.as_ref() == Some(&candidate))
     }
 
     pub fn blocks_digest(&self, digest: &Digest) -> bool {
@@ -255,20 +318,6 @@ impl BlocklistSnapshot {
 
     pub fn entry_count(&self) -> usize {
         self.entry_count
-    }
-}
-
-/// npm compares by semver precedence, PyPI by PEP 440 equality. A version the
-/// ecosystem's parser rejects keeps only its exact spelling, which still matches an
-/// identical entry — a producer's odd spelling narrows a block, it never widens one.
-fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<CanonicalVersion> {
-    match ecosystem {
-        Ecosystem::Npm => nodejs_semver::Version::parse(version)
-            .ok()
-            .map(|parsed| CanonicalVersion::Npm(Box::new(parsed))),
-        Ecosystem::PyPi => pep440_rs::Version::from_str(version)
-            .ok()
-            .map(|parsed| CanonicalVersion::PyPi(Box::new(parsed))),
     }
 }
 

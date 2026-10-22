@@ -39,8 +39,8 @@ fn specificity(range: &str, types: &[&str; 2]) -> u8 {
 
 /// `GET /pypi/simple/`.
 pub async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let _permit = super::admit(&app)?;
-    let rendered = pypi::index(&app, &negotiate(&headers)?).await?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
+    let rendered = pypi::index(&app, principal.as_ref(), &negotiate(&headers)?).await?;
     Ok(respond(rendered))
 }
 
@@ -55,7 +55,7 @@ pub async fn project(
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path(project) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
     let name = parse_name(&project)?;
     // Negotiated before the redirect, so a client that accepts nothing this server
     // produces is told so once rather than sent to a second URL to be refused there.
@@ -63,7 +63,7 @@ pub async fn project(
     if !name.is_canonical() {
         return Ok(canonical_redirect(&name));
     }
-    let rendered = pypi::serve(&app, &name, representation).await?;
+    let rendered = pypi::serve(&app, principal.as_ref(), &name, representation).await?;
     Ok(respond(rendered))
 }
 

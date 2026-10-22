@@ -38,9 +38,9 @@ pub async fn package(
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path(package) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
     let name = parse_name(&package)?;
-    let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
+    let rendered = npm::serve(&app, principal.as_ref(), &name, negotiate(&headers)).await?;
     Ok(respond(rendered))
 }
 
@@ -57,15 +57,17 @@ pub async fn package_version(
     path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path((package, version_or_tag)) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
+    let principal = principal.as_ref();
     if package.starts_with('@') && !package.contains('/') {
         let name = parse_name(&format!("{package}/{version_or_tag}"))?;
-        let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
+        let rendered = npm::serve(&app, principal, &name, negotiate(&headers)).await?;
         return Ok(respond(rendered));
     }
 
     let name = parse_name(&package)?;
-    let rendered = npm::serve(&app, &name, Representation::NpmVersion(version_or_tag)).await?;
+    let representation = Representation::NpmVersion(version_or_tag);
+    let rendered = npm::serve(&app, principal, &name, representation).await?;
     Ok(respond(rendered))
 }
 

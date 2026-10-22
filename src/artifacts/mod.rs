@@ -47,7 +47,8 @@ use crate::artifacts::content::{ContentError, PinnedFile};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
-use crate::policy::{BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
+use crate::managed::Principal;
+use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, Digest, Ecosystem};
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::{npm, osv, pypi};
 
@@ -58,8 +59,12 @@ pub use reference::{ArtifactReference, InvalidReferenceId};
 ///
 /// `ecosystem` is the root the request arrived under, which the route decided rather
 /// than the client.
+///
+/// `principal` names the policy in managed mode. Each request decides under its own:
+/// waiters sharing one transfer share only its verified bytes (C104).
 pub async fn serve_artifact(
     app: &Arc<App>,
+    principal: Option<&Principal>,
     ecosystem: Ecosystem,
     id: ReferenceId,
     filename: &str,
@@ -68,9 +73,15 @@ pub async fn serve_artifact(
 ) -> Result<ArtifactResponse, ApiError> {
     // The ordering point, read before anything else about this request. PERF-01: a
     // locally conclusive answer is reached without a single upstream call.
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    if !snapshot.is_valid_at(now) {
+    if !policy
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
 
@@ -96,7 +107,7 @@ pub async fn serve_artifact(
     }
 
     let pinned = row.pinned_digests();
-    match evaluate(app, &snapshot, now, &row, &pinned).await {
+    match evaluate(app, &policy, now, &row, &pinned).await {
         Decision::Allow => {}
         other => return Err(decision_error(other, now)),
     }
@@ -127,10 +138,13 @@ pub async fn serve_artifact(
 
     // The final check. SPEC §9: "A request is authorized by its final successful
     // policy check immediately before response creation."
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    let decision = evaluate(app, &snapshot, now, &row, &pinned).await;
-    let Some(auth) = Authorized::from_decision(decision, Some(snapshot.revision)) else {
+    let decision = evaluate(app, &policy, now, &row, &pinned).await;
+    let revision = policy.snapshot.as_ref().map(|snapshot| snapshot.revision);
+    let Some(auth) = Authorized::from_decision(decision, revision) else {
         // No witness, no body — and not because a caller remembered to check.
         return Err(decision_error(decision, now));
     };
@@ -182,22 +196,21 @@ async fn ensure_membership(app: &App, row: &ReferenceRow) -> Result<(), ApiError
     Err(ApiError::NotFound)
 }
 
-/// One `now`, one snapshot, and both kinds of digest knowledge: what upstream
+/// One `now`, one policy, and both kinds of digest knowledge: what upstream
 /// advertised and what we computed ourselves (SPEC §9). Routes through
 /// `osv::evaluate` (D2) rather than calling `policy::evaluate` directly, so OSV is
 /// resolved for a candidate this checkpoint would otherwise allow.
 async fn evaluate(
     app: &App,
-    snapshot: &BlocklistSnapshot,
+    policy: &CompiledPolicy,
     now: i64,
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
     osv::evaluate(
         &app.osv,
-        Some(snapshot),
+        policy,
         now,
-        app.config.cooldown_seconds,
         &Candidate {
             ecosystem: row.reference.ecosystem,
             name: &row.reference.name,

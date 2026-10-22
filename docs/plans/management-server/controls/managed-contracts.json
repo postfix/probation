@@ -1,0 +1,490 @@
+{
+  "note": "Source-obligation entries for molecule-contracts.json (12 contracts, 24 controls). Each from string must match exactly once in the real source; reference/<source>.txt is the shape they were validated against: sf-start molecule-verify PASS on a synthetic snapshot of all seven sources, rerun 2026-10-21 after the decide (CompiledPolicy, five-argument evaluate), sync (ChangesResponse, Rejected) and edit (EditTarget) reference changes: 12/12 PASS, every control detected. Claims state only the call-order property checked.",
+  "contracts": [
+    {
+      "id": "authenticate-checks-retired-first",
+      "operation": "authenticate",
+      "flow": "managed-request",
+      "claim": "Managed::authenticate reads the shared retired flag before it hashes the presented key, consults the key cache or looks the key up, so a retired firewall serves no request (C72).",
+      "source": "src/managed/mod.rs",
+      "symbol": "Managed.authenticate",
+      "spec": ".smtc/analyzers/managed-auth-retired-checked-first.yaml",
+      "bySlice": 2,
+      "controls": [
+        {
+          "id": "retired-check-removed",
+          "mutations": [
+            {
+              "source": "src/managed/mod.rs",
+              "from": "        if self.retired.load(Ordering::Acquire) {\n            return Err(Refusal::Unauthenticated);\n        }\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "src/managed/mod.rs",
+            "summaryIncludes": "Operation 'key_hash' lacks required guard"
+          }
+        },
+        {
+          "id": "retired-check-after-lookup",
+          "mutations": [
+            {
+              "source": "src/managed/mod.rs",
+              "from": "        if self.retired.load(Ordering::Acquire) {\n            return Err(Refusal::Unauthenticated);\n        }\n",
+              "to": ""
+            },
+            {
+              "source": "src/managed/mod.rs",
+              "from": "        Ok(principal)\n    }",
+              "to": "        if self.retired.load(Ordering::Acquire) {\n            return Err(Refusal::Unauthenticated);\n        }\n        Ok(principal)\n    }"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/mod.rs",
+            "summaryIncludes": "Operation 'key_hash' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "record-activity-bounded",
+      "operation": "record_activity",
+      "flow": "managed-request",
+      "claim": "Every push into the activity queue (a push*/insert/extend/append call on a receiver named queue) is dominated by a queue.drain(..) cap trim in the same function, so no push is unbounded; the drained range itself is not checked.",
+      "source": "src/managed/activity.rs",
+      "symbol": "ActivityQueue.record_activity",
+      "spec": ".smtc/analyzers/managed-activity-bounded-queue.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "unbounded-push",
+          "mutations": [
+            {
+              "source": "src/managed/activity.rs",
+              "from": "        queue.drain(..overflow);\n        queue.push_back(event);",
+              "to": "        queue.push_back(event);"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/activity.rs",
+            "summaryIncludes": "Operation 'queue.push_back' lacks required guard"
+          }
+        },
+        {
+          "id": "drops-newest",
+          "mutations": [
+            {
+              "source": "src/managed/activity.rs",
+              "from": "        queue.drain(..overflow);\n        queue.push_back(event);",
+              "to": "        queue.truncate(queue.len() - overflow);\n        queue.push_back(event);"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/activity.rs",
+            "summaryIncludes": "Operation 'queue.push_back' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unreachable-keeps-cache",
+      "operation": "fetch_changes",
+      "flow": "sync-changes",
+      "claim": "KeySync::fetch_changes shrinks the key cache (drop_cache, apply_changes, stop_serving, or a direct clear/retain/remove/drain) only after mark_reachable in the same function; that mark_reachable runs only after a server answer is not checked by this spec (C19, C96).",
+      "source": "src/managed/sync.rs",
+      "symbol": "KeySync.fetch_changes",
+      "spec": ".smtc/analyzers/managed-sync-unreachable-keeps-cache.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "drop-on-unreachable",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "            Err(_) => return Err(Unreachable),",
+              "to": "            Err(_) => {\n                self.drop_cache();\n                return Err(Unreachable);\n            }"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.drop_cache' lacks required guard"
+          }
+        },
+        {
+          "id": "clear-on-unreachable",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "            Err(_) => return Err(Unreachable),",
+              "to": "            Err(_) => {\n                self.cache.clear();\n                return Err(Unreachable);\n            }"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'self.cache.clear' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "drop-only-on-reset",
+      "operation": "drop_cache",
+      "flow": "sync-changes",
+      "claim": "Every drop_cache call in src/managed/sync.rs is dominated by a reset_cursor call in the same function; that only the Reset answer arm calls reset_cursor is not checked by this spec.",
+      "source": "src/managed/sync.rs",
+      "symbol": "KeySync.fetch_changes",
+      "spec": ".smtc/analyzers/managed-sync-drop-only-on-reset.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "drop-on-changes",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "            Answer::Changes(delta) => self.apply_changes(&delta),",
+              "to": "            Answer::Changes(delta) => {\n                self.drop_cache();\n                self.apply_changes(&delta);\n            }"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.drop_cache' lacks required guard"
+          }
+        },
+        {
+          "id": "drop-after-every-answer",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        Ok(Synced::Applied)\n    }\n\n    async fn request_changes",
+              "to": "        self.drop_cache();\n        Ok(Synced::Applied)\n    }\n\n    async fn request_changes"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.drop_cache' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "stop-serving-sets-retired",
+      "operation": "stop_serving",
+      "flow": "sync-changes",
+      "claim": "KeySync::stop_serving stores the shared retired flag before it clears the key cache.",
+      "source": "src/managed/sync.rs",
+      "symbol": "KeySync.stop_serving",
+      "spec": ".smtc/analyzers/managed-sync-stop-serving-retires.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "retired-flag-not-set",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.retired.store(true, Ordering::Release);\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'self.cache.clear' lacks required guard"
+          }
+        },
+        {
+          "id": "cache-cleared-before-flag",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.retired.store(true, Ordering::Release);\n        self.cache.clear();",
+              "to": "        self.cache.clear();\n        self.retired.store(true, Ordering::Release);"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'self.cache.clear' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "decide-exceptions-first",
+      "operation": "decide",
+      "flow": "managed-request",
+      "claim": "In decide, apply_exceptions is called before evaluate: exceptions are applied before the block/freeze/OSV rules run.",
+      "source": "src/policy/effective.rs",
+      "symbol": "decide",
+      "spec": ".smtc/analyzers/managed-decide-exceptions-first.yaml",
+      "bySlice": 1,
+      "controls": [
+        {
+          "id": "exceptions-skipped",
+          "mutations": [
+            {
+              "source": "src/policy/effective.rs",
+              "from": "    let rules = apply_exceptions(compiled, candidate, osv_matched);\n    let decision = evaluate(rules.snapshot.as_deref(), now_utc_micros, rules.cooldown_seconds, candidate, rules.osv_matched);",
+              "to": "    let rules = Rules::untouched(compiled, osv_matched);\n    let decision = evaluate(compiled.snapshot.as_deref(), now_utc_micros, compiled.policy.freeze_seconds, candidate, osv_matched);"
+            }
+          ],
+          "expect": {
+            "file": "src/policy/effective.rs",
+            "summaryIncludes": "Operation 'evaluate' lacks required guard"
+          }
+        },
+        {
+          "id": "exceptions-after-rules",
+          "mutations": [
+            {
+              "source": "src/policy/effective.rs",
+              "from": "    let rules = apply_exceptions(compiled, candidate, osv_matched);\n    let decision = evaluate(rules.snapshot.as_deref(), now_utc_micros, rules.cooldown_seconds, candidate, rules.osv_matched);",
+              "to": "    let decision = evaluate(compiled.snapshot.as_deref(), now_utc_micros, compiled.policy.freeze_seconds, candidate, osv_matched);\n    let rules = apply_exceptions(compiled, candidate, osv_matched);"
+            }
+          ],
+          "expect": {
+            "file": "src/policy/effective.rs",
+            "summaryIncludes": "Operation 'evaluate' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "check-edit-loosening-search-first",
+      "operation": "check_edit",
+      "flow": "policy-edit",
+      "claim": "In check_edit, find_loosening is called before CheckedEdit::accepted: a CheckedEdit is created only after the loosening search ran.",
+      "source": "crates/probation-policy/src/edit.rs",
+      "symbol": "check_edit",
+      "spec": ".smtc/analyzers/managed-check-edit-loosening-first.yaml",
+      "bySlice": 1,
+      "controls": [
+        {
+          "id": "loosening-search-removed",
+          "mutations": [
+            {
+              "source": "crates/probation-policy/src/edit.rs",
+              "from": "    if let Some(refusal) = find_loosening(parent, current, &proposed) {\n        return Err(refusal);\n    }\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-policy/src/edit.rs",
+            "summaryIncludes": "Operation 'CheckedEdit.accepted' lacks required guard"
+          }
+        },
+        {
+          "id": "fast-path-before-search",
+          "mutations": [
+            {
+              "source": "crates/probation-policy/src/edit.rs",
+              "from": "    if let Some(refusal) = find_loosening(parent, current, &proposed) {\n        return Err(refusal);\n    }\n",
+              "to": "    if proposed.is_empty() {\n        return Ok(CheckedEdit::accepted(target, proposed));\n    }\n    if let Some(refusal) = find_loosening(parent, current, &proposed) {\n        return Err(refusal);\n    }\n"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-policy/src/edit.rs",
+            "summaryIncludes": "Operation 'CheckedEdit.accepted' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "authorize-may-edit-first",
+      "operation": "authorize",
+      "flow": "policy-edit",
+      "claim": "In authorize, role.may_edit is called before EditPermit::granted: an EditPermit is created only after the role's edit permission was asked.",
+      "source": "crates/probation-server/src/tenancy.rs",
+      "symbol": "authorize",
+      "spec": ".smtc/analyzers/managed-authorize-may-edit-first.yaml",
+      "bySlice": 4,
+      "controls": [
+        {
+          "id": "permission-check-removed",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/tenancy.rs",
+              "from": "    if !role.may_edit(checked.layer_kind()) {\n        return Err(Denied);\n    }\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/tenancy.rs",
+            "summaryIncludes": "Operation 'EditPermit.granted' lacks required guard"
+          }
+        },
+        {
+          "id": "global-admin-bypass",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/tenancy.rs",
+              "from": "    let role = role_on(actor, checked.place()).ok_or(Denied)?;",
+              "to": "    if actor.is_global_admin() {\n        return Ok(EditPermit::granted(actor.login_id(), checked.place()));\n    }\n    let role = role_on(actor, checked.place()).ok_or(Denied)?;"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/tenancy.rs",
+            "summaryIncludes": "Operation 'EditPermit.granted' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "save-edit-audit-before-commit",
+      "operation": "save_edit",
+      "flow": "policy-edit",
+      "claim": "In PolicyStore::save_edit, insert_audit is called before tx.commit: the transaction is committed only after its audit_log row was written.",
+      "source": "crates/probation-server/src/policy.rs",
+      "symbol": "PolicyStore.save_edit",
+      "spec": ".smtc/analyzers/managed-save-edit-audit-before-commit.yaml",
+      "bySlice": 4,
+      "controls": [
+        {
+          "id": "audit-row-dropped",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/policy.rs",
+              "from": "        let () = insert_audit(&mut tx, actor, &permit, &checked).await?;\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/policy.rs",
+            "summaryIncludes": "Operation 'tx.commit' lacks required guard"
+          }
+        },
+        {
+          "id": "audit-after-commit",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/policy.rs",
+              "from": "        let () = insert_audit(&mut tx, actor, &permit, &checked).await?;\n        let () = tx.commit().await?;",
+              "to": "        let () = tx.commit().await?;\n        let () = insert_audit(&mut self.pool.acquire().await?, actor, &permit, &checked).await?;"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/policy.rs",
+            "summaryIncludes": "Operation 'tx.commit' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "save-edit-change-before-commit",
+      "operation": "save_edit",
+      "flow": "policy-edit",
+      "claim": "In PolicyStore::save_edit, insert_change is called before tx.commit: the transaction is committed only after its change_log row was written.",
+      "source": "crates/probation-server/src/policy.rs",
+      "symbol": "PolicyStore.save_edit",
+      "spec": ".smtc/analyzers/managed-save-edit-change-before-commit.yaml",
+      "bySlice": 4,
+      "controls": [
+        {
+          "id": "change-row-dropped",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/policy.rs",
+              "from": "        let () = insert_change(&mut tx, checked.place(), revision).await?;\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/policy.rs",
+            "summaryIncludes": "Operation 'tx.commit' lacks required guard"
+          }
+        },
+        {
+          "id": "change-after-commit",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/policy.rs",
+              "from": "        let () = insert_change(&mut tx, checked.place(), revision).await?;\n        let () = insert_audit(&mut tx, actor, &permit, &checked).await?;\n        let () = tx.commit().await?;",
+              "to": "        let () = insert_audit(&mut tx, actor, &permit, &checked).await?;\n        let () = tx.commit().await?;\n        let () = insert_change(&mut self.pool.acquire().await?, checked.place(), revision).await?;"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/policy.rs",
+            "summaryIncludes": "Operation 'tx.commit' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "apply-changes-keys-before-cursor",
+      "operation": "apply_changes",
+      "flow": "sync-changes",
+      "claim": "In KeySync::apply_changes, cache.remove_keys is called before advance_cursor: the sync cursor moves past a delta only after the delta's changed keys were removed.",
+      "source": "src/managed/sync.rs",
+      "symbol": "KeySync.apply_changes",
+      "spec": ".smtc/analyzers/managed-apply-changes-keys-before-cursor.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "keys-not-expired",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.cache.remove_keys(&delta.changed_keys, delta.revision);\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.advance_cursor' lacks required guard"
+          }
+        },
+        {
+          "id": "cursor-first",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.cache.remove_keys(&delta.changed_keys, delta.revision);\n        self.cache.expire_places(&delta.changed_places, delta.revision);\n        self.advance_cursor(delta.revision);",
+              "to": "        self.advance_cursor(delta.revision);\n        self.cache.remove_keys(&delta.changed_keys, delta.revision);\n        self.cache.expire_places(&delta.changed_places, delta.revision);"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.advance_cursor' lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "apply-changes-places-before-cursor",
+      "operation": "apply_changes",
+      "flow": "sync-changes",
+      "claim": "In KeySync::apply_changes, cache.expire_places is called before advance_cursor: the sync cursor moves past a delta only after the delta's changed places were expired.",
+      "source": "src/managed/sync.rs",
+      "symbol": "KeySync.apply_changes",
+      "spec": ".smtc/analyzers/managed-apply-changes-places-before-cursor.yaml",
+      "bySlice": 3,
+      "controls": [
+        {
+          "id": "places-not-expired",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.cache.expire_places(&delta.changed_places, delta.revision);\n",
+              "to": ""
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.advance_cursor' lacks required guard"
+          }
+        },
+        {
+          "id": "cursor-between",
+          "mutations": [
+            {
+              "source": "src/managed/sync.rs",
+              "from": "        self.cache.expire_places(&delta.changed_places, delta.revision);\n        self.advance_cursor(delta.revision);",
+              "to": "        self.advance_cursor(delta.revision);\n        self.cache.expire_places(&delta.changed_places, delta.revision);"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/sync.rs",
+            "summaryIncludes": "Operation 'KeySync.advance_cursor' lacks required guard"
+          }
+        }
+      ]
+    }
+  ]
+}

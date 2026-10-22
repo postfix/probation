@@ -1,0 +1,75 @@
+# HOW THIS IS RUN. This is a molecule source obligation for
+# docs/plans/management-server (sidecar molecule-contracts.json). The sf-start
+# checker snapshots ONLY the declared contract sources and specs, runs this spec
+# with `smtc spec run --root <snapshot>`, and requires: zero findings on
+# production, a Protocol pipeline with find_operations >= 1, find_guards >= 1 and
+# a cfg_dominance step, and for every control a finding whose
+# evidence.caller_function equals the contract symbol. The control `from`/`to`
+# text and the reference shape live in
+# docs/plans/management-server/controls/ -- the implementation must keep each
+# `from` string matching exactly once.
+#
+# SMTC FACTS THIS RELIES ON (probed on synthetic Rust fixtures, 2026-10-21):
+#   - `relation: {must_dominate: true}` runs cfg_dominance for Rust; `{}` runs
+#     only co-occurrence, which the checker rejects.
+#   - `evidence: full` is what puts caller_function/confidence/file_path on a
+#     finding; without it the checker cannot ground the finding.
+#   - `scope.files` is a NO-OP in this build (same op counts with and without it
+#     on the product root), so it is omitted. Restriction comes from the
+#     checker snapshot (contract sources only), method names unique to the
+#     managed module, and the `where` filter on caller_function.
+#   - `scope.functions` is refused without `same_argument`, and `same_argument`
+#     is refused for Rust ("currently supports TypeScript and JavaScript only"),
+#     so nothing here proves VALUE identity -- only that one call dominates
+#     another in the same function.
+#   - caller_function is `Type.method` for methods, the bare name for free fns.
+#     A method callee resolves to `Type.method` (KeySync.drop_cache), not
+#     `self.drop_cache`; an unresolved receiver call keeps its text
+#     (self.cache.clear).
+#   - A guard and an operation on the SAME line makes dominance fail
+#     (analysis_failed); keep them on separate statements.
+#   - A guard or operation call that ends an expression statement with `?`
+#     (`foo(..).await?;`) cannot be located (analysis_failed). Bind it:
+#     `let () = foo(..).await?;` or `let x = foo(..)?;`. A plain `foo(..);`
+#     or a tail expression is fine. This applies to EVERY matching call in
+#     every analysed contract source, not only in the symbol.
+#   - Dominance is not control dependence: a guard call whose result is ignored
+#     still "dominates". Each guard below is chosen so that it is only reached
+#     on the path that makes the operation legal.
+#
+# ON TODAY'S REPOSITORY the source is absent: SMTC returns 0 breach findings
+# (only its own info-severity "obligation vacuous" record where no operation
+# site exists). The checker does not run a spec while its source is absent.
+#
+# GUARANTEE (obligation fetch_changes, C19/C96): an unreachable management
+# server never clears or shrinks the key cache.
+#
+# SHAPE: KeySync::fetch_changes (src/managed/sync.rs) gets the answer through
+# request_changes; the Err arm returns Unreachable at once; only after an
+# answer does it call self.mark_reachable() and then dispatch to apply_changes,
+# drop_cache or stop_serving. mark_reachable is reached only on a server
+# answer, so "every cache-shrinking call is dominated by mark_reachable" is
+# "nothing shrinks the cache on the unreachable path".
+#
+# WHAT IT CATCHES (in KeySync.fetch_changes): any drop_cache / apply_changes /
+# stop_serving call or any direct clear / retain / remove / drain /
+# invalidate* / expire* call not dominated by mark_reachable -- e.g. a drop or clear in
+# the Err arm, or a shrink placed before the answer. The `or callee in [...]`
+# half also reports a call to drop_cache / apply_changes / stop_serving from
+# ANY other function; that finding carries a different caller, which the
+# checker rejects as UNKNOWN (fail closed), never PASS.
+# NOT CAUGHT: a direct cache mutation in another function (the where filter
+# drops it, because drop_cache/apply_changes/stop_serving legitimately mutate
+# the cache in their own bodies); a call whose name is not in the list; a
+# mark_reachable call moved onto the unreachable path.
+# Symbol: KeySync.fetch_changes.
+name: managed-sync-unreachable-keeps-cache
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: ["mark_reachable"]}}
+operation:
+  calls:
+    name: ["drop_cache", "apply_changes", "stop_serving", "clear", "retain", "remove", "drain", "invalidate*", "expire*"]
+relation: {must_dominate: true}
+where: "caller_function == 'KeySync.fetch_changes' or callee_qualified_name in ['KeySync.drop_cache', 'KeySync.apply_changes', 'KeySync.stop_serving']"

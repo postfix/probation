@@ -81,6 +81,13 @@ pub enum ApiError {
     /// The one upstream failure SPEC §11 separates out, because a client may
     /// reasonably retry it.
     UpstreamTimeout,
+    /// Managed mode: no key, or one the management server does not accept. One fixed
+    /// answer for every reason, naming no account (C13).
+    Unauthenticated,
+    /// Managed mode: the key could not be checked right now — the lookup budget is
+    /// spent or the server is busy. `Retry-After: 1`, because a valid key must never be
+    /// told it is wrong (T10).
+    LookupBusy,
 }
 
 impl ApiError {
@@ -107,7 +114,9 @@ impl ApiError {
             | ApiError::Overloaded
             | ApiError::CapacityExhausted
             | ApiError::StorageUnusable
-            | ApiError::InternalFailure => StatusCode::SERVICE_UNAVAILABLE,
+            | ApiError::InternalFailure
+            | ApiError::LookupBusy => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::UpstreamFailure | ApiError::UpstreamInvalid | ApiError::IntegrityMismatch => {
                 StatusCode::BAD_GATEWAY
             }
@@ -133,6 +142,8 @@ impl ApiError {
             ApiError::UpstreamInvalid => "UPSTREAM_INVALID",
             ApiError::IntegrityMismatch => "INTEGRITY_MISMATCH",
             ApiError::UpstreamTimeout => "UPSTREAM_TIMEOUT",
+            ApiError::Unauthenticated => "AUTHENTICATION_REQUIRED",
+            ApiError::LookupBusy => "LOOKUP_BUSY",
         }
     }
 
@@ -170,6 +181,10 @@ impl ApiError {
                 "the artifact does not match its expected digests".to_owned()
             }
             ApiError::UpstreamTimeout => "the upstream registry did not answer in time".to_owned(),
+            ApiError::Unauthenticated => "a valid API key is required".to_owned(),
+            ApiError::LookupBusy => {
+                "the API key could not be checked right now; retry shortly".to_owned()
+            }
         }
     }
 
@@ -217,6 +232,22 @@ impl IntoResponse for ApiError {
             && let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string())
         {
             response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        match self {
+            ApiError::LookupBusy => {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            }
+            // RFC 9110 §15.5.2: a 401 names the scheme it accepts. Basic, so pip and uv
+            // know to send the key as a password.
+            ApiError::Unauthenticated => {
+                response.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Basic realm=\"probation\""),
+                );
+            }
+            _ => {}
         }
         // Carried out to `logging::decide`, which is outside every handler and
         // therefore the only place that can log one line for every answer including

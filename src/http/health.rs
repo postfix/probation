@@ -27,7 +27,13 @@ pub async fn live() -> StatusCode {
 /// readiness false and deny package responses with `503` until storage is usable
 /// again." `StoreHandle::is_healthy` is that flag, and it goes back to true when a
 /// command succeeds again.
+///
+/// A managed firewall is ready once its first sync is applied, and the sync loop
+/// arrives in slice 3 (C109). Until then it reports not ready.
 pub async fn ready(State(app): State<Arc<App>>) -> StatusCode {
+    if app.managed().is_some() {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     let now = app.clock.now_utc_micros();
     if !app.store().is_healthy() {
         return StatusCode::SERVICE_UNAVAILABLE;

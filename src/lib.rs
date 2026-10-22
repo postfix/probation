@@ -12,6 +12,7 @@ pub mod config;
 /// public Rust surface.
 pub(crate) mod delivery;
 pub mod http;
+pub mod managed;
 pub mod npm;
 pub mod osv;
 pub mod policy;
@@ -19,6 +20,63 @@ pub mod pypi;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
+
+/// Named points where a test can hold one request still while it changes the world
+/// around it. **Compiled only under `test-support`**, so no build that ships has them.
+#[cfg(feature = "test-support")]
+pub mod pause {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::Semaphore;
+
+    /// One armed point: the request that reaches it waits until [`Pause::release`].
+    pub struct Pause {
+        reached: Semaphore,
+        released: Semaphore,
+    }
+
+    impl Pause {
+        /// Returns once a request is waiting at the point.
+        pub async fn reached(&self) {
+            let _ = self.reached.acquire().await.expect("the pause is open");
+        }
+
+        pub fn release(&self) {
+            self.released.add_permits(1);
+        }
+    }
+
+    type Armed = Vec<(&'static str, String, Arc<Pause>)>;
+    static ARMED: Mutex<Armed> = Mutex::new(Vec::new());
+
+    /// Holds the next request that reaches `point` for `subject`, once.
+    pub fn arm(point: &'static str, subject: &str) -> Arc<Pause> {
+        let pause = Arc::new(Pause {
+            reached: Semaphore::new(0),
+            released: Semaphore::new(0),
+        });
+        ARMED.lock().expect("the armed points").push((
+            point,
+            subject.to_owned(),
+            Arc::clone(&pause),
+        ));
+        pause
+    }
+
+    pub(crate) async fn at(point: &'static str, subject: &str) {
+        let pause = {
+            let mut armed = ARMED.lock().expect("the armed points");
+            let found = armed.iter().position(|(armed_point, armed_subject, _)| {
+                *armed_point == point && armed_subject == subject
+            });
+            found.map(|index| armed.remove(index).2)
+        };
+        if let Some(pause) = pause {
+            pause.reached.add_permits(1);
+            let _ = pause.released.acquire().await;
+        }
+    }
+}
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -34,7 +92,8 @@ use crate::artifacts::download::DownloadCoordinator;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::http::limits::Limits;
-use crate::policy::BlocklistSnapshot;
+use crate::managed::{Managed, Principal};
+use crate::policy::{BlocklistSnapshot, CompiledPolicy};
 use crate::store::StoreHandle;
 use crate::store::cache::MemoryCaches;
 use crate::tasks::Tasks;
@@ -86,7 +145,10 @@ pub struct App {
     /// `src/policy/blocklist.rs`. They live here until the slice that owns that file
     /// again can lift them out; the seam is the same either way, because every
     /// reader and the one writer already go through these methods.
-    policy: ArcSwapOption<BlocklistSnapshot>,
+    ///
+    /// The snapshot is published inside the policy compiled from it, so a request that
+    /// loads one reads both from the same publication.
+    policy: ArcSwapOption<CompiledPolicy>,
     store: StoreHandle,
     /// Verified artifact bytes on disk (SPEC §9, §10).
     pub content: ContentStore,
@@ -103,6 +165,8 @@ pub struct App {
     /// privacy: reached only through `osv::evaluate` call sites that already hold
     /// `&App`.
     osv: osv::OsvClient,
+    /// Present only when `[management]` is set: each request's key names its policy.
+    managed: Option<Managed>,
 }
 
 impl App {
@@ -113,23 +177,49 @@ impl App {
     /// Inside a request it also records the revision handed out, so the decision line
     /// names the snapshot the request was judged against.
     pub fn blocklist(&self) -> Option<Arc<BlocklistSnapshot>> {
-        let snapshot = self.policy.load_full();
-        if let Some(snapshot) = &snapshot {
+        self.policy().and_then(|policy| policy.snapshot.clone())
+    }
+
+    /// The policy every request decides under: the blocklist in force, compiled with
+    /// `cooldown_seconds` and `osv_mode`. Records the revision like `blocklist`.
+    pub fn policy(&self) -> Option<Arc<CompiledPolicy>> {
+        let policy = self.policy.load_full();
+        if let Some(snapshot) = policy.as_ref().and_then(|policy| policy.snapshot.as_ref()) {
             http::logging::record_blocklist_revision(snapshot.revision);
         }
-        snapshot
+        policy
+    }
+
+    /// The policy one request decides under: its key's in managed mode, otherwise
+    /// [`App::policy`]'s, read at the moment of the call.
+    pub fn policy_for(&self, principal: Option<&Principal>) -> Option<Arc<CompiledPolicy>> {
+        match principal {
+            Some(principal) => Some(Arc::clone(&principal.policy)),
+            None => self.policy(),
+        }
+    }
+
+    /// Managed mode's key cache and server client, when `[management]` is set.
+    pub fn managed(&self) -> Option<&Managed> {
+        self.managed.as_ref()
     }
 
     /// Makes `snapshot` the one in force for every request that loads it from here
     /// on. Called only after the snapshot has been committed (SPEC §10).
     pub fn publish_blocklist(&self, snapshot: Arc<BlocklistSnapshot>) {
-        self.policy.store(Some(snapshot));
+        let policy = CompiledPolicy::standalone(
+            self.config.cooldown_seconds,
+            self.config.osv_mode,
+            snapshot,
+        );
+        self.policy.store(Some(Arc::new(policy)));
     }
 
     pub fn blocklist_revision(&self) -> Option<u64> {
         self.policy
             .load()
             .as_ref()
+            .and_then(|policy| policy.snapshot.as_ref())
             .map(|snapshot| snapshot.revision)
     }
 
@@ -207,19 +297,22 @@ impl App {
                 url,
                 osv_cache_ttl,
                 osv_request_timeout,
-                deps.config.osv_mode,
                 drain.clone(),
             ),
             None => osv::OsvClient::new(
                 deps.osv_client,
                 osv_cache_ttl,
                 osv_request_timeout,
-                deps.config.osv_mode,
                 drain.clone(),
             ),
         };
         delivery_tasks.push(osv_task);
 
+        let managed = deps
+            .config
+            .management
+            .as_ref()
+            .map(|management| Managed::new(management, Arc::clone(&deps.clock)));
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
             // injected. Ahead of `config`, which the next field moves.
@@ -237,6 +330,7 @@ impl App {
             limits,
             delivery,
             osv,
+            managed,
         });
 
         restore_blocklist(&app).await;
@@ -286,14 +380,16 @@ impl App {
                 // `into_make_service_with_connect_info` changes the service type, so
                 // each arm owns its whole expression rather than assigning to one
                 // variable. The peer address is offered to the router only when an
-                // operator has asked for it to be recorded.
-                let consumer_identification = app.config.log_consumer_identification;
+                // operator has asked for it to be recorded, or managed mode counts
+                // lookups against it.
+                let connect_info =
+                    app.config.log_consumer_identification || app.config.management.is_some();
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {
                         let server =
                             axum_server::from_tcp_rustls(std_listener, tls_config)?.handle(handle);
-                        if consumer_identification {
+                        if connect_info {
                             server
                                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await
@@ -303,7 +399,7 @@ impl App {
                     }
                     None => {
                         let server = axum_server::from_tcp(std_listener)?.handle(handle);
-                        if consumer_identification {
+                        if connect_info {
                             server
                                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await

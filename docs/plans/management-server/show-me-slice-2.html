@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slice 2 done: managed mode against a fake management server</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d2127; --muted: #5b6470; --line: #d5dae0; --panel: #f5f7f9;
+    --ok: #1f7a3d; --ok-bg: #e7f4ec; --bad: #a3262a; --bad-bg: #fbeaea; --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --accent: #2457a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e4e7eb; --muted: #9aa3ad; --line: #353b43; --panel: #1e2228;
+      --ok: #6fd393; --ok-bg: #173323; --bad: #f08b8e; --bad-bg: #3a1d1f; --warn: #f1c46b; --warn-bg: #3a2f14;
+      --accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
+  p, li { overflow-wrap: anywhere; }
+  ul { padding-left: 1.2rem; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .label { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+           background: var(--panel); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { background: var(--panel); }
+  .pass { color: var(--ok); font-weight: 600; }
+  .note { color: var(--warn); font-weight: 600; }
+  figure { margin: 8px 0; }
+  svg { display: block; width: 100%; max-width: 560px; height: auto; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ok { fill: var(--ok-bg); stroke: var(--ok); }
+  svg .bad { fill: var(--bad-bg); stroke: var(--bad); }
+  svg .warn { fill: var(--warn-bg); stroke: var(--warn); }
+  svg .edge { stroke: var(--muted); fill: none; stroke-width: 1.3; }
+  svg .edge-label { fill: var(--muted); font-size: 9.5px; }
+  svg .head { fill: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .question { margin-top: 28px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; font-weight: 600; font-size: 1.05rem; }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 32px; }
+    table { font-size: 0.85rem; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Slice 2 done: managed mode against a fake management server</h1>
+<p class="muted">Managed mode is still unreleased. It ships with slice 8.</p>
+
+<h2>Delivered</h2>
+<p><strong>What works now.</strong> A firewall with a <code>[management]</code> section is a managed firewall. Each npm or pip request must carry an API key. npm sends it as <code>Bearer &lt;key&gt;</code>. pip sends it as the password of <code>Basic</code>, with any user name. The firewall asks the management server about the key once, then keeps the answer in a cache. Each request is decided under that key's own policy: the policy layers from the platform down to the key's own place.</p>
+<ul>
+  <li>No key, or a key the server does not know (also revoked or suspended): <strong>401</strong>.</li>
+  <li>The firewall cannot check the key right now (lookup budget spent, or the server is busy): <strong>503 LOOKUP_BUSY</strong>, with <code>Retry-After: 1</code>. A valid key is never told it is wrong.</li>
+  <li>Caches never mix policies. A listing cached for one policy is not reused for a key with another policy.</li>
+  <li>Downloads are decided per key. When two keys wait for the same download, each one gets the answer of its own policy.</li>
+  <li>The API key and its hash never appear in a log line or in a <code>Decision</code> record. The record gains <code>place</code> (C107).</li>
+  <li>The standalone firewall is unchanged.</li>
+</ul>
+
+<h3>Request flow (Slice 2)</h3>
+<figure>
+<svg viewBox="0 0 360 392" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">How a managed firewall handles one npm or pip request</title>
+  <desc id="flow-desc">A request arrives. If the Authorization header holds no API key, the answer is 401. If the key is in the cache and still fresh, the request goes straight to the decision. Otherwise the firewall asks the management server, one lookup per key at a time, within the lookup budget. An unknown, revoked or suspended key gets 401, and that refusal is cached. A spent budget or a busy server gets 503 LOOKUP_BUSY. A known key is cached. The request is then decided under this key's own policy. Blocked gives 403. Allowed is served, and caches are keyed by the policy fingerprint.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="head"/>
+    </marker>
+  </defs>
+  <!-- A: request -->
+  <rect class="box" x="30" y="8" width="200" height="40" rx="6"/>
+  <text x="130" y="24" text-anchor="middle" font-size="11" font-weight="600">npm or pip request</text>
+  <text x="130" y="40" text-anchor="middle" font-size="10">Bearer (npm) or Basic (pip) API key</text>
+  <line class="edge" x1="130" y1="48" x2="130" y2="64" marker-end="url(#arrow)"/>
+  <!-- B: header holds a key? -->
+  <rect class="box" x="30" y="66" width="200" height="36" rx="6"/>
+  <text x="130" y="81" text-anchor="middle" font-size="11">Authorization header</text>
+  <text x="130" y="95" text-anchor="middle" font-size="11">holds an API key?</text>
+  <line class="edge" x1="230" y1="84" x2="248" y2="84" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="232" y="79">no</text>
+  <rect class="bad" x="250" y="70" width="105" height="30" rx="6"/>
+  <text x="302" y="83" text-anchor="middle" font-size="11" font-weight="600">401</text>
+  <text x="302" y="95" text-anchor="middle" font-size="9.5">key required</text>
+  <line class="edge" x1="130" y1="102" x2="130" y2="118" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="136" y="114">yes</text>
+  <!-- C: cache fresh? -->
+  <rect class="box" x="30" y="120" width="200" height="36" rx="6"/>
+  <text x="130" y="135" text-anchor="middle" font-size="11">Key in the cache</text>
+  <text x="130" y="149" text-anchor="middle" font-size="11">and still fresh?</text>
+  <path class="edge" d="M30,138 L12,138 L12,300 L28,300" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="14" y="152">yes</text>
+  <line class="edge" x1="130" y1="156" x2="130" y2="174" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="136" y="169">no</text>
+  <!-- D: ask the server -->
+  <rect class="box" x="30" y="176" width="200" height="50" rx="6"/>
+  <text x="130" y="192" text-anchor="middle" font-size="11" font-weight="600">Ask the management server</text>
+  <text x="130" y="206" text-anchor="middle" font-size="10">one lookup per key at a time,</text>
+  <text x="130" y="219" text-anchor="middle" font-size="10">within the lookup budget</text>
+  <line class="edge" x1="230" y1="190" x2="248" y2="184" marker-end="url(#arrow)"/>
+  <rect class="bad" x="250" y="162" width="105" height="44" rx="6"/>
+  <text x="302" y="176" text-anchor="middle" font-size="11" font-weight="600">401</text>
+  <text x="302" y="189" text-anchor="middle" font-size="9.5">unknown, revoked</text>
+  <text x="302" y="201" text-anchor="middle" font-size="9.5">or suspended (cached)</text>
+  <line class="edge" x1="230" y1="214" x2="248" y2="232" marker-end="url(#arrow)"/>
+  <rect class="warn" x="250" y="212" width="105" height="44" rx="6"/>
+  <text x="302" y="226" text-anchor="middle" font-size="10" font-weight="600">503 LOOKUP_BUSY</text>
+  <text x="302" y="239" text-anchor="middle" font-size="9.5">budget spent or</text>
+  <text x="302" y="251" text-anchor="middle" font-size="9.5">server busy</text>
+  <line class="edge" x1="130" y1="226" x2="130" y2="280" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="136" y="256">known key: cached</text>
+  <!-- E: decide -->
+  <rect class="box" x="30" y="282" width="200" height="36" rx="6"/>
+  <text x="130" y="297" text-anchor="middle" font-size="11" font-weight="600">Decide under this</text>
+  <text x="130" y="311" text-anchor="middle" font-size="11" font-weight="600">key's own policy</text>
+  <line class="edge" x1="230" y1="300" x2="248" y2="300" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="232" y="295">blocked</text>
+  <rect class="bad" x="250" y="284" width="105" height="32" rx="6"/>
+  <text x="302" y="297" text-anchor="middle" font-size="11" font-weight="600">403</text>
+  <text x="302" y="310" text-anchor="middle" font-size="9.5">blocked by its policy</text>
+  <line class="edge" x1="130" y1="318" x2="130" y2="336" marker-end="url(#arrow)"/>
+  <text class="edge-label" x="136" y="331">allowed</text>
+  <!-- F: served -->
+  <rect class="ok" x="30" y="338" width="200" height="40" rx="6"/>
+  <text x="130" y="354" text-anchor="middle" font-size="11" font-weight="600">Served</text>
+  <text x="130" y="369" text-anchor="middle" font-size="10">caches keyed by policy fingerprint</text>
+</svg>
+</figure>
+<p class="muted">Contract on this flow: <code>authenticate-checks-retired-first</code>. The "retired" check runs before anything else. The flag is set from slice 3 (C72).</p>
+
+<h3>Interface changes</h3>
+<pre><code><span class="label">New</span> src/managed/mod.rs
+/// The only reader of the Authorization header (C123). Only the key's SHA-256 leaves.
+pub async fn authenticate(
+    &amp;self,
+    headers: &amp;HeaderMap, // Bearer &lt;key&gt; (npm) or the password of Basic &lt;user:key&gt; (pip, uv, Poetry)
+    peer: IpAddr,        // the address the per-client lookup allowance is counted against
+) -&gt; Result&lt;Principal, Refusal&gt;;
+// Effect: on a cache miss, one lookup per key at a time; the answer, a refusal too, is cached.
+
+pub struct Principal {               // the key a request is served for
+    pub place: PlaceRef,             // the key's own place, the last of `chain`
+    pub policy: Arc&lt;CompiledPolicy&gt;, // shared by every key with the same effective policy
+    pub chain: Arc&lt;[PlaceRef]&gt;,      // Platform -&gt; … -&gt; place
+    // also: key_id (for activity rows), account and rate_limit (C28, C66), org
+}
+
+pub enum Refusal {
+    Unauthenticated, // -&gt; ApiError::Unauthenticated: 401, one fixed message for every reason (C13)
+    Busy,            // -&gt; ApiError::LookupBusy: 503 LOOKUP_BUSY, Retry-After: 1
+}</code></pre>
+<pre><code><span class="label">Changed</span> src/store/cache.rs (C103)
+ pub struct RenderKey {
+     pub project: ProjectKey,
+     pub representation: Representation,
++    pub policy: PolicyFingerprint, // a cached listing is reused only under the same policy
+ }</code></pre>
+<p>Also changed: <code>admit</code> authenticates in managed mode and returns the <code>Principal</code>. Each single-flight download waiter decides with its own policy (C104). A managed firewall answers an empty PyPI root index (T8). The new <code>[management]</code> config holds <code>url</code>, <code>token_file</code> and the cache, budget and timeout settings; none of them can be pushed. The benches gain <code>--managed</code>.</p>
+
+<h2>Proof</h2>
+<p class="muted">Rerun by the main agent on the final tree, 2026-10-22.</p>
+<table>
+  <colgroup><col style="width:34%"><col style="width:38%"><col style="width:28%"></colgroup>
+  <thead><tr><th scope="col">Promise</th><th scope="col">Check</th><th scope="col">Result</th></tr></thead>
+  <tbody>
+    <tr><td>401 for a missing or unknown key; Bearer and Basic; refusals cached; one lookup per key; per-key policy; no cache mix; per-key downloads; config; empty PyPI root index</td>
+        <td><code>cargo test --test managed_mode</code> (10 tests, T-auth-missing-401 … T-pypi-root-index-empty)</td>
+        <td class="pass">ok. 10 passed</td></tr>
+    <tr><td>An empty platform field means OSV Off and freeze 0 (C125, S2-1)</td>
+        <td><code>cargo test -p probation-policy --lib tests::t_resolve_empty_platform</code></td>
+        <td class="pass">ok. 1 passed</td></tr>
+    <tr><td>Only one place reads the Authorization header (C123)</td>
+        <td><code>cargo test --test authorization_read_once</code>; the C123 SMTC query</td>
+        <td><span class="pass">ok. 4 passed</span>; exactly 1 site, <code>headers.get(AUTHORIZATION)</code></td></tr>
+    <tr><td>The API key and its hash never reach a log line; lookups do not go through an environment proxy</td>
+        <td><code>cargo test --test key_canary</code></td>
+        <td class="pass">ok. 1 passed</td></tr>
+    <tr><td>Managed mode is fast enough (B-auth-overhead)</td>
+        <td><code>cargo bench --bench warm_metadata --bench artifact_throughput -- --managed</code></td>
+        <td>overhead p95 ≤ 0.022 ms <span class="pass">PASS</span>; throughput <span class="note">89.4% FAIL once</span> at load 18.45, then 110.7, 109.6, 99.1% <span class="pass">PASS</span> (S2-4)</td></tr>
+    <tr><td>Standalone is unchanged; nothing else broke</td>
+        <td><code>cargo test --workspace</code>; <code>cargo bench … -- --assert</code>; clippy; fmt; <code>cargo llvm-cov</code>; <code>docker build .</code></td>
+        <td><span class="pass">36 ok, 0 failed</span>; 9/9 SPEC §12 PASS; clean; 98.46% lines; exit 0</td></tr>
+    <tr><td>Contract <code>authenticate-checks-retired-first</code>; security analyzers</td>
+        <td><code>router molecule-verify --slice 2</code>; SMTC analyzers (sf-verify-cert)</td>
+        <td><span class="pass">PASS</span>, both controls detected; 9 of 9 pass. 9 later-slice obligations SOURCE_PENDING</td></tr>
+  </tbody>
+</table>
+<p class="muted">Evidence limit: T-config-management-required was not seen failing before its code was written. Its later additions (token, interval, TTL, <code>http://</code> checks) were seen failing first.</p>
+
+<h3>Review path</h3>
+<ul>
+  <li><strong>Design reopened once.</strong> The planned key-header analyzer could not be built with this SMTC build. You chose C123 (a test plus an SMTC query), with C124 and C125, and re-approved the design on 2026-10-22.</li>
+  <li><strong>Security:</strong> found a real leak. The sync client followed environment proxies, so the firewall token could reach a proxy in plain text. Fixed with <code>.no_proxy()</code>, and <code>key_canary</code> now checks it. Final: CLEAR.</li>
+  <li><strong>Adversarial:</strong> found a listing race: a blocked version could stay visible for up to 5 minutes. Fixed: the listing now reads pins after the refresh commits, for npm and PyPI. Final: fixed.</li>
+  <li><strong>Code review:</strong> found tests that could not fail (for example the eviction test). Fixed; each now has a recorded failing run. Final: SHIP.</li>
+  <li><strong>Verification:</strong> VERIFIED, after one fix to <code>SPEC.md</code>.</li>
+</ul>
+
+<h2>Limits</h2>
+<ul>
+  <li>Managed mode is not released before slice 8. The management server here is a test fake (<code>tests/common/mod.rs</code>).</li>
+  <li>Temporary until slice 3: no sync loop, no network lock, no activity rows and no rate limit. The local blocklist file is still required. An expired cache entry is not served stale: if the server is down, the key gets 401. <code>/health/ready</code> reports not ready.</li>
+  <li>The per-client lookup allowance is keyed by the full client address. A client that changes addresses inside one IPv6 /64 can use up the budget. Moved to slice 3 (S2-2).</li>
+  <li>The sync client cannot use an egress proxy (S2-6). A site that reaches the management server only through a proxy cannot use managed mode. This goes into <code>docs/operations.md</code> in slice 8.</li>
+  <li>The <code>--managed</code> throughput benchmark is noisy on this shared machine (S2-4).</li>
+  <li>Nothing is committed yet: slices 1 and 2 are uncommitted on <code>main</code>.</li>
+</ul>
+
+<h2>Next</h2>
+<p><strong>Slice 3.</strong> A managed firewall syncs with the management server. It enforces the network lock (403) and is ready only after the first sync. Revocations apply within one sync interval. It serves stale entries while the server is down, ships activity, and applies settings pushes. Upstream URLs become configurable. The IPv6 /64 allowance (S2-2) lands here too.</p>
+<p class="muted">Witness: <code>cargo test --test managed_sync</code> prints <code>ok. 30 passed</code>; <code>cargo test --test key_canary</code> prints <code>ok. 2 passed</code>.</p>
+
+<h2>Recommendation</h2>
+<p><strong>Continue to slice 3.</strong> Every slice 2 check passes and all four reviews ended clean. The temporary gaps above are exactly what slice 3 closes. Because slices 1 and 2 are not committed, consider committing them before slice 3 starts.</p>
+
+<p class="muted">Status: slice 2 of 8 is checked in <code>00-status.md</code>. Reviews: qa VERIFIED, code-review SHIP, security CLEAR, adversarial PASS. This page: render: not inspected.</p>
+<p class="muted">Sources: <code>04-slices.md</code> (row 2, § Slice 2 interfaces, row 3, § Slice 3 interfaces); <code>evidence/slice-2.md</code> (S2-1 … S2-8, witness, security coverage, reviews, changed files); <code>evidence/tdd-slice-2.md</code>; <code>00-status.md</code>; <code>src/managed/mod.rs</code>, <code>src/http/error.rs</code>, <code>src/store/cache.rs</code>. Note: <code>src/tasks/mod.rs</code> was planned for slice 2 but not changed.</p>
+
+<p class="question">Continue to slice 3, or re-steer?</p>
+</main>
+</body>
+</html>

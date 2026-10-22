@@ -2613,6 +2613,7 @@ dependencies = [
  "nodejs-semver",
  "pep440_rs",
  "probation",
+ "probation-policy",
  "proptest",
  "reqwest",
  "serde",
@@ -2631,6 +2632,18 @@ dependencies = [
  "turso",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "probation-policy"
+version = "0.2.2"
+dependencies = [
+ "nodejs-semver",
+ "pep440_rs",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

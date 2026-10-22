@@ -7,11 +7,12 @@ Principles: KISS, YAGNI, fast warm requests, bounded resource use
 
 ### Changed after revision 3
 
-Four features were specified later, each in its own `docs/plans/<name>/` folder, and are documented for operators in `docs/operations.md`. Where they contradict this document, they win:
+Five features were specified later, each in its own `docs/plans/<name>/` folder, and are documented for operators in `docs/operations.md` (managed mode from that plan's final slice). Where they contradict this document, they win:
 
 - **OSV vulnerability checks** (`docs/plans/osv-intel/`). §8's "No remote intelligence request is made during an installation" no longer holds: a candidate the blocklist allows is also checked against `https://api.osv.dev/v1/querybatch`, failing open. Config keys `osv_cache_ttl_seconds`, `osv_request_timeout_ms`, `osv_mode`.
 - **Decision log delivery** (`docs/plans/decision-log-delivery/`): optional file and SIEM sinks. Config keys `log_file_path`, `log_file_max_bytes`, `log_queue_max_bytes`, `siem_url`, `siem_auth_header`, `siem_queue_max_bytes`, `log_consumer_identification`.
 - **Rated-load guard** (`docs/plans/rated-load-guard/`): bounded queue budgets for those sinks and `GET /health/delivery`.
+- **Managed mode** (`docs/plans/management-server/`), in progress and not released before that plan's last slice. With a `[management]` section a firewall serves each request under the policy of the API key it carries, looked up from a management server; it amends §3, §9 and §11 where marked "Managed mode". Config: `[management]` (`url`, `token_file`, `key_cache_ttl_seconds`, `key_cache_max_entries`, `lookup_budget_per_second`, `client_lookup_allowance_per_second`, `request_timeout_seconds`, `sync_margin_seconds`, `trusted_proxies`) and `sync_interval_seconds`.
 - **Built-in TLS**: `serve` terminates TLS when `tls_cert_path` and `tls_key_path` are both set (§3 already says so). `SIGTERM` is handled like `SIGINT`.
 
 `max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is Apache-2.0.
@@ -45,7 +46,7 @@ Automatic fallback occurs during metadata-based resolution. A client that has al
 
 ## 3. Small deployment and implementation
 
-Ship one Rust binary and a container image built from it. Run one process against one local data directory. `serve` terminates TLS itself when `tls_cert_path`/`tls_key_path` are both configured; a reverse proxy is still required for per-client rate limiting and is optional for TLS. The default listener is loopback. All consumers of an instance share one policy.
+Ship one Rust binary and a container image built from it. Run one process against one local data directory. `serve` terminates TLS itself when `tls_cert_path`/`tls_key_path` are both configured; a reverse proxy is still required for per-client rate limiting and is optional for TLS. The default listener is loopback. All consumers of an instance share one policy. Managed mode: each API key has its own policy, and consumers share one policy only when their keys do.
 
 The binary performs four jobs:
 
@@ -177,7 +178,7 @@ Serve both Simple API HTML and JSON with correct content negotiation. Rewrite ar
 
 For simplicity, omit optional separate core-metadata advertisements and provenance links in this release. Clients obtain dependency metadata from the verified distribution itself. Do not leave upstream auxiliary download links in the response. This deliberately trades some cold-resolution speed for a smaller implementation.
 
-Serve `/pypi/simple/` as a valid index of projects already known to this instance, not a mirror of all PyPI projects. Installation of a project not listed there still works through its project endpoint. For an existing project with no eligible files, return an empty valid project listing; pip reports no matching distribution. Log why the files were excluded.
+Serve `/pypi/simple/` as a valid index of projects already known to this instance, not a mirror of all PyPI projects. Managed mode: the index is always empty, because it would show every tenant what the others install. Installation of a project not listed there still works through its project endpoint. For an existing project with no eligible files, return an empty valid project listing; pip reports no matching distribution. Log why the files were excluded.
 
 The cooldown applies to wheels, source distributions, and build dependencies fetched through the configured index. It does not inspect code executed by package installers.
 
@@ -284,7 +285,7 @@ The first complete, upstream-integrity-verified download pins the reference's co
 
 Do not forward any body bytes before full verification. Do not redirect artifact downloads to upstream. Disable HTTP content decoding for artifact transfers so hashes and cached bytes refer to the distribution itself.
 
-Concurrent requests for one reference share one fetch and verification result. Each waiter rechecks policy before its own response starts. Bound active downloads globally. A download failure removes its temporary file and is returned consistently to waiters. A subsequent request may retry; no detached infinite retry loop.
+Concurrent requests for one reference share one fetch and verification result. Each waiter rechecks policy before its own response starts. Managed mode: the shared transfer publishes verified bytes without a policy decision of its own, and each waiter decides under its own key's policy, so one tenant's block never refuses another's download. Bound active downloads globally. A download failure removes its temporary file and is returned consistently to waiters. A subsequent request may retry; no detached infinite retry loop.
 
 A disconnected waiter releases its request resources without canceling other waiters. If the last waiter leaves before artifact publication, cancel the fetch and remove its temporary file and reservation. Once the durable publication transaction starts, finish that bounded operation and leave a valid cache entry. Apply a 30-second downstream write-idle timeout and a 15-minute response-body lifetime; timeout or disconnect releases file pins and permits. These are initial implementation defaults, to be included in slow-client tests.
 
@@ -368,6 +369,8 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | Invalid input | `400`. |
 | Unsupported route/method/representation | `404`, `405`, or `406` as applicable. |
 | Missing/expired blocklist, local capacity exhausted, overloaded | `503`. |
+| Managed mode: missing, malformed, unknown, revoked or suspended API key | `401 AUTHENTICATION_REQUIRED`, one fixed reason naming no account. |
+| Managed mode: the key cannot be checked now (lookup budget spent, server busy) | `503 LOOKUP_BUSY` with `Retry-After: 1`; a valid key is never answered `401` for it. |
 | Upstream failure, invalid upstream metadata, integrity failure | `502`; timeout is `504`. |
 
 Policy errors include `error`, `reason`, `request_id`, and, for cooldown, `eligible_at`. Include a numeric `Retry-After` on cooldown responses. Do not require clients to recognize custom error fields for correctness. Log exclusions that cannot be represented in an ecosystem listing.

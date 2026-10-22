@@ -2,7 +2,14 @@
 //! denial latency.
 //!
 //! Run with `cargo bench --bench warm_metadata`. The numbers this prints are the ones
-//! recorded in `docs/operations.md`.
+//! recorded in `docs/operations.md`. Every target ends in one `SPEC §12 <target> PASS`
+//! (or `FAIL`) line; with `-- --assert` a `FAIL` makes the run exit non-zero.
+//!
+//! `-- --managed` measures C83 instead: a standalone firewall and a managed one (warm
+//! key cache, fake management server) with the same effective policy, sampled
+//! alternately, one request each. It prints `managed overhead p95 <x> ms <= 1 ms` and
+//! `managed throughput <r>% >= 90%`, each `PASS` or `FAIL`, and exits non-zero on a
+//! `FAIL`.
 //!
 //! **What this measures, and what it does not.** SPEC §12's reference environment
 //! names a separate load-generator process; this is an in-process client on the same
@@ -17,6 +24,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
+use common::sync::{client_with_key, standalone_equivalent};
 use common::{
     FakeAnswer, FakeRegistry, TestClock, TestServer, config_with_open_blocklist, fake_origins,
     fixture, npm_upstream_path,
@@ -38,14 +46,176 @@ const CONCURRENCY: usize = 32;
 const THROUGHPUT_SECONDS: u64 = 5;
 
 fn main() {
+    let (assert, managed) = flags();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("a benchmark runtime");
-    runtime.block_on(run());
+    let mut failed = false;
+    if assert || !managed {
+        let verdicts = runtime.block_on(run());
+        for (target, met) in &verdicts {
+            println!("SPEC §12 {target} {}", if *met { "PASS" } else { "FAIL" });
+        }
+        failed |= assert && verdicts.iter().any(|(_, met)| !met);
+    }
+    if managed {
+        let verdicts = runtime.block_on(run_managed());
+        for (target, met) in &verdicts {
+            println!("{target} {}", if *met { "PASS" } else { "FAIL" });
+        }
+        failed |= verdicts.iter().any(|(_, met)| !met);
+    }
+    if failed {
+        std::process::exit(1);
+    }
 }
 
-async fn run() {
+/// `--assert` turns a missed SPEC §12 target into a failing exit; `--managed` runs the
+/// C83 comparison instead, and fails on a miss by itself. Cargo itself passes
+/// `--bench`; anything else is refused rather than silently ignored.
+fn flags() -> (bool, bool) {
+    let (mut assert, mut managed) = (false, false);
+    for argument in std::env::args().skip(1) {
+        match argument.as_str() {
+            "--assert" => assert = true,
+            "--managed" => managed = true,
+            "--bench" => {}
+            other => {
+                eprintln!("unknown argument `{other}`; the options are --assert and --managed");
+                std::process::exit(2);
+            }
+        }
+    }
+    (assert, managed)
+}
+
+/// The two firewalls the managed comparison runs: one standalone, one managed, on the
+/// same fixture, clock and effective policy, each with a client that can reach it.
+async fn start(managed: bool) -> (TestServer, reqwest::Client, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    config.cooldown_seconds = ONE_DAY;
+    let client = if managed {
+        let (sync, key) = standalone_equivalent(ONE_DAY).await;
+        // The fake server's task outlives this handle, for as long as the runtime runs.
+        config = sync.managed(config);
+        client_with_key(&key)
+    } else {
+        common::downstream_client()
+    };
+
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(fixture("npm/representative-100-versions.json")),
+    );
+    let clock = TestClock::at_rfc3339(NOW);
+    let server =
+        TestServer::start_with_upstream(config, clock.shared(), registry, fake_origins()).await;
+    (server, client, dir)
+}
+
+/// C83: the cached managed path adds at most 1 ms at p95 and keeps at least 90 % of the
+/// standalone throughput, both measured against a standalone firewall sampled
+/// alternately with it.
+async fn run_managed() -> Vec<(String, bool)> {
+    let (standalone, standalone_client, _a) = start(false).await;
+    let (managed, managed_client, _b) = start(true).await;
+    let document = format!("/npm/{WIDGET}");
+    let sides = [
+        (&standalone_client, standalone.url(&document)),
+        (&managed_client, managed.url(&document)),
+    ];
+    for (client, url) in &sides {
+        for _ in 0..WARMUP {
+            let response = client.get(url).send().await.expect("the request completes");
+            assert_eq!(response.status(), 200, "{url}");
+            let _ = response.bytes().await.expect("a body");
+        }
+    }
+
+    println!("C83 managed overhead, warm metadata: standalone and managed sampled alternately");
+    let mut samples = [Vec::with_capacity(SAMPLES), Vec::with_capacity(SAMPLES)];
+    let mut bytes = [0usize; 2];
+    for _ in 0..SAMPLES {
+        for (side, (client, url)) in sides.iter().enumerate() {
+            let start = Instant::now();
+            let response = client.get(url).send().await.expect("the request completes");
+            let status = response.status();
+            bytes[side] = response.bytes().await.expect("a body").len();
+            samples[side].push(start.elapsed());
+            assert_eq!(status, 200, "{url}");
+        }
+    }
+    let [mut standalone_samples, mut managed_samples] = samples;
+    report("standalone", &mut standalone_samples, bytes[0]);
+    report("managed", &mut managed_samples, bytes[1]);
+    let overhead =
+        millis(percentile(&managed_samples, 0.95)) - millis(percentile(&standalone_samples, 0.95));
+
+    // Throughput in alternating one-second rounds, so drift on the host lands on both,
+    // and with the side that goes first swapped each round, so warm-up order does not.
+    let mut served = [0.0f64; 2];
+    for round in 0..THROUGHPUT_SECONDS as usize {
+        for side in [round % 2, 1 - round % 2] {
+            let (client, url) = &sides[side];
+            served[side] += rate(client, url, Duration::from_secs(1)).await;
+        }
+    }
+    let ratio = served[1] / served[0];
+    println!(
+        "  throughput: standalone {:.0}/s, managed {:.0}/s",
+        served[0] / THROUGHPUT_SECONDS as f64,
+        served[1] / THROUGHPUT_SECONDS as f64
+    );
+
+    standalone.shutdown().await;
+    managed.shutdown().await;
+    vec![
+        (
+            format!("managed overhead p95 {overhead:.3} ms <= 1 ms"),
+            overhead <= 1.0,
+        ),
+        (
+            format!("managed throughput {:.1}% >= 90%", ratio * 100.0),
+            ratio >= 0.9,
+        ),
+    ]
+}
+
+/// Responses a second from `CONCURRENCY` workers on `url` for `window`.
+async fn rate(client: &reqwest::Client, url: &str, window: Duration) -> f64 {
+    let deadline = Instant::now() + window;
+    let start = Instant::now();
+    let workers: Vec<_> = (0..CONCURRENCY)
+        .map(|_| {
+            let client = client.clone();
+            let url = url.to_owned();
+            tokio::spawn(async move {
+                let mut served = 0u64;
+                while Instant::now() < deadline {
+                    let response = client
+                        .get(&url)
+                        .send()
+                        .await
+                        .expect("the request completes");
+                    assert!(response.status().is_success());
+                    let _ = response.bytes().await.expect("a body");
+                    served += 1;
+                }
+                served
+            })
+        })
+        .collect();
+    let mut served = 0u64;
+    for worker in workers {
+        served += worker.await.expect("the worker finishes");
+    }
+    served as f64 / start.elapsed().as_secs_f64()
+}
+
+async fn run() -> Vec<(String, bool)> {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let mut config = config_with_open_blocklist(dir.path());
     config.cooldown_seconds = ONE_DAY;
@@ -77,9 +247,9 @@ async fn run() {
     warm(&server, &denial).await;
     let commands_before = server.store_commands();
 
-    latency(&server, "warm metadata, p95 target 5 ms", &document, 200).await;
-    latency(&server, "warm policy denial, p95 target 2 ms", &denial, 403).await;
-    throughput(
+    let metadata = latency(&server, "warm metadata, p95 target 5 ms", &document, 200).await;
+    let denial = latency(&server, "warm policy denial, p95 target 2 ms", &denial, 403).await;
+    let rate = throughput(
         &server,
         "warm metadata, target 1000 responses/second",
         &document,
@@ -93,6 +263,21 @@ async fn run() {
     );
 
     server.shutdown().await;
+
+    vec![
+        (
+            format!("warm metadata p95 {metadata:.3} ms <= 5 ms"),
+            metadata <= 5.0,
+        ),
+        (
+            format!("warm policy denial p95 {denial:.3} ms <= 2 ms"),
+            denial <= 2.0,
+        ),
+        (
+            format!("warm metadata throughput {rate:.0} responses/s >= 1000"),
+            rate >= 1_000.0,
+        ),
+    ]
 }
 
 async fn warm(server: &TestServer, path: &str) {
@@ -102,12 +287,12 @@ async fn warm(server: &TestServer, path: &str) {
     }
 }
 
-/// `SAMPLES` sequential requests, reported as percentiles.
+/// `SAMPLES` sequential requests, reported as percentiles. Returns the p95 in ms.
 ///
 /// Sequential rather than concurrent on purpose: SPEC §12 states latency as a p95 per
 /// response, and a concurrent run reports queueing delay as latency. Throughput is
 /// measured separately, below.
-async fn latency(server: &TestServer, what: &str, path: &str, expect: u16) {
+async fn latency(server: &TestServer, what: &str, path: &str, expect: u16) -> f64 {
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut bytes = 0usize;
     for _ in 0..SAMPLES {
@@ -120,10 +305,12 @@ async fn latency(server: &TestServer, what: &str, path: &str, expect: u16) {
         bytes = body.len();
     }
     report(what, &mut samples, bytes);
+    millis(percentile(&samples, 0.95))
 }
 
-/// Sustained load at a fixed concurrency, reported as responses per second.
-async fn throughput(server: &TestServer, what: &str, path: &str) {
+/// Sustained load at a fixed concurrency, reported (and returned) as responses per
+/// second.
+async fn throughput(server: &TestServer, what: &str, path: &str) -> f64 {
     let url = server.url(path);
     let deadline = Instant::now() + Duration::from_secs(THROUGHPUT_SECONDS);
     let mut workers = Vec::with_capacity(CONCURRENCY);
@@ -152,10 +339,11 @@ async fn throughput(server: &TestServer, what: &str, path: &str) {
         served += worker.await.expect("the worker finishes");
     }
     let elapsed = start.elapsed().as_secs_f64();
+    let rate = served as f64 / elapsed;
     println!(
-        "  {what}: {:.0} responses/second at concurrency {CONCURRENCY} ({served} responses in {elapsed:.2} s)",
-        served as f64 / elapsed
+        "  {what}: {rate:.0} responses/second at concurrency {CONCURRENCY} ({served} responses in {elapsed:.2} s)"
     );
+    rate
 }
 
 fn report(what: &str, samples: &mut [Duration], body_bytes: usize) {

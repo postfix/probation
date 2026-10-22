@@ -1,0 +1,52 @@
+//! Accept or refuse a proposed layer against the effective policy above it.
+
+use crate::{EditRefusal, EffectivePolicy, Layer, LayerKind, PlaceRef};
+
+/// A layer edit that passed `check_edit`. Its field is private and so is its
+/// constructor, so nothing outside this module can build one.
+pub struct CheckedEdit {
+    target: EditTarget,
+    layer: Layer,
+}
+
+/// The place an edit targets and the layer revision the form was loaded at.
+pub struct EditTarget {
+    pub place: PlaceRef,
+    pub expected_revision: u64,
+}
+
+impl CheckedEdit {
+    fn accepted(target: EditTarget, layer: Layer) -> Self {
+        Self { target, layer }
+    }
+
+    pub fn layer(&self) -> &Layer {
+        &self.layer
+    }
+
+    pub fn place(&self) -> PlaceRef {
+        self.target.place
+    }
+
+    pub fn layer_kind(&self) -> LayerKind {
+        self.layer.kind
+    }
+
+    pub fn expected_revision(&self) -> u64 {
+        self.target.expected_revision
+    }
+}
+
+/// Accept `proposed` only if every loosening or grant it adds or widens compared with the
+/// stored `current` layer is allowed by `parent` (C8, C11, C45). Unchanged kept settings pass
+/// and stay not in effect through `resolve` (C47).
+pub fn check_edit(parent: &EffectivePolicy, current: &Layer, target: EditTarget, proposed: Layer) -> Result<CheckedEdit, EditRefusal> {
+    if let Some(refusal) = find_loosening(parent, current, &proposed) {
+        return Err(refusal);
+    }
+    Ok(CheckedEdit::accepted(target, proposed))
+}
+
+fn find_loosening(parent: &EffectivePolicy, current: &Layer, proposed: &Layer) -> Option<EditRefusal> {
+    proposed.loosenings_added_since(current, parent).find(|loosening| !parent.allows(loosening)).map(EditRefusal::from)
+}

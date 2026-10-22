@@ -1251,6 +1251,13 @@ fn projection(harness: &Harness) -> Option<Arc<probation::store::cache::Rendered
         .get(&RenderKey {
             project: ProjectKey::new(Ecosystem::PyPi, BARD),
             representation: Representation::PypiJson,
+            policy: harness
+                .server
+                .app()
+                .policy()
+                .expect("a policy")
+                .policy
+                .fingerprint,
         })
 }
 
@@ -1643,6 +1650,13 @@ fn projection_of(
         .get(&RenderKey {
             project: ProjectKey::new(Ecosystem::PyPi, name),
             representation: Representation::PypiJson,
+            policy: harness
+                .server
+                .app()
+                .policy()
+                .expect("a policy")
+                .policy
+                .fingerprint,
         })
 }
 

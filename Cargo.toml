@@ -13,6 +13,11 @@ categories = ["command-line-utilities", "web-programming::http-server"]
 # tests and the operator documents.
 exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude"]
 
+# The firewall stays the root package, so every existing path and test is unchanged;
+# `crates/` holds what it shares with the management server.
+[workspace]
+members = ["crates/*"]
+
 [lib]
 name = "probation"
 path = "src/lib.rs"
@@ -71,6 +76,9 @@ jiff = "0.2.37"
 lru = "0.18.4"
 nodejs-semver = "5.0.0"
 pep440_rs = "0.7.3"
+# The policy rules the firewall and the management server share. `version` as well as
+# `path`, so the published `probation` names the published `probation-policy`.
+probation-policy = { path = "crates/probation-policy", version = "0.2.2" }
 # No TLS feature: reqwest 0.13 defaults to rustls, and `rustls-tls` was renamed to
 # `rustls` (Gate 3 dependency note 3). The three decompression codecs are opt-in in
 # 0.13 and are enabled deliberately (note 2); `deflate` is deliberately left off.

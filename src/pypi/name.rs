@@ -12,6 +12,9 @@
 
 use std::fmt;
 
+/// The one PEP 503 normaliser, shared with the policy merge and the server (T6).
+pub use probation_policy::names::normalize;
+
 /// PyPI's own limit on a project name.
 const MAX_LENGTH: usize = 214;
 
@@ -78,24 +81,6 @@ impl ProjectName {
     pub fn is_canonical(&self) -> bool {
         self.requested == self.normalized
     }
-}
-
-/// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
-pub fn normalize(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut in_separator = false;
-    for c in raw.chars() {
-        if matches!(c, '-' | '_' | '.') {
-            if !in_separator {
-                out.push('-');
-                in_separator = true;
-            }
-        } else {
-            in_separator = false;
-            out.extend(c.to_lowercase());
-        }
-    }
-    out
 }
 
 impl fmt::Display for ProjectName {

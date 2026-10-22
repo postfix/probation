@@ -313,6 +313,14 @@ async fn transfer(
             // and the next resolution loads the project afresh. Reuse is
             // generation-checked, the way `RenderedResponse::is_reusable` already is,
             // rather than bounded by `metadata_ttl_seconds`.
+            //
+            // Managed mode has no one policy to decide with here, and some key's policy
+            // may block this digest. So every listing rendered without it goes stale:
+            // the generation is bumped before the cached snapshot is dropped, and the
+            // next resolution reloads the project with both (C104, SPEC §9).
+            if app.managed().is_some() {
+                bump_digest_generation(app, row.reference.ecosystem, &row.reference.name).await;
+            }
             app.store().caches().projects.remove(&ProjectKey::new(
                 row.reference.ecosystem,
                 row.reference.name.as_str(),
@@ -334,23 +342,30 @@ async fn transfer(
 
     // The latest policy, against digests upstream may never have advertised.
     let now = app.clock.now_utc_micros();
-    let snapshot = app.blocklist();
     let pinned = computed.pinned_digests();
-    let decision = crate::osv::evaluate(
-        &app.osv,
-        snapshot.as_deref(),
-        now,
-        app.config.cooldown_seconds,
-        &Candidate {
-            ecosystem: row.reference.ecosystem,
-            name: &row.reference.name,
-            version: &row.reference.version,
-            publication: row.publication_time(),
-            advertised_digests: &row.reference.expected,
-            pinned_digests: &pinned,
-        },
-    )
-    .await;
+    // Managed mode has no one policy to judge by: each waiter decides with its own
+    // once the bytes are verified, so one tenant's block cannot refuse another's
+    // download (C104). The bytes are published either way.
+    let decision = if app.managed().is_some() {
+        Decision::Allow
+    } else {
+        match app.policy() {
+            Some(policy) => {
+                let candidate = Candidate {
+                    ecosystem: row.reference.ecosystem,
+                    name: &row.reference.name,
+                    version: &row.reference.version,
+                    publication: row.publication_time(),
+                    advertised_digests: &row.reference.expected,
+                    pinned_digests: &pinned,
+                };
+                crate::osv::evaluate(&app.osv, &policy, now, &candidate).await
+            }
+            // No blocklist has ever been in force: `evaluate`'s own answer to a missing
+            // snapshot.
+            None => Decision::Unavailable,
+        }
+    };
     if decision != Decision::Allow {
         // SPEC §9: "If a computed digest reveals a block not visible in upstream
         // metadata, invalidate that project's filtered metadata."
@@ -404,16 +419,19 @@ fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, Dow
     result.map_err(DownloadError::Capacity)
 }
 
-/// A failed bump is logged and not fatal: the artifact is refused either way, and
-/// the worst consequence is a rendered response that stays current one generation
-/// too long.
+/// A failed bump is logged and not fatal. Standalone refuses the artifact either way,
+/// and the worst consequence is a rendered response that stays current one generation
+/// too long. In managed mode the bump follows a new pin and nothing is refused here:
+/// a failed one leaves other keys' listings rendered before the pin reusable, showing
+/// a version their policy blocks by this digest, until their metadata TTL ends. The
+/// artifact itself is still refused to them by their own final check.
 async fn bump_digest_generation(app: &App, ecosystem: Ecosystem, name: &str) {
     if let Err(err) = app.store().bump_digest_generation(ecosystem, name).await {
         tracing::warn!(
             package = %name,
             error = %err,
-            "could not invalidate the project's rendered metadata after a computed digest \
-             revealed a block"
+            "could not invalidate the project's rendered metadata after a new pin or a \
+             computed digest that revealed a block"
         );
     }
 }

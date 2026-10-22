@@ -5,8 +5,8 @@
 
 use std::fmt;
 use std::io;
-use std::net::SocketAddr;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::net::{IpAddr, SocketAddr};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 
 use reqwest::header::{self, HeaderName};
@@ -86,6 +86,70 @@ pub struct Config {
     pub tls_cert_path: Option<PathBuf>,
     /// The private key paired with `tls_cert_path`. Both or neither; see there.
     pub tls_key_path: Option<PathBuf>,
+    /// How often a managed firewall asks the management server for changes (C22).
+    /// Read only in managed mode.
+    pub sync_interval_seconds: NonZeroU64,
+    /// Present only in managed mode: every key's policy comes from the management
+    /// server. A broken section refuses to start rather than run standalone (T20).
+    pub management: Option<ManagementConfig>,
+}
+
+/// `[management]`. None of it can be pushed from the portal (C35).
+#[derive(Clone, Debug)]
+pub struct ManagementConfig {
+    /// The management server's base URL.
+    pub url: Url,
+    /// Read from `token_file` at load, never from configuration text.
+    pub token: FirewallToken,
+    pub key_cache_ttl_seconds: NonZeroU64,
+    pub key_cache_max_entries: NonZeroUsize,
+    /// Lookups a second this firewall may send for keys it has no live entry for (T10).
+    pub lookup_budget_per_second: NonZeroU32,
+    /// The share of that budget one client address may use for keys with no entry
+    /// (C120).
+    pub client_lookup_allowance_per_second: NonZeroU32,
+    pub request_timeout_seconds: NonZeroU64,
+    pub sync_margin_seconds: NonZeroU64,
+    /// Peers whose `X-Forwarded-For` is believed (C113).
+    pub trusted_proxies: Vec<Cidr>,
+}
+
+/// The firewall's credential for the sync API. Its `Debug` prints nothing, because
+/// `Config` is printed whole.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FirewallToken(String);
+
+impl FirewallToken {
+    pub fn new(token: String) -> FirewallToken {
+        FirewallToken(token)
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for FirewallToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FirewallToken(..)")
+    }
+}
+
+/// An address range, `192.0.2.0/24` or `2001:db8::/32`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Cidr {
+    pub addr: IpAddr,
+    pub prefix: u8,
+}
+
+impl Cidr {
+    pub fn parse(text: &str) -> Option<Cidr> {
+        let (addr, prefix) = text.split_once('/')?;
+        let addr: IpAddr = addr.parse().ok()?;
+        let prefix: u8 = prefix.parse().ok()?;
+        let bits = if addr.is_ipv4() { 32 } else { 128 };
+        (prefix <= bits).then_some(Cidr { addr, prefix })
+    }
 }
 
 /// The default for the one key SPEC §4 does not list. It is a Gate 3 addition
@@ -121,6 +185,20 @@ const DEFAULT_OSV_CACHE_TTL_SECONDS: NonZeroU64 = NonZeroU64::new(300).unwrap();
 /// least-confident-decision 3), short enough to keep C12c's outbound-call bound and
 /// C14's per-waiter reply bound both tight.
 const DEFAULT_OSV_REQUEST_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(500).unwrap();
+
+/// The longest `sync_interval_seconds` or `key_cache_ttl_seconds`: a day. Both are
+/// added to clock readings, and a value past what an `Instant` can hold would panic
+/// there rather than fail here.
+const MAX_MANAGEMENT_SECONDS: u64 = 86_400;
+
+/// C22's default: changes reach a managed firewall within a minute.
+const DEFAULT_SYNC_INTERVAL_SECONDS: NonZeroU64 = NonZeroU64::new(60).unwrap();
+
+/// C112: the round trip is taken out of the interval, so a change applies within it.
+const DEFAULT_SYNC_MARGIN_SECONDS: NonZeroU64 = NonZeroU64::new(5).unwrap();
+
+/// How long one call to the management server may take.
+const DEFAULT_REQUEST_TIMEOUT_SECONDS: NonZeroU64 = NonZeroU64::new(2).unwrap();
 
 /// The file as written, before validation. Unknown keys are rejected so a typo in
 /// an operator's configuration is an error rather than a silently ignored line.
@@ -159,6 +237,25 @@ struct RawConfig {
     osv_mode: Option<String>,
     tls_cert_path: Option<PathBuf>,
     tls_key_path: Option<PathBuf>,
+    sync_interval_seconds: Option<u64>,
+    management: Option<RawManagement>,
+}
+
+/// `[management]` as written. `url` and `token_file` are optional here only so their
+/// absence is reported by name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManagement {
+    url: Option<String>,
+    token_file: Option<PathBuf>,
+    key_cache_ttl_seconds: Option<u64>,
+    key_cache_max_entries: Option<usize>,
+    lookup_budget_per_second: Option<u32>,
+    client_lookup_allowance_per_second: Option<u32>,
+    request_timeout_seconds: Option<u64>,
+    sync_margin_seconds: Option<u64>,
+    #[serde(default)]
+    trusted_proxies: Vec<String>,
 }
 
 fn default_max_references_per_project() -> u32 {
@@ -209,6 +306,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "osv_mode",
     "tls_cert_path",
     "tls_key_path",
+    "sync_interval_seconds",
+    "management",
 ];
 
 impl Config {
@@ -403,6 +502,15 @@ impl RawConfig {
             ));
         }
 
+        let sync_interval_seconds = match self.sync_interval_seconds {
+            Some(value) => bounded_seconds("sync_interval_seconds", value)?,
+            None => DEFAULT_SYNC_INTERVAL_SECONDS,
+        };
+        let management = self
+            .management
+            .map(|raw| raw.validate(sync_interval_seconds))
+            .transpose()?;
+
         Ok(Config {
             listen,
             public_url,
@@ -477,8 +585,129 @@ impl RawConfig {
             },
             tls_cert_path: self.tls_cert_path,
             tls_key_path: self.tls_key_path,
+            sync_interval_seconds,
+            management,
         })
     }
+}
+
+impl RawManagement {
+    fn validate(self, sync_interval: NonZeroU64) -> Result<ManagementConfig, ConfigError> {
+        let url = self.url.ok_or(ConfigError::MissingKey("management.url"))?;
+        let url = Url::parse(&url)
+            .map_err(|_| invalid("management.url", "must be a valid URL".to_owned()))?;
+        // The firewall token and every key hash travel this URL: https only (C34),
+        // loopback included. A test reaches its plain-HTTP fake server by building
+        // `ManagementConfig` itself, never through this file.
+        if url.scheme() != "https" {
+            return Err(invalid("management.url", "must use https".to_owned()));
+        }
+        if has_userinfo(&url) || url.query().is_some() || url.fragment().is_some() {
+            return Err(invalid(
+                "management.url",
+                "must not carry a username, password, query or fragment".to_owned(),
+            ));
+        }
+
+        let token_file = self
+            .token_file
+            .ok_or(ConfigError::MissingKey("management.token_file"))?;
+        let token = std::fs::read_to_string(&token_file)
+            .map_err(|err| invalid("management.token_file", format!("cannot be read: {err}")))?;
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(invalid(
+                "management.token_file",
+                "holds no token".to_owned(),
+            ));
+        }
+        // It is sent as a header value, so visible ASCII only: no inner whitespace,
+        // line break or control character can split or smuggle a header.
+        if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(invalid(
+                "management.token_file",
+                "the token holds a character outside visible ASCII".to_owned(),
+            ));
+        }
+
+        let sync_margin_seconds = match self.sync_margin_seconds {
+            Some(value) => nonzero_u64("management.sync_margin_seconds", value)?,
+            None => DEFAULT_SYNC_MARGIN_SECONDS.min(half(sync_interval)),
+        };
+        // C112: the margin is at most half the interval.
+        if sync_margin_seconds > half(sync_interval) {
+            return Err(invalid(
+                "management.sync_margin_seconds",
+                "must be at most half of sync_interval_seconds".to_owned(),
+            ));
+        }
+        let request_timeout_seconds = match self.request_timeout_seconds {
+            Some(value) => nonzero_u64("management.request_timeout_seconds", value)?,
+            None => DEFAULT_REQUEST_TIMEOUT_SECONDS.min(sync_margin_seconds),
+        };
+        if request_timeout_seconds > sync_margin_seconds {
+            return Err(invalid(
+                "management.request_timeout_seconds",
+                "must not exceed management.sync_margin_seconds".to_owned(),
+            ));
+        }
+
+        let trusted_proxies = self
+            .trusted_proxies
+            .iter()
+            .map(|text| {
+                Cidr::parse(text).ok_or_else(|| {
+                    invalid(
+                        "management.trusted_proxies",
+                        format!("{text:?} is not an address range"),
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(ManagementConfig {
+            url,
+            token: FirewallToken(token.to_owned()),
+            key_cache_ttl_seconds: bounded_seconds(
+                "management.key_cache_ttl_seconds",
+                self.key_cache_ttl_seconds.unwrap_or(300),
+            )?,
+            key_cache_max_entries: NonZeroUsize::new(self.key_cache_max_entries.unwrap_or(100_000))
+                .ok_or_else(|| {
+                    invalid(
+                        "management.key_cache_max_entries",
+                        "must not be zero".to_owned(),
+                    )
+                })?,
+            lookup_budget_per_second: nonzero_u32(
+                "management.lookup_budget_per_second",
+                self.lookup_budget_per_second.unwrap_or(50),
+            )?,
+            client_lookup_allowance_per_second: nonzero_u32(
+                "management.client_lookup_allowance_per_second",
+                self.client_lookup_allowance_per_second.unwrap_or(5),
+            )?,
+            request_timeout_seconds,
+            sync_margin_seconds,
+            trusted_proxies,
+        })
+    }
+}
+
+/// A non-zero duration of at most [`MAX_MANAGEMENT_SECONDS`]. The margin and the request
+/// timeout are bounded by the interval, so this bounds them too.
+fn bounded_seconds(key: &'static str, value: u64) -> Result<NonZeroU64, ConfigError> {
+    if value > MAX_MANAGEMENT_SECONDS {
+        return Err(invalid(
+            key,
+            format!("must not exceed {MAX_MANAGEMENT_SECONDS} (one day)"),
+        ));
+    }
+    nonzero_u64(key, value)
+}
+
+fn half(interval: NonZeroU64) -> NonZeroU64 {
+    NonZeroU64::new(interval.get() / 2).unwrap_or(NonZeroU64::MIN)
 }
 
 fn has_userinfo(url: &Url) -> bool {

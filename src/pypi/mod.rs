@@ -30,8 +30,10 @@ use crate::App;
 use crate::concurrency::Resolution;
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
+use crate::managed::Principal;
 use crate::policy::{
-    BlocklistSnapshot, Candidate, Decision, Digest, Ecosystem, HashAlgorithm, PublicationTime,
+    BlocklistSnapshot, Candidate, CompiledPolicy, Decision, Digest, Ecosystem, HashAlgorithm,
+    PublicationTime,
 };
 use crate::pypi::filename::{FileIdentity, UnsupportedFilename, file_identity};
 use crate::pypi::render::ListedFile;
@@ -69,6 +71,7 @@ pub struct Rendered {
 /// `GET /pypi/simple/{project}/`.
 pub async fn serve(
     app: &App,
+    principal: Option<&Principal>,
     name: &ProjectName,
     representation: Representation,
 ) -> Result<Rendered, ApiError> {
@@ -76,15 +79,20 @@ pub async fn serve(
     let monotonic = app.clock.now_monotonic();
 
     // SPEC §9's ordering point, read exactly once for this request.
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(now) {
-        return Err(ApiError::PolicyUnavailable);
-    }
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    let snapshot = policy
+        .snapshot
+        .as_deref()
+        .filter(|snapshot| snapshot.is_valid_at(now))
+        .ok_or(ApiError::PolicyUnavailable)?;
 
     let project = ProjectKey::new(Ecosystem::PyPi, name.as_str());
     let render_key = RenderKey {
         project: project.clone(),
         representation: representation.clone(),
+        policy: policy.policy.fingerprint,
     };
     let caches = app.store().caches();
 
@@ -109,7 +117,7 @@ pub async fn serve(
     }
     logging::record_cache(logging::CacheStatus::Miss);
 
-    let resolved = resolve(app, name, &snapshot, now, monotonic).await?;
+    let resolved = resolve(app, name, &policy, snapshot, now, monotonic).await?;
     let (body, content_type) = render(app, name, &resolved, &representation);
     let body: Arc<[u8]> = Arc::from(body);
 
@@ -135,7 +143,11 @@ pub async fn serve(
 /// `GET /pypi/simple/` — the projects *this instance* has already fetched, which
 /// SPEC §7 is explicit is not a mirror of PyPI. Installing a project that is absent
 /// from it still works through its own endpoint.
-pub async fn index(app: &App, representation: &Representation) -> Result<Rendered, ApiError> {
+pub async fn index(
+    app: &App,
+    principal: Option<&Principal>,
+    representation: &Representation,
+) -> Result<Rendered, ApiError> {
     let now = app.clock.now_utc_micros();
     let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
     if !snapshot.is_valid_at(now) {
@@ -144,11 +156,17 @@ pub async fn index(app: &App, representation: &Representation) -> Result<Rendere
 
     // Every known project is listed, including one the blocklist denies outright:
     // its own listing is what answers for it, and that listing is already empty.
-    let projects = app
-        .store()
-        .list_known_projects(Ecosystem::PyPi)
-        .await
-        .map_err(storage_error)?;
+    //
+    // Not in managed mode: the list is every project any tenant's client fetched, so
+    // each tenant would see what the others install (T8, C1). It is empty instead.
+    let projects = match principal {
+        Some(_) => Vec::new(),
+        None => app
+            .store()
+            .list_known_projects(Ecosystem::PyPi)
+            .await
+            .map_err(storage_error)?,
+    };
 
     let (body, content_type) = match representation {
         Representation::PypiJson => (render::index_json(&projects), render::JSON_CONTENT_TYPE),
@@ -281,6 +299,7 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
 async fn resolve(
     app: &App,
     name: &ProjectName,
+    policy: &CompiledPolicy,
     snapshot: &BlocklistSnapshot,
     now: i64,
     monotonic: Instant,
@@ -310,14 +329,7 @@ async fn resolve(
             // an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&file.id),
         };
-        crate::osv::evaluate(
-            &app.osv,
-            Some(snapshot),
-            now,
-            app.config.cooldown_seconds,
-            &candidate,
-        )
-        .await
+        crate::osv::evaluate(&app.osv, policy, now, &candidate).await
     }))
     .await;
     let next_release = decisions
@@ -568,14 +580,8 @@ async fn refresh(
         })
         .collect();
 
-    // A refresh carries existing pins forward rather than changing them, but it does
-    // replace the cached project, so they are read back with it.
-    let pins = app
-        .store()
-        .list_project_pins(Ecosystem::PyPi, name.as_str())
-        .await
-        .map_err(storage_error)?;
-
+    #[cfg(feature = "test-support")]
+    crate::pause::at("before refresh commit", name.as_str()).await;
     let committed = app
         .store()
         .commit_project_refresh(ProjectRefresh {
@@ -587,6 +593,17 @@ async fn refresh(
             fetched_at_micros,
             references,
         })
+        .await
+        .map_err(storage_error)?;
+
+    // A refresh carries existing pins forward rather than changing them, but it does
+    // replace the cached project, so they are read back with it.
+    // After the commit, never before: a pin that lands between the two, with its
+    // digest-generation bump, would otherwise travel with the newer generation it bumped
+    // to and show a version a policy blocks until the metadata TTL (C104, SPEC §9).
+    let pins = app
+        .store()
+        .list_project_pins(Ecosystem::PyPi, name.as_str())
         .await
         .map_err(storage_error)?;
 

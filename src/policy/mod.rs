@@ -5,39 +5,20 @@
 
 pub mod blocklist;
 pub mod digest;
+pub mod effective;
 
 pub use blocklist::{BlocklistError, BlocklistSnapshot, Replacement, check_replacement};
 pub use digest::{Digest, HashAlgorithm, InvalidDigest};
+pub use effective::{CompiledPolicy, PolicyVerdict, decide};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Ecosystem {
-    Npm,
-    PyPi,
-}
+/// Owned by `probation-policy` so the firewall and the management server name one type.
+pub use probation_policy::Ecosystem;
 
-impl Ecosystem {
-    /// The spelling used in the blocklist file (SPEC §8) and in log lines.
-    pub const fn as_tag(self) -> &'static str {
-        match self {
-            Ecosystem::Npm => "npm",
-            Ecosystem::PyPi => "pypi",
-        }
-    }
-
-    pub fn from_tag(tag: &str) -> Option<Ecosystem> {
-        match tag {
-            "npm" => Some(Ecosystem::Npm),
-            "pypi" => Some(Ecosystem::PyPi),
-            _ => None,
-        }
-    }
-
-    /// Indexes the per-ecosystem lookup tables in `blocklist.rs`.
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Ecosystem::Npm => 0,
-            Ecosystem::PyPi => 1,
-        }
+/// Indexes the per-ecosystem lookup tables in `blocklist.rs`.
+pub(crate) const fn ecosystem_index(ecosystem: Ecosystem) -> usize {
+    match ecosystem {
+        Ecosystem::Npm => 0,
+        Ecosystem::PyPi => 1,
     }
 }
 

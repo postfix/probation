@@ -32,6 +32,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 COPY benches ./benches
+# The workspace members: `probation-policy`, which the firewall depends on.
+COPY crates ./crates
 
 # `--locked` is the point of shipping Cargo.lock: the image is built from the exact
 # dependency graph the tests ran against, and a lockfile that no longer matches the
