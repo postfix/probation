@@ -14,8 +14,11 @@
 //   POST /oidc/next {...}             Oidc.next
 //   POST /oidc/rotate                 new IdP signing key
 //
-// A fault is {host?, path? (prefix), method?, mode, times?, ...}; the first that
-// matches a request applies, `times` (default unlimited) counts down. Modes:
+// A fault is {host?, path? (prefix), method?, conditional?, mode, times?, ...}; the
+// first that matches a request applies, `times` (default unlimited) counts down.
+// `conditional: false` matches only requests without If-None-Match (an origin that is
+// down behind a CDN still answering revalidations with 304), `true` only those with it.
+// Modes:
 //   status   answer `status` (with `retryAfter` as Retry-After) and a short body
 //   delay    answer normally after `ms`
 //   hang     never answer; the connection stays open until the client gives up
@@ -62,7 +65,11 @@ function readBody(req) {
 
 function fault(host, req) {
   const found = faults.find(
-    (f) => (!f.host || f.host === host) && (!f.path || req.url.startsWith(f.path)) && (!f.method || f.method === req.method),
+    (f) =>
+      (!f.host || f.host === host) &&
+      (!f.path || req.url.startsWith(f.path)) &&
+      (!f.method || f.method === req.method) &&
+      (f.conditional === undefined || f.conditional === Boolean(req.headers["if-none-match"])),
   );
   if (found && found.times !== undefined && --found.times <= 0) faults = faults.filter((f) => f !== found);
   return found;
