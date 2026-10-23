@@ -884,6 +884,9 @@ pub async fn set_role(
         ));
     }
     stopped_admin(&mut tx, org, id).await?;
+    if old == "org_admin" {
+        withdraw_invitations(&mut tx, org, id).await?;
+    }
     sqlx::query("UPDATE memberships SET role = $2 WHERE id = $1")
         .bind(id)
         .bind(role)
@@ -936,6 +939,26 @@ async fn stopped_admin(conn: &mut PgConnection, org: i32, id: i32) -> Result<(),
     .map(drop)
 }
 
+/// Withdraws the open invitations the login of membership `id` sent in `org`: they
+/// stand only while their sender may send them (S6-SEC-4). Called when an org admin is
+/// demoted or their membership ends.
+async fn withdraw_invitations(
+    conn: &mut PgConnection,
+    org: i32,
+    id: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM invitations
+         WHERE org_id = $2 AND accepted_by IS NULL
+           AND created_by = (SELECT login_id FROM memberships WHERE id = $1)",
+    )
+    .bind(id)
+    .bind(org)
+    .execute(conn)
+    .await
+    .map(drop)
+}
+
 fn last_admin_refusal() -> ChangeError {
     ChangeError::Refused(
         "Not done: the organisation must always have at least one org admin. Make someone else an org admin first.".to_owned(),
@@ -968,6 +991,7 @@ async fn end_membership(
         return Err(last_admin_refusal());
     }
     stopped_admin(conn, org, id).await?;
+    withdraw_invitations(conn, org, id).await?;
     let revoked: Vec<i64> = sqlx::query_scalar(
         "UPDATE keys SET revoked_at = now()
          WHERE place_kind = 'user' AND place_id = $1 AND revoked_at IS NULL RETURNING id",
@@ -1443,6 +1467,18 @@ pub async fn accept_invitation(
             "Confirm your email address first, then open the link again.".to_owned(),
         ));
     }
+    // Under the organisation's lock, as a demotion or removal that withdraws the
+    // sender's invitations takes it first.
+    let org: Option<i32> = sqlx::query_scalar(
+        "SELECT org_id FROM invitations WHERE token_hash = $1 AND org_id IS NOT NULL",
+    )
+    .bind(crate::accounts::token_hash(token))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(org) = org else {
+        return Ok(None);
+    };
+    lock_org(&mut tx, org).await?;
     let taken: Option<(i32, i32, Option<i32>, String)> = sqlx::query_as(
         "UPDATE invitations SET accepted_by = $2
          WHERE token_hash = $1 AND accepted_by IS NULL AND expires_at > now()
@@ -1456,6 +1492,23 @@ pub async fn accept_invitation(
     let Some((id, org, group, role)) = taken else {
         return Ok(None);
     };
+    // The sender must still be able to send it: a live login that is an org admin of the
+    // organisation, or a global admin (S6-SEC-4).
+    let sender_may: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM invitations AS i
+                        JOIN logins AS l ON l.id = i.created_by AND l.deleted_at IS NULL
+                        JOIN memberships AS m ON m.login_id = i.created_by
+                         AND ((m.org_id = i.org_id AND m.role = 'org_admin') OR m.org_id IS NULL)
+                        WHERE i.id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !sender_may {
+        return Err(ChangeError::Refused(
+            "The person who sent this invitation can no longer invite people to this organisation. Ask an org admin for a new one.".to_owned(),
+        ));
+    }
     // A removal is lifted only by an invitation created after it: a link from before,
     // one the removed org admin sent themselves included, is refused (AC3, S6-SEC-4).
     let removed_after: bool = sqlx::query_scalar(

@@ -2356,6 +2356,81 @@ async fn t_grant_by_invitation() {
         memberships_in(&fx.db, world.acme).await.len(),
         before.len() + 1
     );
+
+    // An invitation stands only while its sender may still send it (S6-SEC-4). Max, an
+    // org admin, invites Bea; demoting him from the organisation page withdraws his
+    // open invitations.
+    let set_max_role = |role: &'static str| {
+        let pool = fx.db.owner.clone();
+        let max = world.max;
+        async move {
+            sqlx::query("UPDATE memberships SET role = $2 WHERE login_id = $1")
+                .bind(max)
+                .bind(role)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    set_max_role("org_admin").await;
+    let mut max = admin_browser(&fx, "max@acme.test").await;
+    fx.person("bea@acme.test").await;
+    invite(
+        &mut max,
+        &world,
+        &[
+            ("email", "bea@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let bea_link = invitation_link(&fx, "bea@acme.test").await;
+    let org_page = format!("/org/{}", world.acme.id);
+    let max_place = world.places[&world.max];
+    ana.submit(
+        &org_page,
+        &format!("/org/members/{}/role", max_place.id),
+        &[("role", "member")],
+    )
+    .await;
+    assert!(
+        !ana.get(&org_page).await.has("bea@acme.test"),
+        "a demoted admin's open invitations are withdrawn"
+    );
+    let mut bea = fx.signed_in("bea@acme.test").await;
+    let bea_answer = accept(&mut bea, &bea_link).await;
+    assert!(
+        bea_answer.has("expired or was already used"),
+        "{}",
+        bea_answer.body
+    );
+
+    // When his role goes by a way that leaves the invitation (written directly here, as a
+    // path outside this page would), accepting it answers 403 and grants nothing.
+    set_max_role("org_admin").await;
+    let cal = fx.person("cal@acme.test").await;
+    invite(
+        &mut max,
+        &world,
+        &[
+            ("email", "cal@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let cal_link = invitation_link(&fx, "cal@acme.test").await;
+    set_max_role("member").await;
+    let mut cal_browser = fx.signed_in("cal@acme.test").await;
+    let cal_answer = accept(&mut cal_browser, &cal_link).await;
+    assert_eq!(
+        cal_answer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        cal_answer.body
+    );
+    assert!(!is_member(&fx.db, world.acme, cal).await, "no grant");
 }
 
 /// T-portal-invitation-expiry (C43): an invitation link works for 7 days; after that it
@@ -2851,6 +2926,18 @@ async fn t_portal_sso_removed_not_rejoined() {
         ],
     )
     .await;
+    let own_link = invitation_link(&fx, "acme-dave@acme.test").await;
+    // Ana, who stays an org admin, also invites him before the removal.
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "acme-dave@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
     let old_link = invitation_link(&fx, "acme-dave@acme.test").await;
 
     // Removed, his next SSO sign-in leaves him no member, with no key and no place.
@@ -2872,7 +2959,10 @@ async fn t_portal_sso_removed_not_rejoined() {
     let keys_page = dave.get("/keys").await;
     assert!(keys_page.has("You have no place yet"), "{}", keys_page.body);
 
-    // The invitation made before the removal is refused, and clears nothing (AC3).
+    // His own link went with his admin role; Ana's link from before the removal is
+    // refused and clears nothing (AC3).
+    let own = accept(&mut dave, &own_link).await;
+    assert!(own.has("expired or was already used"), "{}", own.body);
     let stale = accept(&mut dave, &old_link).await;
     assert_eq!(stale.status, StatusCode::FORBIDDEN, "{}", stale.body);
     assert!(
