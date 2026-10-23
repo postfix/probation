@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slice 8 done: the management server plan is delivered</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d2127; --muted: #5b6470; --line: #d5dae0; --panel: #f5f7f9;
+    --ok: #1f7a3d; --ok-bg: #e7f4ec; --bad: #a3262a; --bad-bg: #fbeaea; --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --accent: #2457a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e4e7eb; --muted: #9aa3ad; --line: #353b43; --panel: #1e2228;
+      --ok: #6fd393; --ok-bg: #173323; --bad: #f08b8e; --bad-bg: #3a1d1f; --warn: #f1c46b; --warn-bg: #3a2f14;
+      --accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
+  p, li { overflow-wrap: anywhere; }
+  ul, ol { padding-left: 1.2rem; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0; }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { background: var(--panel); }
+  .pass { color: var(--ok); font-weight: 600; }
+  .note { color: var(--warn); font-weight: 600; }
+  figure { margin: 8px 0; }
+  svg { display: block; width: 100%; max-width: 640px; height: auto; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 11px; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ok { fill: var(--ok-bg); stroke: var(--ok); }
+  svg .bad { fill: var(--bad-bg); stroke: var(--bad); }
+  svg .warn { fill: var(--warn-bg); stroke: var(--warn); }
+  svg .edge { stroke: var(--muted); fill: none; stroke-width: 1.3; }
+  svg .edge-label { fill: var(--muted); font-size: 9.5px; }
+  svg .head { fill: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .question { margin-top: 28px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; font-weight: 600; font-size: 1.05rem; }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 32px; }
+    table { font-size: 0.85rem; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Slice 8 done: the management server plan is delivered</h1>
+<p class="muted">The last slice. qa = UNCERTAIN on the throughput benchmark only, accepted by you (S8-18); code-review, security and adversarial = FIXED. Commit a32877a on <code>management-server</code>.</p>
+
+<h2>Delivered</h2>
+<p><strong>What now works.</strong> A new organisation goes from sign-up to a working <code>npm install</code> through a managed firewall, in one scripted test. An operator can install, start and restore the service from the documents.</p>
+<ul>
+  <li><strong>End-to-end test</strong> (<code>tests/e2e/signup_to_install.sh</code>): sign-up to <code>npm install</code> done in <strong>1.3 s</strong>. The whole script, with both image builds, took 3 min 47 s (target: under 10 minutes).</li>
+  <li><strong>Propagation:</strong> 50 policy edits and 50 key revocations reach the firewall with p99 about 5 s (edits 5.049 s, revocations 5.035 s) against a 10 s interval.</li>
+  <li><strong>Both images build</strong> (firewall and <code>probation-server</code>) with the label <code>org.opencontainers.image.licenses="Elastic-2.0"</code>.</li>
+  <li><strong>Release gate:</strong> in <code>.github/workflows/release.yml</code>, both <code>publish</code> and <code>release</code> need the <code>e2e</code> job (C82).</li>
+  <li><strong>Deploy examples and operator docs:</strong> <code>deploy/docker-compose.yml</code>, <code>deploy/probation.service</code>, <code>docs/operations.md</code> &sect;13 (proxies, plain HTTP behind TLS, server-down behaviour, backup and restore), <code>docs/management-server.md</code> (images, settings, secrets, first run, commands).</li>
+  <li><strong><code>probation-server admin after-restore</code></strong> (C129): after a database restore, it moves the change counter above every firewall's cursor, so every firewall resets to the restored data. It writes an audit row.</li>
+  <li><strong><code>admin bootstrap --config --email</code></strong> (S8-14): the first global admin gets an email sign-in and a one-time set-password link, printed on the console only (single use, 60 minutes, no mail). The admin must still set up an authenticator before <code>/admin</code> (C24). <strong><code>admin reset-link</code></strong> prints a fresh link for a live global admin.</li>
+  <li><strong><code>[portal] firewall_url</code></strong> (S8-1): the <code>.npmrc</code> and <code>pip.conf</code> lines on the keys page now show the real firewall address. Unset, the <code>FIREWALL</code> placeholder stays.</li>
+</ul>
+
+<h3>First run and the end-to-end path</h3>
+<figure aria-labelledby="flow-cap">
+<svg viewBox="0 0 640 230" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">First run and sign-up to npm install</title>
+  <desc id="flow-desc">The operator runs admin bootstrap with an email and gets a one-time set-password link. The admin sets a password, sets up an authenticator and reaches the admin page. A new person signs up, confirms the email, creates a key and copies the setup lines with the firewall address. npm install through the managed firewall succeeds.</desc>
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+  <rect class="box" x="10" y="20" width="140" height="56" rx="6"/>
+  <text x="80" y="42" text-anchor="middle">Operator: admin</text>
+  <text x="80" y="58" text-anchor="middle">bootstrap --email</text>
+  <rect class="ok" x="180" y="20" width="140" height="56" rx="6"/>
+  <text x="250" y="42" text-anchor="middle">set_password_link=</text>
+  <text x="250" y="58" text-anchor="middle">single use, 60 min</text>
+  <rect class="ok" x="350" y="20" width="130" height="56" rx="6"/>
+  <text x="415" y="42" text-anchor="middle">Set password,</text>
+  <text x="415" y="58" text-anchor="middle">authenticator (C24)</text>
+  <rect class="ok" x="510" y="20" width="120" height="56" rx="6"/>
+  <text x="570" y="42" text-anchor="middle">/admin, /fleet</text>
+  <text x="570" y="58" text-anchor="middle">register firewalls</text>
+  <rect class="box" x="10" y="140" width="140" height="56" rx="6"/>
+  <text x="80" y="162" text-anchor="middle">Person: sign-up,</text>
+  <text x="80" y="178" text-anchor="middle">confirm email</text>
+  <rect class="ok" x="180" y="140" width="140" height="56" rx="6"/>
+  <text x="250" y="162" text-anchor="middle">API key and setup</text>
+  <text x="250" y="178" text-anchor="middle">lines (firewall_url)</text>
+  <rect class="ok" x="350" y="140" width="130" height="56" rx="6"/>
+  <text x="415" y="162" text-anchor="middle">Managed firewall</text>
+  <text x="415" y="178" text-anchor="middle">syncs every 10 s</text>
+  <rect class="ok" x="510" y="140" width="120" height="56" rx="6"/>
+  <text x="570" y="162" text-anchor="middle">npm install done</text>
+  <text x="570" y="178" text-anchor="middle">E2E PASS 1.3</text>
+  <path class="edge" d="M150,48 L178,48" marker-end="url(#arr)"/>
+  <path class="edge" d="M320,48 L348,48" marker-end="url(#arr)"/>
+  <path class="edge" d="M480,48 L508,48" marker-end="url(#arr)"/>
+  <path class="edge" d="M150,168 L178,168" marker-end="url(#arr)"/>
+  <path class="edge" d="M320,168 L348,168" marker-end="url(#arr)"/>
+  <path class="edge" d="M480,168 L508,168" marker-end="url(#arr)"/>
+  <path class="edge" d="M570,76 L570,104 L415,104 L415,138" marker-end="url(#arr)"/>
+  <text class="edge-label" x="492" y="98" text-anchor="middle">firewall token</text>
+  <text class="edge-label" x="80" y="214" text-anchor="middle">clock starts here</text>
+  <text class="edge-label" x="570" y="214" text-anchor="middle">clock stops here</text>
+</svg>
+<figcaption id="flow-cap" class="muted">Text version: the operator runs <code>admin bootstrap</code>; the printed link lets the admin set a password; the admin sets up an authenticator and reaches <code>/admin</code> and <code>/fleet</code>. A person signs up and confirms the email (the test reads the mail from <code>email_outbox</code>, S8-3), creates a key, copies the setup lines and runs <code>npm install</code> through the managed firewall. The timer covers sign-up to <code>npm install</code> only; images are built and the stack started before it (S8-16).</figcaption>
+</figure>
+
+<h3>Interface changes (added)</h3>
+<pre><code class="language-toml"># server config (docs/management-server.md)
+[portal]
+firewall_url = "https://fw.acme.test:8443"   # optional; https only, or http to a loopback host (S8-17 item 4)</code></pre>
+<pre><code class="language-bash">probation-server admin bootstrap --config &lt;file&gt; --email &lt;address&gt;   # prints set_password_link=; without [portal] prints a note and no link
+probation-server admin reset-link --config &lt;file&gt; --email &lt;address&gt;  # live global admin only; audit row admin.reset_link
+probation-server admin after-restore                                # run after a database restore (C129); prints the before and after values</code></pre>
+<p class="muted">Changed: <code>admin bootstrap</code> now requires <code>--config</code> and <code>--email</code>. The sync API routes, portal routes and the firewall's request path are unchanged. New migration <code>0006_after_restore.sql</code>.</p>
+
+<h3>Review fixes (9, S8-17)</h3>
+<ol>
+  <li>A new set-password link cancels the older unused links, and setting a password burns the rest.</li>
+  <li><code>admin bootstrap</code> without <code>[portal]</code> still creates everything and tells you to run <code>admin reset-link</code> later.</li>
+  <li>Deploy example and docs: the config must set <code>listen = "0.0.0.0:8080"</code>, and the token file must be readable by the image's <code>firewall</code> user.</li>
+  <li>A bad <code>[portal] firewall_url</code> (no host, or plain http to a non-loopback host) is refused at start.</li>
+  <li>The end-to-end script fails clearly when the stack is not ready, prints the logs and cleans up.</li>
+  <li><code>deploy/probation.service</code> has <code>LogsDirectory=probation</code>.</li>
+  <li>Restore docs: list the security changes made after the backup and apply them again (key revocations with <code>admin revoke-key</code> before start).</li>
+  <li><code>after-restore</code> also moves the rollout id sequence forward, so a new rollout never reuses an old id.</li>
+  <li>The firewall image is labelled with its title and <code>Elastic-2.0</code>.</li>
+</ol>
+
+<h2>Proof</h2>
+<table>
+  <caption class="sr-only">Final verification of slice 8 on c6fa0c2</caption>
+  <thead><tr><th>Executed witness</th><th style="width:44%">Observed result and limit</th></tr></thead>
+  <tbody>
+    <tr><td><code>tests/e2e/signup_to_install.sh</code></td><td><span class="pass">E2E PASS 1.3</span>; script 3 min 47 s with builds; propagation p99 5.049 s / 5.035 s &le; 10 s</td></tr>
+    <tr><td><code>cargo bench --bench warm_metadata --bench artifact_throughput -- --managed</code></td><td><span class="pass">artifact PASS every run</span> (99.6-100.8%); <span class="note">warm_metadata 82.6-101.4% over 8 runs, 4 below 90%</span>, on a host at load 8-20 from other processes</td></tr>
+    <tr><td><code>axe.mjs --slice 5</code> / <code>6</code> / <code>7</code></td><td><span class="pass">22 / 26 / 12 pages, 0 problems</span></td></tr>
+    <tr><td><code>docker build -f crates/probation-server/Dockerfile .</code>; <code>docker build .</code> (via the E2E, podman)</td><td><span class="pass">exit 0</span>; both labelled Elastic-2.0</td></tr>
+    <tr><td><code>cargo test -p probation-server --test after_restore</code></td><td><span class="pass">ok. 1 passed</span></td></tr>
+    <tr><td><code>cargo test --workspace --no-fail-fast</code></td><td><span class="pass">708 passed, 0 failed</span></td></tr>
+    <tr><td><code>router molecule-verify</code> (full plan)</td><td><span class="pass">PASS 12/12, 0 PENDING</span></td></tr>
+    <tr><td>analyzers; C123 query; <code>authorization_read_once</code>; <code>key_canary</code>; clippy, fmt; <code>cargo package</code></td><td><span class="pass">as documented; 1 site; 4; 2; clean</span>; packages probation and probation-policy 0.2.2</td></tr>
+    <tr><td>mutants on the review fixes</td><td><span class="pass">M1-M6 killed</span></td></tr>
+  </tbody>
+</table>
+
+<h2>Limits</h2>
+<ul>
+  <li><strong>Your decision S8-18:</strong> the warm_metadata throughput result was accepted as is on a busy machine (under S2-4). It must be rerun on a quiet machine (load &lt; 2) before release.</li>
+  <li><strong>S8-11:</strong> the lead reverted one wording edit in the approved <code>03-program-design.md</code> (commit 848a4e5). The rule stays recorded as deviation S2-3.</li>
+  <li><strong>Before release:</strong>
+    <ul>
+      <li>a version above 0.2.2, because probation 0.2.2 is already on crates.io (S8-15; not bumped, your decision);</li>
+      <li>the quiet-machine benchmark (S8-18);</li>
+      <li>a lawyer's check of the Elastic-2.0 license <span class="muted">(lead's note)</span>;</li>
+      <li>nothing has been pushed: <code>management-server</code> has no upstream branch.</li>
+    </ul>
+  </li>
+  <li><strong>Backlog:</strong> the <code>blocklist_reload</code> timing flake (S6-12); the stale <code>last_apply_error</code> in rollouts (S7-14); self-service <code>/reset</code> can cancel the operator's printed link (recover with <code>admin reset-link</code>); the flaky <code>tp16_unopenable_log_path_fails_startup</code> (B5); <code>after-restore</code> fits about 2,147 runs of the rollout sequence.</li>
+  <li>Render: not inspected.</li>
+</ul>
+
+<h2>Next</h2>
+<p>No approved slice remains. All 8 slices are done, and <code>router check</code> reports no findings (the review verdicts of slices 3-6 are now recorded, a32877a). Release steps are listed under Limits.</p>
+
+<h2>Recommendation</h2>
+<p>Complete the feature. Every acceptance check passed except the warm_metadata throughput on a loaded host, which you accepted with a recheck before release.</p>
+
+<p class="muted">Status: slices 1-8 done; plan delivered. Branch <code>management-server</code>, HEAD a32877a, not pushed. Presentation setting: auto.</p>
+<p class="muted">Sources: 00-status.md (Slice 8 proof); evidence/slice-8.md (S8-1 to S8-18, Final verification); evidence/tdd-slice-8.md; evidence/slice-6.md (S6-12); evidence/slice-7.md (S7-14); 04-slices.md (row 8); git log 848a4e5, a32877a; router check at a32877a.</p>
+
+<p class="question">Complete the feature, or re-steer?</p>
+</main>
+</body>
+</html>
