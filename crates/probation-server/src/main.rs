@@ -43,6 +43,12 @@ enum Command {
 enum AdminCommand {
     /// Create the first global admin, an organisation, a key and a firewall token.
     Bootstrap {
+        /// The server's settings file: the set-password link uses its `[portal] base_url`.
+        #[arg(long)]
+        config: PathBuf,
+        /// The first global admin's email address.
+        #[arg(long)]
+        email: String,
         #[arg(long)]
         org: String,
         #[arg(long)]
@@ -50,6 +56,13 @@ enum AdminCommand {
         /// An address range the firewall's token is accepted from; repeatable.
         #[arg(long = "firewall-source", required = true)]
         firewall_sources: Vec<IpNet>,
+    },
+    /// Print a fresh set-password link for a global admin (a lost first link).
+    ResetLink {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        email: String,
     },
     /// Revoke an API key by its id.
     RevokeKey {
@@ -100,15 +113,20 @@ async fn run(command: Command) -> Result<(), String> {
                 .map_err(|err| format!("migrate: {err}"))
         }
         Command::Admin(AdminCommand::Bootstrap {
+            config,
+            email,
             org,
             firewall,
             firewall_sources,
         }) => {
+            let base_url = base_url(&config)?;
             let pool = pool(DATABASE_URL).await?;
             let input = Bootstrap {
                 org_name: org,
                 firewall_name: firewall,
                 firewall_sources,
+                email,
+                base_url,
             };
             match admin::bootstrap(&pool, input).await {
                 Ok(done) => {
@@ -119,12 +137,34 @@ async fn run(command: Command) -> Result<(), String> {
                     println!("key={}", done.key);
                     println!("firewall_id={}", done.firewall_id);
                     println!("firewall_token={}", done.firewall_token);
+                    // Printed here only, never mailed: the operator opens it, or hands it
+                    // to the admin, before it expires.
+                    println!("set_password_link={}", done.set_password_link);
                     Ok(())
                 }
                 Err(BootstrapError::AlreadyDone) => Err(
                     "bootstrap refused: a global admin exists already; nothing changed".to_owned(),
                 ),
+                Err(BootstrapError::BadEmail) => {
+                    Err("bootstrap refused: --email is not an email address".to_owned())
+                }
+                Err(BootstrapError::EmailTaken) => Err(
+                    "bootstrap refused: that address already has a sign-in; nothing changed"
+                        .to_owned(),
+                ),
                 Err(BootstrapError::Store(err)) => Err(format!("bootstrap: {err}")),
+            }
+        }
+        Command::Admin(AdminCommand::ResetLink { config, email }) => {
+            let base_url = base_url(&config)?;
+            let pool = pool(DATABASE_URL).await?;
+            match admin::reset_link(&pool, &base_url, &email).await {
+                Ok(Some(link)) => {
+                    println!("set_password_link={link}");
+                    Ok(())
+                }
+                Ok(None) => Err(format!("no live global admin signs in as {email}")),
+                Err(err) => Err(format!("reset-link: {err}")),
             }
         }
         Command::Admin(AdminCommand::RevokeKey { key_id }) => {
@@ -202,6 +242,15 @@ fn portal_deps(
         password_params: argon2::Params::default(),
         trusted_proxies: config.server.trusted_proxies.clone(),
     }))
+}
+
+/// `[portal] base_url` of the settings file at `path`: every link is built from it.
+fn base_url(path: &std::path::Path) -> Result<url::Url, String> {
+    let config = probation_server::Config::load(path)?;
+    config
+        .portal
+        .map(|portal| portal.base_url)
+        .ok_or_else(|| format!("{}: has no [portal] base_url for the link", path.display()))
 }
 
 async fn pool(variable: &str) -> Result<sqlx::PgPool, String> {

@@ -6,6 +6,9 @@ keys, the organisations and their policy layers, and the self-service portal whe
 people sign up, create keys and edit policy. Firewalls fetch what they need and cache
 it; they never take requests from the server.
 
+Licensed under the Elastic License 2.0 (`Elastic-2.0`), like the rest of the
+repository; see [LICENSE](../LICENSE).
+
 Operating the firewall itself (disk, blocklist, logs, TLS) is in
 [operations.md](operations.md). Backups, restores, reverse proxies and the release
 recovery for both are in its section 13.
@@ -103,17 +106,24 @@ Secrets come only from the environment, never from the file:
 2. Create the first global admin, an organisation, a service key and a firewall token:
 
    ```sh
-   probation-server admin bootstrap --org "Example" --firewall fw-1 \
+   probation-server admin bootstrap --config /etc/probation-server/config.toml \
+     --email ops@example.org --org "Example" --firewall fw-1 \
      --firewall-source 203.0.113.10/32
    ```
 
-   It prints the key and the firewall token once; only their hashes are stored. It
-   refuses to run a second time. `--firewall-source` (repeatable) lists the addresses
-   the token is accepted from; behind a load balancer, list the balancer in
-   `[server] trusted_proxies` and give the firewall's own address here.
+   It prints the key, the firewall token and a `set_password_link` once, on this
+   console only; only hashes are stored and no mail is sent. The global admin's sign-in
+   is `--email`, already confirmed because you vouch for it. Open the link (it works
+   once, for 60 minutes, and is built from `[portal] base_url`) to choose the
+   password, then sign in: the portal first asks for an authenticator app, and `/admin`
+   and the fleet page open once it is set up (C24). Bootstrap refuses to run a second
+   time. `--firewall-source` (repeatable) lists the addresses the token is accepted
+   from; behind a load balancer, list the balancer in `[server] trusted_proxies` and
+   give the firewall's own address here.
 
-   Known gap: the global admin this creates has no way to sign in to the portal, so
-   `/admin` and the fleet page need a signed-up login that holds the role.
+   Lost the link, or it expired? `probation-server admin reset-link --config … --email
+   ops@example.org` prints a fresh one for that global admin (audited). It changes only
+   the password: an authenticator already set up is still asked for.
 
 3. Start the server (`probation-server serve --config …`), with its port published only
    to your TLS proxy.
@@ -145,7 +155,8 @@ in compose, `Restart=on-failure` under systemd. Both examples in `deploy/` have 
 | --- | --- |
 | `probation-server serve --config FILE` | The server. Prunes `change_log`, activity and the audit log by their retention every hour. |
 | `probation-server migrate` | Applies the schema (owner role). |
-| `probation-server admin bootstrap …` | First run only (§4). |
+| `probation-server admin bootstrap --config FILE --email ADDR …` | First run only (§4). |
+| `probation-server admin reset-link --config FILE --email ADDR` | A fresh set-password link for a global admin (§4). |
 | `probation-server admin revoke-key --key-id N` | Revokes any key; every firewall stops accepting it within one sync interval. |
 | `probation-server admin after-restore` | After restoring the database from a backup, before starting the server (operations.md §13). |
 
@@ -160,4 +171,8 @@ up, installs a package with npm through a firewall, and measures how fast policy
 and key revocations reach both firewalls. It needs docker with compose, node 20 or
 later, npm, openssl, curl and outbound https to registry.npmjs.org, api.osv.dev and
 api.pwnedpasswords.com. The release workflow runs it, and nothing is released unless it
-prints `E2E PASS` and both `propagation … p99 <= interval` lines.
+prints `E2E PASS` and both `propagation … p99 <= interval` lines. The seconds on the
+`E2E PASS` line run from the sign-up page to `npm install` finishing; building the
+images and starting the stack happen before that clock starts. Firewall-2 is
+registered by the global admin `admin bootstrap` created, through its set-password
+link.

@@ -4,14 +4,19 @@
 
 mod common;
 
+use std::net::SocketAddr;
 use std::process::Command;
+use std::sync::Arc;
 
 use common::{Db, EditFailure};
 use probation_policy::api::KeyId;
 use probation_policy::{Block, Ecosystem, Layer, LayerKind, PlaceRef};
+use probation_server::accounts::{Outbound, OutboundError};
 use probation_server::fleet;
 use probation_server::keys::{self, RevokeError};
+use probation_server::portal::{self, Portal, PortalConfig, PortalDeps};
 use probation_server::tenancy::{NotFound, PLATFORM, Session, authorize};
+use reqwest::StatusCode;
 
 fn stricter(layer: &mut Layer) {
     layer.blocks.push(Block::Package {
@@ -309,11 +314,13 @@ async fn t_tenant_isolation() {
     );
 }
 
-fn bootstrap(db: &Db) -> std::process::Output {
+fn bootstrap(db: &Db, config: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_probation-server"))
+        .args(["admin", "bootstrap", "--config"])
+        .arg(config)
         .args([
-            "admin",
-            "bootstrap",
+            "--email",
+            "Ops@Example.test",
             "--org",
             "Acme",
             "--firewall",
@@ -326,12 +333,135 @@ fn bootstrap(db: &Db) -> std::process::Output {
         .expect("the binary runs")
 }
 
-/// T-grant-bootstrap (T3): `probation-server admin bootstrap` creates exactly one global
-/// admin and one audit row; run again it refuses and changes nothing.
+/// The leaked-password range API, answering that no password has leaked.
+struct NothingLeaked;
+
+#[async_trait::async_trait]
+impl Outbound for NothingLeaked {
+    async fn get(&self, _url: &url::Url, _bearer: Option<&str>) -> Result<Vec<u8>, OutboundError> {
+        Ok(Vec::new())
+    }
+
+    async fn post_form(
+        &self,
+        url: &url::Url,
+        _form: &[(&str, &str)],
+    ) -> Result<Vec<u8>, OutboundError> {
+        Err(OutboundError::Refused(url.to_string()))
+    }
+}
+
+/// The portal on a loopback port, and one browser's cookie, never following redirects.
+struct Visitor {
+    http: reqwest::Client,
+    base: String,
+    cookie: Option<String>,
+}
+
+impl Visitor {
+    async fn start(db: &Db) -> Visitor {
+        let portal = Portal::new(PortalDeps {
+            pool: db.app.clone(),
+            config: PortalConfig {
+                base_url: url::Url::parse(BASE_URL).unwrap(),
+                google: None,
+                github: None,
+                microsoft: None,
+                leaked_password_url: url::Url::parse("https://api.pwnedpasswords.com/range/")
+                    .unwrap(),
+                smtp: None,
+                firewall_url: None,
+            },
+            outbound: Arc::new(NothingLeaked),
+            mailer: None,
+            secret_key: [7; 32],
+            password_params: argon2::Params::new(8, 1, 1, None).unwrap(),
+            trusted_proxies: Vec::new(),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                portal::router(Arc::new(portal))
+                    .into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+        Visitor {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            base: format!("http://{addr}"),
+            cookie: None,
+        }
+    }
+
+    /// (status, Location, body), answered within ten seconds.
+    async fn fetch(
+        &mut self,
+        mut builder: reqwest::RequestBuilder,
+    ) -> (StatusCode, Option<String>, String) {
+        if let Some(cookie) = &self.cookie {
+            builder = builder.header("cookie", cookie);
+        }
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), builder.send())
+            .await
+            .expect("the portal answers in time")
+            .unwrap();
+        for value in answer.headers().get_all("set-cookie") {
+            let value = value.to_str().unwrap();
+            self.cookie =
+                (!value.contains("Max-Age=0")).then(|| value.split(';').next().unwrap().to_owned());
+        }
+        let location = answer
+            .headers()
+            .get("location")
+            .map(|value| value.to_str().unwrap().to_owned());
+        (answer.status(), location, answer.text().await.unwrap())
+    }
+
+    async fn get(&mut self, path: &str) -> (StatusCode, Option<String>, String) {
+        let builder = self.http.get(format!("{}{path}", self.base));
+        self.fetch(builder).await
+    }
+
+    async fn post(
+        &mut self,
+        path: &str,
+        form: &[(&str, &str)],
+    ) -> (StatusCode, Option<String>, String) {
+        let builder = self.http.post(format!("{}{path}", self.base)).form(form);
+        self.fetch(builder).await
+    }
+}
+
+/// The value of the hidden field `name` in `body`.
+fn hidden(body: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    let start = body.find(&marker).expect("a hidden field") + marker.len();
+    body[start..start + body[start..].find('"').unwrap()].to_owned()
+}
+
+const BASE_URL: &str = "https://portal.test/";
+
+/// T-grant-bootstrap (T3, S8-14): `probation-server admin bootstrap` creates exactly one
+/// global admin and one audit row, and prints a single-use link that sets the admin's
+/// first password; signed in, the admin must set up an authenticator before `/admin`
+/// (C24). Run again it refuses and changes nothing.
 #[tokio::test]
 async fn t_grant_bootstrap() {
     let db = Db::fresh().await;
-    let first = bootstrap(&db);
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    std::fs::write(
+        &config,
+        format!("[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"{BASE_URL}\"\n"),
+    )
+    .unwrap();
+    let first = bootstrap(&db, &config);
     assert!(
         first.status.success(),
         "{}",
@@ -371,7 +501,63 @@ async fn t_grant_bootstrap() {
             .unwrap();
     assert_eq!(actor, (None, true, "admin.bootstrap".to_owned()));
 
-    let second = bootstrap(&db);
+    // The printed link sets the first password, once.
+    let link = printed
+        .lines()
+        .find_map(|line| line.strip_prefix("set_password_link="))
+        .expect("a set-password link");
+    let path = link
+        .strip_prefix("https://portal.test")
+        .filter(|path| path.starts_with("/reset/confirm?token="))
+        .unwrap_or_else(|| panic!("{link}"));
+    let token = path.split_once("token=").unwrap().1;
+    let mut admin = Visitor::start(&db).await;
+    let (status, _, form) = admin.get(path).await;
+    assert_eq!(status, StatusCode::OK, "{form}");
+    let password = "bootstrap admin passphrase";
+    let choose = [
+        ("csrf", hidden(&form, "csrf")),
+        ("token", token.to_owned()),
+        ("new", password.to_owned()),
+        ("again", password.to_owned()),
+    ];
+    let choose: Vec<(&str, &str)> = choose.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (status, _, done) = admin.post("/reset/confirm", &choose).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(done.contains("Your password is changed"), "{done}");
+    let (status, _, _) = admin.post("/reset/confirm", &choose).await;
+    assert_eq!(status, StatusCode::GONE, "a used link is refused");
+    assert_eq!(admin.get(path).await.0, StatusCode::GONE);
+
+    // Signed in, the global admin is sent to set up an authenticator first (C24).
+    let (_, _, signin) = admin.get("/signin").await;
+    let csrf = hidden(&signin, "csrf");
+    let (status, location, body) = admin
+        .post(
+            "/signin",
+            &[
+                ("csrf", &csrf),
+                ("email", "ops@example.test"),
+                ("password", password),
+            ],
+        )
+        .await;
+    assert_eq!(
+        (status, location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/account")),
+        "{body}"
+    );
+    let (status, location, _) = admin.get("/admin").await;
+    assert_eq!(
+        (status, location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/account#totp-heading"))
+    );
+
+    let mut before_second = Vec::new();
+    for sql in tables {
+        before_second.push(db.count(sql).await);
+    }
+    let second = bootstrap(&db, &config);
     assert!(!second.status.success());
     assert!(
         String::from_utf8_lossy(&second.stderr).contains("refused"),
@@ -382,5 +568,29 @@ async fn t_grant_bootstrap() {
     for sql in tables {
         after_second.push(db.count(sql).await);
     }
-    assert_eq!(after_second, after_first);
+    assert_eq!(after_second, before_second);
+
+    // `admin reset-link`: a fresh link for a global admin only.
+    let reset_link = |email: &str| {
+        Command::new(env!("CARGO_BIN_EXE_probation-server"))
+            .args(["admin", "reset-link", "--config"])
+            .arg(&config)
+            .args(["--email", email])
+            .env("PROBATION_SERVER_DATABASE_URL", &db.app_url)
+            .output()
+            .expect("the binary runs")
+    };
+    let fresh = reset_link("ops@example.test");
+    assert!(
+        fresh.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    let fresh = String::from_utf8(fresh.stdout).unwrap();
+    let path = fresh
+        .trim()
+        .strip_prefix("set_password_link=https://portal.test")
+        .unwrap_or_else(|| panic!("{fresh}"));
+    assert_eq!(admin.get(path).await.0, StatusCode::OK);
+    assert!(!reset_link("nobody@example.test").status.success());
 }

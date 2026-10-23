@@ -27,6 +27,9 @@ RUN cargo build --release --locked -p probation-server --bin probation-server
 
 FROM docker.io/library/debian:bookworm-slim
 
+LABEL org.opencontainers.image.title="probation-server" \
+      org.opencontainers.image.licenses="Elastic-2.0"
+
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*

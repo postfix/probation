@@ -1489,6 +1489,22 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
         return Ok(());
     }
     let mut tx = pool.begin().await?;
+    let link = reset_link(&mut tx, base, method).await?;
+    let body = format!(
+        "Open this link to choose a new password for Probation:\n\n{link}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n"
+    );
+    enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
+    tx.commit().await
+}
+
+/// A link that sets the password of the email-and-password `method`: a hashed,
+/// single-use reset token with a reset link's lifetime, written in the caller's
+/// transaction.
+pub(crate) async fn reset_link(
+    conn: &mut PgConnection,
+    base: &Url,
+    method: i32,
+) -> Result<String, sqlx::Error> {
     let token = random_token();
     sqlx::query(
         "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
@@ -1497,14 +1513,70 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
     .bind(token_hash(&token))
     .bind(method)
     .bind(RESET_MINUTES)
-    .execute(&mut *tx)
+    .execute(conn)
     .await?;
-    let body = format!(
-        "Open this link to choose a new password for Probation:\n\n{}reset/confirm?token={token}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n",
-        base_path(base)
-    );
-    enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
-    tx.commit().await
+    Ok(format!("{}reset/confirm?token={token}", base_path(base)))
+}
+
+/// `admin bootstrap`'s global admin: an email-and-password method with no password
+/// yet, confirmed because the host operator vouches for the address. `None` when the
+/// address already has an email-and-password method.
+pub(crate) async fn insert_unset_password(
+    conn: &mut PgConnection,
+    login_id: i32,
+    email: &str,
+) -> Result<Option<i32>, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO sign_in_methods (login_id, kind, subject, email, verified_at)
+         VALUES ($1, 'password', $2, $2, now())
+         ON CONFLICT DO NOTHING RETURNING id",
+    )
+    .bind(login_id)
+    .bind(email)
+    .fetch_optional(conn)
+    .await
+}
+
+/// `admin reset-link`: a fresh set-password link for the live global admin whose
+/// email-and-password address is `email`, with an audit row; `None` when there is no
+/// such admin. It signs no one in, so an admin with an authenticator still needs it.
+pub async fn operator_reset_link(
+    pool: &PgPool,
+    base: &Url,
+    email: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(email) = normal_email(email) else {
+        return Ok(None);
+    };
+    let mut tx = pool.begin().await?;
+    let found: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT m.id, m.login_id FROM sign_in_methods AS m
+         JOIN logins AS l ON l.id = m.login_id
+         WHERE m.kind = 'password' AND lower(m.email) = $1 AND l.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM memberships AS g
+                       WHERE g.login_id = m.login_id AND g.role = 'global_admin')",
+    )
+    .bind(&email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((method, login_id)) = found else {
+        return Ok(None);
+    };
+    let link = reset_link(&mut tx, base, method).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor: &Actor::Operator,
+            org_id: None,
+            action: "admin.reset_link",
+            subject: format!("login:{login_id}"),
+            before: None,
+            after: None,
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(Some(link))
 }
 
 pub(crate) async fn reset_token_live(pool: &PgPool, token: &str) -> Result<bool, sqlx::Error> {

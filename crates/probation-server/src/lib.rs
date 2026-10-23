@@ -128,12 +128,16 @@ pub mod admin {
 
     use crate::keys::{self, KeyKind, RevokeError};
     use crate::tenancy::{self, Actor};
-    use crate::{audit, fleet};
+    use crate::{accounts, audit, fleet};
 
     pub struct Bootstrap {
         pub org_name: String,
         pub firewall_name: String,
         pub firewall_sources: Vec<IpNet>,
+        /// The global admin's email address; the host operator vouches for it.
+        pub email: String,
+        /// `[portal] base_url`: the set-password link is built from it.
+        pub base_url: url::Url,
     }
 
     /// What `bootstrap` created. The key and the firewall token are shown once.
@@ -144,12 +148,18 @@ pub mod admin {
         pub key: String,
         pub firewall_id: i32,
         pub firewall_token: String,
+        /// Sets the global admin's first password; single-use, a reset link's lifetime.
+        pub set_password_link: String,
     }
 
     #[derive(Debug)]
     pub enum BootstrapError {
         /// A global admin exists already; nothing was written.
         AlreadyDone,
+        /// Not an email address; nothing was written.
+        BadEmail,
+        /// The address already has an email-and-password sign-in; nothing was written.
+        EmailTaken,
         Store(sqlx::Error),
     }
 
@@ -159,7 +169,8 @@ pub mod admin {
         }
     }
 
-    /// Creates the first global admin, an organisation, a service key on it and a
+    /// Creates the first global admin, with an email-and-password sign-in that has no
+    /// password yet and a link that sets one, an organisation, a service key on it and a
     /// firewall token, with one audit row, in one transaction. Refused once any global
     /// admin exists (T3): the platform row is locked first, so two concurrent runs
     /// cannot both see none.
@@ -167,6 +178,7 @@ pub mod admin {
         pool: &PgPool,
         input: Bootstrap,
     ) -> Result<Bootstrapped, BootstrapError> {
+        let email = accounts::normal_email(&input.email).ok_or(BootstrapError::BadEmail)?;
         let mut tx = pool.begin().await?;
         sqlx::query("SELECT 1 FROM platform_settings WHERE id = 1 FOR UPDATE")
             .execute(&mut *tx)
@@ -185,6 +197,10 @@ pub mod admin {
             .bind(login_id)
             .execute(&mut *tx)
             .await?;
+        let method = accounts::insert_unset_password(&mut tx, login_id, &email)
+            .await?
+            .ok_or(BootstrapError::EmailTaken)?;
+        let set_password_link = accounts::reset_link(&mut tx, &input.base_url, method).await?;
         let org = tenancy::create_org(&mut tx, &input.org_name).await?;
         let key = keys::insert(
             &mut tx,
@@ -200,6 +216,7 @@ pub mod admin {
         let actor = Actor::Operator;
         let after = serde_json::json!({
             "global_admin": login_id,
+            "email": email,
             "org": org.0,
             "key": key.id.0,
             "firewall": firewall.id,
@@ -224,7 +241,18 @@ pub mod admin {
             key: key.secret,
             firewall_id: firewall.id,
             firewall_token: firewall.token,
+            set_password_link,
         })
+    }
+
+    /// `admin reset-link`: a fresh set-password link for a live global admin, as the host
+    /// operator's recovery for a lost first link.
+    pub async fn reset_link(
+        pool: &PgPool,
+        base_url: &url::Url,
+        email: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        accounts::operator_reset_link(pool, base_url, email).await
     }
 
     /// `admin revoke-key`: the host operator revokes any key by id.

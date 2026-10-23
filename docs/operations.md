@@ -862,6 +862,21 @@ key's policy, fetched from `probation-server`. Setting it up is in
 [management-server.md](management-server.md). This section covers what changes
 for the operator.
 
+### First run: the first global admin
+
+`probation-server admin bootstrap --config <server settings> --email <address>
+--org … --firewall … --firewall-source …` creates the first global admin, an
+organisation, a service key and the first firewall's token, and refuses to run
+again once a global admin exists. The address is the admin's sign-in, confirmed
+because you vouch for it. The command prints, on your console only, a
+`set_password_link`: built from `[portal] base_url`, single-use, valid for 60
+minutes, never mailed. Open it, choose the password and sign in; the portal then
+asks for an authenticator app before `/admin` and the fleet page work. If the
+link is lost or expired, `probation-server admin reset-link --config … --email
+<address>` prints a new one for a global admin; it is audited and does not skip
+an authenticator that is already set up. Treat both links like passwords: anyone
+who opens one first sets the password.
+
 ### Behind a reverse proxy: list it in `trusted_proxies`
 
 A managed firewall uses the client's address twice: for the network lock (an

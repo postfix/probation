@@ -10,8 +10,9 @@
 //    portal; the p99 of (last firewall apply - commit) is at most the interval, for
 //    edits and revocations each. Prints the two `propagation … p99` lines.
 //
-// The mail the portal would send is read from its outbox (no SMTP relay is configured),
-// and two setup steps the portal has no page for are written with SQL (S8-3).
+// The mail the portal would send is read from its outbox (no SMTP relay is configured,
+// S8-3); everything else goes through the portal, firewall-2 and the organisation's
+// limits through the operator's global admin from `admin bootstrap` (S8-14).
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
@@ -28,6 +29,8 @@ const firewalls = [env.E2E_FIREWALL_1_PORT, env.E2E_FIREWALL_2_PORT].map(
 const INTERVAL = 10;
 const CHANGES = 50;
 const BUDGET_SECONDS = 600;
+/// `admin bootstrap --email` in signup_to_install.sh.
+const OPERATOR_EMAIL = "ops@example.com";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -215,7 +218,11 @@ async function signUpToInstall() {
   expect(existsSync(installed) && JSON.parse(readFileSync(installed, "utf8")).version === "7.0.0", "is-number 7.0.0 is installed");
 
   const seconds = (performance.now() - started) / 1000;
-  console.log(`E2E ${seconds < BUDGET_SECONDS ? "PASS" : "FAIL"} ${seconds.toFixed(1)}`);
+  // The clock starts at the sign-up page, after the images are built and the stack is up:
+  // it measures what a new organisation waits for, not the operator's deployment.
+  console.log(
+    `E2E ${seconds < BUDGET_SECONDS ? "PASS" : "FAIL"} ${seconds.toFixed(1)} (seconds from sign-up to npm install done; deployment not timed)`,
+  );
   expect(seconds < BUDGET_SECONDS, `sign-up to install took ${seconds} s`);
   return user;
 }
@@ -227,34 +234,65 @@ function p99(committed, applied) {
   return latencies[Math.ceil(latencies.length * 0.99) - 1];
 }
 
-async function propagation(user) {
-  const { browser } = user;
-  // An org admin edits policy only with an authenticator (C24): turn it on, then sign
-  // in again with a code.
-  let page = await browser.submit("/account", "/account/totp/setup", {});
+/// Turns the authenticator on for a signed-in `who` ({browser, email, password});
+/// returns its secret and the step whose code turned it on.
+async function enableTotp(who) {
+  const page = await who.browser.submit("/account", "/account/totp/setup", {});
   const secret = between(page.body, '<code id="totp-key">', "</code>");
   const enabledAt = step();
-  page = await browser.post("/account/totp/enable", { code: totp(secret, enabledAt), csrf: hidden(page.body, "csrf") });
-  expect(page.status === 303, `authenticator: ${page.status}\n${page.body}`);
+  const on = await who.browser.post("/account/totp/enable", { code: totp(secret, enabledAt), csrf: hidden(page.body, "csrf") });
+  expect(on.status === 303, `authenticator for ${who.email}: ${on.status}\n${on.body}`);
+  return { secret, enabledAt };
+}
 
-  // S8-3, test-only setup the portal has no page for: the bootstrap's global admin
-  // cannot sign in, so this login becomes one to register firewall-2; and this
-  // organisation's keys get room for 52 keys and the pollers' request rate (C114).
-  const login = sql(`SELECT login_id FROM sign_in_methods WHERE kind = 'password' AND email = '${user.email}'`);
-  sql(`INSERT INTO memberships (login_id, role) VALUES (${login}, 'global_admin')`);
-  const org = sql(`SELECT id FROM orgs WHERE name = '${user.org}'`);
-  sql(`INSERT INTO limits (scope_kind, scope_id, rate_per_min, max_keys, max_service_keys) VALUES ('org', ${org}, 10000000, 1000, 1000)`);
+/// Signs `who` out and in again with a password and a code from a later step than
+/// the one that turned the authenticator on (a code is accepted once).
+async function signInWithCode(who, { secret, enabledAt }) {
+  await who.browser.submit("/account", "/signout", {});
+  let page = await who.browser.submit("/signin", "/signin", { email: who.email, password: who.password });
+  expect(page.location === "/totp", `${who.email} is asked for a code: ${page.status} ${page.location}`);
+  while (step() === enabledAt) await sleep(1000);
+  page = await who.browser.submit("/totp", "/totp", { code: totp(secret, step()) });
+  expect(page.status === 303, `code for ${who.email}: ${page.status}\n${page.body}`);
+}
 
-  await browser.submit("/account", "/signout", {});
-  page = await browser.submit("/signin", "/signin", { email: user.email, password: user.password });
-  expect(page.location === "/totp", `sign-in asks for a code: ${page.status} ${page.location}`);
-  while (step() === enabledAt) await sleep(1000); // a code is accepted once
-  page = await browser.submit("/totp", "/totp", { code: totp(secret, step()) });
-  expect(page.status === 303, `code: ${page.status}\n${page.body}`);
+async function propagation(user) {
+  const { browser } = user;
+  let page;
+  // The operator's global admin from `admin bootstrap` (S8-14): the printed link sets
+  // its password; a global admin, like an org admin, acts only with an authenticator
+  // (C24), so both turn one on and sign in again with a code.
+  const link = readFileSync(join(work, "bootstrap.out"), "utf8").match(/^set_password_link=(\S+)$/m);
+  expect(link, "admin bootstrap printed a set-password link");
+  const path = new URL(link[1]).pathname + new URL(link[1]).search;
+  const operator = { browser: new Browser(), email: OPERATOR_EMAIL, password: randomBytes(18).toString("base64url") };
+  page = await operator.browser.get(path);
+  page = await operator.browser.post("/reset/confirm", {
+    csrf: hidden(page.body, "csrf"),
+    token: new URL(link[1]).searchParams.get("token"),
+    new: operator.password,
+    again: operator.password,
+  });
+  expect(page.body.includes("Your password is changed"), `set-password link: ${page.status}\n${page.body}`);
+  page = await operator.browser.submit("/signin", "/signin", { email: operator.email, password: operator.password });
+  expect(page.status === 303 && page.location === "/account", `operator sign-in: ${page.status} ${page.location}`);
+  const operatorTotp = await enableTotp(operator);
+  const userTotp = await enableTotp(user);
+  await signInWithCode(operator, operatorTotp);
+  await signInWithCode(user, userTotp);
 
-  page = await browser.submit("/fleet", "/fleet/register", { name: "firewall-2", sources: "0.0.0.0/0 ::/0" });
+  page = await operator.browser.submit("/fleet", "/fleet/register", { name: "firewall-2", sources: "0.0.0.0/0 ::/0" });
   writeFileSync(join(work, "firewall-2.token"), `${between(page.body, '<code id="new-token">', "</code>")}\n`);
   execFileSync("bash", ["-c", "$E2E_COMPOSE up -d --no-deps firewall-2"], { stdio: "inherit" });
+  // Room for 52 keys and the pollers' request rate (C114), as tests/propagation.rs gives.
+  const policy = (await browser.get("/policy")).location;
+  expect(policy?.startsWith("/policy/org-"), `the organisation's policy page: ${policy}`);
+  page = await operator.browser.submit("/admin", `/admin/limits/orgs/${policy.slice("/policy/org-".length)}`, {
+    rate: "10000000",
+    keys: "1000",
+    service: "1000",
+  });
+  expect(page.status === 303, `organisation limits: ${page.status}\n${page.body}`);
   await Promise.all([ready(0), ready(1)]);
 
   const keys = [];
@@ -286,8 +324,6 @@ async function propagation(user) {
     for (const key of keys) await warm(f, `/npm/commander/${keep}`, key);
   }
 
-  const policy = (await browser.get("/policy")).location;
-  expect(policy?.startsWith("/policy/org-"), `the organisation's policy page: ${policy}`);
   const edits = new Map();
   const revocations = new Map();
   const editsApplied = new Map();

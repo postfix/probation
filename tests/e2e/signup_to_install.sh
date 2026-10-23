@@ -5,7 +5,9 @@
 # Builds both images, starts docker-compose.e2e.yml, does what an operator does once
 # (migrate, the app's database role, `admin bootstrap`, firewall-1's token), then hands
 # over to drive.mjs, which signs a new organisation up and installs with npm through
-# firewall-1 (prints `E2E PASS <seconds>`), and measures propagation to two firewalls
+# firewall-1 (prints `E2E PASS <seconds>`: from the sign-up page to npm install done,
+# with the images built and the stack started before the clock), and measures
+# propagation to two firewalls, the second registered by the bootstrap's global admin
 # (prints `propagation edits p99 <= interval` and `propagation revocations p99 <=
 # interval`). Exits 0 only when all three pass.
 #
@@ -110,7 +112,8 @@ done
 $E2E_COMPOSE run --rm --no-deps server migrate
 $E2E_COMPOSE exec -T postgres psql -U probation -d probation -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE probation_e2e LOGIN PASSWORD 'probation' IN ROLE probation_app"
-$E2E_COMPOSE run --rm --no-deps server admin bootstrap --org Operators \
+$E2E_COMPOSE run --rm --no-deps server admin bootstrap \
+  --config /etc/probation-server/config.toml --email ops@example.com --org Operators \
   --firewall firewall-1 --firewall-source 0.0.0.0/0 --firewall-source ::/0 >"$E2E_WORK/bootstrap.out"
 sed -n 's/^firewall_token=//p' "$E2E_WORK/bootstrap.out" >"$E2E_WORK/firewall-1.token"
 test -s "$E2E_WORK/firewall-1.token"
