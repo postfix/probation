@@ -67,7 +67,8 @@ export class Stack {
 
   /// One compose command; throws unless it exits 0 (`check: false` returns instead).
   compose(args, { input, check = true, quiet = false } = {}) {
-    const profiles = this.nightly ? ["--profile", "nightly"] : [];
+    // `down` also removes the nightly clients a previous nightly stack left.
+    const profiles = this.nightly || args[0] === "down" ? ["--profile", "nightly"] : [];
     const run = spawnSync(this.command[0], [...this.command.slice(1), "-p", this.project, ...this.files, ...profiles, ...args], {
       env: this.env,
       input,
