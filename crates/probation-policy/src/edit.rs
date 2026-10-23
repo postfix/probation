@@ -227,6 +227,15 @@ fn find_invalid(current: &Layer, proposed: &Layer) -> Option<String> {
             proposed.kind, current.kind
         ));
     }
+    // A layer may shrink back under the cap, never grow past it (T24).
+    if proposed.blocks.len() > crate::MAX_LAYER_BLOCKS
+        && proposed.blocks.len() > current.blocks.len()
+    {
+        return Some(format!(
+            "a layer holds at most {} blocks",
+            crate::MAX_LAYER_BLOCKS
+        ));
+    }
     let bad_version = |version: &str| version.is_empty() || version.trim() != version;
     for exception in &proposed.exceptions {
         if !names::valid_name(exception.ecosystem, &exception.name) {

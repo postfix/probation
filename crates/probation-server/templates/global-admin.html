@@ -120,8 +120,8 @@
 <input id="limit-org-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
 <label for="limit-org-keys">Most keys, per member</label>
 <input id="limit-org-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
-<label for="limit-org-service">Most service keys</label>
-<input id="limit-org-service" name="service" type="number" min="0" value="{{ limits.max_service_keys.unwrap_or_default() }}">
+<label for="limit-org-service">Most service keys <span class="mut">(blank = no limit)</span></label>
+<input id="limit-org-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
 <button type="submit" class="pri">Save organisation limits</button>
 </fieldset>
 </form>
@@ -135,8 +135,8 @@
 <input id="limit-{{ id }}-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
 <label for="limit-{{ id }}-keys">Keys per member</label>
 <input id="limit-{{ id }}-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
-<label for="limit-{{ id }}-service">Service keys</label>
-<input id="limit-{{ id }}-service" name="service" type="number" min="0" value="{{ limits.max_service_keys.unwrap_or_default() }}">
+<label for="limit-{{ id }}-service">Service keys <span class="mut">(blank = no limit)</span></label>
+<input id="limit-{{ id }}-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
 <button type="submit" class="pri">Save {{ name }}'s limits</button>
 </fieldset>
 </form>
@@ -148,9 +148,11 @@
 <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="org">
 <label for="own-org">Organisation</label>
 <select id="own-org" name="org">{% for (id, name) in view.default_orgs %}<option value="{{ id }}">{{ name }}</option>{% endfor %}</select>
-<label for="own-rate">Requests per minute</label><input id="own-rate" name="rate" type="number" min="1" required>
-<label for="own-keys">Keys per member</label><input id="own-keys" name="keys" type="number" min="1" required>
-<label for="own-service">Service keys</label><input id="own-service" name="service" type="number" min="0">
+{% if let Some(limits) = view.org_limits() %}
+<label for="own-rate">Requests per minute</label><input id="own-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
+<label for="own-keys">Keys per member</label><input id="own-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
+<label for="own-service">Service keys <span class="mut">(blank = no limit)</span></label><input id="own-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
+{% endif %}
 <button type="submit">Set own limits</button>
 </fieldset>
 </form>
@@ -163,12 +165,12 @@
 <form method="post" action="/admin/retention">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <label for="retention-activity">Blocked and held downloads (Activity), in days <span class="mut">default 90</span></label>
-<input id="retention-activity" name="activity_days" type="number" min="7" required value="{{ view.activity_days }}">
+<input id="retention-activity" name="activity_days" type="number" min="7" max="36500" required value="{{ view.activity_days }}">
 <label for="retention-audit">Audit log, in days <span class="mut">default 365</span></label>
-<input id="retention-audit" name="audit_days" type="number" min="7" required value="{{ view.audit_days }}">
+<input id="retention-audit" name="audit_days" type="number" min="7" max="36500" required value="{{ view.audit_days }}">
 <button type="submit" class="pri">Save</button>
 </form>
-<p class="mut">At least 7 days each; no maximum. Older history is deleted once an hour.</p>
+<p class="mut">From 7 to 36500 days each. Older history is deleted once an hour.</p>
 </section>
 
 <section aria-labelledby="platform-heading">

@@ -2593,8 +2593,14 @@ async fn mark_login_deleted(conn: &mut PgConnection, login_id: i32) -> Result<()
         .await?;
     change_owned_keys(conn, login_id).await?;
     let actor = login_actor(conn, login_id).await?;
-    // Its automation tokens go with the login (C86).
+    // Its automation tokens and open global-admin links go with the login (C86, T3).
     crate::keys::revoke_tokens_of(conn, &actor, login_id, true).await?;
+    sqlx::query(
+        "DELETE FROM invitations WHERE created_by = $1 AND org_id IS NULL AND accepted_by IS NULL",
+    )
+    .bind(login_id)
+    .execute(&mut *conn)
+    .await?;
     audit::record(
         conn,
         audit::Entry {

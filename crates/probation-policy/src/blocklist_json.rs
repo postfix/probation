@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Block, DigestAlgorithm, Ecosystem};
 
+/// The most records one blocklist file may hold, and the longest reason, in bytes (T24):
+/// with `MAX_LAYER_BLOCKS` they keep a layer's sync answer far below the firewall's cap.
+pub const MAX_ENTRIES: usize = 5_000;
+pub const MAX_REASON_BYTES: usize = 256;
+
 /// What an export writes for a block that has no reason: today's format requires one.
 pub const NO_REASON: &str = "Blocked in Probation";
 
@@ -48,6 +53,24 @@ pub fn import(text: &str) -> Result<Vec<Block>, String> {
         serde_json::from_str(text).map_err(|err| format!("not a blocklist file: {err}"))?;
     if file.schema_version != 1 {
         return Err(format!("schema_version {} is not 1", file.schema_version));
+    }
+    let records = file.blocked_packages.len() + file.blocked_hashes.len();
+    if records > MAX_ENTRIES {
+        return Err(format!(
+            "the file holds {records} records; at most {MAX_ENTRIES} are taken at once"
+        ));
+    }
+    if let Some(long) = file
+        .blocked_packages
+        .iter()
+        .map(|record| &record.reason)
+        .chain(file.blocked_hashes.iter().map(|record| &record.reason))
+        .find(|reason| reason.len() > MAX_REASON_BYTES)
+    {
+        return Err(format!(
+            "a reason is {} bytes long; at most {MAX_REASON_BYTES}",
+            long.len()
+        ));
     }
     let reason = |text: String| Some(text.trim().to_owned()).filter(|text| !text.is_empty());
     let mut blocks = Vec::with_capacity(file.blocked_packages.len() + file.blocked_hashes.len());

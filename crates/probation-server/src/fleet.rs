@@ -200,14 +200,32 @@ pub async fn push_settings(
     distinct.sort_unstable();
     distinct.dedup();
     let mut tx = pool.begin().await?;
-    let live: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM firewalls WHERE id = ANY($1) AND retired_at IS NULL",
+    // The firewalls' rows are locked, so two pushes to one firewall take turns.
+    let live: Vec<i32> = sqlx::query_scalar(
+        "SELECT id FROM firewalls WHERE id = ANY($1) AND retired_at IS NULL ORDER BY id FOR UPDATE",
     )
     .bind(firewalls)
-    .fetch_one(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
-    if live as usize != firewalls.len() || distinct.len() != firewalls.len() {
+    if live.len() != firewalls.len() || distinct.len() != firewalls.len() {
         return Err(ChangeError::NotFound);
+    }
+    // A firewall waiting in an unfinished rollout would take this one's revision and
+    // never report the older one, so the older would time out (M2).
+    let busy: Option<(String, i32)> = sqlx::query_as(
+        "SELECT f.name, s.rollout_id FROM settings_rollout_steps AS s
+         JOIN settings_rollouts AS r ON r.id = s.rollout_id AND r.state IN ('running', 'halted')
+         JOIN firewalls AS f ON f.id = s.firewall_id
+         WHERE s.firewall_id = ANY($1) AND s.state IN ('pending', 'sent')
+         ORDER BY s.rollout_id LIMIT 1",
+    )
+    .bind(firewalls)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((name, rollout)) = busy {
+        return Err(ChangeError::Refused(format!(
+            "Not saved: {name} is still in rollout {rollout}; finish, skip or resume it first."
+        )));
     }
     let rollout: i32 = sqlx::query_scalar(
         "INSERT INTO settings_rollouts (created_by, settings_toml, state) VALUES ($1, $2, 'running') RETURNING id",
@@ -360,8 +378,8 @@ async fn expire(pool: &PgPool) -> Result<(), sqlx::Error> {
              FROM settings_rollouts AS r, firewalls AS f
              WHERE r.id = s.rollout_id AND r.state = 'running' AND f.id = s.firewall_id
                AND s.state = 'sent'
-               AND s.sent_at < now() - make_interval(secs => 3 * COALESCE(
-                       (f.last_report -> 'report' ->> 'effective_period_seconds')::double precision, 60))
+               AND s.sent_at < now() - make_interval(secs => 3 * LEAST(86400, COALESCE(
+                       (f.last_report -> 'report' ->> 'effective_period_seconds')::double precision, 60)))
              RETURNING s.rollout_id
          )
          UPDATE settings_rollouts SET state = 'halted' WHERE id IN (SELECT rollout_id FROM late)",
@@ -371,7 +389,9 @@ async fn expire(pool: &PgPool) -> Result<(), sqlx::Error> {
     .map(drop)
 }
 
-/// "Resume" on a halted rollout: its stopped step is sent again (C71).
+/// "Resume" on a rollout halted by a step that timed out: it is sent again (C71). A
+/// failed step is never resumed: the firewall does not apply a revision it refused
+/// again, so the operator skips it and pushes new settings.
 pub async fn resume(pool: &PgPool, actor: &Actor, rollout: i32) -> Result<(), ChangeError> {
     unhalt(pool, actor, rollout, false).await
 }
@@ -388,11 +408,12 @@ async fn unhalt(pool: &PgPool, actor: &Actor, rollout: i32, skip: bool) -> Resul
     let stopped: Option<(i32, String)> = sqlx::query_as(
         "SELECT s.firewall_id, s.state FROM settings_rollouts AS r
          JOIN settings_rollout_steps AS s ON s.rollout_id = r.id AND s.state IN ('failed', 'timed_out')
-         WHERE r.id = $1 AND r.state = 'halted'
+         WHERE r.id = $1 AND r.state = 'halted' AND ($2 OR s.state = 'timed_out')
          ORDER BY s.position DESC LIMIT 1
          FOR UPDATE OF r",
     )
     .bind(rollout)
+    .bind(skip)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((firewall, state)) = stopped else {
@@ -482,6 +503,10 @@ pub async fn firewalls(pool: &PgPool) -> Result<Vec<FirewallRow>, sqlx::Error> {
         .collect())
 }
 
+/// The longest sync period a firewall's report is taken at: whatever it says, it is
+/// unhealthy after 3 days without a check-in.
+const MAX_PERIOD_SECONDS: u64 = 86_400;
+
 fn health(retired: bool, since: Option<i64>, report: Option<&FirewallReport>) -> (bool, String) {
     if retired {
         return (false, "Retired".to_owned());
@@ -489,7 +514,7 @@ fn health(retired: bool, since: Option<i64>, report: Option<&FirewallReport>) ->
     let (Some(since), Some(report)) = (since, report) else {
         return (false, "Waiting for its first check-in".to_owned());
     };
-    if since > 3 * report.effective_period_seconds.max(1) as i64 {
+    if since > 3 * report.effective_period_seconds.clamp(1, MAX_PERIOD_SECONDS) as i64 {
         return (false, "Unhealthy: missed 3 check-ins".to_owned());
     }
     let upstreams = report.status.upstreams;
@@ -532,6 +557,8 @@ pub struct StepRow {
 pub struct RolloutRow {
     pub id: i32,
     pub state: String,
+    /// Halted by a step that timed out, so "Resume" may send it again.
+    pub resumable: bool,
     pub created: String,
     pub settings: String,
     pub steps: Vec<StepRow>,
@@ -558,6 +585,7 @@ pub async fn rollouts(pool: &PgPool) -> Result<Vec<RolloutRow>, sqlx::Error> {
         .await?;
         rows.push(RolloutRow {
             id,
+            resumable: state == "halted" && steps.iter().any(|(_, step, _)| step == "timed_out"),
             state,
             created,
             settings,

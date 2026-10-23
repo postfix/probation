@@ -413,6 +413,27 @@ pub async fn create_token(
         return Err(KeyError::Denied);
     };
     let mut tx = pool.begin().await?;
+    // The role again under the lock every path that ends it takes (the organisation's
+    // row, or the platform's), so a token is never created by a role just lost (C86).
+    let org = place.org();
+    let lock = if org.is_some() {
+        "SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT 1 FROM platform_settings WHERE id = 1 AND $1::integer IS NULL FOR UPDATE"
+    };
+    sqlx::query(lock).bind(org).execute(&mut *tx).await?;
+    let holds: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM memberships AS m JOIN logins AS l ON l.id = m.login_id
+                        WHERE m.login_id = $1 AND l.deleted_at IS NULL
+                          AND (m.org_id IS NULL OR (m.role = 'org_admin' AND m.org_id = $2)))",
+    )
+    .bind(login)
+    .bind(org)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !holds {
+        return Err(KeyError::Denied);
+    }
     let token = insert(
         &mut tx,
         KeyKind::Automation,

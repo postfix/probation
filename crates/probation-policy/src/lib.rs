@@ -30,6 +30,9 @@ pub const LOCAL_ONLY_SETTINGS: &[&str] = &[
     "siem_auth_header",
 ];
 
+/// The most blocks one layer may hold (T24).
+pub const MAX_LAYER_BLOCKS: usize = 5_000;
+
 /// Where a layer sits. Declared top to bottom, so `Ord` is chain order: platform ->
 /// organisation -> group -> user, or platform -> personal account (C9).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]

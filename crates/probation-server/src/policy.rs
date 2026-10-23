@@ -4,6 +4,8 @@
 //! transaction. Blocklist import, export and the automation push (C80, C86) take the
 //! same path.
 
+use std::collections::HashSet;
+
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -473,12 +475,9 @@ pub async fn push_blocks(
     if replace {
         proposed.blocks = blocks;
     } else {
+        let mut held: HashSet<Block> = proposed.blocks.iter().map(target).collect();
         for block in blocks {
-            if !proposed
-                .blocks
-                .iter()
-                .any(|held| target(held) == target(&block))
-            {
+            if held.insert(target(&block)) {
                 proposed.blocks.push(block);
             }
         }

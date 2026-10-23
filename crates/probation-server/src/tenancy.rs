@@ -408,9 +408,11 @@ impl Tenancy {
     }
 
     /// The actor of a live automation token and the one layer it may write (C86, T9):
-    /// only an `aut_` credential of kind automation, whose creator's login is live and
-    /// whose organisation or personal account is not suspended (C78). Anything else, a
-    /// store error included, is `None` (401).
+    /// only an `aut_` credential of kind automation whose creator's login is live and
+    /// still holds, at this use, the role that let it create the token (an org admin of
+    /// the layer's organisation, or a global admin), and whose organisation or personal
+    /// account is not suspended (C78). Anything else, a store error included, is `None`
+    /// (401).
     pub async fn automation(&self, secret: &str) -> Option<(Actor, Authorized<Place>)> {
         if !secret.starts_with(crate::keys::KeyKind::Automation.prefix()) {
             return None;
@@ -420,7 +422,12 @@ impl Tenancy {
             let token: Option<(i64, String, i32, i32)> = sqlx::query_as(
                 "SELECT k.id, k.place_kind, k.place_id, k.owner_login FROM keys AS k
                  JOIN logins AS l ON l.id = k.owner_login AND l.deleted_at IS NULL
-                 WHERE k.hash = $1 AND k.kind = 'automation' AND k.revoked_at IS NULL",
+                 WHERE k.hash = $1 AND k.kind = 'automation' AND k.revoked_at IS NULL
+                   AND EXISTS (SELECT 1 FROM memberships AS m
+                               WHERE m.login_id = k.owner_login
+                                 AND (m.org_id IS NULL
+                                      OR (m.role = 'org_admin'
+                                          AND m.org_id = place_org(k.place_kind, k.place_id))))",
             )
             .bind(KeyHash::of(secret).0.as_slice())
             .fetch_optional(&mut *conn)
@@ -1438,11 +1445,28 @@ pub async fn accept_invitation(
     token: &str,
 ) -> Result<Option<Option<i32>>, ChangeError> {
     let mut tx = pool.begin().await?;
+    // A global admin's link is taken under the platform row's lock, the one removing a
+    // global admin takes, and only while its sender still is one (C90, T3).
+    let global: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM invitations WHERE token_hash = $1 AND org_id IS NULL)",
+    )
+    .bind(crate::accounts::token_hash(token))
+    .fetch_one(&mut *tx)
+    .await?;
+    if global {
+        sqlx::query("SELECT 1 FROM platform_settings WHERE id = 1 FOR UPDATE")
+            .execute(&mut *tx)
+            .await?;
+    }
     let taken: Option<(i32, Option<i32>, Option<i32>, String)> = sqlx::query_as(
-        "UPDATE invitations SET accepted_by = $2
-         WHERE token_hash = $1 AND accepted_by IS NULL AND expires_at > now()
-           AND (org_id IS NULL OR org_id IN (SELECT id FROM orgs WHERE deleted_at IS NULL))
-         RETURNING id, org_id, group_id, role",
+        "UPDATE invitations AS i SET accepted_by = $2
+         WHERE i.token_hash = $1 AND i.accepted_by IS NULL AND i.expires_at > now()
+           AND (i.org_id IN (SELECT id FROM orgs WHERE deleted_at IS NULL)
+                OR (i.org_id IS NULL
+                    AND EXISTS (SELECT 1 FROM memberships AS m JOIN logins AS l ON l.id = m.login_id
+                                WHERE m.login_id = i.created_by AND m.org_id IS NULL
+                                  AND l.deleted_at IS NULL)))
+         RETURNING i.id, i.org_id, i.group_id, i.role",
     )
     .bind(crate::accounts::token_hash(token))
     .bind(login)
@@ -2109,6 +2133,13 @@ pub async fn remove_global_admin(
         .bind(login)
         .execute(&mut *tx)
         .await?;
+    // Their open global-admin links go with the role.
+    sqlx::query(
+        "DELETE FROM invitations WHERE created_by = $1 AND org_id IS NULL AND accepted_by IS NULL",
+    )
+    .bind(login)
+    .execute(&mut *tx)
+    .await?;
     crate::keys::revoke_tokens_of(&mut tx, actor, login, false).await?;
     let () = audit::record(
         &mut tx,

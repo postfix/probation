@@ -78,11 +78,16 @@
 {% endfor %}
 </ul>
 {% if rollout.state == "halted" %}
+{% if rollout.resumable %}
 <p>The firewalls after the one that stopped get nothing until you resume or skip.</p>
 <div class="row">
 <form method="post" action="/fleet/rollouts/{{ rollout.id }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Resume: send them to it again</button></form>
 <form method="post" action="/fleet/rollouts/{{ rollout.id }}/skip"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Skip it and go on</button></form>
 </div>
+{% else %}
+<p>The firewall refused these settings and will not try them again. Skip it so the firewalls after it get them, then push corrected settings to it.</p>
+<form method="post" action="/fleet/rollouts/{{ rollout.id }}/skip"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Skip it and go on</button></form>
+{% endif %}
 {% endif %}
 {% endfor %}
 </section>

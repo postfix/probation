@@ -825,6 +825,40 @@ async fn t_automation_token_creator_removed() {
         assert_eq!(row.0, Some(oli), "the admin whose change revoked it");
     }
     let _ = oli_place;
+
+    // A role lost by any path, the revoking ones bypassed: the token is checked against
+    // its creator's role when it is used (B1).
+    let raced = org_token(&mut oli_browser, world.acme, &acme_layer, "ci four").await;
+    sqlx::query("UPDATE memberships SET role = 'member' WHERE login_id = $1")
+        .bind(oli)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    let (after, _) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &raced,
+        &acme_layer,
+        one_block_file("npm", "colors"),
+    )
+    .await;
+    assert_eq!(after, StatusCode::UNAUTHORIZED);
+    let mut root = fx.admin("root@probation.test").await;
+    let platform = platform_token(&mut root, "platform ci").await;
+    sqlx::query("DELETE FROM memberships WHERE login_id = $1 AND org_id IS NULL")
+        .bind(world.root)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    let (after, _) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &platform,
+        "platform-1",
+        one_block_file("npm", "colors"),
+    )
+    .await;
+    assert_eq!(after, StatusCode::UNAUTHORIZED);
 }
 
 /// T-portal-admin-in-org (C4, C79): a global admin opens Acme as an org admin, and a
@@ -985,6 +1019,61 @@ async fn t_grant_global_admin() {
         .await;
     assert_eq!(forged.status, StatusCode::NOT_FOUND);
     assert_eq!(state(&fx.db).await, before, "nothing written");
+
+    // A removed global admin's open link grants nothing (M4).
+    fx.operator("kim@probation.test").await;
+    let mut kim = fx.admin("kim@probation.test").await;
+    let invited = kim
+        .submit(
+            "/admin",
+            "/admin/admins/invite",
+            &[("email", "late@probation.test")],
+        )
+        .await;
+    assert_eq!(invited.status, StatusCode::SEE_OTHER, "{}", invited.body);
+    fx.deliver().await;
+    let link = fx.mail.link("late@probation.test", "/invite?token=");
+    let token = link.split("token=").nth(1).unwrap().to_owned();
+    let kim_login: i32 = sqlx::query_scalar(
+        "SELECT login_id FROM sign_in_methods WHERE email = 'kim@probation.test'",
+    )
+    .fetch_one(&fx.db.owner)
+    .await
+    .unwrap();
+    let removed = root
+        .submit("/admin", &format!("/admin/admins/{kim_login}/remove"), &[])
+        .await;
+    assert_eq!(removed.status, StatusCode::SEE_OTHER, "{}", removed.body);
+    let open: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM invitations WHERE created_by = $1 AND accepted_by IS NULL",
+    )
+    .bind(kim_login)
+    .fetch_one(&fx.db.owner)
+    .await
+    .unwrap();
+    assert_eq!(open, 0, "the removed admin's open links are gone");
+    fx.person("late@probation.test").await;
+    let mut late = fx.signed_in("late@probation.test").await;
+    let accepted = late.submit(&link, "/invite", &[("token", &token)]).await;
+    assert_ne!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    // A link of theirs that survived anyway is refused when it is taken.
+    sqlx::query(
+        "INSERT INTO invitations (token_hash, role, created_by, expires_at, email)
+         VALUES (sha256('surviving'::bytea), 'global_admin', $1, now() + interval '1 day', 'late@probation.test')",
+    )
+    .bind(kim_login)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    let accepted = late
+        .submit(
+            "/invite?token=surviving",
+            "/invite",
+            &[("token", "surviving")],
+        )
+        .await;
+    assert_ne!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert_eq!(fx.db.count(globals).await, 2, "root and the first winner");
 }
 
 /// T-portal-global-admin-totp (C24): a global admin with a password login and no
@@ -1487,6 +1576,50 @@ async fn t_portal_limits() {
             .await,
         0
     );
+
+    // No limit on service keys survives a re-save of the page as rendered.
+    let blank = root
+        .submit(
+            "/admin",
+            "/admin/limits",
+            &[
+                ("kind", "org"),
+                ("rate", "6000"),
+                ("keys", "20"),
+                ("service", ""),
+            ],
+        )
+        .await;
+    assert_eq!(blank.status, StatusCode::SEE_OTHER, "{}", blank.body);
+    let page = root.get("/admin").await;
+    assert!(
+        input(&page, "limit-org-service").contains("value=\"\""),
+        "{}",
+        input(&page, "limit-org-service")
+    );
+    let again = root
+        .submit(
+            "/admin",
+            "/admin/limits",
+            &[
+                ("kind", "org"),
+                ("rate", "6000"),
+                ("keys", "20"),
+                ("service", ""),
+            ],
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::SEE_OTHER, "{}", again.body);
+    assert_eq!(
+        fx.db
+            .count(
+                "SELECT count(*) FROM limits WHERE scope_kind = 'org' AND max_service_keys IS NULL"
+            )
+            .await,
+        1
+    );
+    // A new organisation row starts from the platform default.
+    assert!(input(&root.get("/admin").await, "own-rate").contains("value=\"6000\""));
 }
 
 /// T-sync-limits-change (C28, C67, K2): an organisation's new limit applies within one
@@ -1632,6 +1765,46 @@ async fn t_retention() {
         rows[0].5,
         Some(serde_json::json!({"activity_days": 30, "audit_days": 400}))
     );
+
+    // At most 100 years (M5), in the form and in the table.
+    let huge = root
+        .submit(
+            "/admin",
+            "/admin/retention",
+            &[("activity_days", "36501"), ("audit_days", "400")],
+        )
+        .await;
+    assert_eq!(huge.status, StatusCode::CONFLICT, "{}", huge.body);
+    assert!(huge.has("at most 36500 days"), "{}", huge.body);
+    for sql in [
+        "UPDATE platform_settings SET activity_retention_days = 36501",
+        "UPDATE orgs SET audit_retention_days = 36501",
+    ] {
+        assert!(
+            sqlx::query(sql).execute(&fx.db.owner).await.is_err(),
+            "{sql}"
+        );
+    }
+    // One prune failing does not skip the other: with the activity prune refused, the
+    // audit prune still runs.
+    sqlx::query(
+        "INSERT INTO audit_log (at, actor_is_global_admin, org_id, action, subject)
+         VALUES (now() - interval '500 days', false, $1, 'ancient.action', 'x')",
+    )
+    .bind(world.acme.id as i32)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    sqlx::query("REVOKE DELETE ON activity FROM probation_app")
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    assert!(probation_server::audit::prune(&fx.db.app).await.is_err());
+    assert_eq!(
+        audit_rows(&fx.db, "ancient.action").await.len(),
+        0,
+        "the audit prune ran"
+    );
 }
 
 async fn range_id(db: &Db, cidr: &str) -> i32 {
@@ -1701,6 +1874,42 @@ async fn t_portal_ranges_approve() {
     let seen = ana.get(&org_page).await;
     assert!(seen.has("Refused by operator"), "{}", seen.body);
     assert!(seen.has("not your office"), "{}", seen.body);
+
+    // The purge erases a global admin who approved a range and sent an invitation; the
+    // range stays approved (M1, C33).
+    ana.submit(&org_page, &add, &[("cidr", "192.0.2.0/24")])
+        .await;
+    let fourth = range_id(&fx.db, "192.0.2.0/24").await;
+    let kim = fx.operator("kim@probation.test").await;
+    let mut kim_browser = fx.admin("kim@probation.test").await;
+    let approved = kim_browser
+        .submit("/admin", &format!("/admin/ranges/{fourth}/approve"), &[])
+        .await;
+    assert_eq!(approved.status, StatusCode::SEE_OTHER, "{}", approved.body);
+    kim_browser
+        .submit(
+            "/admin",
+            "/admin/admins/invite",
+            &[("email", "x@probation.test")],
+        )
+        .await;
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
+         WHERE id = $1",
+    )
+    .bind(kim)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    assert_eq!(accounts::purge(&fx.db.app).await.unwrap().0, 1);
+    let still: bool =
+        sqlx::query_scalar("SELECT approved_by IS NOT NULL FROM org_ip_ranges WHERE id = $1")
+            .bind(fourth)
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    assert!(still, "the range stays approved");
+    assert!(root.get("/admin").await.has("192.0.2.0/24"));
 }
 
 /// T-sync-ranges (C30, C77, C87): an approval reaches the firewall within one interval;
@@ -1802,6 +2011,12 @@ async fn t_fleet_unhealthy() {
         "{row}"
     );
     set_seen(901).await;
+    let row = fleet_row(&root.get("/fleet").await, id);
+    assert!(row.contains("Unhealthy: missed 3 check-ins"), "{row}");
+
+    // A reported period is taken as at most a day.
+    check_in(&fx, &token, report(0, None, 1_000_000_000_000_000_000)).await;
+    set_seen(3 * 86_400 + 1).await;
     let row = fleet_row(&root.get("/fleet").await, id);
     assert!(row.contains("Unhealthy: missed 3 check-ins"), "{row}");
 }
@@ -1944,15 +2159,38 @@ async fn t_fleet_push_staggered() {
     }
     let page = root.get("/fleet").await;
     assert!(page.has("Halted"), "{}", page.body);
-    for action in ["resume", "skip"] {
-        assert!(
-            page.has(&format!(
-                "action=\"/fleet/rollouts/{failed_rollout}/{action}\""
-            )),
-            "{action}: {}",
-            page.body
-        );
-    }
+    // A failed apply is never retried by the firewall: skip only (M3).
+    assert!(
+        page.has(&format!("action=\"/fleet/rollouts/{failed_rollout}/skip\"")),
+        "{}",
+        page.body
+    );
+    assert!(!page.has(&format!(
+        "action=\"/fleet/rollouts/{failed_rollout}/resume\""
+    )));
+    let before = state(&fx.db).await;
+    let resumed = root
+        .submit(
+            "/fleet",
+            &format!("/fleet/rollouts/{failed_rollout}/resume"),
+            &[],
+        )
+        .await;
+    assert_ne!(resumed.status, StatusCode::SEE_OTHER, "{}", resumed.body);
+    // The second firewall waits in that rollout: a new push to it is refused (M2).
+    let overlapping = push_settings(&mut root, &[two], "sync_interval_seconds = 20").await;
+    assert_eq!(
+        overlapping.status,
+        StatusCode::CONFLICT,
+        "{}",
+        overlapping.body
+    );
+    assert!(
+        overlapping.has(&format!("fw-eu-2 is still in rollout {failed_rollout}")),
+        "{}",
+        overlapping.body
+    );
+    assert_eq!(state(&fx.db).await, before, "nothing written");
     let skipped = root
         .submit(
             "/fleet",
@@ -1961,12 +2199,13 @@ async fn t_fleet_push_staggered() {
         )
         .await;
     assert_eq!(skipped.status, StatusCode::SEE_OTHER, "{}", skipped.body);
-    assert!(
-        check_in(&fx, &two_token, report(0, None, 60))
-            .await
-            .settings
-            .is_some()
-    );
+    let pushed = check_in(&fx, &two_token, report(0, None, 60))
+        .await
+        .settings
+        .expect("the next firewall gets the settings");
+    // It applies them, and the rollout is done.
+    check_in(&fx, &two_token, report(pushed.revision, None, 60)).await;
+    assert_eq!(rollout_state(&fx.db, failed_rollout).await.0, "done");
 
     // The first firewall of the next rollout never reports.
     push_settings(&mut root, &[one, two], "sync_interval_seconds = 45").await;
@@ -2827,4 +3066,46 @@ async fn t_automation_body_limit() {
     body.truncate(cap);
     let (status, text) = blocklist_call(&fx, reqwest::Method::PUT, &token, &acme_layer, body).await;
     assert_eq!(status, StatusCode::OK, "{text}");
+
+    // Entry caps (M6): a file over `blocklist_json::MAX_ENTRIES`, and a layer over
+    // `MAX_LAYER_BLOCKS`, are refused and write nothing.
+    let many = |count: usize, prefix: &str| {
+        let records: Vec<_> = (0..count)
+            .map(|n| serde_json::json!({"ecosystem": "npm", "name": format!("{prefix}-{n}"), "version": null, "reason": "r"}))
+            .collect();
+        serde_json::json!({"schema_version": 1, "blocked_packages": records, "blocked_hashes": []})
+            .to_string()
+            .into_bytes()
+    };
+    let before = state(&fx.db).await;
+    let (status, text) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &token,
+        &acme_layer,
+        many(blocklist_json::MAX_ENTRIES + 1, "one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+    assert_eq!(state(&fx.db).await, before, "nothing written");
+    let (status, text) = blocklist_call(
+        &fx,
+        reqwest::Method::PUT,
+        &token,
+        &acme_layer,
+        many(probation_policy::MAX_LAYER_BLOCKS, "two"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let before = state(&fx.db).await;
+    let (status, text) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &token,
+        &acme_layer,
+        one_block_file("npm", "one-more"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+    assert_eq!(state(&fx.db).await, before, "nothing written");
 }

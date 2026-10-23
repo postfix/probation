@@ -39,8 +39,10 @@ pub async fn record(conn: &mut PgConnection, entry: Entry<'_>) -> Result<(), sql
     .map(drop)
 }
 
-/// The shortest retention either log may have (C68).
+/// The shortest retention either log may have (C68), and the longest: a cutoff past it
+/// would overflow the timestamp, and the prune and every activity upload would fail.
 pub const MIN_RETENTION_DAYS: i32 = 7;
+pub const MAX_RETENTION_DAYS: i32 = 36_500;
 
 /// The platform's retention: (activity days, audit days) (C26).
 pub async fn retention(pool: &PgPool) -> Result<(i32, i32), sqlx::Error> {
@@ -66,6 +68,11 @@ pub async fn set_retention(
         return Err(ChangeError::Refused(
             "Not saved. Each must be at least 7 days.".to_owned(),
         ));
+    }
+    if activity_days > MAX_RETENTION_DAYS || audit_days > MAX_RETENTION_DAYS {
+        return Err(ChangeError::Refused(format!(
+            "Not saved. Each must be at most {MAX_RETENTION_DAYS} days."
+        )));
     }
     let mut tx = pool.begin().await?;
     let (old_activity, old_audit): (i32, i32) = sqlx::query_as(
@@ -107,8 +114,8 @@ pub async fn set_retention(
 
 /// The retention job (C26): deletes activity rows older than their organisation's
 /// retention (the platform's for the platform and personal accounts), then audit rows
-/// through `prune_audit()`, the only way the app role can (T17). Returns how many rows
-/// of each went.
+/// through `prune_audit()`, the only way the app role can (T17). Each runs whether or not
+/// the other failed. Returns how many rows of each went, or the first error.
 pub async fn prune(pool: &PgPool) -> Result<(u64, i64), sqlx::Error> {
     let activity = sqlx::query(
         "DELETE FROM activity AS a
@@ -117,10 +124,10 @@ pub async fn prune(pool: &PgPool) -> Result<(u64, i64), sqlx::Error> {
              (SELECT p.activity_retention_days FROM platform_settings AS p WHERE p.id = 1))))",
     )
     .execute(pool)
-    .await?
-    .rows_affected();
-    let audit: i64 = sqlx::query_scalar("SELECT prune_audit()")
+    .await
+    .map(|done| done.rows_affected());
+    let audit: Result<i64, _> = sqlx::query_scalar("SELECT prune_audit()")
         .fetch_one(pool)
-        .await?;
-    Ok((activity, audit))
+        .await;
+    Ok((activity?, audit?))
 }
