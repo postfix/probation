@@ -30,7 +30,8 @@ jobs:
   # (C82): a new organisation signs up and installs with npm through a managed firewall
   # in under 10 minutes, and changes reach two firewalls within one sync interval.
   # Nothing is published unless this passes. The images it tested are what `images`
-  # publishes.
+  # publishes; they build here without the Actions cache, so nothing a branch wrote into
+  # the cache reaches a published image.
   e2e:
     needs: test
     runs-on: ubuntu-latest

@@ -182,8 +182,10 @@ trusted_proxies = ["${gateway}/32"]
     copyFileSync(join(ROOT, "blocklist.sample.json"), join(this.work, "producer", "blocklist.json"));
   }
 
+  /// The two images (unless E2E_PREBUILT says CI built them already) and the clients.
   build() {
-    this.compose(["build", "server", "firewall-1", ...CLIENTS, ...(this.nightly ? NIGHTLY_CLIENTS.filter((c) => c !== "client-bun") : [])]);
+    const images = process.env.E2E_PREBUILT ? [] : ["server", "firewall-1"];
+    this.compose(["build", ...images, ...CLIENTS, ...(this.nightly ? NIGHTLY_CLIENTS.filter((c) => c !== "client-bun") : [])]);
   }
 
   /// Brings the stack up from nothing and does the operator's one-time steps; leaves

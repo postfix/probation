@@ -22,6 +22,7 @@ and openssl. `tests/e2e/signup_to_install.sh` runs the release witness alone.
 | `E2E_WORK` | `target/e2e` | generated CA, configs and tokens. Keep it on disk, not under `/tmp`. |
 | `E2E_OUT` | `$E2E_WORK/out` | `junit.xml`, plus `logs/<scenario>/` for each failure: every container's log, the fakes' request log, the mail index |
 | `E2E_SKIP_BUILD=1` / `--skip-build` | | use the images already built |
+| `E2E_PREBUILT=1` | | the two product images are built already (CI builds them with the Actions cache); build only the clients |
 | `E2E_KEEP=1` / `--keep` | | leave the stack running afterwards |
 | `E2E_BRIDGE_PORT` | `18128` | the one published port (see below) |
 | `E2E_NET`, `E2E_PROJECT` | `11.220.0`, `probation-e2e` | to run two stacks at once |
@@ -112,6 +113,13 @@ export default async function (h) {
 }
 ```
 
+In managed mode the bootstrap organisation starts with no
+release-age freeze and no OSV check (C125, the user's decision). A version published an
+hour ago installs, and so does one OSV flags as `MAL-`. A scenario that needs a freeze or
+OSV enforcement sets that policy first: the platform layer as `h.operator`, or the org's
+own layer. The standalone firewall has `osv_mode = "enforce"` and the sample's 24-hour
+cooldown from its config file.
+
 A thrown error fails the scenario. Wait for a condition with a deadline (`h.waitFor`),
 never for a fixed time. There are no automatic retries.
 
@@ -145,6 +153,15 @@ days.
   sdist-only install needs the backend published, or `--no-build-isolation` in an image
   that has it.
 
+## Accessibility walk (D11)
+
+`a11y/axe.mjs` is the A11Y-axe and keyboard walk of slices 5 to 7 (C84). Its nightly scenario
+`scenarios/a11y-axe.mjs` runs on a stack of its own: it loads
+`crates/probation-server/tests/seed.sql`, then walks each slice in Chromium through the
+bridge, against the deployed portal behind the TLS gateway. It still runs by hand against
+`cargo run -p probation-server -- serve --config crates/probation-server/tests/portal.toml`
+with `PORTAL_URL`.
+
 ## Suites
 
 | Suite | When | Clients | Blocks |
@@ -153,3 +170,31 @@ days.
 | `nightly` | nightly on main (90 min) | all | opens an issue |
 | `canary` | nightly, live registries (`canary.yml`) | PR clients | nothing; opens an issue |
 | `release` | on a tag (`release.yml`, 2 h), before anything is published | all | the release and the image push (D7) |
+
+### Image builds in CI
+
+Both Dockerfiles build in stages through cargo-chef. One layer holds the compiled
+dependencies, and only a change to `Cargo.toml` or `Cargo.lock` invalidates it. A second
+layer compiles this workspace's own crates. The runtime stage is unchanged. `e2e.yml`
+builds both images with buildx and the GitHub Actions cache (`mode=max`, one scope per
+image), then runs the harness with `E2E_PREBUILT=1`. The release gate builds without a
+cache, so nothing a branch wrote into the cache can reach a published image.
+
+Measured locally with 16 cores (`podman build --no-cache`):
+
+| Image | Cold | Dependencies cached | CPU time, cold |
+|---|---|---|---|
+| firewall | 2 min 32 s (dependencies 1 min 23 s) | 12 s of compiling | 11 min 54 s user |
+| server | 2 min 10 s (dependencies 49 s) | 20 s of compiling | 7 min 3 s user |
+
+Estimate for the PR suite on a hosted 4-vCPU runner:
+- setup: 1 to 1.5 min (checkout, `npm ci`, Chromium with its system dependencies);
+- images, dependencies cached: 3 to 5 min, mostly restoring the cache;
+- images, cold (a lock change, or the first run): 8 to 10 min;
+- pulls and client images: about 2 min;
+- stack start: under 1 min;
+- E2E-signup-to-install: under 1 min.
+
+That leaves 10 to 12 min for the other PR scenarios on a warm cache, and 6 to 8 min on a
+cold one.
+

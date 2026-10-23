@@ -8,13 +8,18 @@
 # the runtime stage brings `ca-certificates`, because the outbound calls (OAuth and
 # OIDC providers, the leaked-password range API) verify against the system trust store.
 
-FROM docker.io/library/rust:1.96.0-bookworm AS build
+FROM docker.io/library/rust:1.96.0-bookworm AS chef
 
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends cmake perl \
  && rm -rf /var/lib/apt/lists/*
+# As in the root `Dockerfile`: dependencies first, in a layer only a manifest or lock
+# change invalidates, then the workspace's own crates.
+RUN cargo install cargo-chef --locked --version 0.1.78
 
 WORKDIR /src
+
+FROM chef AS planner
 
 # Every workspace member's manifest has to be present for `--locked` to resolve, so the
 # whole workspace goes in, as in the root `Dockerfile`.
@@ -22,7 +27,18 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 COPY benches ./benches
 COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
 
+FROM chef AS build
+
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --locked -p probation-server --bin probation-server --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY benches ./benches
+COPY crates ./crates
 RUN cargo build --release --locked -p probation-server --bin probation-server
 
 FROM docker.io/library/debian:bookworm-slim

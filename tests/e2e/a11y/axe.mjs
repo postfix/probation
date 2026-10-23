@@ -1,10 +1,14 @@
 // A11Y-axe and the automatable part of A11Y-keyboard (03 § Test plan, C84: WCAG 2.2 AA).
+// The nightly e2e suite runs it on the e2e stack (scenarios/a11y-axe.mjs, D11); by hand:
 //
-//   node crates/probation-server/tests/a11y/axe.mjs --slice 5
-//   node crates/probation-server/tests/a11y/axe.mjs --slice 6
-//   node crates/probation-server/tests/a11y/axe.mjs --slice 7
+//   node tests/e2e/a11y/axe.mjs --slice 5
+//   node tests/e2e/a11y/axe.mjs --slice 6
+//   node tests/e2e/a11y/axe.mjs --slice 7
 //
-// against the portal served with tests/portal.toml on a database seeded by tests/seed.sql.
+// against a portal on a database seeded by crates/probation-server/tests/seed.sql (by hand:
+// the portal served with crates/probation-server/tests/portal.toml at PORTAL_URL). With
+// A11Y_PROXY set, Chromium reaches the portal through that HTTP proxy (the e2e bridge)
+// and accepts the e2e CA's certificate.
 // The slice 6 run turns on an authenticator for oli@acme.test and the slice 7 run one for
 // admin@probation.test, so run each once per seeded database, after the slice 5 run.
 // Playwright Chromium signs in through the real sign-in form with the seeded logins,
@@ -173,7 +177,7 @@ async function slice6(browser) {
   // Mia, a member: her keys, a key shown once, a refused name, her own policy layer,
   // her activity, her organisation page with her leave request, and the audit log.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'mia@acme.test');
     await go(page, '/keys');
@@ -199,7 +203,7 @@ async function slice6(browser) {
   // Bob, a group admin (no authenticator needed, C24): his group's policy and a refused
   // looser freeze, and its log.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'bob@acme.test');
     await go(page, '/policy');
@@ -217,7 +221,7 @@ async function slice6(browser) {
   // Oli, an org admin: an authenticator first (C24), then the organisation page and
   // its states, service keys, the organisation's policy, activity and audit log.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'oli@acme.test');
     await turnTotpOn(page);
@@ -255,7 +259,7 @@ async function slice6(browser) {
     ['pat@home.test', [['/keys', 'API keys (personal account)'], ['/policy', 'Policy (personal account)'], ['/activity', 'Activity (personal account, empty)'], ['/org', 'Organisation (no organisation)'], ['/audit', 'Audit log (personal account)']]],
     ['admin@probation.test', [['/audit', 'Audit log (global admin)']]],
   ]) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, email);
     for (const [path, name] of pages) {
@@ -271,7 +275,7 @@ async function slice6(browser) {
 async function slice7(browser) {
   // The global admin: an authenticator first (C24), then /admin and /fleet and their states.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'admin@probation.test');
     await turnTotpOn(page);
@@ -320,7 +324,7 @@ async function slice7(browser) {
 
   // Ivy, a member of the suspended Initech: read-only with the banner (C64).
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'ivy@initech.test');
     await go(page, '/keys');
@@ -334,7 +338,7 @@ async function slice7(browser) {
   }
 }
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.A11Y_PROXY ? { proxy: { server: process.env.A11Y_PROXY } } : {});
 try {
   if (slice === '6') {
     await slice6(browser);
@@ -343,7 +347,7 @@ try {
   } else {
   // Signed out.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await go(page, '/signin');
     await audit(page, 'Sign in');
@@ -375,7 +379,7 @@ try {
     ['gus@globex.test', 'Globex org admin'],
     ['pat@home.test', 'personal account only'],
   ]) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, email);
     if (!page.url().endsWith('/account')) throw new Error(`${email} did not reach /account: ${page.url()}`);
@@ -385,7 +389,7 @@ try {
 
   // Pat: a password error, then the authenticator set-up, the code step and its error.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'pat@home.test');
     await page.locator('#current').fill('not my password at all');
@@ -417,7 +421,7 @@ try {
 
   // Ana deletes and restores her personal account; her login stays in Acme.
   {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, 'ana@acme.test');
     await page.locator('#confirm-personal').fill('delete');
@@ -432,7 +436,7 @@ try {
     ['del@home.test', 'This login was deleted', '/deleted'],
     ['new@home.test', 'Confirm your email', '/verify-email'],
   ]) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: Boolean(process.env.A11Y_PROXY) });
     const page = await context.newPage();
     await signIn(page, email);
     if (!page.url().endsWith(path)) throw new Error(`${email} did not reach ${path}: ${page.url()}`);

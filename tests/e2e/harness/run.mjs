@@ -9,7 +9,8 @@
 // mail sink between scenarios, writes JUnit XML and, for each failure, every
 // container's log into $E2E_OUT (default $E2E_WORK/out). Exits 0 only when all pass.
 //
-// Environment: E2E_WORK (default <repo>/target/e2e), E2E_OUT, E2E_COMPOSE_CMD
+// Environment: E2E_WORK (default <repo>/target/e2e), E2E_OUT, E2E_PREBUILT=1 (the two
+// images are built already; build only the clients), E2E_COMPOSE_CMD
 // (default "docker compose"; "podman-compose" works too), E2E_BRIDGE_PORT (18128),
 // E2E_NET (the e2e subnet's first three octets, 11.220.0), E2E_PROJECT (probation-e2e).
 

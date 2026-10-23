@@ -31,7 +31,27 @@ jobs:
           persist-credentials: false
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      # Both images through buildx with the Actions cache: with cargo-chef's dependency
+      # layer cached, only this workspace's crates compile (tests/e2e/README.md).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: localhost/probation:e2e
+          cache-from: type=gha,scope=probation
+          cache-to: type=gha,scope=probation,mode=max
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
+          cache-to: type=gha,scope=probation-server,mode=max
       - run: node tests/e2e/harness/run.mjs --suite pr
+        env:
+          E2E_PREBUILT: "1"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -49,7 +69,27 @@ jobs:
           persist-credentials: false
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      # Both images through buildx with the Actions cache: with cargo-chef's dependency
+      # layer cached, only this workspace's crates compile (tests/e2e/README.md).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: localhost/probation:e2e
+          cache-from: type=gha,scope=probation
+          cache-to: type=gha,scope=probation,mode=max
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
+          cache-to: type=gha,scope=probation-server,mode=max
       - run: node tests/e2e/harness/run.mjs --suite nightly
+        env:
+          E2E_PREBUILT: "1"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -67,7 +107,27 @@ jobs:
         with:
           persist-credentials: false
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      # Both images through buildx with the Actions cache: with cargo-chef's dependency
+      # layer cached, only this workspace's crates compile (tests/e2e/README.md).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: localhost/probation:e2e
+          cache-from: type=gha,scope=probation
+          cache-to: type=gha,scope=probation,mode=max
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
+          cache-to: type=gha,scope=probation-server,mode=max
       - run: node tests/e2e/harness/run.mjs --suite canary
+        env:
+          E2E_PREBUILT: "1"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
