@@ -266,15 +266,6 @@ async function slice6(browser) {
   }
 }
 
-/** Turns on an authenticator for the signed-in login from /account. */
-async function turnTotpOn(page) {
-  await go(page, '/account');
-  await submit(page, 'form[action="/account/totp/setup"] button[type=submit]');
-  const key = await page.locator('#totp-key').textContent();
-  await page.locator('#code').fill(totp(key));
-  await submit(page, 'form[action="/account/totp/enable"] button[type=submit]');
-}
-
 /** Every page and state of slice 7: global admin, fleet, the organisation page's
  * automation tokens and blocklist file, and the suspended banner. */
 async function slice7(browser) {

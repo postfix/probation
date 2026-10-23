@@ -1500,6 +1500,7 @@ async fn t_activity_queued() {
                 Block::Package {
                     ecosystem: Ecosystem::PyPi,
                     name: "alpha".to_owned(),
+                    reason: None,
                 },
             ]),
         );

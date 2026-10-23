@@ -97,3 +97,20 @@ Rechecks after the fix round (2026-10-23, `-j 8`, `--test-threads=8`):
 - The 4 analyzers at `--root crates/probation-server`: 0 findings each.
 - C123 SMTC query: one site in all eight runs, `src/managed/mod.rs:276` `headers.get(AUTHORIZATION)`.
 - `node crates/probation-server/tests/a11y/axe.mjs --slice 7` on a freshly seeded database: `A11Y slice 7: 12 pages, 0 problems`, exit 0 (the halted rollout in the seed now offers Skip only).
+
+## Merge of slice 6 (cec5fa9) and management-server (09d5f4a), 2026-10-23
+
+- `/admin` and `/fleet` gate on slice 6's second factor. A login that is a global admin, its second factor aside, but whose session has none is sent to `second_factor_first()`; any other session gets 404. The slice 7 `second_factor` helper is gone.
+- `accept_invitation`: the link's organisation is read first. An organisation's link is taken under `lock_org`, a global admin's under the platform row's lock (the one `remove_global_admin` takes), and slice 6's sender check ("a live login that is an org admin of the organisation, or a global admin") covers both. It replaces slice 7's own sender clause in the UPDATE; T-grant-global-admin's surviving-link case still fails without it.
+- 0005_admin.sql no longer repeats 0004's statements (approver kept as history, invitation keys ON DELETE CASCADE).
+- Merge fixes: `Top` reads the chosen place from slice 6's `SwitcherPlace`; a new `Block::Package` literal in tests/managed_sync.rs (`t_activity_queued`) got `reason: None`; axe.mjs had two `turnTotpOn` helpers, and the slice 7 copy is dropped.
+- The first workspace run after the merge failed 19 accounts tests with Postgres `53100 could not resize shared memory segment … No space left on device`: my test instance held 1285 leftover test databases (12 GB of its RAM-backed data directory). I dropped them; the rerun passed. This came from the environment, not the code.
+
+Rechecks after the merge (`-j 8`, `--test-threads=8`):
+- `cargo test -p probation-server --test admin_fleet`: `test result: ok. 29 passed`; `--test portal_places`: `test result: ok. 36 passed` (both in the workspace run).
+- `cargo test --workspace -j 8 --no-fail-fast -- --test-threads=8`: exit 0, 47 result lines, 705 passed, 0 failed, 21 ignored (accounts 29, managed_sync 33, authorization_read_once 4, key_canary 2).
+- clippy `-D warnings`: exit 0. `cargo fmt --all -- --check`: exit 0.
+- `router molecule-check`: PASS. `router molecule-verify --plan-root docs/plans/management-server --slice 7`: PASS, 12 of 12.
+- The 4 analyzers at `--root crates/probation-server`: 0 findings each.
+- C123 SMTC query: one site in all eight runs, `src/managed/mod.rs:276`.
+- `node crates/probation-server/tests/a11y/axe.mjs --slice 7` on a freshly seeded database: `A11Y slice 7: 12 pages, 0 problems`, exit 0.
