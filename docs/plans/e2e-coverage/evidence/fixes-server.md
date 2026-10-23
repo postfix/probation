@@ -186,3 +186,78 @@ must be retired again. Docs only, no test.
 - `router molecule-verify`: PASS, 12 checks, 0 findings.
 - The 4 SMTC analyzers at `crates/probation-server`: 0 findings each.
 - C123 query: one site, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.
+
+## Round 3: defects from the P0 e2e run
+
+### F7: a session opened before the address was confirmed survived the confirmation
+
+- Test: `confirming_an_address_ends_the_logins_sessions` (tests/accounts.rs). A squatter
+  signs up with the victim's address and signs in; the owner opens the confirm link in
+  another browser; the squatter's `GET /account` must redirect to `/signin`, and the
+  login must have no session left.
+- Red: `cargo test -p probation-server --test accounts confirming_an_address`:
+  `left: (200, None), right: (303, Some("/signin"))`.
+- Fix (chosen: end all, the safest minimal option): `accounts::verify_email` calls
+  `end_sessions(login, keep: None)` in its transaction, so every session of the login
+  ends, signed in or pending at its TOTP or deleted-login step, the confirmer's included.
+  The confirmation page always continues to `/signin`, so whoever confirms signs in
+  with the password.
+- Green: same command, ok; `--test accounts`, `portal_places`, `admin_fleet` and `tenancy`
+  all pass.
+- Not fixed here: a squatter who chose the password can still sign in again after the
+  owner confirms, until the owner resets it. Closing that needs a design change, such as
+  asking for the password on the confirm page.
+
+### F17: an invitation was lost across sign-up and sign-in
+
+- Test: `invitation_survives_sign_up_and_sign_in` (tests/portal_places.rs; its test
+  `Browser` now keeps cookies by name). A signed-out invitee opens the link, is sent to
+  `/signin`, signs up, confirms, signs in, and `GET /account` must redirect to the
+  invitation, which it accepts; the next `/account` is 200. Planted values
+  (`https://evil.example/`, `//evil.example`, `/admin`, `x&next=/admin`) give 200 and go
+  nowhere, and a link with no usable token sets no cookie.
+- Red: `cargo test -p probation-server --test portal_places invitation_survives`:
+  `left: (200, None), right: (303, Some("/invite?token=…"))`.
+- Fix (chosen over a `next` parameter): `/invite` opened signed out sets a
+  `probation_invite` cookie (Secure, HttpOnly, SameSite=Lax, one day) that holds only the
+  token, and only when it is URL-safe base64 of at most 64 characters. Every sign-in path
+  (password, TOTP, the deleted-login choice, Google/GitHub/Microsoft, company SSO, and
+  sign-up then confirmation) ends on `GET /account`, which sends the browser to
+  `/invite?token=<token>` and clears the cookie. The destination is built by the server
+  from a validated token, so it cannot become an open redirect. A value that is not a
+  token is cleared and ignored. A `next` parameter would have to be carried through every
+  one of those flows and through the confirmation mail.
+- Green: same command, ok.
+
+### ND-2: a wrong `PROBATION_SERVER_SECRET_KEY` failed silently
+
+- Test: `serve_refuses_a_secret_key_that_does_not_match` (tests/serve.rs). A TOTP secret
+  sealed under key `[8; 32]`; `serve` with key `07…` must exit 1, with the stderr naming
+  the mismatch; after the row is sealed again under the key used, `serve` starts and
+  stops on SIGTERM with 0.
+- Red: `cargo test -p probation-server --test serve serve_refuses`: `serve stops at once:
+  Elapsed(())`; serve ran with the wrong key. That first version of the test waited on
+  the process's output and hung until it was killed; the test now polls and kills
+  the process at 20 s.
+- Fix: `accounts::secret_key_matches` opens one TOTP secret and one SSO client secret,
+  when there are any. `serve` with `[portal]` runs it first and, on a mismatch, logs and
+  returns `PROBATION_SERVER_SECRET_KEY does not match the one these secrets were sealed
+  with (a database restored with another key?); serve refused` (exit 1). Decision:
+  refuse, as recommended, because otherwise every TOTP sign-in and SSO sign-in fails
+  silently. A database error during the check only warns, so a slow database does not
+  stop the start. `second_factor` logs an error when the TOTP secret does not open,
+  instead of folding it into "wrong code" (log only, no test).
+- Green: same command, ok (serve.rs: 6 passed).
+- Docs: operations.md (backups: back up the key together with every database backup;
+  serve refuses another key; a troubleshooting row for the new message),
+  management-server.md (the key's row). portal-guide.md §1.2 and §1.8 now describe F7
+  and F17.
+
+### Checks (round 3)
+
+- `cargo test -j 16 --workspace --no-fail-fast -- --test-threads=16`: exit 0, 49
+  binaries, 723 passed, 0 failed, 21 ignored.
+- clippy `-D warnings` and `fmt --check`: clean.
+- `router molecule-verify`: PASS, 12 checks, 0 findings.
+- The 4 SMTC analyzers at `crates/probation-server`: 0 findings each.
+- C123 query: one site, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.

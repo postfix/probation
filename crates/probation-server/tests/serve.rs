@@ -101,6 +101,60 @@ impl Server {
     }
 }
 
+/// ND-2: `serve` refuses to start when `PROBATION_SERVER_SECRET_KEY` does not open the
+/// secrets already sealed in the database (a restore with another key), and says so;
+/// with the key they were sealed with it starts.
+#[tokio::test]
+async fn serve_refuses_a_secret_key_that_does_not_match() {
+    use probation_server::accounts::{SecretBox, totp_aad};
+    let db = Db::fresh().await;
+    let login = db.login().await;
+    let plant = |key: [u8; 32]| {
+        sqlx::query(
+            "INSERT INTO totp (login_id, secret_enc, enabled_at) VALUES ($1, $2, now())
+             ON CONFLICT (login_id) DO UPDATE SET secret_enc = EXCLUDED.secret_enc",
+        )
+        .bind(login)
+        .bind(SecretBox::new(key).seal(&totp_aad(login), b"a totp secret"))
+        .execute(&db.owner)
+    };
+    plant([8; 32]).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    std::fs::write(
+        &config,
+        "[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"http://127.0.0.1/\"\n",
+    )
+    .unwrap();
+    let mut refused = std::process::Command::new(env!("CARGO_BIN_EXE_probation-server"))
+        .args(["serve", "--config"])
+        .arg(&config)
+        .env("PROBATION_SERVER_DATABASE_URL", &db.app_url)
+        .env("PROBATION_SERVER_SECRET_KEY", "07".repeat(32))
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while refused.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(20) {
+            let _ = refused.kill();
+            panic!("serve runs with a secret key that does not match");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let refused = refused.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the one these secrets were sealed with"),
+        "{stderr}"
+    );
+    plant(common::SECRET_KEY).await.unwrap();
+    let mut server = Server::start(&db).await;
+    server.sigterm();
+    assert!(server.exit_within(Duration::from_secs(5)).await.success());
+}
+
 /// F8: SIGTERM stops `serve`, its background jobs included, with exit code 0 within a
 /// few seconds.
 #[tokio::test]

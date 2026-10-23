@@ -53,7 +53,16 @@ pub(crate) async fn show(State(portal): State<Shared>, headers: HeaderMap) -> Re
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
-    show_with(&portal, &signed_in, StatusCode::OK, |_| {}).await
+    // Every sign-in ends here: back to the invitation opened before it (F17).
+    let forget = match super::kept_invitation(&headers) {
+        Some((Some(back), forget)) => return with_cookie(redirect(&back), Some(forget)),
+        Some((None, forget)) => Some(forget),
+        None => None,
+    };
+    with_cookie(
+        show_with(&portal, &signed_in, StatusCode::OK, |_| {}).await,
+        forget,
+    )
 }
 
 /// The account page, adjusted by `with` (an error in one of its sections).

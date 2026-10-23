@@ -426,9 +426,11 @@ exits.
 
 Back up Postgres the way you back up any Postgres database (`pg_dump`, or your
 provider's snapshots). The server keeps nothing else, except its settings file
-and its environment. Keep `PROBATION_SERVER_SECRET_KEY` with the backups, but
-apart from them: without it the authenticator secrets, SSO client secrets and
-sealed bodies of unsent mail in the backup cannot be read.
+and its environment. Back up `PROBATION_SERVER_SECRET_KEY` together with every
+database backup, but store it apart from them: without it the authenticator
+secrets, SSO client secrets and sealed bodies of unsent mail in the backup cannot
+be read. A restored database needs the key it was sealed with; `serve` refuses to
+start with another one.
 
 To restore:
 
@@ -1384,6 +1386,7 @@ Changing the retention is written to the audit log.
 | Firewall stays stopped after a settings push | No restart policy. | Add one (section 2) and start it. |
 | A push shows an error on the fleet page | The pushed settings failed their checks or the start. | The firewall runs on its previous settings. Fix the push and send it again. |
 | Server stops at start: `PROBATION_SERVER_SECRET_KEY is not set`, or `must be 64 hex characters (32 bytes)` | `[portal]` is set and the key is missing or wrong. | Set the key you used before. A new key makes stored authenticator and SSO secrets unreadable. |
+| Server stops at start: `PROBATION_SERVER_SECRET_KEY does not match the one these secrets were sealed with` | The key does not open a stored authenticator or SSO secret: usually a database restored from a backup taken under another key. | Set the key the database was sealed with (the one backed up with it). |
 | Server stops at start: `PROBATION_SERVER_<PROVIDER>_CLIENT_SECRET is not set` | A provider section with no secret. | Set the secret, or remove the section. |
 | `bootstrap refused: a global admin exists already; nothing changed` | Bootstrap ran before. | Use `admin reset-link` for a lost link. |
 | `no live global admin signs in as …` from `reset-link` | That address is not a global admin's email sign-in. | Check the address. |

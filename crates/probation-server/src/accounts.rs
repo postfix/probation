@@ -540,7 +540,8 @@ pub enum Verified {
 
 /// Confirms the address of the link's method, once, and creates what the sign-up asked
 /// for: an organisation with the signer as its only org admin (C5) or a personal
-/// account (C6).
+/// account (C6). Every session of the login ends: one opened before the address was
+/// confirmed may be someone else's, who signed up with this address.
 pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let used: Option<(i32, Value)> = sqlx::query_as(
@@ -564,6 +565,7 @@ pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::
     let Some(login_id) = confirmed else {
         return Ok(Verified::BadLink);
     };
+    end_sessions(&mut tx, login_id, None).await?;
     let actor = Actor::own_account(login_id, false);
     match payload["kind"].as_str() {
         Some("org") => {
@@ -963,6 +965,23 @@ impl SecretBox {
     }
 }
 
+/// Whether `secrets` opens what the database holds sealed already: one TOTP secret and one
+/// SSO client secret, when there are any (T16). Another key, as after a restore with a
+/// different `PROBATION_SERVER_SECRET_KEY`, opens neither.
+pub async fn secret_key_matches(pool: &PgPool, secrets: &SecretBox) -> Result<bool, sqlx::Error> {
+    let sealed: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        "(SELECT 'totp:' || login_id, secret_enc FROM totp LIMIT 1)
+         UNION ALL
+         (SELECT 'org:' || id, sso_client_secret_enc FROM orgs
+          WHERE sso_client_secret_enc IS NOT NULL LIMIT 1)",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(sealed
+        .iter()
+        .all(|(aad, sealed)| secrets.open(aad, sealed).is_some()))
+}
+
 /// The associated data of an organisation's SSO client secret: its row's id.
 pub fn sso_secret_aad(org_id: i32) -> String {
     format!("org:{org_id}")
@@ -1310,7 +1329,13 @@ pub(crate) async fn second_factor(
         .fetch_optional(&mut *tx)
         .await?;
         let step = row.and_then(|(sealed, last_step)| {
-            let secret = secrets.open(&totp_aad(login_id), &sealed)?;
+            let Some(secret) = secrets.open(&totp_aad(login_id), &sealed) else {
+                tracing::error!(
+                    login_id,
+                    "the TOTP secret does not open: PROBATION_SERVER_SECRET_KEY does not match the one these secrets were sealed with"
+                );
+                return None;
+            };
             code_step(&secret, &code, last_step)
         });
         match step {

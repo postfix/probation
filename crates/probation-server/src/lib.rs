@@ -105,6 +105,21 @@ pub async fn serve(
     portal: Option<portal::PortalDeps>,
 ) -> std::io::Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
+    if let Some(deps) = &portal {
+        let secrets = accounts::SecretBox::new(deps.secret_key);
+        // A wrong key would only show as failed sign-ins (ND-2).
+        match accounts::secret_key_matches(&deps.pool, &secrets).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let refused = "PROBATION_SERVER_SECRET_KEY does not match the one these secrets were sealed with (a database restored with another key?); serve refused";
+                tracing::error!("{refused}");
+                return Err(std::io::Error::other(refused));
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "PROBATION_SERVER_SECRET_KEY could not be checked")
+            }
+        }
+    }
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -125,10 +140,11 @@ pub async fn serve(
     let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies));
     let mut router = build_router(state);
     if let Some(deps) = portal {
+        let secrets = accounts::SecretBox::new(deps.secret_key);
         jobs.extend(accounts::spawn_jobs(
             deps.pool.clone(),
             deps.mailer.clone(),
-            accounts::SecretBox::new(deps.secret_key),
+            secrets,
             &stopping,
         ));
         router = router.merge(portal::router(Arc::new(portal::Portal::new(deps))));

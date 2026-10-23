@@ -125,7 +125,7 @@ Secrets come only from the environment, never from the file:
 | --- | --- | --- |
 | `PROBATION_SERVER_DATABASE_URL` | `serve`, `admin …` | A login role that is a member of `probation_app` (§4). Owns nothing. |
 | `PROBATION_SERVER_MIGRATE_DATABASE_URL` | `migrate` | The schema owner. Needs `CREATEROLE` on the first run. |
-| `PROBATION_SERVER_SECRET_KEY` | `serve` with `[portal]` | 64 hex characters (32 bytes), for example from `openssl rand -hex 32`. Seals secrets stored in the database (authenticator keys, SSO client secrets). Losing it loses them; keep it with the database backups, but apart from them. |
+| `PROBATION_SERVER_SECRET_KEY` | `serve` with `[portal]` | 64 hex characters (32 bytes), for example from `openssl rand -hex 32`. Seals secrets stored in the database (authenticator keys, SSO client secrets). Losing it loses them; back it up together with every database backup, but store it apart from them. `serve` refuses to start when the key does not open the secrets already stored. |
 | `PROBATION_SERVER_GOOGLE_CLIENT_SECRET`, `PROBATION_SERVER_GITHUB_CLIENT_SECRET`, `PROBATION_SERVER_MICROSOFT_CLIENT_SECRET` | `serve` | Required for each provider section you set. |
 | `PROBATION_SERVER_SMTP_PASSWORD` | `serve` | With `[portal.smtp] username`; empty when unset. |
 | `RUST_LOG` | all | Log filter; default `info`. Logs go to stderr. |

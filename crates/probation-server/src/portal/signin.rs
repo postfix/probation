@@ -268,16 +268,9 @@ pub(crate) async fn verify_email(
         };
     }
     let (status, view) = match accounts::verify_email(&portal.pool, &query.token).await {
-        Ok(Verified::Done { .. }) => (
-            StatusCode::OK,
-            SignupView::Confirmed {
-                next: if session.login_id.is_some() {
-                    "/account"
-                } else {
-                    "/signin"
-                },
-            },
-        ),
+        // The login's sessions ended with the confirmation (F7): whoever confirmed signs
+        // in with the password.
+        Ok(Verified::Done { .. }) => (StatusCode::OK, SignupView::Confirmed { next: "/signin" }),
         Ok(Verified::BadLink) => (StatusCode::GONE, SignupView::BadLink),
         Err(err) => return unavailable(err),
     };

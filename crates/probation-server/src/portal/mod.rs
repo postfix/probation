@@ -471,14 +471,54 @@ const COOKIE_NAME: &str = "probation_session";
 
 /// The session token the browser sent, if any.
 fn cookie_token(headers: &HeaderMap) -> Option<String> {
+    cookie(headers, COOKIE_NAME)
+}
+
+fn cookie(headers: &HeaderMap, wanted: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == COOKIE_NAME)
+        .find(|(name, _)| *name == wanted)
         .map(|(_, value)| value.to_owned())
+}
+
+/// The invitation a signed-out visitor opened, kept for a day across sign-up, the
+/// address confirmation and sign-in, which all end on `/account` (F17). Only a token
+/// is kept, never a URL, so the way back is always `/invite?token=…`.
+const INVITE_COOKIE: &str = "probation_invite";
+
+/// An invitation token as its link carries it: URL-safe base64 and nothing else.
+fn invite_token(token: &str) -> bool {
+    (1..=64).contains(&token.len())
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+pub(crate) fn invite_cookie(token: &str) -> Option<HeaderValue> {
+    invite_token(token).then(|| {
+        HeaderValue::from_str(&format!(
+            "{INVITE_COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=86400"
+        ))
+        .expect("a cookie")
+    })
+}
+
+/// The kept invitation's way back, and the cookie that forgets it; `None` when the
+/// browser keeps none. A value that is not a token is forgotten and goes nowhere.
+pub(crate) fn kept_invitation(headers: &HeaderMap) -> Option<(Option<String>, HeaderValue)> {
+    let token = cookie(headers, INVITE_COOKIE)?;
+    let forget = HeaderValue::from_str(&format!(
+        "{INVITE_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
+    ))
+    .expect("a cookie");
+    Some((
+        invite_token(&token).then(|| format!("/invite?token={token}")),
+        forget,
+    ))
 }
 
 /// The cookie for a new session: `Secure` and `HttpOnly` (C101), `Lax` so an IdP's

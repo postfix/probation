@@ -752,6 +752,53 @@ async fn outbox_run_stops_between_mails() {
     );
 }
 
+/// F7: confirming an address ends every session of its login. Someone who signed up
+/// with another person's address and stayed signed in loses that session when the owner
+/// confirms; the confirmer signs in with the password, like anyone else.
+#[tokio::test]
+async fn confirming_an_address_ends_the_logins_sessions() {
+    let fx = Fixture::start().await;
+    let mut squatter = fx.browser();
+    let fields = [
+        ("email", "victim@acme.test"),
+        ("password", PASSWORD),
+        ("kind", "personal"),
+    ];
+    let page = squatter.submit("/signup", "/signup", &fields).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let signed_in = sign_in(&mut squatter, "victim@acme.test", PASSWORD).await;
+    assert_eq!(
+        signed_in.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        signed_in.body
+    );
+    let mut owner = fx.browser();
+    fx.deliver().await;
+    let link = fx.mail.link("victim@acme.test", "/verify-email?token=");
+    let confirmed = owner.get(&link).await;
+    assert!(
+        confirmed.has("Your email address is confirmed"),
+        "{}",
+        confirmed.body
+    );
+    assert!(confirmed.has("href=\"/signin\""), "{}", confirmed.body);
+    let account = squatter.get("/account").await;
+    assert_eq!(
+        (account.status, account.location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/signin")),
+        "{}",
+        account.body
+    );
+    let login = login_of(&fx.db, "victim@acme.test").await;
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE login_id = $1")
+        .bind(login)
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0);
+}
+
 /// T-portal-signup-personal (C6): a personal account whose chain is platform -> personal.
 #[tokio::test]
 async fn t_portal_signup_personal() {

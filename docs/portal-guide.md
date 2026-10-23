@@ -76,7 +76,8 @@ invitation (§1.8), or use company SSO if the organisation has connected it.
 ### 1.2 Confirm your email
 
 The email has a link to `/verify-email`. It works once and expires in 24 hours. Opening
-it confirms the address; then press **Continue**.
+it confirms the address and signs out every session of that login, in every browser;
+then press **Continue** and sign in with your password.
 
 Until the address is confirmed, a signed-in login reaches only the **Confirm your
 email** page; nothing else works. On that page, **Send the link again** sends a new
@@ -186,8 +187,9 @@ In **Account settings** → **Your places**:
 
 ### 1.8 Join an organisation with an invitation
 
-An org admin sends you an email with a link to `/invite`. Sign in (or create a login)
-first, then open the link. The page says what it grants, for example "Join Acme as a
+An org admin sends you an email with a link to `/invite`. Open it; if you are not
+signed in, the portal sends you to sign in (or to create a login and confirm it) and
+then back to the invitation, in the same browser, for a day. The page says what it grants, for example "Join Acme as a
 member in the &lt;group&gt; group". Press **Accept**.
 
 - The link works once, for 7 days, for whichever login accepts it. Make sure you are
