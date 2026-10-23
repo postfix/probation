@@ -119,7 +119,8 @@ export default async function pythonClients(h) {
   blockedSince("uv pip install (artifact URL)", since);
   // The lock pins the blocked 1.0.0: install fails and the lock is not rewritten.
   run = poetry(`rm -rf .venv && poetry install`);
-  fails("poetry install from the lock", run, new RegExp(mixed));
+  // The blocked 1.0.0 is not on the firewall's page, so Poetry finds no file for the pin.
+  fails("poetry install from the lock", run, new RegExp(`Unable to find installation candidates for ${mixed} \\(1\\.0\\.0\\)`));
   const after = h.client("client-poetry", "cat poetry.lock", { dir: poetryDir }).stdout;
   expect(after === poetryLock, "poetry.lock is unchanged by the refused install");
 

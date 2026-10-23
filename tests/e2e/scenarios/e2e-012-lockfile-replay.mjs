@@ -116,7 +116,7 @@ export default async function lockfileReplay(h) {
       relock: { files: {}, script: `${poetryEnv}\npoetry source add --priority=primary probation https://fw1.e2e.test/pypi/simple/ && poetry lock` },
       replay: { files: {}, script: `${poetryEnv}\nexport POETRY_CACHE_DIR=$PWD/.p@FRESH@; rm -rf .venv; poetry install && ${pyCheck(".venv/bin/python")}` },
       installed: pyInstalled,
-      refusal: { said: /e2e-left \(1\.1\.0\)/, blocked: false },
+      refusal: { said: /Unable to find installation candidates for e2e-left \(1\.1\.0\)/, blocked: false },
     },
   ];
 
