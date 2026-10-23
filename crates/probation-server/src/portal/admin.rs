@@ -774,10 +774,21 @@ impl LimitsForm {
                 "Not saved. Enter whole numbers.".to_owned(),
             ));
         };
+        // Blank is "no limit"; anything else must be a number.
+        let service = self.service.trim();
+        let max_service_keys = match number(service) {
+            Some(keys) => Some(keys),
+            None if service.is_empty() => None,
+            None => {
+                return Err(ChangeError::Refused(
+                    "Not saved. Leave the service keys blank for no limit, or enter a whole number.".to_owned(),
+                ));
+            }
+        };
         Ok(Limits {
             rate_per_min,
             max_keys,
-            max_service_keys: number(&self.service),
+            max_service_keys,
         })
     }
 }
