@@ -645,6 +645,19 @@ impl Portal {
         }
     }
 
+    /// Like `signed_in_post`, refused for a session opened through an organisation's
+    /// SSO: such a session acts only inside that organisation (T2), so it cannot change
+    /// the login itself (its methods, password, authenticator or places).
+    async fn unscoped_post(&self, headers: &HeaderMap, csrf: &str) -> Result<SignedIn, Response> {
+        let signed_in = self.signed_in_post(headers, csrf).await?;
+        if signed_in.session.scope_org_id.is_some() {
+            return Err(refused(
+                "You signed in through your organisation's SSO. Sign in another way to change your login's settings.",
+            ));
+        }
+        Ok(signed_in)
+    }
+
     /// The signed-in session of a POST carrying its CSRF token.
     async fn signed_in_post(&self, headers: &HeaderMap, csrf: &str) -> Result<SignedIn, Response> {
         let session = self.posted(headers, csrf).await?;
