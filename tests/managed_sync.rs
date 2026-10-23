@@ -73,6 +73,7 @@ fn left_pad_block() -> Block {
     Block::Package {
         ecosystem: Ecosystem::Npm,
         name: LEFT_PAD.to_owned(),
+        reason: None,
     }
 }
 
@@ -1882,6 +1883,14 @@ async fn t_settings_push_allowlist() {
     config.management = Some(management);
     let at = |name: &str| data_dir.join(name).display().to_string();
 
+    // Every key of the one list the server checks a push against is refused here too
+    // (C35, C118).
+    for key in probation_policy::LOCAL_ONLY_SETTINGS {
+        assert!(
+            config.with_overlay(&format!("{key} = \"x\"\n")).is_err(),
+            "{key} must be refused"
+        );
+    }
     for (push, what) in [
         (
             "[management]\nurl = \"https://evil.example\"\n".to_owned(),

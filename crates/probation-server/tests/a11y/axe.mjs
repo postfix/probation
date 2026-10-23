@@ -2,10 +2,11 @@
 //
 //   node crates/probation-server/tests/a11y/axe.mjs --slice 5
 //   node crates/probation-server/tests/a11y/axe.mjs --slice 6
+//   node crates/probation-server/tests/a11y/axe.mjs --slice 7
 //
 // against the portal served with tests/portal.toml on a database seeded by tests/seed.sql.
-// The slice 6 run turns on an authenticator for oli@acme.test, so run it once per seeded
-// database.
+// The slice 6 run turns on an authenticator for oli@acme.test and the slice 7 run one for
+// admin@probation.test, so run each once per seeded database.
 // Playwright Chromium signs in through the real sign-in form with the seeded logins,
 // visits every page and state of the slice, runs axe-core on each, and walks each page
 // with the Tab key: the focus order follows the DOM, every focused control shows a focus
@@ -25,8 +26,8 @@ const slice = (() => {
   const at = process.argv.indexOf('--slice');
   return at >= 0 ? process.argv[at + 1] : undefined;
 })();
-if (slice !== '5' && slice !== '6') {
-  console.error('usage: node axe.mjs --slice 5|6 (slice 7 adds its pages here)');
+if (slice !== '5' && slice !== '6' && slice !== '7') {
+  console.error('usage: node axe.mjs --slice 5|6|7');
   process.exit(2);
 }
 
@@ -258,10 +259,89 @@ async function slice6(browser) {
   }
 }
 
+/** Turns on an authenticator for the signed-in login from /account. */
+async function turnTotpOn(page) {
+  await go(page, '/account');
+  await submit(page, 'form[action="/account/totp/setup"] button[type=submit]');
+  const key = await page.locator('#totp-key').textContent();
+  await page.locator('#code').fill(totp(key));
+  await submit(page, 'form[action="/account/totp/enable"] button[type=submit]');
+}
+
+/** Every page and state of slice 7: global admin, fleet, the organisation page's
+ * automation tokens and blocklist file, and the suspended banner. */
+async function slice7(browser) {
+  // The global admin: an authenticator first (C24), then /admin and /fleet and their states.
+  {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, 'admin@probation.test');
+    await turnTotpOn(page);
+    await go(page, '/admin');
+    await audit(page, 'Global admin');
+    await page.locator('#token-name').fill('a11y platform tool');
+    await submit(page, 'form[action="/admin/tokens"] button[type=submit]');
+    if (!(await page.locator('#new-token').count())) throw new Error('no platform token was shown once');
+    await audit(page, 'Global admin: platform token shown once');
+    // The server's own refusal, as a browser that skips the form's `min` check gets it.
+    await page.locator('#retention-activity').fill('6');
+    await page.evaluate(() => { document.querySelector('form[action="/admin/retention"]').noValidate = true; });
+    await submit(page, 'form[action="/admin/retention"] button[type=submit]');
+    await audit(page, 'Global admin: retention refused');
+    for (const [selector, name] of [
+      ['a[href^="/admin/orgs/"][href$="/suspend"]', 'Global admin: suspend an organisation?'],
+      ['a[href^="/admin/personal/"][href$="/delete"]', 'Global admin: delete a personal account?'],
+    ]) {
+      await go(page, '/admin');
+      await page.locator(selector).first().click();
+      await page.waitForLoadState('load');
+      await audit(page, name);
+    }
+    await go(page, '/fleet');
+    await audit(page, 'Fleet (unhealthy, halted rollout)');
+    await page.locator('#register-name').fill('fw-a11y-3');
+    await page.locator('#register-sources').fill('127.0.0.1/32');
+    await submit(page, 'form[action="/fleet/register"] button[type=submit]');
+    if (!(await page.locator('#new-token').count())) throw new Error('no firewall token was shown once');
+    await audit(page, 'Fleet: firewall registered, token shown once');
+    await page.locator('input[name=firewall]').first().check();
+    await page.locator('#settings-toml').fill('listen = "0.0.0.0:1"');
+    await submit(page, 'form[action="/fleet/settings"] button[type=submit]');
+    await audit(page, 'Fleet: settings refused');
+    // Inside Acme as an org admin: its automation tokens and blocklist file.
+    await go(page, '/admin');
+    await page.locator('a[href^="/org/"]').first().click();
+    await page.waitForLoadState('load');
+    await audit(page, 'Organisation (global admin inside it)');
+    await page.locator('#token-name').fill('a11y org tool');
+    await submit(page, 'form[action$="/automation"] button[type=submit]');
+    if (!(await page.locator('#new-token').count())) throw new Error('no org token was shown once');
+    await audit(page, 'Organisation: automation token shown once');
+    await context.close();
+  }
+
+  // Ivy, a member of the suspended Initech: read-only with the banner (C64).
+  {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, 'ivy@initech.test');
+    await go(page, '/keys');
+    if (!(await page.getByText('is suspended by the service operator').count())) {
+      throw new Error('no suspension banner');
+    }
+    await audit(page, 'API keys (suspended organisation)');
+    await go(page, '/org');
+    await audit(page, 'Organisation (suspended, member)');
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   if (slice === '6') {
     await slice6(browser);
+  } else if (slice === '7') {
+    await slice7(browser);
   } else {
   // Signed out.
   {

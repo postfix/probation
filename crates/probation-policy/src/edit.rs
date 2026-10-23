@@ -240,7 +240,9 @@ fn find_invalid(current: &Layer, proposed: &Layer) -> Option<String> {
         }
     }
     proposed.blocks.iter().find_map(|block| match block {
-        Block::Package { ecosystem, name }
+        Block::Package {
+            ecosystem, name, ..
+        }
         | Block::Version {
             ecosystem, name, ..
         } if !names::valid_name(*ecosystem, name) => {
@@ -249,7 +251,9 @@ fn find_invalid(current: &Layer, proposed: &Layer) -> Option<String> {
         Block::Version { name, version, .. } if bad_version(version) => Some(format!(
             "the block on `{name}` has an empty or padded version"
         )),
-        Block::File { algorithm, digest } => {
+        Block::File {
+            algorithm, digest, ..
+        } => {
             let length = match algorithm {
                 DigestAlgorithm::Sha256 => 64,
                 DigestAlgorithm::Sha512 => 128,
@@ -475,6 +479,7 @@ mod tests {
             blocks: vec![Block::Package {
                 ecosystem: Ecosystem::Npm,
                 name: "left-pad".to_owned(),
+                reason: None,
             }],
             ..current.clone()
         };

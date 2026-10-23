@@ -1,18 +1,22 @@
 //! The organisation page (mockup organisation.html): members, roles and groups,
-//! invitations, leave requests, company SSO, network-lock ranges, and deleting and
-//! restoring the organisation. Every id in a path goes through `authorized_owner` or
+//! invitations, leave requests, company SSO, network-lock ranges, automation tokens and
+//! blocklist files for its layers (C80, C86), and deleting and restoring the
+//! organisation. Every id in a path goes through `authorized_owner` or
 //! `authorized_place` first (404, C1, T9); then the org admin's role (403) and, for a
 //! password session, the authenticator (C24, C60).
 
 use askama::Template;
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 
 use super::{Shared, SignedIn, Top, not_found, redirect, refused, render, unavailable};
 use crate::accounts;
+use crate::keys::{self, TokenRow};
+use crate::policy::{self, PushError, StoreError};
 use crate::tenancy::{
     self, Actor, Authorized, ChangeError, GroupRow, MemberRow, Owned, Place, RangeRow, Role,
 };
@@ -75,6 +79,9 @@ pub(crate) struct AdminView {
     pub ranges: Vec<RangeRow>,
     pub members: Vec<MemberRow>,
     pub groups: Vec<GroupRow>,
+    /// Live automation tokens of its layers, and one just created, shown once (C86).
+    pub tokens: Vec<TokenRow>,
+    pub new_token: Option<String>,
     pub error: Option<String>,
 }
 
@@ -172,7 +179,10 @@ fn is_admin(actor: &Actor, place: &Authorized<Place>) -> bool {
 
 /// A password session acts as an admin only once its login has an authenticator; an
 /// OAuth or SSO session has its provider's second factor (C24, C38, C60, T15).
-async fn second_factor(portal: &super::Portal, signed_in: &SignedIn) -> Result<(), Response> {
+pub(super) async fn second_factor(
+    portal: &super::Portal,
+    signed_in: &SignedIn,
+) -> Result<(), Response> {
     if signed_in.session.totp_ok {
         return Ok(());
     }
@@ -209,6 +219,17 @@ async fn admin_page(
     status: StatusCode,
     error: Option<String>,
 ) -> Response {
+    admin_page_with(portal, signed_in, place, status, error, None).await
+}
+
+async fn admin_page_with(
+    portal: &super::Portal,
+    signed_in: &SignedIn,
+    place: &Authorized<Place>,
+    status: StatusCode,
+    error: Option<String>,
+    new_token: Option<String>,
+) -> Response {
     let built = async {
         Ok::<_, sqlx::Error>(AdminView {
             id: place.place().id as i32,
@@ -223,6 +244,8 @@ async fn admin_page(
                 .to_string(),
             members: tenancy::members(&portal.pool, place).await?,
             groups: tenancy::groups(&portal.pool, place).await?,
+            tokens: keys::tokens(&portal.pool, place).await?,
+            new_token,
             error,
         })
     };
@@ -700,7 +723,9 @@ pub(crate) async fn accept_invitation(
         Err(answer) => return answer,
     };
     match tenancy::accept_invitation(&portal.pool, signed_in.login_id, &form.token).await {
-        Ok(Some(org)) => redirect(&format!("/org/{org}")),
+        Ok(Some(Some(org))) => redirect(&format!("/org/{org}")),
+        // A global admin's link: they set up an authenticator before acting (C24).
+        Ok(Some(None)) => redirect("/admin"),
         Ok(None) => {
             let view = OrgView::Invitation {
                 token: String::new(),
@@ -970,4 +995,209 @@ pub(crate) async fn rename_group(
     };
     let done = tenancy::rename_group(&portal.pool, &actor, &group, &form.name).await;
     after(&portal, &signed_in, &group, done).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct TokenForm {
+    csrf: String,
+    name: String,
+    /// The layer: `org-3`, or `group-5` of the same organisation.
+    layer: String,
+}
+
+/// "Create token" for one of the organisation's layers (C86): shown once.
+pub(crate) async fn create_token(
+    State(portal): State<Shared>,
+    Path(org): Path<i32>,
+    headers: HeaderMap,
+    Form(form): Form<TokenForm>,
+) -> Response {
+    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+        Ok(signed_in) => signed_in,
+        Err(answer) => return answer,
+    };
+    let Some(place) = org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    if let Err(answer) = admin_on(&portal, &signed_in, &place).await {
+        return answer;
+    }
+    let layer = match policy::layer_ref(&form.layer) {
+        Some(layer) => portal
+            .tenancy()
+            .authorized_place(&signed_in.tenancy_session(), layer)
+            .await
+            .ok()
+            .filter(|layer| {
+                matches!(layer.place().kind, LayerKind::Org | LayerKind::Group)
+                    && layer.org() == place.org()
+            }),
+        None => None,
+    };
+    let Some(layer) = layer else {
+        return not_found();
+    };
+    let actor = match admin_on(&portal, &signed_in, &layer).await {
+        Ok(actor) => actor,
+        Err(answer) => return answer,
+    };
+    let name = form.name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return after(
+            &portal,
+            &signed_in,
+            &place,
+            Err(ChangeError::Refused(
+                "Give the token a name of at most 100 characters.".to_owned(),
+            )),
+        )
+        .await;
+    }
+    match keys::create_token(&portal.pool, &actor, &layer, name).await {
+        Ok(token) => {
+            admin_page_with(
+                &portal,
+                &signed_in,
+                &place,
+                StatusCode::OK,
+                None,
+                Some(token.secret),
+            )
+            .await
+        }
+        Err(keys::KeyError::Store(err)) => unavailable(err),
+        Err(_) => refused("Only the organisation's org admins can do this."),
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct RevokeTokenForm {
+    csrf: String,
+    /// The token's id.
+    token: String,
+}
+
+/// "Revoke" on an automation token of the organisation's layers: one of another
+/// organisation is not found (C1).
+pub(crate) async fn revoke_token(
+    State(portal): State<Shared>,
+    Path(org): Path<i32>,
+    headers: HeaderMap,
+    Form(form): Form<RevokeTokenForm>,
+) -> Response {
+    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+        Ok(signed_in) => signed_in,
+        Err(answer) => return answer,
+    };
+    let Some(place) = org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    let actor = match admin_on(&portal, &signed_in, &place).await {
+        Ok(actor) => actor,
+        Err(answer) => return answer,
+    };
+    let Ok(token) = form.token.parse() else {
+        return not_found();
+    };
+    let done = match keys::revoke_token(&portal.pool, &actor, &place, token).await {
+        Ok(()) => Ok(()),
+        Err(keys::RevokeError::NotFound) => Err(ChangeError::NotFound),
+        Err(keys::RevokeError::Denied) => Err(ChangeError::Denied),
+        Err(keys::RevokeError::Store(err)) => Err(ChangeError::Store(err)),
+    };
+    after(&portal, &signed_in, &place, done).await
+}
+
+/// "Export blocklist": the organisation layer's blocks as today's file (C80, C86).
+pub(crate) async fn export_blocklist(
+    State(portal): State<Shared>,
+    Path(org): Path<i32>,
+    headers: HeaderMap,
+) -> Response {
+    let signed_in = match portal.signed_in(&headers).await {
+        Ok(signed_in) => signed_in,
+        Err(answer) => return answer,
+    };
+    let Some(place) = org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    if let Err(answer) = admin_on(&portal, &signed_in, &place).await {
+        return answer;
+    }
+    blocklist_file(policy::export_blocks(&portal.pool, &place).await)
+}
+
+/// The export as a download, or the store's failure.
+pub(crate) fn blocklist_file(file: Result<String, StoreError>) -> Response {
+    match file {
+        Ok(file) => (
+            [
+                (CONTENT_TYPE, HeaderValue::from_static("application/json")),
+                (
+                    CONTENT_DISPOSITION,
+                    HeaderValue::from_static("attachment; filename=\"blocklist.json\""),
+                ),
+            ],
+            file,
+        )
+            .into_response(),
+        Err(StoreError::Db(err)) => unavailable(err),
+        Err(StoreError::MissingLayer(_)) => not_found(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct ImportForm {
+    csrf: String,
+    /// The blocklist file's text.
+    file: String,
+}
+
+/// "Import blocklist": adds the file's blocks to the organisation layer (C80, C86),
+/// through the same checks as any edit.
+pub(crate) async fn import_blocklist(
+    State(portal): State<Shared>,
+    Path(org): Path<i32>,
+    headers: HeaderMap,
+    Form(form): Form<ImportForm>,
+) -> Response {
+    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+        Ok(signed_in) => signed_in,
+        Err(answer) => return answer,
+    };
+    let Some(place) = org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    let actor = match admin_on(&portal, &signed_in, &place).await {
+        Ok(actor) => actor,
+        Err(answer) => return answer,
+    };
+    let done = import_into(&portal, &actor, &place, &form.file).await;
+    after(&portal, &signed_in, &place, done).await
+}
+
+/// Adds the blocks of `file` to `place`'s layer as `actor`, for an import form.
+pub(crate) async fn import_into(
+    portal: &super::Portal,
+    actor: &Actor,
+    place: &Authorized<Place>,
+    file: &str,
+) -> Result<(), ChangeError> {
+    let blocks = probation_policy::blocklist_json::import(file)
+        .map_err(|problem| ChangeError::Refused(format!("Not imported: {problem}.")))?;
+    match policy::push_blocks(&portal.pool, actor, place, blocks, false).await {
+        Ok(_) => Ok(()),
+        Err(PushError::Denied) => Err(ChangeError::Denied),
+        Err(PushError::Refused(problem)) => {
+            Err(ChangeError::Refused(format!("Not imported: {problem}.")))
+        }
+        Err(PushError::Conflict) => Err(ChangeError::Refused(
+            "Not imported: the policy changed meanwhile. Import the file again.".to_owned(),
+        )),
+        Err(PushError::Store(StoreError::Db(err))) => Err(ChangeError::Store(err)),
+        Err(PushError::Store(StoreError::MissingLayer(_))) => Err(ChangeError::NotFound),
+    }
 }

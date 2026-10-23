@@ -404,6 +404,7 @@ async fn t_key_canary_sync() {
             blocks: vec![Block::Package {
                 ecosystem: Ecosystem::Npm,
                 name: "left-pad".to_owned(),
+                reason: None,
             }],
             ..Layer::empty(LayerKind::Org)
         },

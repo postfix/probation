@@ -2,13 +2,15 @@
 //! (`fwt_`). A credential is shown once at creation; only its SHA-256 is stored, and
 //! every query filters its kind, so one kind never passes for another (T9).
 
-use probation_policy::api::{KeyHash, KeyId};
+use std::num::NonZeroU32;
+
+use probation_policy::api::{AccountKind, KeyHash, KeyId, LimitChange, LimitSource};
 use probation_policy::{LayerKind, PlaceRef};
 use sqlx::{PgConnection, PgPool};
 
 use crate::audit;
 use crate::sync::{ChangeKind, record_change};
-use crate::tenancy::{Actor, Authorized, Place};
+use crate::tenancy::{Actor, Authorized, ChangeError, Place, Role};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeyKind {
@@ -29,7 +31,7 @@ impl KeyKind {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             KeyKind::User => "user",
             KeyKind::Service => "service",
@@ -374,4 +376,445 @@ mod tests {
         }
         assert_ne!(generate(KeyKind::User), generate(KeyKind::User));
     }
+}
+
+// ---- Automation tokens (C80, C86) ------------------------------------------------------
+
+/// One live automation token as its page lists it.
+pub struct TokenRow {
+    pub id: i64,
+    pub name: String,
+    pub last4: String,
+    pub created: String,
+    /// "Acme organisation", "Frontend group" or "Platform".
+    pub layer: String,
+    pub created_by: String,
+}
+
+/// Creates an automation token for `place`'s layer, shown once: an organisation's or
+/// one of its groups' layers by its org admin, the platform layer by a global admin
+/// (C80, C86). Its creator is its `owner_login`, so the token goes when they lose the
+/// role that let them create it.
+pub async fn create_token(
+    pool: &PgPool,
+    actor: &Actor,
+    place: &Authorized<Place>,
+    name: &str,
+) -> Result<NewKey, KeyError> {
+    let allowed = match place.place().kind {
+        LayerKind::Platform => actor.role(place.place()) == Some(Role::GlobalAdmin),
+        LayerKind::Org | LayerKind::Group => matches!(
+            actor.role(place.place()),
+            Some(Role::OrgAdmin | Role::GlobalAdmin)
+        ),
+        LayerKind::User | LayerKind::Personal => false,
+    };
+    let Some(login) = actor.login_id().filter(|_| allowed) else {
+        return Err(KeyError::Denied);
+    };
+    let mut tx = pool.begin().await?;
+    let token = insert(
+        &mut tx,
+        KeyKind::Automation,
+        place.place(),
+        Some(login),
+        name,
+    )
+    .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: place.org(),
+            action: "automation.create",
+            subject: format!("key:{}", token.id.0),
+            before: None,
+            after: Some(serde_json::json!({
+                "name": name,
+                "place": place.place(),
+                "last4": &token.secret[token.secret.len() - 4..],
+            })),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(token)
+}
+
+/// Revokes the automation token `id` of `place`'s layer (its organisation's layers for
+/// an org place).
+pub async fn revoke_token(
+    pool: &PgPool,
+    actor: &Actor,
+    place: &Authorized<Place>,
+    id: i64,
+) -> Result<(), RevokeError> {
+    if !matches!(
+        actor.role(place.place()),
+        Some(Role::OrgAdmin | Role::GlobalAdmin)
+    ) {
+        return Err(RevokeError::Denied);
+    }
+    let mut tx = pool.begin().await?;
+    let revoked = sqlx::query(
+        "UPDATE keys SET revoked_at = now()
+         WHERE id = $1 AND kind = 'automation' AND revoked_at IS NULL
+           AND ((place_kind = $2 AND place_id = $3)
+                OR ($2 = 'org' AND place_kind = 'group'
+                    AND place_id IN (SELECT id FROM groups WHERE org_id = $3)))",
+    )
+    .bind(id)
+    .bind(crate::tenancy::kind_str(place.place().kind))
+    .bind(place.place().id as i32)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if revoked == 0 {
+        return Err(RevokeError::NotFound);
+    }
+    let () = audit_token_revoked(&mut tx, actor, place.org(), id).await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+async fn audit_token_revoked(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    org_id: Option<i32>,
+    id: i64,
+) -> Result<(), sqlx::Error> {
+    audit::record(
+        conn,
+        audit::Entry {
+            actor,
+            org_id,
+            action: "automation.revoke",
+            subject: format!("key:{id}"),
+            before: Some(serde_json::json!({"revoked": false})),
+            after: Some(serde_json::json!({"revoked": true})),
+        },
+    )
+    .await
+}
+
+/// Revokes, each with its audit row and in the caller's transaction, the automation
+/// tokens `login` created that its roles no longer cover: a platform token needs a
+/// global admin, an organisation's one its org admin or a global admin (C86). `all`
+/// revokes every one, for a login that is deleted.
+pub(crate) async fn revoke_tokens_of(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    login: i32,
+    all: bool,
+) -> Result<(), sqlx::Error> {
+    let revoked: Vec<(i64, Option<i32>)> = sqlx::query_as(
+        "UPDATE keys AS k SET revoked_at = now()
+         WHERE k.kind = 'automation' AND k.owner_login = $1 AND k.revoked_at IS NULL
+           AND ($2 OR NOT EXISTS (
+               SELECT 1 FROM memberships AS m
+               WHERE m.login_id = $1
+                 AND (m.org_id IS NULL
+                      OR (m.role = 'org_admin' AND m.org_id = place_org(k.place_kind, k.place_id)))))
+         RETURNING k.id, place_org(k.place_kind, k.place_id)",
+    )
+    .bind(login)
+    .bind(all)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, org) in revoked {
+        audit_token_revoked(conn, actor, org, id).await?;
+    }
+    Ok(())
+}
+
+/// The live automation tokens of `place`'s layer, and of its groups' for an
+/// organisation.
+pub async fn tokens(
+    pool: &PgPool,
+    place: &Authorized<Place>,
+) -> Result<Vec<TokenRow>, sqlx::Error> {
+    type Row = (i64, String, String, String, String, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT k.id, k.name, k.last4, to_char(k.created_at, 'DD Mon YYYY'),
+                CASE k.place_kind WHEN 'platform' THEN 'Platform'
+                                  WHEN 'org' THEN o.name || ' organisation'
+                                  ELSE g.name || ' group' END,
+                (SELECT m.email FROM sign_in_methods AS m WHERE m.login_id = k.owner_login
+                 AND m.email IS NOT NULL ORDER BY m.id LIMIT 1)
+         FROM keys AS k
+         LEFT JOIN orgs AS o ON k.place_kind = 'org' AND o.id = k.place_id
+         LEFT JOIN groups AS g ON k.place_kind = 'group' AND g.id = k.place_id
+         WHERE k.kind = 'automation' AND k.revoked_at IS NULL
+           AND ((k.place_kind = $1 AND k.place_id = $2)
+                OR ($1 = 'org' AND k.place_kind = 'group' AND g.org_id = $2))
+         ORDER BY k.id",
+    )
+    .bind(crate::tenancy::kind_str(place.place().kind))
+    .bind(place.place().id as i32)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, last4, created, layer, created_by)| TokenRow {
+            id,
+            name,
+            last4,
+            created,
+            layer,
+            created_by: created_by.unwrap_or_default(),
+        })
+        .collect())
+}
+
+// ---- Revoking every key of a personal account, and limits (C28, C51, C65, C67) --------
+
+/// "Revoke keys" on a personal account: every live key of it, each with its `key` row,
+/// and one audit row (C65).
+pub async fn revoke_all(
+    pool: &PgPool,
+    actor: &Actor,
+    place: &Authorized<Place>,
+) -> Result<(), RevokeError> {
+    if actor.role(place.place()) != Some(Role::GlobalAdmin)
+        || place.place().kind != LayerKind::Personal
+    {
+        return Err(RevokeError::Denied);
+    }
+    let mut tx = pool.begin().await?;
+    let revoked: Vec<i64> = sqlx::query_scalar(
+        "UPDATE keys SET revoked_at = now()
+         WHERE place_kind = 'personal' AND place_id = $1 AND kind = 'user' AND revoked_at IS NULL
+         RETURNING id",
+    )
+    .bind(place.place().id as i32)
+    .fetch_all(&mut *tx)
+    .await?;
+    for key in &revoked {
+        record_change(&mut tx, ChangeKind::Key, &KeyId(*key as u64)).await?;
+    }
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "keys.revoke_all",
+            subject: format!("personal:{}", place.place().id),
+            before: Some(serde_json::json!({"live": revoked})),
+            after: Some(serde_json::json!({"live": []})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// One `limits` row: requests a minute, keys (per member in an organisation) and, for
+/// organisations, service keys (C28, C51).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+pub struct Limits {
+    pub rate_per_min: i32,
+    pub max_keys: i32,
+    pub max_service_keys: Option<i32>,
+}
+
+impl Limits {
+    fn problem(&self) -> Option<&'static str> {
+        if self.rate_per_min < 1 {
+            Some("Not saved. The most requests per minute must be at least 1.")
+        } else if self.max_keys < 1 {
+            Some("Not saved. The most keys must be at least 1.")
+        } else if self.max_service_keys.is_some_and(|keys| keys < 0) {
+            Some("Not saved. The most service keys cannot be below 0.")
+        } else {
+            None
+        }
+    }
+}
+
+/// Saves the default limits of an account kind (`org` `None`), or one organisation's
+/// own (C67), as only a global admin may. A `limits` row updates the rate of every
+/// cached key it covers in place (K2).
+pub async fn set_limits(
+    pool: &PgPool,
+    actor: &Actor,
+    kind: AccountKind,
+    org: Option<&Authorized<Place>>,
+    limits: Limits,
+) -> Result<(), ChangeError> {
+    if !actor.is_global_admin()
+        || org.is_some_and(|org| {
+            actor.role(org.place()) != Some(Role::GlobalAdmin) || kind != AccountKind::Org
+        })
+    {
+        return Err(ChangeError::Denied);
+    }
+    if let Some(problem) = limits.problem() {
+        return Err(ChangeError::Refused(problem.to_owned()));
+    }
+    let scope_id = org.and_then(|org| org.org());
+    let scope = kind_tag(kind);
+    let service = match kind {
+        AccountKind::Org => limits.max_service_keys,
+        AccountKind::Personal => None,
+    };
+    let mut tx = pool.begin().await?;
+    let before: Option<(i32, i32, Option<i32>)> = sqlx::query_as(
+        "SELECT rate_per_min, max_keys, max_service_keys FROM limits
+         WHERE scope_kind = $1 AND scope_id IS NOT DISTINCT FROM $2 FOR UPDATE",
+    )
+    .bind(scope)
+    .bind(scope_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO limits (scope_kind, scope_id, rate_per_min, max_keys, max_service_keys)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (scope_kind, scope_id) DO UPDATE
+         SET rate_per_min = $3, max_keys = $4, max_service_keys = $5",
+    )
+    .bind(scope)
+    .bind(scope_id)
+    .bind(limits.rate_per_min)
+    .bind(limits.max_keys)
+    .bind(service)
+    .execute(&mut *tx)
+    .await?;
+    let source = if scope_id.is_some() {
+        LimitSource::Override
+    } else {
+        LimitSource::Default
+    };
+    record_change(
+        &mut tx,
+        ChangeKind::Limits,
+        &LimitChange {
+            scope_kind: kind,
+            scope_id: scope_id.map(|id| id as u32),
+            rate_per_min: NonZeroU32::new(limits.rate_per_min as u32),
+            source,
+        },
+    )
+    .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: scope_id,
+            action: "limits.set",
+            subject: match scope_id {
+                Some(org) => format!("org:{org}"),
+                None => format!("{scope}:default"),
+            },
+            before: before.map(|(rate, keys, service)| {
+                serde_json::json!({"rate_per_min": rate, "max_keys": keys, "max_service_keys": service})
+            }),
+            after: Some(serde_json::json!({
+                "rate_per_min": limits.rate_per_min,
+                "max_keys": limits.max_keys,
+                "max_service_keys": service,
+            })),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// "Back to default" for organisation `org`: its row goes, and a `limits` row for it
+/// carries the default's rate with source `default` (02 § Change propagation).
+pub async fn reset_limits(
+    pool: &PgPool,
+    actor: &Actor,
+    org: &Authorized<Place>,
+) -> Result<(), ChangeError> {
+    if actor.role(org.place()) != Some(Role::GlobalAdmin) {
+        return Err(ChangeError::Denied);
+    }
+    let org_id = org.org().ok_or(ChangeError::NotFound)?;
+    let mut tx = pool.begin().await?;
+    let removed: Option<(i32, i32, Option<i32>)> = sqlx::query_as(
+        "DELETE FROM limits WHERE scope_kind = 'org' AND scope_id = $1
+         RETURNING rate_per_min, max_keys, max_service_keys",
+    )
+    .bind(org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((rate, keys, service)) = removed else {
+        return Ok(());
+    };
+    let default: i32 = sqlx::query_scalar(
+        "SELECT rate_per_min FROM limits WHERE scope_kind = 'org' AND scope_id IS NULL",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    record_change(
+        &mut tx,
+        ChangeKind::Limits,
+        &LimitChange {
+            scope_kind: AccountKind::Org,
+            scope_id: Some(org_id as u32),
+            rate_per_min: NonZeroU32::new(default as u32),
+            source: LimitSource::Default,
+        },
+    )
+    .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: Some(org_id),
+            action: "limits.reset",
+            subject: format!("org:{org_id}"),
+            before: Some(
+                serde_json::json!({"rate_per_min": rate, "max_keys": keys, "max_service_keys": service}),
+            ),
+            after: Some(serde_json::json!({"default": true})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+fn kind_tag(kind: AccountKind) -> &'static str {
+    match kind {
+        AccountKind::Org => "org",
+        AccountKind::Personal => "personal",
+    }
+}
+
+/// One `limits` row as `/admin` shows it: the kind's default (`org` `None`) or one
+/// organisation's own, with its name.
+pub struct LimitsRow {
+    pub kind: AccountKind,
+    pub org: Option<(i32, String)>,
+    pub limits: Limits,
+}
+
+/// Every `limits` row: the two defaults first, then the organisations' own by name.
+pub async fn limits(pool: &PgPool) -> Result<Vec<LimitsRow>, sqlx::Error> {
+    type Row = (String, Option<i32>, Option<String>, i32, i32, Option<i32>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT l.scope_kind, l.scope_id, o.name, l.rate_per_min, l.max_keys, l.max_service_keys
+         FROM limits AS l LEFT JOIN orgs AS o ON l.scope_kind = 'org' AND o.id = l.scope_id
+         ORDER BY l.scope_id IS NOT NULL, l.scope_kind DESC, o.name",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(kind, id, name, rate, keys, service)| LimitsRow {
+            kind: if kind == "org" {
+                AccountKind::Org
+            } else {
+                AccountKind::Personal
+            },
+            org: id.map(|id| (id, name.unwrap_or_default())),
+            limits: Limits {
+                rate_per_min: rate,
+                max_keys: keys,
+                max_service_keys: service,
+            },
+        })
+        .collect())
 }

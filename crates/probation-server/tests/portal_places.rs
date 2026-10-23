@@ -857,6 +857,7 @@ async fn block(db: &Db, login: i32, at: PlaceRef, name: &str) {
         layer.blocks.push(probation_policy::Block::Package {
             ecosystem: probation_policy::Ecosystem::Npm,
             name: name.to_owned(),
+            reason: None,
         })
     })
     .await

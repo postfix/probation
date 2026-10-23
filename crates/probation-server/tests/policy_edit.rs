@@ -24,6 +24,7 @@ fn block(name: &str) -> Block {
     Block::Package {
         ecosystem: Ecosystem::Npm,
         name: name.to_owned(),
+        reason: None,
     }
 }
 

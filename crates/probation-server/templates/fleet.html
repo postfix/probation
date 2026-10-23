@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Fleet</h1>
+<p>The Probation firewalls that every organisation and personal account downloads through. Only the service operator sees this page.</p>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% if let Some((name, token)) = registered %}
+<section aria-labelledby="registered-heading">
+<h2 id="registered-heading">{{ name }} is registered</h2>
+<p role="status"><b>Copy its token now. You will not see it again.</b></p>
+<pre><code id="new-token">{{ token }}</code></pre>
+<p class="mut">Write it to the file named by <code>token_file</code> in the <code>[management]</code> section of {{ name }}'s <code>config.toml</code>. Its last check-in reads "never" until it starts with this token.</p>
+</section>
+{% endif %}
+
+<section aria-labelledby="firewalls-heading">
+<h2 id="firewalls-heading">Firewalls</h2>
+{% if firewalls.is_empty() %}
+<p class="mut">No firewalls registered yet. Register one, then put its token into that firewall's config.</p>
+{% else %}
+<form method="post" action="/fleet/settings" id="settings-form">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="wrap"><table>
+<caption class="mut">Registered firewalls. A firewall is unhealthy after 3 missed check-ins in a row, or when it reports it cannot reach npm, PyPI or OSV.</caption>
+<thead><tr><th scope="col">Select</th><th scope="col">Firewall</th><th scope="col">Version</th><th scope="col">Last check-in</th><th scope="col">Health</th></tr></thead>
+<tbody>
+{% for firewall in firewalls %}
+<tr id="firewall-{{ firewall.id }}"><td>{% if !firewall.retired %}<input type="checkbox" name="firewall" value="{{ firewall.id }}" id="select-{{ firewall.id }}" aria-label="Select {{ firewall.name }}">{% endif %}</td>
+<td>{{ firewall.name }}</td><td>{{ firewall.version.as_deref().unwrap_or("not reported yet") }}</td><td>{{ firewall.last_check_in }}</td>
+<td>{% if firewall.healthy %}<span class="good">{{ firewall.health }}</span>{% else %}<span class="bad">{{ firewall.health }}</span>{% endif %}{% if let Some(error) = firewall.error %}<br><span class="mut">Last error: {{ error }}</span>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+<fieldset><legend>Settings for the selected firewalls</legend>
+<label for="settings-toml">Settings, as lines of the firewall's <code>config.toml</code></label>
+<textarea id="settings-toml" name="toml" rows="6" cols="60" aria-describedby="settings-help"></textarea>
+<p class="mut" id="settings-help">For example <code>sync_interval_seconds = 60</code> or <code>npm_upstream_url = "https://registry.npmjs.org"</code>. <code>listen</code>, <code>data_dir</code>, <code>[management]</code>, the TLS paths, <code>public_url</code>, <code>siem_url</code> and <code>siem_auth_header</code> stay on each firewall and cannot be set here. Each selected firewall rewrites its settings from these and restarts, one at a time: the next one gets them after the one before reports success.</p>
+<button type="submit" class="pri">Save and apply</button>
+</fieldset>
+</form>
+{% for firewall in firewalls %}{% if !firewall.retired %}
+<form method="post" action="/fleet/{{ firewall.id }}/retire" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="retire-{{ firewall.id }}">Type <b>{{ firewall.name }}</b> to retire it</label>
+<input id="retire-{{ firewall.id }}" name="confirm" autocomplete="off">
+<button type="submit" class="danger">Retire {{ firewall.name }}</button>
+</form>
+{% endif %}{% endfor %}
+<p class="mut">A retired firewall's token stops working: at its next check-in it stops serving every request, so anyone still pointed at its address must use another firewall. This cannot be undone; to bring it back, register it again.</p>
+{% endif %}
+<form method="post" action="/fleet/register">
+<fieldset><legend>Register a firewall</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="register-name">Name</label>
+<input id="register-name" name="name" required maxlength="100" autocomplete="off">
+<label for="register-sources">Address ranges its token is accepted from <span class="mut">(for example 203.0.113.10/32; separate several with spaces)</span></label>
+<input id="register-sources" name="sources" required autocomplete="off">
+<button type="submit" class="pri">Register firewall</button>
+</fieldset>
+</form>
+</section>
+
+<section aria-labelledby="rollouts-heading">
+<h2 id="rollouts-heading">Settings changes</h2>
+{% if rollouts.is_empty() %}
+<p class="mut">No settings have been pushed yet.</p>
+{% endif %}
+{% for rollout in rollouts %}
+<h3>Saved {{ rollout.created }}: {% if rollout.state == "halted" %}<span class="bad">Halted</span>{% else if rollout.state == "done" %}<span class="good">Done</span>{% else %}Applying{% endif %}</h3>
+<pre>{{ rollout.settings }}</pre>
+<ul>
+{% for step in rollout.steps %}
+<li>{% if step.state == "applied" %}<span class="good">Applied by {{ step.firewall }}.</span>
+{% else if step.state == "sent" %}<b>Waiting</b> for {{ step.firewall }} to pick them up at its next check-in.
+{% else if step.state == "failed" %}<span class="err"><b>{{ step.firewall }} could not apply the new settings</b> and keeps running on its old settings. It reported: "{{ step.error.as_deref().unwrap_or_default() }}"</span>
+{% else if step.state == "timed_out" %}<span class="err"><b>{{ step.firewall }} did not report success within 3 check-ins.</b></span>
+{% else if step.state == "skipped" %}Skipped {{ step.firewall }}.
+{% else %}{{ step.firewall }} gets them after the one before reports success.{% endif %}</li>
+{% endfor %}
+</ul>
+{% if rollout.state == "halted" %}
+<p>The firewalls after the one that stopped get nothing until you resume or skip.</p>
+<div class="row">
+<form method="post" action="/fleet/rollouts/{{ rollout.id }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Resume: send them to it again</button></form>
+<form method="post" action="/fleet/rollouts/{{ rollout.id }}/skip"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Skip it and go on</button></form>
+</div>
+{% endif %}
+{% endfor %}
+</section>
+{% endblock %}

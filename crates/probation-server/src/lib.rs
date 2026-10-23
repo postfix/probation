@@ -77,8 +77,9 @@ pub async fn migrate(owner: &PgPool) -> Result<(), sqlx::migrate::MigrateError> 
     sqlx::migrate!("./migrations").run(owner).await
 }
 
-/// Serves the sync API, and the portal when `portal` is given, on `config.server.listen`
-/// until the process is stopped, and prunes `change_log` once an hour.
+/// Serves the sync and automation APIs, and the portal when `portal` is given, on
+/// `config.server.listen` until the process is stopped; prunes `change_log`, activity
+/// and the audit log by their retention once an hour (C26).
 pub async fn serve(
     config: Config,
     pool: PgPool,
@@ -92,6 +93,9 @@ pub async fn serve(
             every_hour.tick().await;
             if let Err(err) = sync::prune_change_log(&pruner, retention).await {
                 tracing::warn!(error = %err, "change_log prune failed");
+            }
+            if let Err(err) = audit::prune(&pruner).await {
+                tracing::warn!(error = %err, "retention prune failed");
             }
         }
     });
@@ -108,10 +112,11 @@ pub async fn serve(
     .await
 }
 
-/// Every route the server answers. Serve it with connect info: the sync API checks the
-/// firewall's address (T31).
+/// Every API route the server answers: the sync API and the automation blocklist API
+/// (C86). Serve it with connect info: the sync API checks the firewall's address (T31).
 pub fn build_router(state: Arc<sync::SyncState>) -> axum::Router {
-    sync::router(state)
+    let automation = policy::router(state.pool().clone());
+    sync::router(state).merge(automation)
 }
 
 /// `probation-server admin …`: the supported first-run path, before the portal exists

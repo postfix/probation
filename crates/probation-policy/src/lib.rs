@@ -6,6 +6,7 @@
 //! every layer above allows it. It holds no state and does no I/O.
 
 pub mod api;
+pub mod blocklist_json;
 mod edit;
 pub mod names;
 
@@ -13,6 +14,21 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 pub use edit::{CheckedEdit, EditRefusal, EditTarget, Loosening, check_edit};
+
+/// The firewall settings a push may never set (C35, C118, T5): they stay in the
+/// firewall's own `config.toml`, so a bad value cannot cut it off from its server, move
+/// its state, or redirect its download links and decision records. The server refuses a
+/// push naming one before it is stored; the firewall refuses it again before it writes.
+pub const LOCAL_ONLY_SETTINGS: &[&str] = &[
+    "management",
+    "listen",
+    "data_dir",
+    "tls_cert_path",
+    "tls_key_path",
+    "public_url",
+    "siem_url",
+    "siem_auth_header",
+];
 
 /// Where a layer sits. Declared top to bottom, so `Ord` is chain order: platform ->
 /// organisation -> group -> user, or platform -> personal account (C9).
@@ -111,22 +127,29 @@ pub enum DigestAlgorithm {
 }
 
 /// What a block points at (C17). A file block carries only its digest, as today's
-/// blocklist format does (C119).
+/// blocklist format does (C119). `reason` is the blocklist file's own (C86); it is left
+/// out of the encoding when absent, so a policy without reasons keeps its fingerprint.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Block {
     Package {
         ecosystem: Ecosystem,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Version {
         ecosystem: Ecosystem,
         name: String,
         version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     File {
         algorithm: DigestAlgorithm,
         /// Lowercase hex.
         digest: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 
@@ -326,22 +349,34 @@ pub fn is_chain(kinds: &[LayerKind]) -> bool {
 
 fn canonical_block(block: &Block) -> Block {
     match block {
-        Block::Package { ecosystem, name } => Block::Package {
+        Block::Package {
+            ecosystem,
+            name,
+            reason,
+        } => Block::Package {
             ecosystem: *ecosystem,
             name: names::canonical_name(*ecosystem, name),
+            reason: reason.clone(),
         },
         Block::Version {
             ecosystem,
             name,
             version,
+            reason,
         } => Block::Version {
             ecosystem: *ecosystem,
             name: names::canonical_name(*ecosystem, name),
             version: version.clone(),
+            reason: reason.clone(),
         },
-        Block::File { algorithm, digest } => Block::File {
+        Block::File {
+            algorithm,
+            digest,
+            reason,
+        } => Block::File {
             algorithm: *algorithm,
             digest: digest.to_ascii_lowercase(),
+            reason: reason.clone(),
         },
     }
 }
@@ -410,6 +445,7 @@ impl EffectivePolicy {
                 Block::Package {
                     ecosystem: blocked,
                     name: blocked_name,
+                    ..
                 }
                 | Block::Version {
                     ecosystem: blocked,
@@ -514,10 +550,12 @@ mod tests {
                 Block::Package {
                     ecosystem: Ecosystem::PyPi,
                     name: "Foo_Bar".to_owned(),
+                    reason: None,
                 },
                 Block::Package {
                     ecosystem: Ecosystem::PyPi,
                     name: "requests".to_owned(),
+                    reason: None,
                 },
             ],
             allow: Switches::ALL,
@@ -533,7 +571,8 @@ mod tests {
             policy.blocks[0].block,
             Block::Package {
                 ecosystem: Ecosystem::PyPi,
-                name: "foo-bar".to_owned()
+                name: "foo-bar".to_owned(),
+                reason: None,
             },
             "the block is stored under its PEP 503 name"
         );
@@ -776,6 +815,7 @@ mod tests {
                         vec![Block::Package {
                             ecosystem: Ecosystem::Npm,
                             name: "pkg".to_owned(),
+                            reason: None,
                         }]
                     } else {
                         Vec::new()

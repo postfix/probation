@@ -227,13 +227,16 @@ impl BlocklistSnapshot {
         let mut digests = HashSet::new();
         for owned in blocks {
             match &owned.block {
-                Block::Package { ecosystem, name } => {
+                Block::Package {
+                    ecosystem, name, ..
+                } => {
                     packages[ecosystem_index(*ecosystem)].insert(name.clone());
                 }
                 Block::Version {
                     ecosystem,
                     name,
                     version,
+                    ..
                 } => versions[ecosystem_index(*ecosystem)]
                     .entry(name.clone())
                     .or_default()
@@ -241,7 +244,9 @@ impl BlocklistSnapshot {
                         raw: version.clone(),
                         canonical: canonical_version(*ecosystem, version),
                     }),
-                Block::File { algorithm, digest } => {
+                Block::File {
+                    algorithm, digest, ..
+                } => {
                     let algorithm = match algorithm {
                         DigestAlgorithm::Sha256 => HashAlgorithm::Sha256,
                         DigestAlgorithm::Sha512 => HashAlgorithm::Sha512,

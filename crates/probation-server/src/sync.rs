@@ -168,6 +168,11 @@ impl SyncState {
         Ok(firewall)
     }
 
+    /// The app role's pool, for the routes served beside the sync API.
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     fn within_rate(&self, firewall: i32) -> bool {
         let now = Instant::now();
         let mut recent = self
@@ -382,6 +387,7 @@ async fn record_report(
     asked: &ChangesRequest,
 ) -> Result<(), SyncError> {
     let mut tx = pool.begin().await?;
+    crate::fleet::settle(&mut tx, firewall, &asked.report).await?;
     let report = serde_json::json!({
         "report": asked.report,
         "activity_dropped": asked.activity_dropped,

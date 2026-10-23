@@ -129,17 +129,20 @@ fn attribute(
     };
     let layer = match decision {
         Decision::Deny(DenyReason::BlockedPackage) => blocked_by(&|block| {
-            matches!(block, Block::Package { ecosystem, name }
+            matches!(block, Block::Package { ecosystem, name, .. }
                 if *ecosystem == candidate.ecosystem && name == candidate.name)
         }),
         Decision::Deny(DenyReason::BlockedVersion) => blocked_by(&|block| {
-            matches!(block, Block::Version { ecosystem, name, version }
+            matches!(block, Block::Version { ecosystem, name, version, .. }
                 if *ecosystem == candidate.ecosystem
                     && name == candidate.name
                     && names::same_version(*ecosystem, version, candidate.version))
         }),
         Decision::Deny(DenyReason::BlockedDigest) => blocked_by(&|block| {
-            let Block::File { algorithm, digest } = block else {
+            let Block::File {
+                algorithm, digest, ..
+            } = block
+            else {
                 return false;
             };
             let algorithm = match algorithm {
@@ -241,6 +244,7 @@ mod tests {
         Block::Package {
             ecosystem: PolicyEcosystem::Npm,
             name: name.to_owned(),
+            reason: None,
         }
     }
 
@@ -818,6 +822,7 @@ mod tests {
         let file_block = Block::File {
             algorithm: DigestAlgorithm::Sha256,
             digest: SHA256.to_owned(),
+            reason: None,
         };
         let verdict = decide_old(
             &[
@@ -944,11 +949,13 @@ mod tests {
                         Block::Package {
                             ecosystem: PolicyEcosystem::PyPi,
                             name: "Foo_Bar".to_owned(),
+                            reason: None,
                         },
                         Block::Version {
                             ecosystem: PolicyEcosystem::PyPi,
                             name: "Zope.Interface".to_owned(),
                             version: "5.0".to_owned(),
+                            reason: None,
                         },
                     ],
                     ..layer(LayerKind::Platform)
@@ -1125,6 +1132,7 @@ mod tests {
                     ecosystem: PolicyEcosystem::Npm,
                     name: "d".to_owned(),
                     version: "1.0.0".to_owned(),
+                    reason: None,
                 }],
                 exceptions: vec![exception("c", None, BLOCK)],
                 ..layer(LayerKind::Org)
