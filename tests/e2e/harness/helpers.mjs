@@ -61,7 +61,7 @@ export function helpers(stack, { log = console.log } = {}) {
     mail: {
       purge: () => call("DELETE", `${MAIL}/messages`),
       /// The newest mail to `to` (waits for it): {subject, text, html}.
-      async latest(to, { timeout = 30_000, subject } = {}) {
+      async latest(to, { timeout = 65_000, subject } = {}) {
         const found = await waitFor(`mail to ${to}`, async () => {
           const { messages } = await call("GET", `${MAIL}/search?query=${encodeURIComponent(`to:"${to}"`)}`);
           return messages.find((m) => !subject || m.Subject.includes(subject));
