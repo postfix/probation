@@ -16,7 +16,7 @@ Built in parallel with slice 3, in worktree ../probation-slice4 (branch `managem
 | S4-9 | scope | The root `Cargo.toml` gets one `exclude` entry, `docker-compose.test.yml`, to keep it out of the published `probation` package (C117). | Approved. |
 | S4-10 | process | The first tests were written after the code; their reds come from named mutants. | Accepted because it is recorded; the remaining tests are written test-first. |
 | S4-11 | fixing (review confirmed): slice 3 adds optional `ActivityEvent.at`; the server stores it clamped to [now − retention, now] and falls back to now() | Activity `at` is the server's receive time, because `ActivityEvent` (api.rs) carries no timestamp, so a row can be up to one sync interval late. | Reviewers judge against the activity-log requirements (C-rows on activity, T-activity-*). Adding a field would change slice 3's wire type. |
-| S4-12 | for review | A `since` above the server's revision (for example after a database restore) answers with a reset. That is not in the design text; the effect is conservative. | — |
+| S4-12 | superseded by C126 (S4-14) | A `since` above the server's revision (for example after a database restore) answers with a reset. That is not in the design text; the effect is conservative. | — |
 | S4-13 | for review | The `changes` entry caps (1 000 events, 1 000 `activity_dropped`, a 2 KiB `last_apply_error`) are checked after a parse that the 2 MiB byte cap bounds, and before any write (T24). | — |
 
 ## Branch history
@@ -40,3 +40,14 @@ Built in parallel with slice 3, in worktree ../probation-slice4 (branch `managem
 | adversarial F4 | crates/probation-server/src/sync.rs:515 | changes builds the delta in quadratic time; since=0 over a large log can outlast the firewall's 2 s request timeout |
 | adversarial F5 | crates/probation-server/src/tenancy.rs:242 | A soft-deleted login keeps Owner on its personal account (edit and key management) |
 | S4-14 | decision C126 | Slice-4 verification (UNCERTAIN, B1): the R3/N1 counter raise lets one firewall's cursor move the shared revision and `pruned_through`, so every firewall resets, and a stolen token can repeat that. | User decision C126 (2026-10-22): only the ahead firewall resets. Server: no raise; reset at its own revision. Firewall (slice 3): adopt the lower revision and discard asks begun before the reset. |
+
+## Re-verification (2026-10-22, on 2b7b55c)
+UNCERTAIN on one item: the C126 layers-epoch clause has no executed witness (the mutant removing it survives). Slice 3 is adding the test (S3-8 V3); slice 4 becomes VERIFIED once that test is merged. Verified: the C126 server side (killed mutant), the B2 OSV flake fix, F7, the dedupe, the override clamp, and T-firewall-token-source still detecting a missing rate limit (killed mutant). Row-4 witness: sync_api 6, policy_edit 8, tenancy 3, propagation 3 (p99 5.026 s and 4.970 s), doctest 1; cargo package gives the 2 crates. Nits sent: i64::MAX cursor bound; stale R3 comment. Open: the bootstrap audit row is still scoped to the new org (lib.rs:193). Other tests still use pooled wiremock servers (backlog). The reference shape sync.rs.txt still names raise_invalidation_floor (no control uses it).
+
+## Final verification (2026-10-22, on 7d9dda9 = 08f804a + slice 3 08b6d69): VERIFIED
+- The C126 layers clause is witnessed: the store_layers epoch mutant fails t_sync_reset_to_a_lower_revision (200 vs 403), and the file was restored byte-identically.
+- i64::MAX cursor accepted; u64::MAX → 422.
+- Row-4 witness: sync_api 6, policy_edit 8, tenancy 3, propagation 3 (edits p99 5.002 s, revocations p99 4.954 s at a 10 s interval), doctest 1.
+- molecule-check PASS; molecule-verify --slice 4 PASS 12/12.
+- Workspace: 609 passed, 0 failed. clippy and fmt clean.
+- Optional gap: no test at exactly i64::MAX+1.

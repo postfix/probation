@@ -39,7 +39,7 @@ use self::sync::KeySync;
 use crate::clock::Clock;
 use crate::concurrency::{Resolution, SingleFlight};
 use crate::config::{ManagementConfig, SettingsState};
-use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, PolicyVerdict};
+use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, Ecosystem, PolicyVerdict};
 
 /// Who a request runs as. Never holds the key or its hash.
 #[derive(Clone)]
@@ -660,10 +660,14 @@ impl Managed {
 
     /// A blocked, held or would-have-blocked decision, recorded for the key's owner with
     /// the rule and layer behind it (C23, C56, C81, C92).
+    /// `version` is `None` for a refused listing, whose row carries the package alone
+    /// (S3-8).
     pub fn record_decision(
         &self,
         principal: &Principal,
-        candidate: &Candidate<'_>,
+        ecosystem: Ecosystem,
+        package: &str,
+        version: Option<&str>,
         verdict: &PolicyVerdict,
     ) {
         let (result, rule, eligible_at) = match verdict.decision {
@@ -685,12 +689,34 @@ impl Managed {
         self.record(
             principal.account,
             ActivityEvent {
-                ecosystem: Some(candidate.ecosystem),
-                package: Some(candidate.name.to_owned()),
-                version: Some(candidate.version.to_owned()),
+                ecosystem: Some(ecosystem),
+                package: Some(package.to_owned()),
+                version: version.map(str::to_owned),
                 eligible_at,
                 ..row(principal.key_id, principal.place, result, rule, layer)
             },
+        );
+    }
+
+    /// The row for a request `decision` refused, naming `candidate`'s version when
+    /// `names_version`.
+    pub fn record_refused(
+        &self,
+        principal: &Principal,
+        policy: &CompiledPolicy,
+        now: i64,
+        candidate: &Candidate<'_>,
+        decision: Decision,
+        names_version: bool,
+    ) {
+        let verdict = refused_verdict(policy, now, candidate, decision);
+        let version = names_version.then_some(candidate.version);
+        self.record_decision(
+            principal,
+            candidate.ecosystem,
+            candidate.name,
+            version,
+            &verdict,
         );
     }
 
@@ -802,6 +828,19 @@ fn row(
         eligible_at: None,
         at: None,
     }
+}
+
+/// The verdict behind a refusal `decision`. `osv::evaluate` hands back only the
+/// decision, so the layer is the one `decide` names for the same inputs: an OSV denial
+/// is the one decided with a match.
+pub fn refused_verdict(
+    policy: &CompiledPolicy,
+    now: i64,
+    candidate: &Candidate<'_>,
+    decision: Decision,
+) -> PolicyVerdict {
+    let osv_matched = decision == Decision::Deny(DenyReason::BlockedByOsv);
+    crate::policy::decide(policy, candidate, now, osv_matched)
 }
 
 const fn deny_rule(reason: DenyReason) -> &'static str {

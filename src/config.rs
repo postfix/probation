@@ -1012,35 +1012,39 @@ impl Config {
         Ok(config)
     }
 
-    /// A pushed path: absolute, under `data_dir` once resolved, and none of the files
-    /// this firewall keeps there itself or its token (T5).
+    /// A pushed path: absolute, not a symlink, under `data_dir` once resolved, and
+    /// nothing the firewall keeps there itself, nor its token (T5).
     fn confined(&self, key: &str, path: &Path) -> Result<(), String> {
         let refused = || format!("`{key}` must name a file of its own under data_dir");
+        // Read before anything resolves it: canonicalising follows the link.
+        let link = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+        let walks = path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+        if link || walks || !path.is_absolute() {
+            return Err(refused());
+        }
         let resolved = match path.parent().map(std::fs::canonicalize) {
             Some(Ok(parent)) => parent.join(path.file_name().ok_or_else(refused)?),
             _ => path.to_path_buf(),
         };
         let data_dir =
             std::fs::canonicalize(&self.data_dir).unwrap_or_else(|_| self.data_dir.clone());
-        let walks = path
+        let inside = resolved.strip_prefix(&data_dir).map_err(|_| refused())?;
+        let top = inside
             .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir));
-        if !path.is_absolute() || walks || !resolved.starts_with(&data_dir) {
-            return Err(refused());
-        }
-        let name = resolved
-            .file_name()
-            .and_then(|name| name.to_str())
+            .next()
+            .and_then(|part| part.as_os_str().to_str())
             .unwrap_or_default();
         let token_file = self.management.as_ref().map(|management| {
             std::fs::canonicalize(&management.token_file)
                 .unwrap_or_else(|_| management.token_file.clone())
         });
-        if name.starts_with("firewall.db")
-            || name.starts_with("managed-")
-            || std::fs::canonicalize(&resolved)
-                .unwrap_or_else(|_| resolved.clone())
-                .is_symlink()
+        if top.is_empty()
+            || FIREWALL_OWNED.contains(&top)
+            || top.starts_with("managed-")
+            || top.starts_with("firewall.db")
+            || top.starts_with(".tmp")
             || token_file.is_some_and(|token_file| token_file == resolved)
         {
             return Err(refused());
@@ -1048,6 +1052,11 @@ impl Config {
         Ok(())
     }
 }
+
+/// What the firewall keeps directly under `data_dir`, besides its `managed-*` files and
+/// the `.tmp*` files they are written through: the data-directory lock, the store's
+/// directory and the content store. A push may name nothing inside them (T5).
+const FIREWALL_OWNED: &[&str] = &["lock", "state", "content"];
 
 /// Whether start-up can open `path` to append to it, creating nothing.
 fn openable(path: &Path) -> io::Result<()> {
