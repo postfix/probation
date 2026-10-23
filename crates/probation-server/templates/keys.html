@@ -15,6 +15,9 @@
 {% let (scheme, host) = view.firewall %}
 <pre>registry={{ scheme }}://{{ host }}/npm/
 //{{ host }}/npm/:_authToken={{ secret }}</pre>
+<h3>Using yarn 1? Also add to <code>.npmrc</code></h3>
+<pre>//{{ host }}/npm/:always-auth=true</pre>
+<p class="mut">Without it yarn 1 sends the key only for scoped packages. npm does not need this line and warns about it.</p>
 <h3>Point pip at Probation: add to <code>pip.conf</code></h3>
 <pre>[global]
 index-url = {{ scheme }}://key:{{ secret }}@{{ host }}/pypi/simple/</pre>

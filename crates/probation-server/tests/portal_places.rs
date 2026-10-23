@@ -726,6 +726,12 @@ async fn t_portal_keys_create_once() {
         "the .npmrc lines: {}",
         created.body
     );
+    // yarn 1 sends the key for an unscoped package only with `always-auth`.
+    assert!(
+        created.has("//fw.acme.test:8443/npm/:always-auth=true"),
+        "the yarn 1 line: {}",
+        created.body
+    );
     assert!(
         created.has(&format!(
             "index-url = https://key:{secret}@fw.acme.test:8443/pypi/simple/"

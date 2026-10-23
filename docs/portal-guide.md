@@ -253,6 +253,15 @@ registry=https://<firewall>/npm/
 //<firewall>/npm/:_authToken=<key>
 ```
 
+For yarn 1, add one more line to the same `.npmrc`. Without it yarn 1 sends the key
+only for scoped packages (`@scope/name`), so every other install fails with an
+authentication error. npm does not need the line, and npm 11 warns that it does not
+know it:
+
+```ini
+//<firewall>/npm/:always-auth=true
+```
+
 For pip, add to `pip.conf`:
 
 ```ini

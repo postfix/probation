@@ -723,7 +723,7 @@ here downloads straight from the public registry, and nothing tells you so.
 | npm, npx | Yes | Nothing more. |
 | pnpm | Yes, it reads `.npmrc` | Nothing more. |
 | bun | Only from `~/.npmrc` or a project's `.npmrc`, not the machine-wide npmrc the installer writes | Put the same `registry=` line in `~/.npmrc`. |
-| yarn 1 | New installs only | Rewrite each existing `yarn.lock` once (below). |
+| yarn 1 | New installs only | Rewrite each existing `yarn.lock` once (below). In managed mode, also add `//<host>/npm/:always-auth=true` to `.npmrc`: without it yarn 1 sends the key only for scoped packages. |
 | pip, pipx | Yes | Nothing more. |
 | uv | No | `uv.toml`, plus a certificate from `mkcert` (below). |
 | Poetry | No | Once per project (below). |

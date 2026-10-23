@@ -72,3 +72,34 @@ Source: `00-inventory.md` §1.3. Branch `fix-firewall-defects`, based on `manage
   - `enqueue-timeout-guard` @ `src/osv/mod.rs`: 0 findings (pass).
   - `outbound-timeout-guard` @ `src/osv/batcher.rs`: 10 findings at 234, 329, 370, 413, 439, 483, 484, 509, 510, 549, and 179 absent (pass; `batcher.rs` untouched).
 - C123 (`smtc callers --name get|get_all --callsites-matching '*AUTHORIZATION' --argument-index 0|1` over `src` and `crates/probation-policy/src`): one site in total, `src/managed/mod.rs:276` `headers.get(AUTHORIZATION)`.
+
+# E2E follow-ups (on top of f311d6e)
+
+## E1: cold `npm install` gets `503 OVERLOADED` past 8 concurrent downloads (not changed; decision needed)
+
+- Root cause: `src/artifacts/download.rs` `transfer` takes `app.limits.download_permit()`. That call is `try_acquire_owned` on a semaphore of `max_artifact_downloads` permits (`src/http/limits.rs:71`), and when no permit is free it returns `DownloadError::Overloaded`, which becomes `503 OVERLOADED` with no `Retry-After`. The default is 8 (`SPEC.md` §4, `config.sample.toml`, `docs/operations.md`). npm 11's default `maxsockets` is 15 (`npm config get maxsockets`), so one cold install of a tree with more than 8 uncached tarballs exceeds the global cap on its own. npm retries a 503 only twice, after about 10 s and then up to 60 s (`fetch-retries=2`, `fetch-retry-mintimeout=10000`, `fetch-retry-maxtimeout=60000`), and a retry can collide again. yarn 1 defaults to `network-concurrency` 8.
+- This is approved behaviour, not a bug:
+  - `docs/plans/package-firewall-mvp/02-architecture.md` item 6 says overload is "refused, never queued without limit".
+  - `04-slices.md` slice 8 says "Overload is refused with `503`, never queued", and its witness test is `overload_is_refused_not_queued`.
+  - `03-program-design.md` describes `src/http/limits.rs` as "overload is refused, never queued".
+  - The default of 8 is in SPEC §4.
+  - `SPEC.md` §10 itself allows "semaphores and bounded queues; reject overload instead of allowing unbounded waiters".
+- No code was changed. The options are in the report to the team lead.
+
+## E2: yarn 1 gets an authentication error with the keys page's `.npmrc` lines
+
+- Root cause: yarn 1.22.22 `NpmRegistry.request` (`lib/cli.js`, line 31739 in the corepack copy) attaches `Authorization` only when `this.token || isToRegistry && (alwaysAuth || this.isScopedPackage(packageIdent))`. For an unscoped package without `always-auth`, it sends no key at all, and the managed firewall answers 401. The `//host/npm/:_authToken` line is read (`getAuthByRegistry`), but it is never consulted for that request. yarn 1's npm config comes only from `.npmrc` files and `npm_config_*` environment variables, so `.yarnrc` cannot carry the setting.
+- Probe: the real yarn 1.22.22 ran against a local stub that logs whether `Authorization` is present. The scratch dir was on disk next to the project and was deleted afterwards.
+  - With the keys page lines, `yarn add left-pad` sent `GET /npm/left-pad auth=no`.
+  - With `//host/npm/:always-auth=true` added, the same command sent `GET /npm/left-pad auth=yes`.
+- Why not in the firewall: a request that carries no key cannot be authenticated, and serving it would break managed-mode authentication. yarn 1 does not retry with credentials after a 401. The fix therefore belongs in the snippet.
+- Why a separate line instead of a change to the npm block: npm 11 warns on `always-auth` in either form ("Unknown project config "always-auth" … will stop working in the next major version of npm"), and npm does not need it. The npm block stays unchanged, which also keeps the e2e driver's `<pre>registry=` extraction intact. The keys page gets a "Using yarn 1? Also add to `.npmrc`" block with `//{{ host }}/npm/:always-auth=true`.
+- Server code changed for this fix: `crates/probation-server/templates/keys.html`.
+- Test: `crates/probation-server/tests/portal_places.rs` `t_portal_keys_create_once` now asserts `//fw.acme.test:8443/npm/:always-auth=true`.
+  - Red: `the yarn 1 line: <!doctype html>…` (panicked at `portal_places.rs:730`).
+  - Green: `test t_portal_keys_create_once ... ok`.
+- Docs: `docs/portal-guide.md` (setup lines) and `docs/operations.md` (the yarn 1 row of the client table).
+- Checks for this commit:
+  - Workspace tests ran against a private Postgres (`PROBATION_SERVER_TEST_DATABASE_URL`): 713 passed, 1 failed, 21 ignored.
+  - The one failure was `admin_fleet::t_sync_ranges`: "purged: 200 OK within one interval, still 403 Forbidden". It asserts a firewall sees a range purge within one 2 s interval, measured by wall clock. It passed 3/3 alone and in its whole binary (29/29), and it touches no file this commit changed. The failure is that 2 s wall-clock bound being missed under the full parallel run, so it is reported here and was not changed.
+  - fmt and clippy `-D warnings`: clean.
