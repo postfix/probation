@@ -152,7 +152,7 @@ export class Stack {
     const gateway = `${this.net}.10`;
     writeFileSync(
       join(this.work, "server.toml"),
-      readFileSync(join(COMPOSE_DIR, "server.toml"), "utf8").replaceAll("11.220.0.10", gateway),
+      readFileSync(join(COMPOSE_DIR, "server.toml"), "utf8").replaceAll("11.220.0.", `${this.net}.`),
     );
     // The shipped sample, edited as an operator would: plain HTTP behind the gateway.
     const sample = readFileSync(join(ROOT, "config.sample.toml"), "utf8").replace(/^listen = .*$/m, 'listen = "0.0.0.0:8080"');

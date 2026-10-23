@@ -89,8 +89,10 @@ export class Pypi {
   /// Adds a release's files (`kinds`: "wheel", "sdist"). `ageSeconds` or `uploadedAt`
   /// (ISO) sets each file's PEP 700 upload time. `backend: "intree"` makes an sdist that
   /// builds with no build requirement (default: flit_core, which the fakes do not serve).
-  publish({ name, version, uploadedAt, ageSeconds, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend }) {
-    const at = uploadedAt ?? new Date(Date.now() - (ageSeconds ?? 0) * 1000).toISOString();
+  /// `untimed: true` lists no upload time (`upload-time: null`), so a firewall falls
+  /// back to when it first saw the file.
+  publish({ name, version, uploadedAt, ageSeconds, untimed = false, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend }) {
+    const at = untimed ? null : (uploadedAt ?? new Date(Date.now() - (ageSeconds ?? 0) * 1000).toISOString());
     const key = normalize(name);
     let project = this.projects.get(key);
     if (!project) this.projects.set(key, (project = { name, files: [] }));

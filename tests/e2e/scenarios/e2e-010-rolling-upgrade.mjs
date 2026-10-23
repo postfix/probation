@@ -9,11 +9,12 @@
 //
 // Always, on one firewall volume:
 // - the previous image runs standalone with a producer blocklist and is filled: an
-//   install (a pinned file), a version held by the release-age freeze, blocklist
-//   revision 300;
-// - the new image starts on that volume: the install is served, the hold keeps its
-//   first-seen time (Retry-After does not grow), a blocklist with a lower revision is
-//   still refused;
+//   install (a pinned file), a version held by the release-age freeze, a PyPI file with
+//   no upload time (its first-seen time), blocklist revision 300;
+// - the new image starts on that volume with revision 299 already in the producer's
+//   file: the persisted 300 still rules, the install is served, the hold stays, and
+//   the volume's rows (revision, pins, first-seen times, read with sqlite3 while it is
+//   stopped) are the ones the previous release wrote;
 // - the same volume goes managed (registered on /fleet): it serves the operator's key;
 // - rolled back to the previous image with the managed config, it refuses cleanly (exit
 //   non-zero, says why, no restart loop), and the new image starts again on the volume.
@@ -93,6 +94,21 @@ function previousRelease(h, o) {
   return { ref, firewall: tag("probation"), server: hasServer ? tag("probation-server") : null, version: version(tag("probation")) };
 }
 
+/// The stopped firewall volume's persisted state: the blocklist revision and the
+/// references of `pkg` ({filename, first_seen, pinned}), read with Python's sqlite3 in a
+/// throwaway container of the pip client image.
+function volumeState(o, volume, pkg) {
+  const script = `
+import json, sqlite3, sys
+db = sqlite3.connect("/v/state/firewall.db")
+revision = db.execute("SELECT revision FROM blocklist").fetchone()
+rows = db.execute("SELECT filename, first_seen_micros, hex(pinned_sha512) FROM artifact_references WHERE name = ?", (sys.argv[1],)).fetchall()
+print(json.dumps({"revision": revision and revision[0], "references": [{"filename": f, "first_seen": s, "pinned": p or None} for f, s, p in rows]}))
+`;
+  const run = o.engine(["run", "--rm", "-v", `${volume}:/v`, "--user", "0", "localhost/probation-e2e-client:pip26.2", "python3", "-c", script, pkg]);
+  return JSON.parse(run.stdout.trim());
+}
+
 async function standaloneUpgrade(h, o, prev) {
   const { expect } = h;
   const base = h.firewalls.standalone;
@@ -117,6 +133,8 @@ async function standaloneUpgrade(h, o, prev) {
 
   await h.fakes.publishNpm({ name: pkg, version: "1.0.0", ageSeconds: 300 * 86_400 });
   await h.fakes.publishNpm({ name: pkg, version: "1.1.0", ageSeconds: 3600, tag: null });
+  // A PyPI file with no upload time: the firewall records when it first saw it.
+  await h.fakes.publishPypi({ name: pkg, version: "1.0.0", untimed: true, kinds: ["wheel"] });
   publish(300);
   // The previous image's own shipped config, edited for this host.
   const shipped = o.engine(["run", "--rm", "--entrypoint", "cat", prev.firewall, "/etc/probation/config.toml"]).stdout;
@@ -134,27 +152,45 @@ async function standaloneUpgrade(h, o, prev) {
     await h.firewallReady("fw-standalone", 60_000);
     let run = install();
     expect(run.status === 0, `install through ${prev.version}: ${run.stderr}`);
+    const listed = await h.request(`${base}/pypi/simple/${pkg}/`);
+    expect(listed.status === 200, `the PyPI listing through ${prev.version}: ${listed.status}`);
     let answer = await held();
     const before = Number(answer.headers["retry-after"]);
     expect(answer.status === 403 && before > 0, `1.1.0 is held by the freeze: ${answer.status} ${answer.headers["retry-after"]}`);
 
-    // 2. The new image on the same volume.
+    // 2. The new image on the same volume. What the previous release persisted is read
+    //    from the stopped volume first: the blocklist revision, and each reference of
+    //    the package with its first-seen time and pinned digest.
     h.log("standalone 2: the new image on the same volume");
     fw.stop();
     fw.rm();
+    const persisted = volumeState(o, volume, pkg);
+    expect(persisted.revision === 300, `the previous release persisted revision 300: ${JSON.stringify(persisted)}`);
+    expect(persisted.references.some((r) => r.filename === `${pkg}-1.0.0.tgz` && r.pinned), `the previous release persisted the installed file's pin: ${JSON.stringify(persisted)}`);
+    expect(persisted.references.some((r) => r.filename.endsWith(".whl") && r.first_seen), `the previous release persisted the untimed wheel's first-seen time: ${JSON.stringify(persisted)}`);
+    // A lower revision waits in the producer's file before the new image starts: only
+    // the persisted revision 300 keeps it out.
+    publish(299, ["1.0.0"]);
     fw = o.firewall({ name: "firewall-standalone", config, mounts, volume });
     await h.firewallReady("fw-standalone", 60_000);
     expect(!/will not open|refused and left untouched/i.test(fw.logs()), `the new release opens the previous database:\n${fw.logs().slice(-2000)}`);
+    await h.waitFor("the lower revision is refused", () => /the blocklist candidate was rejected/.test(fw.logs()), { timeout: 10_000 });
+    expect((await h.request(`${base}/npm/${pkg}/1.0.0`)).status === 200, "the persisted revision 300 still rules over the file's 299");
     run = install();
     expect(run.status === 0, `the install after the upgrade: ${run.stderr}`);
     answer = await held();
     const after = Number(answer.headers["retry-after"]);
     expect(answer.status === 403 && after <= before, `the hold keeps its first-seen time: Retry-After ${before} before, ${answer.status} ${after} after`);
-    const rejected = () => (fw.logs().match(/the blocklist candidate was rejected/g) ?? []).length;
-    const rejections = rejected();
-    publish(299, ["1.0.0"]);
-    await h.waitFor("the lower revision is refused", () => rejected() > rejections, { timeout: 10_000 });
-    expect((await h.request(`${base}/npm/${pkg}/1.0.0`)).status === 200, "the persisted revision 300 still rules");
+    // The new release kept the rows as they were (stopped again to read them).
+    fw.stop();
+    const kept = volumeState(o, volume, pkg);
+    fw.start();
+    await h.firewallReady("fw-standalone", 60_000);
+    expect(kept.revision === 300, `revision 300 is still the persisted one: ${JSON.stringify(kept)}`);
+    for (const row of persisted.references) {
+      const now = kept.references.find((r) => r.filename === row.filename);
+      expect(now && now.first_seen === row.first_seen && now.pinned === row.pinned, `${row.filename} keeps its first-seen time and pin: ${JSON.stringify(row)} then ${JSON.stringify(now)}`);
+    }
 
     // 3. The same volume goes managed.
     h.log("standalone 3: the same volume goes managed");

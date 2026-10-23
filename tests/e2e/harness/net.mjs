@@ -4,7 +4,7 @@
 // exactly as the stack does (`https://fw1.e2e.test/...`) and its certificate is checked
 // against the e2e CA. Connections are pooled per host.
 
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -116,12 +116,16 @@ export function hidden(body, name) {
 export class Portal {
   cookies = new Map();
 
-  constructor(base = "https://portal.e2e.test") {
+  /// `clientIp`: the address this person browses from, sent in X-Forwarded-For (the
+  /// server trusts the bridge and the gateway in front of it). A new one for each
+  /// Portal, so the server's per-address limits see separate people, not one host.
+  constructor(base = "https://portal.e2e.test", clientIp = randomClientIp()) {
     this.base = base;
+    this.clientIp = clientIp;
   }
 
   async fetch(path, form) {
-    const headers = {};
+    const headers = { "x-forwarded-for": this.clientIp };
     if (this.cookies.size) headers.cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
     let body;
     if (form) {
@@ -152,6 +156,12 @@ export class Portal {
     const csrf = hidden((await this.get(page)).body, "csrf");
     return this.post(path, { ...form, csrf });
   }
+}
+
+/// A client address in 10.200.0.0/16, the range the harness's simulated people use.
+export function randomClientIp() {
+  const [a, b] = randomBytes(2);
+  return `10.200.${a}.${b === 0 ? 1 : b}`;
 }
 
 function base32(text) {

@@ -1,9 +1,12 @@
 # The management server of the e2e stack (docs/management-server.md). Every name here
-# is a network alias on the e2e network; the gateway (11.220.0.10; the harness puts
-# in the address of the stack it starts) terminates TLS.
+# is a network alias on the e2e network; the gateway (11.220.0.10) terminates TLS. The
+# bridge (11.220.0.11) is the load balancer in front of the gateway for everything the
+# harness does from the host; each harness client names its own address in
+# X-Forwarded-For, as clients behind a real load balancer do. The harness puts in the
+# addresses of the stack it starts.
 [server]
 listen = "0.0.0.0:8080"
-trusted_proxies = ["11.220.0.10/32"]
+trusted_proxies = ["11.220.0.10/32", "11.220.0.11/32"]
 
 [portal]
 base_url = "https://portal.e2e.test/"

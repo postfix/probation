@@ -181,5 +181,9 @@ export default async function offboarding(h) {
   // A removed member can come back only by a new invitation; their old key stays dead.
   const link = await invite(h, admin, org, removed.email);
   await accept(removed, link);
-  expect((await keyStatus(h, "fw1", keys.removed.key)) === 401, "rejoining does not bring the old key back");
+  // After the sync round that carries the new membership, not before it.
+  await h.sleep((h.syncInterval + 5) * 1000);
+  for (const host of ["fw1", "fw2"]) {
+    expect((await keyStatus(h, host, keys.removed.key)) === 401, `rejoining does not bring the old key back on ${host}`);
+  }
 }

@@ -54,6 +54,7 @@ export default async function lockfileReplay(h) {
       make: { files: { "package.json": packageJson, ".npmrc": PUBLIC_NPMRC }, script: "npm install --package-lock-only --no-audit --cache $PWD/.c0" },
       replay: { files: { ".npmrc": npmrc }, script: `rm -rf node_modules; npm ci --no-audit --cache $PWD/.c@FRESH@ && ${nodeCheck("node")}` },
       installed: npmInstalled,
+      refusal: { said: /E403|403 Forbidden/, blocked: true },
     })),
     {
       name: "pnpm install --frozen-lockfile",
@@ -62,6 +63,7 @@ export default async function lockfileReplay(h) {
       make: { files: { "package.json": packageJson, ".npmrc": PUBLIC_NPMRC }, script: "pnpm install --lockfile-only --store-dir $PWD/.s0" },
       replay: { files: { ".npmrc": npmrc }, script: `rm -rf node_modules; pnpm install --frozen-lockfile --store-dir $PWD/.s@FRESH@ && ${nodeCheck("node")}` },
       installed: npmInstalled,
+      refusal: { said: /ERR_PNPM_FETCH_403|returned HTTP 403/, blocked: true },
     },
     {
       name: "yarn berry install --immutable",
@@ -73,6 +75,7 @@ export default async function lockfileReplay(h) {
       },
       replay: { files: { ".yarnrc.yml": yarnrc }, script: `rm -rf node_modules; YARN_CACHE_FOLDER=$PWD/.y@FRESH@ yarn install --immutable && ${nodeCheck("node")}` },
       installed: npmInstalled,
+      refusal: { said: /403 \(Forbidden\)|Response Code: 403/, blocked: true },
     },
     {
       name: "bun install --frozen-lockfile",
@@ -81,6 +84,7 @@ export default async function lockfileReplay(h) {
       make: { files: { "package.json": packageJson }, script: "BUN_INSTALL_CACHE_DIR=$PWD/.b0 bun install --lockfile-only" },
       replay: { files: { ".npmrc": npmrc }, script: `rm -rf node_modules; BUN_INSTALL_CACHE_DIR=$PWD/.b@FRESH@ bun install --frozen-lockfile && ${nodeCheck("bun")}` },
       installed: npmInstalled,
+      refusal: { said: /\b403\b/, blocked: true },
     },
     {
       name: "pip install --require-hashes",
@@ -90,6 +94,7 @@ export default async function lockfileReplay(h) {
       make: { files: {}, script: "true" },
       replay: { files: { "pip.conf": pipConf }, script: `rm -rf t; PIP_CONFIG_FILE=$PWD/pip.conf pip install --no-cache-dir --target t --require-hashes -r requirements.txt && PYTHONPATH=t ${pyCheck("python")}` },
       installed: pyInstalled,
+      refusal: { said: /No matching distribution found for e2e-left==1\.1\.0/, blocked: false },
     },
     {
       name: "uv sync",
@@ -100,6 +105,7 @@ export default async function lockfileReplay(h) {
       relock: { files: { "uv.toml": uvToml }, script: "UV_CACHE_DIR=$PWD/.u1 uv lock" },
       replay: { files: {}, script: `rm -rf .venv; UV_CACHE_DIR=$PWD/.u@FRESH@ uv sync --locked && ${pyCheck(".venv/bin/python")}` },
       installed: pyInstalled,
+      refusal: { said: /403 Forbidden/, blocked: true },
     },
     {
       name: "poetry install",
@@ -110,6 +116,7 @@ export default async function lockfileReplay(h) {
       relock: { files: {}, script: `${poetryEnv}\npoetry source add --priority=primary probation https://fw1.e2e.test/pypi/simple/ && poetry lock` },
       replay: { files: {}, script: `${poetryEnv}\nexport POETRY_CACHE_DIR=$PWD/.p@FRESH@; rm -rf .venv; poetry install && ${pyCheck(".venv/bin/python")}` },
       installed: pyInstalled,
+      refusal: { said: /e2e-left \(1\.1\.0\)/, blocked: false },
     },
   ];
 
@@ -157,9 +164,16 @@ export default async function lockfileReplay(h) {
   }
   await untilStatus(h, firewalls, "/npm/e2e-left/1.1.0", key, 403, "the blocks reach the fleet");
   for (const client of clients) {
+    const since = new Date(Date.now() - 1000);
     const refused = run(client, client.replay);
     expect(exitOf(refused) !== 0 && !refused.stdout.includes(client.installed), `${client.name} must fail on the blocked pin: ${said(refused)}`);
-    expect(/403|BLOCKED|[Ff]orbidden|No matching distribution|[Nn]o (matching )?(version|candidates)|[Uu]nable to find|not found/.test(said(refused)), `${client.name} says why: ${said(refused)}`);
+    // The client's own words for this refusal, not just any error.
+    expect(client.refusal.said.test(said(refused)), `${client.name} says ${client.refusal.said}: ${said(refused)}`);
+    if (client.refusal.blocked) {
+      // A client that fetches the pinned artifact was answered 403 BLOCKED for it.
+      const decided = h.decisions("firewall-1", since).filter((d) => /e2e[-_]left-1\.1\.0/.test(d.version ?? ""));
+      expect(decided.some((d) => d.status === 403 && d.result === "BLOCKED"), `${client.name}: firewall-1 refused e2e-left 1.1.0 with 403 BLOCKED: ${JSON.stringify(decided)}`);
+    }
     expect(lockOf(refused) === client.lockHash, `${client.name} leaves ${client.lock} unchanged after the refusal`);
     h.log(`${client.name}: refused`);
   }
@@ -183,7 +197,7 @@ export default async function lockfileReplay(h) {
   const rewritten = lockOf(answer);
   answer = run(yarn, { files: { ".npmrc": npmrc }, script: yarnInstall });
   // needs the yarn 1 auth fix (keys-page .npmrc): today yarn 1 sends no key, so this is 401, not 403.
-  expect(exitOf(answer) !== 0 && /403/.test(said(answer)) && lockOf(answer) === rewritten, `yarn 1 (rewritten) is refused the blocked pin with 403: ${said(answer)}`);
+  expect(exitOf(answer) !== 0 && /Request failed "403 Forbidden"|\b403\b.*Forbidden/.test(said(answer)) && lockOf(answer) === rewritten, `yarn 1 (rewritten) is refused the blocked pin with 403: ${said(answer)}`);
 
   // Unblock: the rewritten yarn.lock installs through the firewall.
   // The npm and the PyPI block read the same on their Remove buttons.

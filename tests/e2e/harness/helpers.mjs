@@ -2,9 +2,10 @@
 // cookie-jar Portal; steps a person does in a browser use h.browser() (Playwright
 // Chromium, D3). Both reach the stack through the bridge under the stack's own names.
 
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Authenticator, Portal, between, expect, hidden, request, totp, unescape } from "./net.mjs";
+import { Authenticator, Portal, between, expect, hidden, randomClientIp, request, totp, unescape } from "./net.mjs";
 import { OPERATOR_EMAIL, SYNC_INTERVAL, enableTotp, signInWithCode, waitFor } from "./stack.mjs";
 
 const FAKES = "http://fakes.e2e.test:8080";
@@ -165,6 +166,26 @@ export function helpers(stack, { log = console.log } = {}) {
       return stack.sql(`UPDATE ${table} SET ${column} = ${column} - interval '${interval}' WHERE ${where}`);
     },
 
+    /// The firewall's "request decided" log lines since `since` (a Date): their fields
+    /// ({method, ecosystem, package, version, status, result, reason, ...}), with the
+    /// quotes the log puts around strings removed. For an artifact, `package` is its
+    /// reference id and `version` its filename.
+    decisions(service, since) {
+      const run = spawnSync(stack.engine, ["logs", "--since", since.toISOString(), stack.container(service)], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      return `${run.stdout}\n${run.stderr}`
+        .split("\n")
+        .filter((line) => line.includes('"request decided"'))
+        .map((line) => {
+          try {
+            const { fields } = JSON.parse(line);
+            return Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? v.replace(/^"|"$/g, "") : v]));
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    },
+
     restart: (...services) => stack.restart(...services),
     stop: (...services) => stack.stop(...services),
     start: (...services) => stack.start(...services),
@@ -182,7 +203,8 @@ export function helpers(stack, { log = console.log } = {}) {
         const { chromium } = await import("playwright");
         browser = await chromium.launch({ proxy: { server: `http://127.0.0.1:${stack.bridgePort}` } });
       }
-      return browser.newContext({ ignoreHTTPSErrors: true, baseURL: h.portalUrl });
+      // Like a Portal, each context is a person with an address of their own.
+      return browser.newContext({ ignoreHTTPSErrors: true, baseURL: h.portalUrl, extraHTTPHeaders: { "x-forwarded-for": randomClientIp() } });
     },
 
     /// In a browser page: the sign-up form, the confirmation link from the mail, and

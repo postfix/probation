@@ -19,6 +19,8 @@ export const meta = {
 };
 
 const DAY = 86_400;
+/// "Fails fast": a client with a revoked key gives up within this, no prompt, no retry loop.
+const FAST_SECONDS = 5;
 
 export default async function pythonClients(h) {
   const { expect } = h;
@@ -47,6 +49,11 @@ export default async function pythonClients(h) {
     const text = run.stdout + run.stderr;
     expect(run.status !== 0, `${what} should fail but exited 0\n${text}`);
     expect(!pattern || pattern.test(text), `${what}: no ${pattern} in\n${text}`);
+  };
+  /// firewall-1 answered the blocked 1.0.0 wheel with 403 BLOCKED since `since`.
+  const blockedSince = (what, since) => {
+    const decided = h.decisions("firewall-1", since).filter((d) => /py_mixed_[0-9a-f]+-1\.0\.0-py3-none-any\.whl/.test(d.version ?? ""));
+    expect(decided.some((d) => d.status === 403 && d.result === "BLOCKED"), `${what}: firewall-1 refused the 1.0.0 wheel with 403 BLOCKED: ${JSON.stringify(decided)}`);
   };
   const pip = (args) => h.pip(`install --no-cache-dir --target t ${args}`, { pipConf });
   const uv = (args, files = {}) =>
@@ -99,13 +106,17 @@ export default async function pythonClients(h) {
   ok("pip falls back", run);
   expect(run.stdout.includes(`Successfully installed ${mixed}-0.9.0`), `pip falls back to 0.9.0: ${run.stdout}`);
   fails("pip install ==1.0.0", pip(`${mixed}==1.0.0`), /No matching distribution found/);
-  fails("pip --require-hashes (artifact URL)", h.pip("install --no-cache-dir --target t --require-hashes -r url.txt", { pipConf, files: hashes }), /403/);
+  let since = new Date(Date.now() - 1000);
+  fails("pip --require-hashes (artifact URL)", h.pip("install --no-cache-dir --target t --require-hashes -r url.txt", { pipConf, files: hashes }), /HTTP error 403/);
+  blockedSince("pip --require-hashes (artifact URL)", since);
   fails("pip --require-hashes (pinned)", h.pip("install --no-cache-dir --target t --require-hashes -r pinned.txt", { pipConf, files: hashes }), /No matching distribution found/);
   run = uv(mixed);
   ok("uv falls back", run);
   expect(run.stderr.includes(`+ ${mixed}==0.9.0`), `uv falls back to 0.9.0: ${run.stderr}`);
-  fails("uv pip install ==1.0.0", uv(`${mixed}==1.0.0`), /1\.0\.0/);
-  fails("uv pip install (artifact URL)", uv(`--require-hashes -r url.txt`, hashes), /403/);
+  fails("uv pip install ==1.0.0", uv(`${mixed}==1.0.0`), new RegExp(`no version of ${mixed}==1\\.0\\.0`));
+  since = new Date(Date.now() - 1000);
+  fails("uv pip install (artifact URL)", uv(`--require-hashes -r url.txt`, hashes), /403 Forbidden/);
+  blockedSince("uv pip install (artifact URL)", since);
   // The lock pins the blocked 1.0.0: install fails and the lock is not rewritten.
   run = poetry(`rm -rf .venv && poetry install`);
   fails("poetry install from the lock", run, new RegExp(mixed));
@@ -133,16 +144,21 @@ export default async function pythonClients(h) {
   await untilStatus(h, [fw1], `/pypi/simple/${wheelOnly}/`, key, 401, "the revocation reaches firewall-1");
   const denied = await fetchWith(h, fw1, `/pypi/simple/${wheelOnly}/`, null, { authorization: basic(key) });
   expect(denied.status === 401 && /^Basic /.test(denied.headers["www-authenticate"] ?? ""), `401 names the Basic scheme: ${denied.status} ${JSON.stringify(denied.headers)}`);
+  // Only the client's own run is timed: the project set-up (venv, Poetry source) comes first.
+  const revokedPoetry = `/work/${h.unique("poetry")}`;
+  ok("poetry project set-up", poetry(poetrySource, { "pyproject.toml": pyproject }, revokedPoetry));
+  const uvDir = `/work/${h.unique("uv")}`;
+  ok("uv venv", h.client("client-uv", "uv venv -q .venv", { dir: uvDir, files: { "uv.toml": uvToml } }));
   for (const [what, command] of [
     ["pip", () => pip(wheelOnly)],
-    ["uv", () => uv(wheelOnly)],
-    ["poetry", () => poetry(`${poetrySource} && poetry add ${wheelOnly}`, { "pyproject.toml": pyproject }, `/work/${h.unique("poetry")}`)],
+    ["uv", () => h.client("client-uv", `export UV_CACHE_DIR=$PWD/.uv-cache-revoked; uv pip install -p .venv ${wheelOnly}`, { dir: uvDir })],
+    ["poetry", () => poetry(`poetry add ${wheelOnly}`, {}, revokedPoetry)],
   ]) {
     const started = performance.now();
     run = command();
     const seconds = (performance.now() - started) / 1000;
     fails(`${what} with the revoked key`, run, /401|[Uu]nauthori[sz]ed|[Aa]uthori[sz]ation error/);
-    expect(seconds < 60, `${what} gave up in ${seconds.toFixed(1)} s, not fast`);
+    expect(seconds < FAST_SECONDS, `${what} gave up in ${seconds.toFixed(1)} s, not within ${FAST_SECONDS} s`);
     h.log(`${what} with a revoked key failed in ${seconds.toFixed(1)} s`);
   }
 

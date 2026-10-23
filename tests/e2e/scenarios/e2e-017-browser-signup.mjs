@@ -60,15 +60,18 @@ export default async function browserSignup(h) {
   await fillSignup(password);
   expect((await text()).includes("We could not check this password just now. Please try again."), `range API down:\n${await text()}`);
   await h.fakes.faults([]);
-  expect((await mailsTo(email)) === 0, "no mail went out for a refused sign-up");
 
   // The sign-up, the mail from the sink, the confirmation and the sign-in.
   await h.browserSignUp(page, { kind: "org", email, password, org });
   const mail = await h.mail.latest(email, { subject: "Confirm your email address" });
   const link = mail.text.match(/https?:\/\/\S+/)?.[0];
   expect(link?.startsWith("https://portal.e2e.test/verify-email?token="), `the link is built from base_url: ${link}`);
+  // Counted once the real mail is in: the outbox sends in order, so a mail queued for
+  // either refused sign-up would be in the sink by now too.
+  const sent = await mailsTo(email);
+  expect(sent === 1, `exactly one mail to ${email} (the refused sign-ups sent none): ${sent}`);
   expect(new URL(page.url()).pathname === "/account", `signed in at /account: ${page.url()}`);
-  const session = (await context.cookies()).find((cookie) => cookie.httpOnly);
+  const session = (await context.cookies()).find((cookie) => cookie.name === "probation_session");
   expect(session?.secure && session.httpOnly && session.sameSite === "Lax", `session cookie: ${JSON.stringify(session)}`);
   const placeLabel = await page.locator("#place-switcher option[selected]").textContent();
   expect(placeLabel === `${org} (organisation)`, `the new organisation is the place: ${placeLabel}`);

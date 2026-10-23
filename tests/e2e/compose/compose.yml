@@ -120,7 +120,12 @@ services:
       E2E_SUBNET_PREFIX: ${E2E_NET:-11.220.0}.
     volumes:
       - ../fixtures:/fixtures:ro
-    networks: [e2e, edge]
+    # A fixed address: the server trusts it as the load balancer in front of the gateway,
+    # so the address the harness puts in X-Forwarded-For is the client's (server.toml).
+    networks:
+      e2e:
+        ipv4_address: ${E2E_NET:-11.220.0}.11
+      edge: {}
     ports:
       - "127.0.0.1:${E2E_BRIDGE_PORT:-18128}:3128"
 

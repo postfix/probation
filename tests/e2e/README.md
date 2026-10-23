@@ -84,6 +84,14 @@ with that token. Scenarios get the signed-in operator as `h.operator` (`portal`,
 `email`, `password`, `auth`) and the bootstrap output as `h.bootstrap` (`key`,
 `firewall_token`, `org`, ...).
 
+Every `Portal` and every browser context is a separate person with an address of its
+own in 10.200.0.0/16. The harness sends that address in `X-Forwarded-For`. The server
+trusts the bridge (`.11`) and the gateway (`.10`) as proxies, as a real load balancer in
+front of nginx is trusted. So its per-address limits (`MAIL_PER_IP`, the sign-in
+throttle) count people, not the one host every harness request comes from. A
+scenario that wants one address for several requests passes it:
+`new h.Portal(undefined, "10.200.0.7")`.
+
 Between scenarios the fakes go back to their seed state and the mail sink is emptied.
 The database is not reset. Each scenario makes its own accounts, orgs, keys and package
 names (`h.unique()`), so scenarios share one stack and run in any order. A scenario that
