@@ -2,8 +2,8 @@
 
 - Gate 1 — Product: APPROVED 2026-10-20
 - Gate 2 — Architecture: APPROVED 2026-10-21
-- Gate 3 — Program Design: APPROVED 2026-10-22
-- Gate 4 — Slice plan: APPROVED 2026-10-22
+- Gate 3 — Program Design: APPROVED 2026-10-23
+- Gate 4 — Slice plan: APPROVED 2026-10-23
 
 ## Factory settings
 
@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":7,"boundary":{"kind":"slice","number":3},"reopened":false,"history":[{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"security"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"hand","reason":"start","to":"engineering"},{"from":"code-review","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"qa"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"hand","reason":"start","to":"engineering"},{"from":"direct-witness","reason":"complete","to":"qa"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"security"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"hand","reason":"start","to":"engineering"},{"from":"qa","reason":"rework","to":"engineering"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"security"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"code-review","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"qa","reason":"rework","to":"sf-spec-authoring"},{"from":"sf-spec-authoring","reason":"complete","to":"qa"},{"from":"qa","reason":"complete","to":"hand"}]}
+{"generation":9,"boundary":{"kind":"slice","number":3},"reopened":false,"history":[{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"hand","reason":"start","to":"engineering"},{"from":"code-review","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"engineering","reason":"complete","to":"direct-witness"},{"from":"direct-witness","reason":"complete","to":"qa"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"hand","reason":"start","to":"engineering"},{"from":"direct-witness","reason":"complete","to":"qa"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"security"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"hand","reason":"start","to":"engineering"},{"from":"qa","reason":"rework","to":"engineering"},{"from":"direct-witness","reason":"complete","to":"code-review"},{"from":"direct-witness","reason":"complete","to":"security"},{"from":"direct-witness","reason":"complete","to":"sf-adversarial-testing"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"sf-adversarial-testing","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"code-review","reason":"rework","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"qa","reason":"rework","to":"sf-spec-authoring"},{"from":"sf-spec-authoring","reason":"complete","to":"qa"},{"from":"qa","reason":"complete","to":"hand"},{"from":"hand","reason":"rework","to":"hand"},{"from":"hand","reason":"start","to":"qa"}]}
 
 ## Gate 1 progress
 
@@ -88,7 +88,9 @@
   Result: tools cargo, docker, npm, npx, bash; test-only fixtures named per slice.
 - [x] Complete required combined design reviews
   Result: sf-threat-model and sf-red-team findings fixed in 02, 03, 04; user decisions Q56 recorded as C113–C116.
-- [x] Obtain QA READY
+- [ ] Obtain QA READY
+  Reopened 2026-10-23: C126 (only the ahead firewall resets), C127 (taken org name revealed, accepted like A3) and C128 (removed members stay removed under SSO) were added to 03 as user decisions during delivery without design re-approval; the router refused slice 3 completion (SOURCE_CONTRACT_REQUIRED). Rework: fresh `--gate design` QA, then user approval.
+  C126–C130 rounds: QUESTIONS (ABQ1 → C129 operator after-restore; ABQ2 → C130 only admin removal blocks SSO re-join, erased with the login; AB1–AB4 fixed, 485f724), REVISE (AC1–AC3, N1 fixed, 861441d), REVISE (AD1: +1 not +2^32, 09d5f4a), READY — gate-4-qa.md. User approved 2026-10-23 (show-me-design.html); gate-qa approve --gate design APPROVED.
   Reopened 2026-10-22 for C123; fresh `--gate design` QA required.
   C123 round 1: QUESTIONS — docs/plans/management-server/gate-4-qa.md. Blocker: YQ1 (user question: C47 "not in effect" vs slice-1 deviation 2). Revisions Y1–Y6 pending. Next: ask YQ1, fix Y1–Y6, request fresh QA.
   YQ1 answered by the user (24 h) as C124; Y1–Y6 fixed in 03 and 04; N1 saved as evidence/smtc-argument-matching.md; router check no findings, molecule-check PASS. Round 2 requested.
@@ -113,7 +115,8 @@
   Round 14: REVISE — gate-4-qa.md (W1 + 4 notes), fixed. Propagation/temporary-behaviour check: 5 found, fixed. router check no findings, molecule-check PASS. User approved round 15 (Q75, 2026-10-21). Round 15 requested.
   Pre-review sweep: 14 confirmed, fixed (03 § Review dispositions); router check no findings, molecule-check PASS.
   Result: Round 15 READY — docs/plans/management-server/gate-4-qa.md (notes N1–N4 non-blocking, left unchanged); gate-qa verify returned READY.
-- [x] Present and record user approval
+- [ ] Present and record user approval
+  Reopened 2026-10-23 for C126–C128.
   Reopened 2026-10-22 for C123; the design needs the user's approval again.
   Result: reopened design (C123, C124, C125) approved by the user 2026-10-22; presentation docs/plans/management-server/show-me-design.md; gate-qa approve --gate design returned APPROVED.
   Result: design approved by the user 2026-10-21; presentation docs/plans/management-server/show-me-design.md; gate-qa approve --gate design returned APPROVED.
