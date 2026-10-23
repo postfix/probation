@@ -105,7 +105,35 @@ pub async fn serve(
     logging::record_cache(logging::CacheStatus::Miss);
 
     let resolved = resolve(app, name, &policy, snapshot, now, monotonic).await?;
-    let (body, content_type) = render(app, &resolved, &representation, now)?;
+    let (body, content_type) = match render(app, &resolved, &representation, now) {
+        Ok(rendered) => rendered,
+        Err(refused) => {
+            // Managed mode: a request refused for one version is one activity row
+            // (S3-8). A listing served with some versions hidden records none.
+            if let (Some((index, names_version)), Some(principal), Some(managed)) =
+                (refused.entry, principal, app.managed())
+            {
+                let entry = &resolved.entries[index];
+                let candidate = Candidate {
+                    ecosystem: Ecosystem::Npm,
+                    name: name.as_str(),
+                    version: entry.version(),
+                    publication: publication_of(entry, &resolved.cached.first_seen),
+                    advertised_digests: &entry.reference.expected,
+                    pinned_digests: resolved.cached.pins_of(&entry.id),
+                };
+                managed.record_refused(
+                    principal,
+                    &policy,
+                    now,
+                    &candidate,
+                    resolved.decisions[index],
+                    names_version,
+                );
+            }
+            return Err(refused.error);
+        }
+    };
     let body: Arc<[u8]> = Arc::from(body);
 
     if resolved.deadline_utc_micros > now {
@@ -119,6 +147,8 @@ pub async fn serve(
                 digest_generation: resolved.digest_generation,
                 deadline_utc_micros: resolved.deadline_utc_micros,
                 deadline_monotonic: resolved.deadline_monotonic,
+                // npm refusals are never cached; they are recorded each time.
+                refused: None,
             }),
             body.len() as u64 + 256,
         );
@@ -139,6 +169,21 @@ struct Resolved {
     digest_generation: u64,
     deadline_utc_micros: i64,
     deadline_monotonic: Instant,
+    /// What the decisions were made from, for an activity row's candidate.
+    cached: Arc<CachedProject>,
+}
+
+/// A refusal, and the entry it was decided on: its index, and whether the route named
+/// its version.
+struct Refused {
+    error: ApiError,
+    entry: Option<(usize, bool)>,
+}
+
+impl From<ApiError> for Refused {
+    fn from(error: ApiError) -> Refused {
+        Refused { error, entry: None }
+    }
 }
 
 /// The project snapshot a decision must be made from: the cached one while it is
@@ -412,6 +457,7 @@ async fn resolve(
         tags,
         deadline_utc_micros,
         deadline_monotonic,
+        cached,
     })
 }
 
@@ -706,7 +752,7 @@ fn render(
     resolved: &Resolved,
     representation: &Representation,
     now: i64,
-) -> Result<(Vec<u8>, &'static str), ApiError> {
+) -> Result<(Vec<u8>, &'static str), Refused> {
     let public_url = &app.config.public_url;
 
     if let Representation::NpmVersion(spelling) = representation {
@@ -743,13 +789,13 @@ fn single_version(
     spelling: &str,
     public_url: &url::Url,
     now: i64,
-) -> Result<(Vec<u8>, &'static str), ApiError> {
+) -> Result<(Vec<u8>, &'static str), Refused> {
     let target = if resolved.document.dist_tags.contains_key(spelling) {
         // A tag upstream really has. It is resolved through the *filtered* tags, so
         // `latest` gives its fallback and a tag the rules dropped is simply gone.
         match resolved.tags.get(spelling).and_then(Value::as_str) {
             Some(target) => target.to_owned(),
-            None => return Err(ApiError::NotFound),
+            None => return Err(ApiError::NotFound.into()),
         }
     } else {
         spelling.to_owned()
@@ -760,32 +806,42 @@ fn single_version(
         .iter()
         .position(|entry| entry.version() == target)
     else {
-        return Err(ApiError::NotFound);
+        return Err(ApiError::NotFound.into());
     };
 
+    let refused = |error| Refused {
+        error,
+        entry: Some((index, true)),
+    };
     match resolved.decisions[index] {
         Decision::Allow => Ok((
             render::single_version(&resolved.entries[index], public_url),
             render::FULL_CONTENT_TYPE,
         )),
-        Decision::Hold { eligible_at_micros } => Err(ApiError::held(eligible_at_micros, now)),
-        Decision::Deny(reason) => Err(ApiError::Blocked {
+        Decision::Hold { eligible_at_micros } => {
+            Err(refused(ApiError::held(eligible_at_micros, now)))
+        }
+        Decision::Deny(reason) => Err(refused(ApiError::Blocked {
             reason: deny_reason(reason),
-        }),
-        Decision::Unavailable => Err(ApiError::PolicyUnavailable),
+        })),
+        Decision::Unavailable => Err(ApiError::PolicyUnavailable.into()),
     }
 }
 
 /// The denial for a project whose every version was excluded. A project held only by
 /// age says when it will be back; one with anything blocked in it does not, because
 /// a block has no deadline.
-fn denial(resolved: &Resolved, now: i64) -> ApiError {
+/// The refusal names the version it was decided on, for its activity row.
+fn denial(resolved: &Resolved, now: i64) -> Refused {
     // A block is reported ahead of a hold: it is the more specific answer, and it is
     // the one a client must not read as "try again later".
-    for decision in &resolved.decisions {
+    for (index, decision) in resolved.decisions.iter().enumerate() {
         if let Decision::Deny(reason) = decision {
-            return ApiError::Blocked {
-                reason: deny_reason(*reason),
+            return Refused {
+                error: ApiError::Blocked {
+                    reason: deny_reason(*reason),
+                },
+                entry: Some((index, false)),
             };
         }
     }
@@ -793,17 +849,21 @@ fn denial(resolved: &Resolved, now: i64) -> ApiError {
     let earliest = resolved
         .decisions
         .iter()
-        .filter_map(|decision| match decision {
-            Decision::Hold { eligible_at_micros } => Some(*eligible_at_micros),
+        .enumerate()
+        .filter_map(|(index, decision)| match decision {
+            Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, index)),
             _ => None,
         })
         .min();
 
     match earliest {
-        Some(eligible_at_micros) => ApiError::held(eligible_at_micros, now),
+        Some((eligible_at_micros, index)) => Refused {
+            error: ApiError::held(eligible_at_micros, now),
+            entry: Some((index, false)),
+        },
         // Nothing here could even be identified, so there is nothing to serve and
         // nothing to wait for.
-        None => ApiError::NotFound,
+        None => ApiError::NotFound.into(),
     }
 }
 

@@ -9,3 +9,6 @@
 
 # Gate QA scratch files.
 docs/plans/*/.gate-*
+
+# Playwright and axe-core for the portal A11Y run; installed with npm, never committed.
+crates/probation-server/tests/a11y/node_modules/

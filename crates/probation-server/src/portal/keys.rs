@@ -8,7 +8,9 @@ use serde::Deserialize;
 
 use probation_policy::api::KeyId;
 
-use super::{Shared, SignedIn, Top, not_found, redirect, refused, render, unavailable};
+use super::{
+    Shared, SignedIn, Top, not_found, redirect, refused, render, second_factor_first, unavailable,
+};
 use crate::keys::{self, KeyError, KeyRow, RevokeError, ServiceKeyRow};
 use crate::tenancy::{self, Authorized, Owned, Place, Role};
 
@@ -259,6 +261,7 @@ pub(crate) async fn revoke(
     };
     match keys::revoke(&portal.pool, &actor, &place, KeyId(id as u64)).await {
         Ok(()) => redirect("/keys"),
+        Err(RevokeError::Denied) if actor.needs_second_factor() => second_factor_first(),
         Err(RevokeError::NotFound | RevokeError::Denied) => not_found(),
         Err(RevokeError::Store(err)) => unavailable(err),
     }
@@ -329,6 +332,7 @@ pub(crate) async fn create_service(
             );
             page(&portal, &signed_in, StatusCode::CONFLICT, None, Some(error)).await
         }
+        Err(KeyError::Denied) if actor.needs_second_factor() => second_factor_first(),
         Err(KeyError::Denied) => refused("Only org admins and group admins create service keys."),
         Err(KeyError::Store(err)) => unavailable(err),
     }

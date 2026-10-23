@@ -13,7 +13,9 @@ use probation_policy::{
 };
 use serde::Deserialize;
 
-use super::{Shared, SignedIn, Top, not_found, redirect, refused, render, unavailable};
+use super::{
+    Shared, SignedIn, Top, not_found, redirect, refused, render, second_factor_first, unavailable,
+};
 use crate::policy::{PolicyStore, SaveError, StoreError};
 use crate::tenancy::{self, Authorized, Place, Role, authorize};
 
@@ -597,6 +599,9 @@ pub(crate) async fn edit(
         Err(err) => return unavailable(err),
     };
     let Ok(permit) = authorize(&actor, &checked) else {
+        if actor.needs_second_factor() {
+            return second_factor_first();
+        }
         return refused("Your role cannot change this layer.");
     };
     match store.save_edit(&actor, permit, checked).await {

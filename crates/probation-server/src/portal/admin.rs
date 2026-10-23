@@ -14,8 +14,10 @@ use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use super::organisation::{blocklist_file, import_into, second_factor};
-use super::{Shared, SignedIn, Top, not_found, redirect, refused, render, unavailable};
+use super::organisation::{blocklist_file, import_into};
+use super::{
+    Shared, SignedIn, Top, not_found, redirect, refused, render, second_factor_first, unavailable,
+};
 use crate::keys::{self, Limits, LimitsRow, TokenRow};
 use crate::tenancy::{self, Actor, Authorized, ChangeError, Owned, PLATFORM, Place};
 use crate::{accounts, audit, policy};
@@ -105,17 +107,25 @@ impl AdminView {
     }
 }
 
-/// The session acting as a global admin on the platform, after its second factor; 404
-/// for any other session.
+/// The session acting as a global admin on the platform; 404 for any other session. A
+/// global admin's session without its second factor holds no admin role (`Tenancy`), so
+/// it is sent to set one up (C24).
 pub(super) async fn operator(
     portal: &super::Portal,
     signed_in: &SignedIn,
 ) -> Result<Actor, Response> {
     let session = signed_in.tenancy_session();
-    if !portal.tenancy().global_admin(&session).await {
+    // Whether the login is a global admin at all, second factor aside.
+    if !portal
+        .tenancy()
+        .global_admin(&session.with_second_factor(true))
+        .await
+    {
         return Err(not_found());
     }
-    second_factor(portal, signed_in).await?;
+    if !signed_in.second_factor {
+        return Err(second_factor_first());
+    }
     let platform = portal
         .tenancy()
         .authorized_place(&session, PLATFORM)

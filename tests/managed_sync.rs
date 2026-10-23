@@ -1493,7 +1493,16 @@ fn drain(queue: &ActivityQueue) -> Drained {
 #[tokio::test]
 async fn t_activity_queued() {
     let h = harness(|sync, _| {
-        sync.layer(org(GLOBEX), org_layer(vec![left_pad_block()]));
+        sync.layer(
+            org(GLOBEX),
+            org_layer(vec![
+                left_pad_block(),
+                Block::Package {
+                    ecosystem: Ecosystem::PyPi,
+                    name: "alpha".to_owned(),
+                },
+            ]),
+        );
     })
     .await;
     let response = h.get(&tarball_route(OLD), &globex_key()).await;
@@ -1515,6 +1524,122 @@ async fn t_activity_queued() {
             assert!(!body.contains(&globex_key()) && !body.contains(hash.trim_matches('"')));
         }
     }
+
+    // V1 (S3-8): a refused metadata or version request is one row, with its package,
+    // and its version when the route names one; versions merely hidden inside a
+    // listing that is served are none.
+    let fresh = "fresh-pkg";
+    h.registry.answer(
+        &npm_upstream_path(fresh),
+        FakeAnswer::Body(
+            json!({
+                "name": fresh,
+                "dist-tags": {"latest": NEW},
+                "versions": {NEW: {
+                    "name": fresh,
+                    "version": NEW,
+                    "dist": {"tarball": npm_tarball_url(fresh, &format!("{fresh}-{NEW}.tgz"))},
+                }},
+                "time": {NEW: FRESH},
+            })
+            .to_string(),
+        ),
+    );
+    h.registry.answer(
+        &common::pypi_upstream_path("alpha"),
+        FakeAnswer::Body(
+            json!({
+                "meta": {"api-version": "1.1"},
+                "name": "alpha",
+                "versions": [],
+                "files": [{
+                    "filename": "alpha-1.0-py3-none-any.whl",
+                    "url": "https://files.invalid/packages/ab/cd/alpha-1.0-py3-none-any.whl",
+                    "hashes": {"sha256": "aa".repeat(32)},
+                    "upload-time": PUBLISHED,
+                }],
+            })
+            .to_string(),
+        ),
+    );
+    let before = activity(&h.sync).len();
+    let response = h.get("/npm/left-pad", &globex_key()).await;
+    assert_status(response, 403, "BLOCKED", "the blocked listing").await;
+    let response = h.get(&format!("/npm/left-pad/{OLD}"), &globex_key()).await;
+    assert_status(response, 403, "BLOCKED", "a blocked version").await;
+    let response = h.get(&format!("/npm/left-pad/{NEW}"), &acme_key()).await;
+    assert_status(response, 403, "HELD", "a held version").await;
+    let response = h.get(&format!("/npm/{fresh}"), &acme_key()).await;
+    assert_status(response, 403, "HELD", "a listing held whole").await;
+    // PyPI answers a refusal with an empty listing (SPEC §7). Each request is a row,
+    // the second one served from the rendered cache.
+    for _ in 0..2 {
+        let response = h.get("/pypi/simple/alpha/", &globex_key()).await;
+        assert_eq!(response.status(), 200, "PyPI answers an empty listing");
+    }
+    // Served, with 2.0.0 hidden while it is held: no row.
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    wait_for("six refusal rows", Duration::from_secs(10), || {
+        activity(&h.sync).len() >= before + 6
+    })
+    .await;
+    h.sync.sync_rounds(2).await;
+    let rows = activity(&h.sync)[before..].to_vec();
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.result,
+                row.package.clone(),
+                row.version.clone(),
+                row.eligible_at.clone(),
+            )
+        })
+        .collect();
+    let eligible = Some("2026-04-07T00:00:00Z".to_owned());
+    assert_eq!(
+        summary,
+        vec![
+            (
+                ActivityResult::Blocked,
+                Some(LEFT_PAD.to_owned()),
+                None,
+                None
+            ),
+            (
+                ActivityResult::Blocked,
+                Some(LEFT_PAD.to_owned()),
+                Some(OLD.to_owned()),
+                None
+            ),
+            (
+                ActivityResult::Held,
+                Some(LEFT_PAD.to_owned()),
+                Some(NEW.to_owned()),
+                eligible.clone()
+            ),
+            (ActivityResult::Held, Some(fresh.to_owned()), None, eligible),
+            (
+                ActivityResult::Blocked,
+                Some("alpha".to_owned()),
+                None,
+                None
+            ),
+            (
+                ActivityResult::Blocked,
+                Some("alpha".to_owned()),
+                None,
+                None
+            ),
+        ],
+        "one row a refused request, none for the served listing"
+    );
+    assert_eq!(rows[0].layer, ActivityLayer::Layer(LayerKind::Org));
+    assert_eq!(rows[0].rule, "blocked_package");
+    assert_eq!(rows[2].layer, ActivityLayer::Layer(LayerKind::Platform));
+    assert_eq!(rows[4].ecosystem, Some(Ecosystem::PyPi));
+    assert_eq!(rows[5].layer, ActivityLayer::Layer(LayerKind::Org));
+    assert_eq!(rows[5].rule, "blocked_package");
     h.server.shutdown().await;
 }
 
@@ -1952,6 +2077,44 @@ async fn t_settings_push_allowlist() {
             "{what} must be refused"
         );
     }
+    // V2: nothing the firewall keeps under data_dir itself, and no symlink, may be a
+    // pushed path. Each target exists, so only the confinement rule can refuse it.
+    for dir in ["state", "content/objects", "content/tmp"] {
+        std::fs::create_dir_all(data_dir.join(dir)).unwrap();
+    }
+    for file in [
+        "lock",
+        "state/firewall.db",
+        "managed-settings.toml",
+        "managed-settings.state",
+    ] {
+        std::fs::write(data_dir.join(file), "").unwrap();
+    }
+    let elsewhere = tempfile::tempdir().expect("a directory");
+    let outside = elsewhere.path().join("decisions.ndjson");
+    std::fs::write(&outside, "").unwrap();
+    std::os::unix::fs::symlink(&outside, data_dir.join("link.ndjson")).unwrap();
+    for (path, what) in [
+        ("lock", "the data-directory lock"),
+        ("state/firewall.db", "the store"),
+        ("state/decisions.ndjson", "a file in the store's directory"),
+        ("content/objects/decisions.ndjson", "the content store"),
+        ("content/tmp/x.part", "a temporary download"),
+        ("managed-cache.prev.json", "the previous cache snapshot"),
+        ("managed-settings.toml", "the settings overlay"),
+        ("managed-settings.prev.toml", "the previous overlay"),
+        ("managed-settings.state", "the settings state"),
+        (".tmpAbCdEf", "a file being written atomically"),
+        ("link.ndjson", "a symlink out of data_dir"),
+    ] {
+        let push = format!("log_file_path = \"{}\"\n", at(path));
+        let refused = config.with_overlay(&push).expect_err(what);
+        assert!(
+            refused.contains("must name a file of its own"),
+            "{what}: {refused}"
+        );
+    }
+
     let accepted = config
         .with_overlay(&format!(
             "log_file_path = \"{}\"\npypi_upstream_url = \"https://pypi.example\"\n",
@@ -2560,6 +2723,9 @@ async fn t_sync_reset_to_a_lower_revision() {
     let h = harness(|sync, config| {
         sync.known_key(&key(96), &[PLATFORM, org(ACME)]);
         sync.known_key(&key(97), &[PLATFORM, org(ACME)]);
+        sync.layer(org(80), org_layer(Vec::new()));
+        sync.known_key(&key(98), &[PLATFORM, org(80)]);
+        sync.known_key(&key(99), &[PLATFORM, org(80)]);
         let management = config.management.as_mut().unwrap();
         management.request_timeout_seconds = NonZeroU64::new(5).unwrap();
         management.sync_margin_seconds = NonZeroU64::new(5).unwrap();
@@ -2626,5 +2792,40 @@ async fn t_sync_reset_to_a_lower_revision() {
         assert_eq!(h.sync.lookups() - lookups, 1, "then cached");
     }
     assert_eq!(h.sync.resets(), 2, "then ordinary deltas");
+
+    // V3: a `layers` call held across a reset to a lower revision. Its answer, read
+    // before the restore at a higher layer revision, is not stored; it is asked again,
+    // and a request waiting on it is served under the restored layer.
+    h.sync.set_revision(1_999);
+    let edited = h.sync.edit_layer(org(80), org_layer(Vec::new()));
+    h.sync.applied(edited).await;
+    h.clock.advance_seconds(1);
+    let held_layers = h.sync.hold_layers();
+    let first = h.spawn_get("/npm/left-pad", &key(98));
+    held_layers.wait_until_reached().await;
+    h.sync.restore_to(1_500);
+    h.sync.layer(org(80), org_layer(vec![left_pad_block()]));
+    wait_for("a reset at 1500", Duration::from_secs(5), || {
+        h.sync.resets() == 3
+    })
+    .await;
+    h.sync.sync_rounds(1).await;
+    let second = h.spawn_get("/npm/left-pad", &key(99));
+    let app = h.server.app();
+    let managed = app.managed().expect("managed");
+    wait_for(
+        "both requests on the held layers call",
+        Duration::from_secs(5),
+        || managed.waiting_on_layer(org(80)) == 2,
+    )
+    .await;
+    h.sync.release_holds();
+    assert_eq!(
+        second.await.unwrap(),
+        403,
+        "decided under the restored layer"
+    );
+    assert_ne!(first.await.unwrap(), 200, "an ask from before the reset");
+    drop(app);
     h.server.shutdown().await;
 }

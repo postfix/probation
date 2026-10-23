@@ -15,7 +15,7 @@
 <form method="post" action="/place" class="switch">
 <input type="hidden" name="csrf" value="{{ top.csrf }}">
 <label for="place-switcher">Place</label>
-<select id="place-switcher" name="to">{% for place in top.places %}<option>{{ place }}</option>{% endfor %}</select>
+<select id="place-switcher" name="to">{% for (label, value, selected) in top.places %}<option value="{{ value }}"{% if *selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
 <button type="submit">Switch</button>
 </form>
 {% endif %}

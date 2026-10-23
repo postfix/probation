@@ -6,7 +6,7 @@
 //
 // against the portal served with tests/portal.toml on a database seeded by tests/seed.sql.
 // The slice 6 run turns on an authenticator for oli@acme.test and the slice 7 run one for
-// admin@probation.test, so run each once per seeded database.
+// admin@probation.test, so run each once per seeded database, after the slice 5 run.
 // Playwright Chromium signs in through the real sign-in form with the seeded logins,
 // visits every page and state of the slice, runs axe-core on each, and walks each page
 // with the Tab key: the focus order follows the DOM, every focused control shows a focus
@@ -159,6 +159,15 @@ function totp(base32, at = Date.now() / 1000) {
   return String((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0');
 }
 
+/** Turns the signed-in login's authenticator on from Account settings. */
+async function turnTotpOn(page) {
+  await go(page, '/account');
+  await submit(page, 'form[action="/account/totp/setup"] button[type=submit]');
+  const key = await page.locator('#totp-key').textContent();
+  await page.locator('#code').fill(totp(key));
+  await submit(page, 'form[action="/account/totp/enable"] button[type=submit]');
+}
+
 /** Every page and state of slice 6: keys, policy, activity, organisation, audit log. */
 async function slice6(browser) {
   // Mia, a member: her keys, a key shown once, a refused name, her own policy layer,
@@ -187,7 +196,8 @@ async function slice6(browser) {
     await context.close();
   }
 
-  // Bob, a group admin: his group's policy and a refused looser freeze, and its log.
+  // Bob, a group admin (no authenticator needed, C24): his group's policy and a refused
+  // looser freeze, and its log.
   {
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -210,10 +220,7 @@ async function slice6(browser) {
     const context = await browser.newContext();
     const page = await context.newPage();
     await signIn(page, 'oli@acme.test');
-    await submit(page, 'form[action="/account/totp/setup"] button[type=submit]');
-    const key = await page.locator('#totp-key').textContent();
-    await page.locator('#code').fill(totp(key));
-    await submit(page, 'form[action="/account/totp/enable"] button[type=submit]');
+    await turnTotpOn(page);
     await go(page, '/org');
     if (!/\/org\/\d+$/.test(page.url())) throw new Error(`/org did not open Acme: ${page.url()}`);
     await audit(page, 'Organisation (org admin)');

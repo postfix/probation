@@ -24,7 +24,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 use ipnet::IpNet;
-use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 use sqlx::PgPool;
 use url::Url;
@@ -394,9 +393,8 @@ async fn stylesheet() -> Response {
 /// The top bar of a signed-in page.
 pub(crate) struct Top {
     pub name: String,
-    /// The switcher's places (C29), the session's own first, so a browser shows it
-    /// selected. Each is posted as its label: organisation names are unique.
-    pub places: Vec<String>,
+    /// The switcher's places (C29): (label, value, selected).
+    pub places: Vec<(String, String, bool)>,
     pub csrf: String,
     /// The page the navigation marks current: "account", "keys", "policy", "activity",
     /// "org", "audit", "admin" or "fleet".
@@ -589,36 +587,39 @@ impl Portal {
 pub(crate) struct SignedIn {
     pub session: accounts::Session,
     pub login_id: i32,
+    /// The session passed a second factor: its provider's (an OAuth or SSO sign-in) or
+    /// the login's authenticator. Global and org admin roles depend on it (C24, C60, T15).
+    pub second_factor: bool,
 }
 
 impl SignedIn {
     pub(crate) async fn top(&self, portal: &Portal) -> Result<Top, sqlx::Error> {
         let (name, places) =
             accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
-        let chosen = self.chosen(&places);
+        let place = self.chosen(&places).map(|choice| choice.place);
+        let chosen = self.chosen(&places).map(|choice| choice.value.clone());
         let tenancy = portal.tenancy();
         let session = self.tenancy_session();
-        let suspended = match chosen.as_deref().and_then(parse_place) {
+        let suspended = match place {
             Some(place) => tenancy
                 .authorized_place(&session, place)
                 .await
                 .ok()
                 .filter(|place| place.suspended())
                 .map(|place| match place.place().kind {
-                    LayerKind::Personal => "personal account",
+                    probation_policy::LayerKind::Personal => "personal account",
                     _ => "organisation",
                 }),
             None => None,
         };
-        let (first, rest): (Vec<_>, Vec<_>) = places
-            .into_iter()
-            .partition(|(_, value)| Some(value) == chosen.as_ref());
         Ok(Top {
             name,
-            places: first
+            places: places
                 .into_iter()
-                .chain(rest)
-                .map(|(label, _)| label)
+                .map(|choice| {
+                    let selected = Some(&choice.value) == chosen.as_ref();
+                    (choice.label, choice.value, selected)
+                })
                 .collect(),
             csrf: self.session.csrf().to_owned(),
             page: "account",
@@ -627,18 +628,20 @@ impl SignedIn {
         })
     }
 
-    /// The switcher value of the session's place: the one chosen when it is still
-    /// listed, else the first.
-    fn chosen(&self, places: &[(String, String)]) -> Option<String> {
+    /// The session's place: the one chosen when it is still listed, else the first.
+    fn chosen<'a>(
+        &self,
+        places: &'a [accounts::SwitcherPlace],
+    ) -> Option<&'a accounts::SwitcherPlace> {
         places
             .iter()
-            .find(|(_, value)| Some(value) == self.session.place.as_ref())
+            .find(|choice| Some(&choice.value) == self.session.place.as_ref())
             .or(places.first())
-            .map(|(_, value)| value.clone())
     }
 
     pub(crate) fn tenancy_session(&self) -> tenancy::Session {
         tenancy::Session::new(self.login_id, self.session.scope_org_id)
+            .with_second_factor(self.second_factor)
     }
 
     /// The account the session works in: its chosen organisation or personal account,
@@ -649,7 +652,7 @@ impl SignedIn {
     ) -> Result<Option<Authorized<Place>>, sqlx::Error> {
         let (_, places) =
             accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
-        let Some(place) = self.chosen(&places).as_deref().and_then(parse_place) else {
+        let Some(place) = self.chosen(&places).map(|choice| choice.place) else {
             return Ok(None);
         };
         Ok(portal
@@ -660,25 +663,11 @@ impl SignedIn {
     }
 }
 
-/// A switcher value: "org:<id>" or "personal:<id>".
-fn parse_place(value: &str) -> Option<PlaceRef> {
-    let (kind, id) = value.split_once(':')?;
-    let kind = match kind {
-        "org" => LayerKind::Org,
-        "personal" => LayerKind::Personal,
-        _ => return None,
-    };
-    Some(PlaceRef {
-        kind,
-        id: id.parse().ok()?,
-    })
-}
-
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct PlaceForm {
     csrf: String,
-    /// The chosen place's label in the switcher.
+    /// The chosen place's value: "personal" or "org:<id>".
     to: String,
 }
 
@@ -703,12 +692,12 @@ async fn choose_place(
         Ok((_, places)) => places,
         Err(err) => return unavailable(err),
     };
-    let Some((_, value)) = places.into_iter().find(|(label, _)| *label == form.to) else {
+    // Only one of the session's own places, by its value, never its label; then
+    // `authorized_place` (C1, C29).
+    let Some(choice) = places.into_iter().find(|choice| choice.value == form.to) else {
         return not_found();
     };
-    let Some(place) = parse_place(&value) else {
-        return not_found();
-    };
+    let place = choice.place;
     if portal
         .tenancy()
         .authorized_place(&signed_in.tenancy_session(), place)
@@ -717,7 +706,7 @@ async fn choose_place(
     {
         return not_found();
     }
-    match accounts::choose_place(&portal.pool, &signed_in.session, &value).await {
+    match accounts::choose_place(&portal.pool, &signed_in.session, &choice.value).await {
         Ok(()) => redirect("/keys"),
         Err(err) => unavailable(err),
     }
@@ -731,22 +720,52 @@ impl Portal {
     /// The signed-in session of a page, or a redirect to sign-in.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<SignedIn, Response> {
         match self.session(headers).await.map_err(unavailable)? {
-            Some(session) => match session.login_id {
-                Some(login_id) => Ok(SignedIn { session, login_id }),
-                None => Err(redirect("/signin")),
-            },
+            Some(session) => self.signed_in_as(session).await,
             None => Err(redirect("/signin")),
         }
+    }
+
+    /// Like `signed_in_post`, refused for a session opened through an organisation's
+    /// SSO: such a session acts only inside that organisation (T2), so it cannot change
+    /// the login itself (its methods, password, authenticator or places).
+    async fn unscoped_post(&self, headers: &HeaderMap, csrf: &str) -> Result<SignedIn, Response> {
+        let signed_in = self.signed_in_post(headers, csrf).await?;
+        if signed_in.session.scope_org_id.is_some() {
+            return Err(refused(
+                "You signed in through your organisation's SSO. Sign in another way to change your login's settings.",
+            ));
+        }
+        Ok(signed_in)
     }
 
     /// The signed-in session of a POST carrying its CSRF token.
     async fn signed_in_post(&self, headers: &HeaderMap, csrf: &str) -> Result<SignedIn, Response> {
         let session = self.posted(headers, csrf).await?;
-        match session.login_id {
-            Some(login_id) => Ok(SignedIn { session, login_id }),
-            None => Err(redirect("/signin")),
-        }
+        self.signed_in_as(session).await
     }
+
+    /// A password session counts as second-factor checked once its login has an
+    /// authenticator: it passed the code at sign-in, or proved one turning it on.
+    async fn signed_in_as(&self, session: accounts::Session) -> Result<SignedIn, Response> {
+        let Some(login_id) = session.login_id else {
+            return Err(redirect("/signin"));
+        };
+        let second_factor = session.totp_ok
+            || accounts::has_totp(&self.pool, login_id)
+                .await
+                .map_err(unavailable)?;
+        Ok(SignedIn {
+            session,
+            login_id,
+            second_factor,
+        })
+    }
+}
+
+/// Where an admin action goes when its role was held back for want of a second factor:
+/// setting up the authenticator (C24, C60).
+pub(crate) fn second_factor_first() -> Response {
+    redirect("/account#totp-heading")
 }
 
 /// The client's address: the peer, or behind a proxy in `trusted_proxies` the rightmost

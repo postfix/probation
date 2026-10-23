@@ -13,7 +13,9 @@ use axum::response::{IntoResponse, Response};
 use probation_policy::{LayerKind, PlaceRef};
 use serde::Deserialize;
 
-use super::{Shared, SignedIn, Top, not_found, redirect, refused, render, unavailable};
+use super::{
+    Shared, SignedIn, Top, not_found, redirect, refused, render, second_factor_first, unavailable,
+};
 use crate::accounts;
 use crate::keys::{self, TokenRow};
 use crate::policy::{self, PushError, StoreError};
@@ -133,6 +135,9 @@ pub(crate) async fn show(
         Ok(actor) => actor,
         Err(err) => return unavailable(err),
     };
+    if actor.needs_second_factor() {
+        return second_factor_first();
+    }
     if !is_admin(&actor, &place) {
         return match leaving(&portal, &signed_in, &place).await {
             Ok(leaving) => {
@@ -146,9 +151,6 @@ pub(crate) async fn show(
             }
             Err(err) => unavailable(err),
         };
-    }
-    if let Err(answer) = second_factor(&portal, &signed_in).await {
-        return answer;
     }
     admin_page(&portal, &signed_in, &place, StatusCode::OK, None).await
 }
@@ -177,24 +179,9 @@ fn is_admin(actor: &Actor, place: &Authorized<Place>) -> bool {
     )
 }
 
-/// A password session acts as an admin only once its login has an authenticator; an
-/// OAuth or SSO session has its provider's second factor (C24, C38, C60, T15).
-pub(super) async fn second_factor(
-    portal: &super::Portal,
-    signed_in: &SignedIn,
-) -> Result<(), Response> {
-    if signed_in.session.totp_ok {
-        return Ok(());
-    }
-    match accounts::has_totp(&portal.pool, signed_in.login_id).await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(redirect("/account#totp-heading")),
-        Err(err) => Err(unavailable(err)),
-    }
-}
-
-/// The actor on `place` when it is an org admin there (or a global admin) with its
-/// second factor: every admin action's check after `authorized_*`.
+/// The actor on `place` when it is an org admin there (or a global admin): every admin
+/// action's check after `authorized_*`. Without a second factor the role is held back
+/// (`Tenancy::actor`), and the session is sent to set one up (C24, C60).
 async fn admin_on(
     portal: &super::Portal,
     signed_in: &SignedIn,
@@ -205,10 +192,12 @@ async fn admin_on(
         .actor(&signed_in.tenancy_session(), place)
         .await
         .map_err(unavailable)?;
+    if actor.needs_second_factor() {
+        return Err(second_factor_first());
+    }
     if !is_admin(&actor, place) {
         return Err(refused("Only the organisation's org admins can do this."));
     }
-    second_factor(portal, signed_in).await?;
     Ok(actor)
 }
 
@@ -939,8 +928,8 @@ pub(crate) async fn restore_org(
         Ok(_) => return not_found(),
         Err(err) => return unavailable(err),
     }
-    if let Err(answer) = second_factor(&portal, &signed_in).await {
-        return answer;
+    if !signed_in.second_factor {
+        return second_factor_first();
     }
     match tenancy::restore_org(&portal.pool, &session, org).await {
         Ok(()) => redirect(&format!("/org/{org}")),

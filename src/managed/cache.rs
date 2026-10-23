@@ -286,7 +286,6 @@ impl KeyCache {
         self.each(HashMap::clear);
     }
 
-    /// A reset: every lookup answer read below `revision` is dropped.
     /// A reset: the answered revision becomes the floor, even when it is lower than
     /// before, every record goes, and every ask in flight is from an older epoch (C126).
     pub(super) fn reset_invalidations(&self, revision: u64) {

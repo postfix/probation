@@ -83,6 +83,9 @@ pub(crate) fn token_hash(token: &str) -> Vec<u8> {
 #[derive(Clone)]
 pub struct Passwords {
     argon: Argon2<'static>,
+    /// Argon2id runs at most one per CPU at a time, so a burst queues instead of
+    /// exhausting memory and the blocking pool (R2).
+    permits: Arc<tokio::sync::Semaphore>,
     /// Verified against when the email has no password, so an unknown email costs the
     /// same as a wrong password (T32).
     dummy: String,
@@ -90,12 +93,21 @@ pub struct Passwords {
 
 impl Passwords {
     pub fn new(params: Params) -> Passwords {
+        let cpus = std::thread::available_parallelism().map_or(2, usize::from);
+        Passwords::with_permits(params, cpus)
+    }
+
+    fn with_permits(params: Params, permits: usize) -> Passwords {
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let dummy = argon
             .hash_password(b"no such login")
             .expect("argon2 hashes")
             .to_string();
-        Passwords { argon, dummy }
+        Passwords {
+            argon,
+            permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+            dummy,
+        }
     }
 
     pub(crate) fn hash(&self, password: &str) -> String {
@@ -105,20 +117,38 @@ impl Passwords {
             .to_string()
     }
 
+    /// The permit for one Argon2id run. It moves into the blocking closure, so it is
+    /// held until the hash finishes even when the caller is cancelled (N1).
+    async fn permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.permits
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the semaphore is never closed")
+    }
+
     /// `hash` off the async runtime: Argon2id is deliberately slow.
     pub(crate) async fn hash_blocking(&self, password: String) -> String {
+        let permit = self.permit().await;
         let passwords = self.clone();
-        tokio::task::spawn_blocking(move || passwords.hash(&password))
-            .await
-            .expect("hashing does not panic")
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            passwords.hash(&password)
+        })
+        .await
+        .expect("hashing does not panic")
     }
 
     /// `verify` off the async runtime.
     pub(crate) async fn verify_blocking(&self, password: String, hash: Option<String>) -> bool {
+        let permit = self.permit().await;
         let passwords = self.clone();
-        tokio::task::spawn_blocking(move || passwords.verify(&password, hash.as_deref()))
-            .await
-            .expect("verifying does not panic")
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            passwords.verify(&password, hash.as_deref())
+        })
+        .await
+        .expect("verifying does not panic")
     }
 
     /// Whether `password` matches `hash`; `None` runs the same work and answers false.
@@ -210,13 +240,28 @@ pub(crate) fn normal_email(email: &str) -> Option<String> {
     .then_some(email)
 }
 
-/// Whether an organisation of that name exists (names are unique case-insensitively, so
-/// `/o/<name>` and the typed name on `/signin` find one organisation, C37).
+/// An organisation name as it is stored: inner whitespace collapsed to one space, none
+/// at the ends.
+pub(crate) fn org_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether an organisation of that name exists. Names are unique ignoring case and
+/// whitespace, so `/o/<name>` and the typed name on `/signin` find one organisation
+/// (C37), and two places in the switcher never read alike.
 pub(crate) async fn org_name_taken(pool: &PgPool, name: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-        .bind(name)
-        .fetch_one(pool)
-        .await
+    let mut conn = pool.acquire().await?;
+    name_taken(&mut conn, name).await
+}
+
+async fn name_taken(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM orgs
+                        WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower($1))",
+    )
+    .bind(org_name(name))
+    .fetch_one(conn)
+    .await
 }
 
 /// Writes one mail to the outbox in the caller's transaction; the outbox job sends it.
@@ -342,38 +387,47 @@ pub async fn sign_up(
     password_hash: &str,
     kind: SignupKind,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM sign_in_methods WHERE kind = 'password' AND lower(email) = $1)",
-    )
-    .bind(email)
-    .fetch_one(&mut *tx)
-    .await?;
-    if taken {
-        let (subject, body) = already_mail(base);
-        enqueue(&mut tx, email, "already", &subject, &body).await?;
-        return tx.commit().await;
-    }
-    let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
+    // Every sign-up mails the address once; counted before the transaction, so the cap
+    // never needs a second connection (N3).
+    let allowed = mail_allowed(pool, email).await?;
+    loop {
+        let mut tx = pool.begin().await?;
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sign_in_methods WHERE kind = 'password' AND lower(email) = $1)",
+        )
+        .bind(email)
         .fetch_one(&mut *tx)
         .await?;
-    let inserted: Option<i32> = sqlx::query_scalar(
-        "INSERT INTO sign_in_methods (login_id, kind, subject, email, password_hash)
-         VALUES ($1, 'password', $2, $2, $3)
-         ON CONFLICT DO NOTHING RETURNING id",
-    )
-    .bind(login)
-    .bind(email)
-    .bind(password_hash)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(method) = inserted else {
-        // A concurrent sign-up took the address first.
-        drop(tx);
-        return Box::pin(sign_up(pool, base, email, password_hash, kind)).await;
-    };
-    send_verify(&mut tx, base, method, email, kind.payload()).await?;
-    tx.commit().await
+        if taken {
+            if allowed {
+                let (subject, body) = already_mail(base);
+                enqueue(&mut tx, email, "already", &subject, &body).await?;
+            }
+            return tx.commit().await;
+        }
+        let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
+            .fetch_one(&mut *tx)
+            .await?;
+        let inserted: Option<i32> = sqlx::query_scalar(
+            "INSERT INTO sign_in_methods (login_id, kind, subject, email, password_hash)
+             VALUES ($1, 'password', $2, $2, $3)
+             ON CONFLICT DO NOTHING RETURNING id",
+        )
+        .bind(login)
+        .bind(email)
+        .bind(password_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        // `None`: a concurrent sign-up took the address first; this one rolls back and
+        // answers as for a taken address.
+        let Some(method) = inserted else {
+            continue;
+        };
+        if allowed {
+            send_verify(&mut tx, base, method, email, kind.payload()).await?;
+        }
+        return tx.commit().await;
+    }
 }
 
 async fn send_verify(
@@ -405,7 +459,6 @@ pub async fn resend_verification(
     base: &Url,
     email: &str,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
     let pending: Option<(i32, Option<Value>)> = sqlx::query_as(
         "SELECT m.id, (SELECT t.payload FROM email_tokens AS t
                        WHERE t.method_id = m.id AND t.purpose = 'verify'
@@ -414,12 +467,24 @@ pub async fn resend_verification(
          WHERE m.kind = 'password' AND lower(m.email) = $1 AND m.verified_at IS NULL",
     )
     .bind(email)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(pool)
     .await?;
-    if let Some((method, payload)) = pending {
-        let payload = payload.unwrap_or_else(|| json!({}));
-        send_verify(&mut tx, base, method, email, payload).await?;
+    // Counted only when a mail would go, and before the transaction (N3).
+    let Some((method, payload)) = pending else {
+        return Ok(());
+    };
+    if !mail_allowed(pool, email).await? {
+        return Ok(());
     }
+    let mut tx = pool.begin().await?;
+    send_verify(
+        &mut tx,
+        base,
+        method,
+        email,
+        payload.unwrap_or_else(|| json!({})),
+    )
+    .await?;
     tx.commit().await
 }
 
@@ -462,16 +527,11 @@ pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::
     let actor = Actor::own_account(login_id, false);
     match payload["kind"].as_str() {
         Some("org") => {
-            let name = payload["org_name"].as_str().unwrap_or_default();
-            let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))",
-            )
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
+            let name = org_name(payload["org_name"].as_str().unwrap_or_default());
+            let taken = name_taken(&mut tx, &name).await?;
             // Taken meanwhile: the login is confirmed and creates one from Account settings.
             if !taken && !name.is_empty() {
-                create_org(&mut tx, &actor, name).await?;
+                create_org(&mut tx, &actor, &name).await?;
             }
         }
         Some("personal") => create_personal(&mut tx, &actor).await?,
@@ -702,6 +762,20 @@ pub(crate) async fn password_method(
     }))
 }
 
+/// Whether the login has an email-and-password address it has not confirmed (C41).
+pub(crate) async fn unconfirmed(
+    conn: &mut PgConnection,
+    login_id: i32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sign_in_methods
+                        WHERE login_id = $1 AND kind = 'password' AND verified_at IS NULL)",
+    )
+    .bind(login_id)
+    .fetch_one(conn)
+    .await
+}
+
 /// A login whose email-and-password address is not confirmed yet can do nothing but
 /// confirm it (C41). Answers that address.
 pub(crate) async fn unconfirmed_email(
@@ -718,26 +792,25 @@ pub(crate) async fn unconfirmed_email(
 }
 
 /// What the top bar shows for a login: a name (its first method's email) and its live
-/// places as (label, switcher value), personal account first; only the organisation of
-/// a session opened through that organisation's SSO (T2).
+/// places, personal account first; only the organisation of a session opened through
+/// that organisation's SSO (T2).
 pub(crate) async fn top_bar(
     pool: &PgPool,
     login_id: i32,
     scope_org_id: Option<i32>,
-) -> Result<(String, Vec<(String, String)>), sqlx::Error> {
+) -> Result<(String, Vec<SwitcherPlace>), sqlx::Error> {
     let name: Option<String> = sqlx::query_scalar(
         "SELECT email FROM sign_in_methods WHERE login_id = $1 AND email IS NOT NULL ORDER BY id LIMIT 1",
     )
     .bind(login_id)
     .fetch_optional(pool)
     .await?;
-    let places: Vec<(String, String)> = sqlx::query_as(
-        "SELECT label, value FROM (
-             SELECT 0 AS rank, 'Personal account' AS label, 'personal:' || id AS value, 0 AS id
-             FROM personal_accounts
+    let rows: Vec<(bool, String, i32)> = sqlx::query_as(
+        "SELECT rank = 0, label, id FROM (
+             SELECT 0 AS rank, 'Personal account' AS label, id FROM personal_accounts
              WHERE login_id = $1 AND deleted_at IS NULL AND $2::integer IS NULL
              UNION ALL
-             SELECT 1, o.name || ' (organisation)', 'org:' || o.id, o.id FROM memberships AS m
+             SELECT 1, o.name || ' (organisation)', o.id FROM memberships AS m
              JOIN orgs AS o ON o.id = m.org_id
              WHERE m.login_id = $1 AND o.deleted_at IS NULL AND ($2::integer IS NULL OR o.id = $2)
          ) AS places ORDER BY rank, id",
@@ -746,7 +819,33 @@ pub(crate) async fn top_bar(
     .bind(scope_org_id)
     .fetch_all(pool)
     .await?;
+    let places = rows
+        .into_iter()
+        .map(|(personal, label, id)| {
+            let (value, kind) = if personal {
+                ("personal".to_owned(), LayerKind::Personal)
+            } else {
+                (format!("org:{id}"), LayerKind::Org)
+            };
+            SwitcherPlace {
+                label,
+                value,
+                place: PlaceRef {
+                    kind,
+                    id: id as u32,
+                },
+            }
+        })
+        .collect();
     Ok((name.unwrap_or_else(|| format!("Login {login_id}")), places))
+}
+
+/// One of a login's places in the switcher: its label, the value the form posts
+/// ("personal" or "org:<id>"), and the place itself.
+pub(crate) struct SwitcherPlace {
+    pub label: String,
+    pub value: String,
+    pub place: PlaceRef,
 }
 
 /// Remembers the place chosen with the switcher; every page checks it again.
@@ -987,10 +1086,13 @@ pub(crate) async fn totp_uri(
 }
 
 /// Turns the authenticator on once `code` matches the pending secret; audited with the
-/// secret redacted (T16).
+/// secret redacted (T16). Every other session of the login ends: one opened with a
+/// password alone must not become an admin session (C24, T15); `session` proved the
+/// code and stays.
 pub(crate) async fn totp_enable(
     pool: &PgPool,
     secrets: &SecretBox,
+    session: &Session,
     login_id: i32,
     code: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -1012,6 +1114,7 @@ pub(crate) async fn totp_enable(
         .bind(step)
         .execute(&mut *tx)
         .await?;
+    end_sessions(&mut tx, login_id, Some(&session.id_hash)).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -1064,8 +1167,8 @@ pub(crate) async fn totp_disable(pool: &PgPool, login_id: i32) -> Result<bool, s
 }
 
 /// An org admin resets the authenticator of a member whose login belongs to their
-/// organisation alone; any other login's, and any org admin's, is reset by a global
-/// admin (C39, C76). The authenticator, its backup codes and every session of the login
+/// organisation alone; any other login's, and any org admin's or one who was an org
+/// admin there in the last 30 days (S6-4), is reset by a global admin (C39, C76). The authenticator, its backup codes and every session of the login
 /// go in one transaction, with the audit row; a refusal writes nothing.
 pub(crate) async fn reset_totp(
     pool: &PgPool,
@@ -1082,10 +1185,14 @@ pub(crate) async fn reset_totp(
         return Err(ChangeError::Denied);
     };
     let mut tx = pool.begin().await?;
+    // Under the organisation's lock, so no role change slips in between (S6-4).
+    tenancy::lock_org(&mut tx, org).await?;
     let (org_only, org_admin): (bool, bool) = sqlx::query_as(
         "SELECT NOT EXISTS (SELECT 1 FROM personal_accounts WHERE login_id = $1)
                     AND NOT EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id IS DISTINCT FROM $2),
-                EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id = $2 AND role = 'org_admin')",
+                EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id = $2 AND role = 'org_admin')
+                    OR EXISTS (SELECT 1 FROM former_org_admins
+                               WHERE login_id = $1 AND org_id = $2 AND until > now() - interval '30 days')",
     )
     .bind(login)
     .bind(org)
@@ -1103,10 +1210,7 @@ pub(crate) async fn reset_totp(
         .bind(login)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login, None).await?;
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -1196,11 +1300,7 @@ pub(crate) const EMAIL_FAILURES: i64 = 10;
 pub(crate) const IP_FAILURES: i64 = 100;
 pub(crate) const TOTP_FAILURES: i64 = 5;
 
-pub(crate) async fn failures(
-    pool: &PgPool,
-    scope: &str,
-    subject: &str,
-) -> Result<i64, sqlx::Error> {
+async fn failures(pool: &PgPool, scope: &str, subject: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*) FROM sign_in_failures
          WHERE scope = $1 AND subject = $2 AND at > now() - interval '15 minutes'",
@@ -1211,17 +1311,96 @@ pub(crate) async fn failures(
     .await
 }
 
-pub(crate) async fn record_failure(
+/// At most this many mails to one address in 15 minutes (sign-up, "send the link
+/// again", reset), and this many mail-sending requests from one client IP.
+pub(crate) const MAIL_PER_ADDRESS: i64 = 5;
+pub(crate) const MAIL_PER_IP: i64 = 20;
+
+/// One attempt, recorded in `sign_in_failures` before it is checked, so a concurrent
+/// burst cannot all see the count from before it (R2): the n-th attempt to be recorded
+/// counts at least n rows. A failed check keeps its rows; `release` removes them.
+#[must_use]
+pub(crate) struct Attempt {
+    rows: Vec<(&'static str, String, String)>,
+}
+
+/// Records one attempt against each `(scope, subject, limit)`; `None`, with nothing
+/// left recorded, when any count including it is over its limit.
+pub(crate) async fn attempt(
     pool: &PgPool,
-    scope: &str,
-    subject: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO sign_in_failures (scope, subject) VALUES ($1, $2)")
-        .bind(scope)
+    checks: &[(&'static str, String, i64)],
+) -> Result<Option<Attempt>, sqlx::Error> {
+    let mut attempt = Attempt { rows: Vec::new() };
+    for (scope, subject, _) in checks {
+        let at: String = sqlx::query_scalar(
+            "INSERT INTO sign_in_failures (scope, subject) VALUES ($1, $2) RETURNING at::text",
+        )
+        .bind(*scope)
         .bind(subject)
-        .execute(pool)
-        .await
-        .map(drop)
+        .fetch_one(pool)
+        .await?;
+        attempt.rows.push((*scope, subject.clone(), at));
+    }
+    for (scope, subject, limit) in checks {
+        if failures(pool, scope, subject).await? > *limit {
+            attempt.release(pool).await?;
+            return Ok(None);
+        }
+    }
+    Ok(Some(attempt))
+}
+
+impl Attempt {
+    /// Removes this attempt's rows: it succeeded, or it was refused unchecked.
+    pub(crate) async fn release(self, pool: &PgPool) -> Result<(), sqlx::Error> {
+        for (scope, subject, at) in &self.rows {
+            sqlx::query(
+                "DELETE FROM sign_in_failures
+                 WHERE ctid = (SELECT ctid FROM sign_in_failures
+                               WHERE scope = $1 AND subject = $2 AND at = $3::timestamptz LIMIT 1)",
+            )
+            .bind(*scope)
+            .bind(subject)
+            .bind(at)
+            .execute(pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Keeps this attempt's rows: a failure, or a mail that counts against its cap.
+    pub(crate) fn keep(self) {}
+}
+
+/// Whether one more mail may go to `email` now (R3); counted when it may.
+async fn mail_allowed(pool: &PgPool, email: &str) -> Result<bool, sqlx::Error> {
+    let checks = [("email", format!("mail {email}"), MAIL_PER_ADDRESS)];
+    Ok(match attempt(pool, &checks).await? {
+        Some(sent) => {
+            sent.keep();
+            true
+        }
+        None => false,
+    })
+}
+
+/// Ends every session of the login, signed in or waiting at its TOTP step or its
+/// deleted-login choice (R5), except `keep`.
+async fn end_sessions(
+    conn: &mut PgConnection,
+    login_id: i32,
+    keep: Option<&[u8]>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM sessions
+         WHERE (login_id = $1 OR pending->>'totp' = $1::text OR pending->>'deleted' = $1::text)
+           AND ($2::bytea IS NULL OR id_hash <> $2)",
+    )
+    .bind(login_id)
+    .bind(keep)
+    .execute(conn)
+    .await
+    .map(drop)
 }
 
 pub(crate) async fn password_hash_of(
@@ -1253,10 +1432,7 @@ pub(crate) async fn change_password(
     .bind(new_hash)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, None).await?;
     let (_, token) = open_session_in(
         &mut tx,
         Some(login_id),
@@ -1288,7 +1464,6 @@ const RESET_MINUTES: i32 = 60;
 /// Mails a reset link when the address has an email-and-password method on a live
 /// login; nothing otherwise. The link is built from the configured base URL (T14).
 pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
     // A member who joined through company SSO, now turned off, has no password yet: the
     // link sets one on their SSO method's login (C62). An address that has a password
     // method anywhere is that method's alone (C91).
@@ -1304,25 +1479,31 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
          ORDER BY m.kind = 'password' DESC, m.id LIMIT 1",
     )
     .bind(email)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(pool)
     .await?;
-    if let Some(method) = method {
-        let token = random_token();
-        sqlx::query(
-            "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
-             VALUES ($1, $2, 'reset', now() + make_interval(mins => $3))",
-        )
-        .bind(token_hash(&token))
-        .bind(method)
-        .bind(RESET_MINUTES)
-        .execute(&mut *tx)
-        .await?;
-        let body = format!(
-            "Open this link to choose a new password for Probation:\n\n{}reset/confirm?token={token}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n",
-            base_path(base)
-        );
-        enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
+    // Counted only when a mail would go, and before the transaction (N3).
+    let Some(method) = method else {
+        return Ok(());
+    };
+    if !mail_allowed(pool, email).await? {
+        return Ok(());
     }
+    let mut tx = pool.begin().await?;
+    let token = random_token();
+    sqlx::query(
+        "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
+         VALUES ($1, $2, 'reset', now() + make_interval(mins => $3))",
+    )
+    .bind(token_hash(&token))
+    .bind(method)
+    .bind(RESET_MINUTES)
+    .execute(&mut *tx)
+    .await?;
+    let body = format!(
+        "Open this link to choose a new password for Probation:\n\n{}reset/confirm?token={token}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n",
+        base_path(base)
+    );
+    enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
     tx.commit().await
 }
 
@@ -1382,10 +1563,7 @@ pub(crate) async fn reset_password(
             return Ok(false);
         }
     }
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, None).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -1436,21 +1614,16 @@ pub(crate) async fn add_org(
     login_id: i32,
     name: &str,
 ) -> Result<Result<(), &'static str>, sqlx::Error> {
-    let name = name.trim();
-    if let Some(problem) = org_name_problem(name) {
+    let name = org_name(name);
+    if let Some(problem) = org_name_problem(&name) {
         return Ok(Err(problem));
     }
     let mut tx = pool.begin().await?;
-    let taken: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
-    if taken {
+    if name_taken(&mut tx, &name).await? {
         return Ok(Err(ORG_NAME_TAKEN));
     }
     let actor = login_actor(&mut tx, login_id).await?;
-    create_org(&mut tx, &actor, name).await?;
+    create_org(&mut tx, &actor, &name).await?;
     let () = tx.commit().await?;
     Ok(Ok(()))
 }
@@ -1690,7 +1863,16 @@ pub(crate) async fn oauth_finish(
     code: &str,
 ) -> Result<Identity, OidcError> {
     let field = |name: &str| flow[name].as_str().unwrap_or_default().to_owned();
-    if field("provider") != idp.name() || field("state").is_empty() || !same(&field("state"), state)
+    // The callback's organisation must be the one the flow started for, or an IdP
+    // mix-up could finish one organisation's flow at another's (F4).
+    let idp_org = match idp.kind {
+        IdpKind::Sso { org, .. } => Some(i64::from(org)),
+        _ => None,
+    };
+    if field("provider") != idp.name()
+        || flow["org"].as_i64() != idp_org
+        || field("state").is_empty()
+        || !same(&field("state"), state)
     {
         return Err(OidcError::State);
     }
@@ -1884,11 +2066,20 @@ pub(crate) async fn identity_login(
     .fetch_optional(&mut *tx)
     .await?;
     if let Some((login, method)) = found {
-        // Past its 30 days the old login is erased now, and the method starts anew.
-        if login_state(pool, login).await? != LoginState::Expired {
-            return Ok((login, method));
+        match login_state(pool, login).await? {
+            // Every sign-in through an organisation's SSO joins it, unless an org admin
+            // removed this login or identity there (C5, C128, C130).
+            LoginState::Live => {
+                if let Some(org) = identity.org {
+                    join_through_sso(&mut tx, login, org).await?;
+                    let () = tx.commit().await?;
+                }
+                return Ok((login, method));
+            }
+            LoginState::Deleted { .. } => return Ok((login, method)),
+            // Past its 30 days the old login is erased now, and the method starts anew.
+            LoginState::Expired => erase_login(&mut tx, login).await?,
         }
-        erase_login(&mut tx, login).await?;
     }
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
@@ -1901,14 +2092,21 @@ pub(crate) async fn identity_login(
     Ok((login, method))
 }
 
-/// A login that signs in through, or links, an organisation's SSO joins it (C5).
+/// A login that signs in through, or links, an organisation's SSO joins it (C5), unless
+/// an org admin removed it, or the SSO identity it holds, there while the removed login
+/// exists; only an invitation brings it back (C128, C130).
 async fn join_through_sso(
     conn: &mut PgConnection,
     login: i32,
     org: i32,
 ) -> Result<(), sqlx::Error> {
     let joined = sqlx::query(
-        "INSERT INTO memberships (login_id, org_id, role) VALUES ($1, $2, 'member')
+        "INSERT INTO memberships (login_id, org_id, role)
+         SELECT $1, $2, 'member'
+         WHERE NOT EXISTS (SELECT 1 FROM org_removals WHERE login_id = $1 AND org_id = $2)
+           AND NOT EXISTS (SELECT 1 FROM org_sso_removals AS r JOIN sign_in_methods AS m
+                             ON m.org_id = r.org_id AND m.issuer = r.issuer AND m.subject = r.subject
+                           WHERE m.login_id = $1 AND r.org_id = $2)
          ON CONFLICT DO NOTHING",
     )
     .bind(login)
@@ -2044,7 +2242,14 @@ pub(crate) async fn save_sso(
     .await?;
     let sealed = match (form.enabled, form.client_secret.trim()) {
         (false, _) => None,
-        (true, "") if before.3 => Some(None),
+        // The stored secret stays only with the issuer and client it was given for.
+        (true, "")
+            if before.3
+                && before.0.as_deref() == Some(issuer)
+                && before.1.as_deref() == Some(client_id) =>
+        {
+            Some(None)
+        }
         (true, "") => return refuse("Enter the client secret your provider gave you."),
         (true, secret) => Some(Some(
             secrets.seal(&sso_secret_aad(org_id), secret.as_bytes()),
@@ -2255,11 +2460,7 @@ pub(crate) async fn unlink_method(
         .bind(method_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1 AND id_hash <> $2")
-        .bind(login_id)
-        .bind(&session.id_hash)
-        .execute(&mut *tx)
-        .await?;
+    end_sessions(&mut tx, login_id, Some(&session.id_hash)).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -2461,6 +2662,30 @@ pub(crate) fn is_public(ip: std::net::IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    /// N1: a hash whose caller is cancelled keeps its permit until Argon2id finishes, so
+    /// cancelled requests never let more hashes run than there are permits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_hash_keeps_its_permit_until_it_finishes() {
+        let params = argon2::Params::new(16 * 1024, 2, 1, None).unwrap();
+        let passwords = super::Passwords::with_permits(params, 2);
+        for _ in 0..6 {
+            let verify = passwords.verify_blocking("a guess".to_owned(), None);
+            let _ = tokio::time::timeout(Duration::from_millis(5), verify).await;
+        }
+        assert_eq!(
+            passwords.permits.available_permits(),
+            0,
+            "both permits still held"
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while passwords.permits.available_permits() < 2 {
+            assert!(Instant::now() < deadline, "the permits never came back");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     use super::is_public;
 
     #[test]
@@ -2587,10 +2812,7 @@ async fn mark_login_deleted(conn: &mut PgConnection, login_id: i32) -> Result<()
     .bind(RESTORE_DAYS)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
-        .bind(login_id)
-        .execute(&mut *conn)
-        .await?;
+    end_sessions(conn, login_id, None).await?;
     change_owned_keys(conn, login_id).await?;
     let actor = login_actor(conn, login_id).await?;
     // Its automation tokens and open global-admin links go with the login (C86, T3).
@@ -3033,6 +3255,7 @@ pub(crate) async fn start_new_login(
     let Some((kind, issuer, subject, org, email, hash, verified)) = method else {
         return Ok(None);
     };
+    // The removals of the erased login go with it (C130).
     erase_login(&mut tx, old_login).await?;
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
@@ -3114,11 +3337,12 @@ pub async fn purge(pool: &PgPool) -> Result<(u64, u64, u64), sqlx::Error> {
     for org in orgs {
         let erase = async {
             let mut tx = pool.begin().await?;
-            tenancy::erase_org(&mut tx, org).await?;
-            tx.commit().await
+            let erased = tenancy::erase_org(&mut tx, org).await?;
+            tx.commit().await.map(|()| erased)
         };
         match erase.await {
-            Ok(()) => erased.2 += 1,
+            Ok(true) => erased.2 += 1,
+            Ok(false) => {}
             Err(err) => tracing::error!(org, error = %err, "purge could not erase an organisation"),
         }
     }

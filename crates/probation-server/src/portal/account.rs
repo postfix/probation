@@ -104,7 +104,7 @@ pub(crate) async fn link(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -144,7 +144,7 @@ pub(crate) async fn add_personal(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -171,7 +171,7 @@ pub(crate) async fn add_org(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -208,7 +208,7 @@ pub(crate) async fn change_password(
     headers: HeaderMap,
     Form(form): Form<PasswordForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -328,7 +328,7 @@ pub(crate) async fn totp_setup(
     headers: HeaderMap,
     Form(form): Form<CodeForm>,
 ) -> Response {
-    match portal.signed_in_post(&headers, &form.csrf).await {
+    match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => show_setup(&portal, &signed_in, None).await,
         Err(answer) => answer,
     }
@@ -339,13 +339,14 @@ pub(crate) async fn totp_enable(
     headers: HeaderMap,
     Form(form): Form<CodeForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
     match accounts::totp_enable(
         &portal.pool,
         &portal.secrets,
+        &signed_in.session,
         signed_in.login_id,
         &form.code,
     )
@@ -370,7 +371,7 @@ pub(crate) async fn totp_disable(
     headers: HeaderMap,
     Form(form): Form<CodeForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -425,7 +426,7 @@ pub(crate) async fn unlink(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -482,7 +483,7 @@ pub(crate) async fn delete_login(
     headers: HeaderMap,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -522,7 +523,7 @@ pub(crate) async fn delete_personal(
     headers: HeaderMap,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
@@ -556,7 +557,7 @@ pub(crate) async fn restore_personal(
     headers: HeaderMap,
     Form(form): Form<NameForm>,
 ) -> Response {
-    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+    let signed_in = match portal.unscoped_post(&headers, &form.csrf).await {
         Ok(signed_in) => signed_in,
         Err(answer) => return answer,
     };
