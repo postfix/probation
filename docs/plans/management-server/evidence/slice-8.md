@@ -70,3 +70,9 @@ Not rerun this round: the benches, axe, the analyzers at their documented firewa
 | `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo fmt --all -- --check` | clean |
 | 4 analyzers at `crates/probation-server` | 0 findings each |
 | `router molecule-verify --plan-root docs/plans/management-server` (full) | `PASS`, 12 of 12, no findings |
+
+## Final verification (2026-10-23, on c6fa0c2): UNCERTAIN on B only, accepted by the user
+- Every acceptance witness and recheck passed: E2E PASS 1.3 s (script 3 min 47 s with builds); propagation edits p99 5.049 s and revocations p99 5.035 s against a 10 s interval; A11Y slices 5, 6 and 7 at 22, 26 and 12 pages with 0 problems; both images build with the Elastic-2.0 label; release.yml gates publish on e2e; after_restore 1 passed; full molecule-verify 12/12 with 0 PENDING; workspace 708 passed, 0 failed; analyzers and C123 as documented; clippy, fmt and package clean. Mutants M1–M6 on the S8-17 fixes were killed.
+- B-auth-overhead (C83): artifact_throughput passed every run (99.6–100.8%, p95 ≤ 0.005 ms). warm_metadata throughput was 82.6–101.4% over 8 runs (median about 90%, 4 runs below), on a host at load 8–20 from processes outside this work, including a root `tee` at 100% CPU. The firewall path is unchanged since slice 7.
+- S8-18 (user decision, 2026-10-23): "Accept as is". The B result is accepted under S2-4. Recheck `cargo bench --bench warm_metadata --bench artifact_throughput -- --managed` on a quiet host (load < 2) before release.
+- Open for release: the next publish needs a version above 0.2.2 (S8-15). Optional notes: self-service `/reset` can cancel the operator's printed link (recover with `admin reset-link`); `after-restore` fits about 2,147 runs of the rollout sequence; leftover test databases on :55436 from mutant runs.
