@@ -1,0 +1,20 @@
+# The management server of the e2e stack (docs/management-server.md). Every name here
+# is a network alias on the e2e network; the gateway (11.220.0.10; the harness puts
+# in the address of the stack it starts) terminates TLS.
+[server]
+listen = "0.0.0.0:8080"
+trusted_proxies = ["11.220.0.10/32"]
+
+[portal]
+base_url = "https://portal.e2e.test/"
+firewall_url = "https://fw1.e2e.test"
+# The fake range API under its real name (also the default).
+leaked_password_url = "https://api.pwnedpasswords.com/range/"
+
+[portal.google]
+client_id = "e2e-google-client"
+
+[portal.smtp]
+host = "mail.e2e.test"
+port = 1025
+from = "Probation <probation@e2e.test>"

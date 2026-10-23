@@ -11,7 +11,7 @@ keywords = ["npm", "pypi", "supply-chain", "proxy", "security"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Planning history and analyzer state are repository-only; the crate ships source,
 # tests and the operator documents.
-exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude", "/docker-compose.test.yml", "/docker-compose.e2e.yml", "/tests/e2e", "/deploy"]
+exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude", "/docker-compose.test.yml", "/tests/e2e", "/deploy"]
 
 # The firewall stays the root package, so every existing path and test is unchanged;
 # `crates/` holds what it shares with the management server.

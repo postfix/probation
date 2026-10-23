@@ -1,0 +1,94 @@
+name: E2E
+
+# The e2e suites (tests/e2e/README.md) on the stack of the exact release images, offline
+# against the fakes (D1). PR: blocks the merge. Nightly: the full set; a failure opens an
+# issue. Canary: the live public registries; it alerts and never blocks anything.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Suite to run
+        type: choice
+        options: [pr, nightly, canary]
+        default: nightly
+
+# The harness builds the images, which runs dependency build scripts: no write token.
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'pr')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/harness/run.mjs --suite pr
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-pr
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  nightly:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/harness/run.mjs --suite nightly
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-nightly
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  canary:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'canary')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Alerts only (D1, D6): no release or merge waits on this job; `report` files an issue.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: node tests/e2e/harness/run.mjs --suite canary
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-canary
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  # A separate job, so that the jobs that build and run the images never hold a token
+  # that can write.
+  report:
+    needs: [nightly, canary]
+    if: always() && github.event_name == 'schedule' && (needs.nightly.result == 'failure' || needs.canary.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "E2E nightly ($NIGHTLY) / canary ($CANARY) failed on $GITHUB_SHA" \
+            --body "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (JUnit and container logs are its artifacts). A canary failure alone means a live registry or its shapes changed; it blocks nothing."
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY: ${{ needs.nightly.result }}
+          CANARY: ${{ needs.canary.result }}

@@ -1368,10 +1368,12 @@ Changing the retention is written to the audit log.
 ## 20. Release and crate-name recovery
 
 The release workflow (`.github/workflows/release.yml`) runs on a pushed `v*.*.*`
-tag. Nothing is released unless the tests, `tests/e2e/signup_to_install.sh` and
-CodeQL pass. It then builds the firewall archives, creates the GitHub release,
-and publishes to crates.io from the `crates-io` environment, which should have
-required reviewers. `probation-server` is never published to crates.io.
+tag. Nothing is released unless the tests, the e2e release suite
+(`tests/e2e/README.md`) and CodeQL pass. It then builds the firewall archives,
+creates the GitHub release, publishes the two images the e2e suite tested to
+`ghcr.io/postfix/probation` and `ghcr.io/postfix/probation-server` (tagged with the
+version and the commit), and publishes to crates.io from the `crates-io`
+environment, which should have required reviewers. `probation-server` is never published to crates.io.
 
 The publish step publishes `probation-policy` and then `probation`, which depends
 on it at the same version. If the `probation` step fails after

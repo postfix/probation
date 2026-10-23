@@ -1,0 +1,252 @@
+# The e2e stack (tests/e2e/README.md). Run it through tests/e2e/harness/run.mjs, which
+# writes every file the services mount into $E2E_WORK (CA, certificate, configs,
+# firewall tokens) and does the operator's one-time steps.
+#
+# Everything except the bridge lives on `e2e`, an internal network (no route out)
+# whose subnet is ordinary public unicast. The fakes answer there under the real
+# upstream names, so the shipped images, with their origin guard that refuses private
+# addresses, fetch from them unchanged. Only the test CA is trusted (SSL_CERT_FILE).
+name: probation-e2e
+
+networks:
+  e2e:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${E2E_NET:-11.220.0}.0/24
+  # Only for the bridge's published port.
+  edge: {}
+
+x-clients: &client
+  command: ["sleep", "infinity"]
+  init: true
+  networks: [e2e]
+  environment: &client-env
+    NODE_EXTRA_CA_CERTS: /e2e/ca/ca.pem
+    SSL_CERT_FILE: /e2e/ca/ca.pem
+    PIP_CERT: /e2e/ca/ca.pem
+    REQUESTS_CA_BUNDLE: /e2e/ca/ca.pem
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_INPUT: "1"
+    npm_config_update_notifier: "false"
+    npm_config_fund: "false"
+  volumes:
+    - ${E2E_WORK}/ca:/e2e/ca:ro
+
+x-firewall: &firewall
+  image: ${E2E_FIREWALL_IMAGE:-localhost/probation:e2e}
+  environment:
+    SSL_CERT_FILE: /e2e/ca/ca.pem
+  networks: [e2e]
+  # Exit 75 after a settings push asks the supervisor for a restart (C105).
+  restart: unless-stopped
+  stop_grace_period: 45s
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_USER: probation
+      POSTGRES_PASSWORD: probation
+      POSTGRES_DB: probation
+    networks: [e2e]
+
+  server:
+    build:
+      context: ../../..
+      dockerfile: crates/probation-server/Dockerfile
+    image: ${E2E_SERVER_IMAGE:-localhost/probation-server:e2e}
+    environment:
+      PROBATION_SERVER_DATABASE_URL: postgres://probation_e2e:probation@postgres/probation
+      PROBATION_SERVER_MIGRATE_DATABASE_URL: postgres://probation:probation@postgres/probation
+      PROBATION_SERVER_SECRET_KEY: ${E2E_SECRET_KEY}
+      PROBATION_SERVER_GOOGLE_CLIENT_SECRET: e2e-google-secret
+      SSL_CERT_FILE: /e2e/ca/ca.pem
+    volumes:
+      - ${E2E_WORK}/server.toml:/etc/probation-server/config.toml:ro
+      - ${E2E_WORK}/ca:/e2e/ca:ro
+    networks: [e2e]
+    restart: unless-stopped
+
+  gateway:
+    image: docker.io/library/nginx:1.27-alpine
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+    volumes:
+      - ./gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${E2E_WORK}/tls:/e2e/tls:ro
+    networks:
+      e2e:
+        ipv4_address: ${E2E_NET:-11.220.0}.10
+        aliases: [portal.e2e.test, sync.e2e.test, fw1.e2e.test, fw2.e2e.test, fw-standalone.e2e.test]
+
+  fakes:
+    image: docker.io/library/node:24.22.1-bookworm-slim
+    command: ["node", "/fixtures/fakes/main.mjs"]
+    init: true
+    volumes:
+      - ../fixtures:/fixtures:ro
+      - ${E2E_WORK}/tls:/e2e/tls:ro
+    networks:
+      e2e:
+        aliases:
+          - registry.npmjs.org
+          - pypi.org
+          - files.pythonhosted.org
+          - api.osv.dev
+          - api.pwnedpasswords.com
+          - accounts.google.com
+          - idp.e2e.test
+          - fakes.e2e.test
+
+  mail:
+    image: docker.io/axllent/mailpit:v1.32.0
+    environment:
+      MP_SMTP_TLS_CERT: /e2e/tls/cert.pem
+      MP_SMTP_TLS_KEY: /e2e/tls/key.pem
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+      MP_MAX_MESSAGES: "5000"
+    volumes:
+      - ${E2E_WORK}/tls:/e2e/tls:ro
+    networks:
+      e2e:
+        aliases: [mail.e2e.test]
+
+  bridge:
+    image: docker.io/library/node:24.22.1-bookworm-slim
+    command: ["node", "/fixtures/bridge.mjs"]
+    init: true
+    environment:
+      E2E_SUBNET_PREFIX: ${E2E_NET:-11.220.0}.
+    volumes:
+      - ../fixtures:/fixtures:ro
+    networks: [e2e, edge]
+    ports:
+      - "127.0.0.1:${E2E_BRIDGE_PORT:-18128}:3128"
+
+  firewall-1:
+    <<: *firewall
+    build:
+      context: ../../..
+    volumes:
+      - ${E2E_WORK}/firewall-1.toml:/etc/probation/config.toml:ro
+      - ${E2E_WORK}/firewall-1.token:/e2e/firewall.token:ro
+      - ${E2E_WORK}/ca:/e2e/ca:ro
+      - firewall-1-data:/var/lib/probation
+
+  firewall-2:
+    <<: *firewall
+    volumes:
+      - ${E2E_WORK}/firewall-2.toml:/etc/probation/config.toml:ro
+      - ${E2E_WORK}/firewall-2.token:/e2e/firewall.token:ro
+      - ${E2E_WORK}/ca:/e2e/ca:ro
+      - firewall-2-data:/var/lib/probation
+
+  # No [management]: the producer's blocklist.json in a bind-mounted directory, so an
+  # atomic rename by the producer is seen inside.
+  firewall-standalone:
+    <<: *firewall
+    volumes:
+      - ${E2E_WORK}/firewall-standalone.toml:/etc/probation/config.toml:ro
+      - ${E2E_WORK}/producer:/e2e/producer:ro
+      - ${E2E_WORK}/ca:/e2e/ca:ro
+      - firewall-standalone-data:/var/lib/probation
+
+  # Clients, pinned (D2). PR suite: current npm and current pip.
+  client-npm:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: node.Dockerfile
+      args:
+        NPM_VERSION: "12.2.1"
+    image: localhost/probation-e2e-client:npm12
+
+  client-pip:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: python.Dockerfile
+      args:
+        PIP_VERSION: "26.2.2"
+    image: localhost/probation-e2e-client:pip26.2
+
+  # Nightly clients.
+  client-npm10:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: node.Dockerfile
+      args:
+        NODE_IMAGE: docker.io/library/node:22.23.4-bookworm-slim
+    image: localhost/probation-e2e-client:npm10
+
+  client-npm11:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: node.Dockerfile
+    image: localhost/probation-e2e-client:npm11
+
+  client-js:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: node.Dockerfile
+      args:
+        # yarn 1.22.22 comes with the Node image.
+        GLOBALS: "pnpm@12.15.0"
+    image: localhost/probation-e2e-client:pnpm-yarn1
+
+  client-yarn-berry:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: node.Dockerfile
+      args:
+        GLOBALS: "@yarnpkg/cli-dist@4.18.1"
+    image: localhost/probation-e2e-client:yarn4
+
+  client-bun:
+    <<: *client
+    profiles: [nightly]
+    image: docker.io/oven/bun:1.4.4-slim
+
+  client-pip-previous:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: python.Dockerfile
+      args:
+        PIP_VERSION: "26.1.2"
+    image: localhost/probation-e2e-client:pip26.1
+
+  client-uv:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: python.Dockerfile
+      args:
+        TOOLS: "uv==0.13.5"
+    image: localhost/probation-e2e-client:uv
+
+  client-poetry:
+    <<: *client
+    profiles: [nightly]
+    build:
+      context: ./clients
+      dockerfile: python.Dockerfile
+      args:
+        TOOLS: "poetry==2.5.1"
+    image: localhost/probation-e2e-client:poetry
+
+volumes:
+  firewall-1-data:
+  firewall-2-data:
+  firewall-standalone-data:

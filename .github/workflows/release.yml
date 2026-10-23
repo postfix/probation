@@ -25,18 +25,34 @@ jobs:
       - run: docker compose -f docker-compose.test.yml up -d --wait postgres
       - run: cargo test --workspace --locked
 
-  # E2E-signup-to-install and M-propagation (C82): both images build, a new
-  # organisation signs up and installs with npm through a managed firewall in under
-  # 10 minutes, and changes reach two firewalls within one sync interval. Nothing is
-  # published unless this passes.
+  # The release e2e gate (D6): the release suite on the stack of the exact images,
+  # offline against the fakes. It includes E2E-signup-to-install and M-propagation
+  # (C82): a new organisation signs up and installs with npm through a managed firewall
+  # in under 10 minutes, and changes reach two firewalls within one sync interval.
+  # Nothing is published unless this passes. The images it tested are what `images`
+  # publishes.
   e2e:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - run: tests/e2e/signup_to_install.sh
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/harness/run.mjs --suite release
+      - run: docker save localhost/probation:e2e localhost/probation-server:e2e | gzip > images.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: images
+          path: images.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-release
+          path: target/e2e/out
+          if-no-files-found: ignore
 
   codeql:
     needs: test
@@ -126,3 +142,30 @@ jobs:
       - run: cargo publish --workspace --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # D7: both images, exactly as the e2e gate tested them, to the GitHub Container
+  # Registry, tagged with the version and the commit. Compiles nothing, so it may write.
+  images:
+    needs: [release, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: images
+      - name: Push
+        run: |
+          set -euo pipefail
+          gunzip -c images.tar.gz | docker load
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          version="${GITHUB_REF_NAME#v}"
+          for image in probation probation-server; do
+            for tag in "$version" "$GITHUB_SHA"; do
+              docker tag "localhost/$image:e2e" "ghcr.io/postfix/$image:$tag"
+              docker push "ghcr.io/postfix/$image:$tag"
+            done
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}

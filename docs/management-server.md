@@ -266,14 +266,16 @@ Every flag and what each command prints: [api.md](api.md#3-commands) §3.
 
 ## 9. The end-to-end test
 
-`tests/e2e/signup_to_install.sh` builds both images, starts `docker-compose.e2e.yml`
-(Postgres, the server, a TLS proxy and two managed firewalls), signs a new organisation
-up, installs a package with npm through a firewall, and measures how fast policy edits
-and key revocations reach both firewalls. It needs docker with compose, node 20 or
-later, npm, openssl, curl and outbound https to registry.npmjs.org, api.osv.dev and
-api.pwnedpasswords.com. The release workflow runs it, and nothing is released unless it
-prints `E2E PASS` and both `propagation … p99 <= interval` lines. The seconds on the
-`E2E PASS` line run from the sign-up page to `npm install` finishing; building the
-images and starting the stack happen before that clock starts. Firewall-2 is
-registered by the global admin `admin bootstrap` created, through its set-password
-link.
+`tests/e2e/signup_to_install.sh` runs one scenario of the e2e suite
+(`tests/e2e/README.md`): it builds both images, starts the e2e stack (Postgres, the
+server, a TLS proxy, two managed firewalls, fakes of the public registries, OSV and the
+range API, and a mail sink), signs a new organisation up in Chromium with the
+confirmation mail read from the sink, installs a package with npm through a firewall,
+and measures how fast policy edits and key revocations reach both firewalls. It runs
+offline. It needs docker with compose (or podman with podman-compose), node 20 or
+later, npm and openssl. The release workflow runs the whole release suite, and nothing
+is released unless it passes; this scenario prints `E2E PASS` and both
+`propagation … p99 <= interval` lines. The seconds on the `E2E PASS` line run from the
+sign-up page to `npm install` finishing; building the images and starting the stack
+happen before that clock starts. Firewall-2 is registered at stack start by the global
+admin `admin bootstrap` created, through its set-password link.

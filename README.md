@@ -216,6 +216,7 @@ cargo test --workspace                      # no network access needed
 cargo test --test e2e_npm -- --ignored      # runs the real npm client
 cargo test --test e2e_pip -- --ignored      # runs the real pip client
 tests/e2e/signup_to_install.sh              # managed mode, sign-up to npm install
+node tests/e2e/harness/run.mjs --suite pr   # the e2e suites (tests/e2e/README.md)
 cargo bench                                 # performance checks
 cargo bench --bench delivery_rated_load     # a slower one, ~10 minutes
 ```

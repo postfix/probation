@@ -12,3 +12,6 @@ docs/plans/*/.gate-*
 
 # Playwright and axe-core for the portal A11Y run; installed with npm, never committed.
 crates/probation-server/tests/a11y/node_modules/
+
+# Playwright for the e2e harness; installed with npm ci in tests/e2e, never committed.
+tests/e2e/node_modules/

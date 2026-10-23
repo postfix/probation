@@ -1,0 +1,51 @@
+# The TLS-terminating reverse proxy of the documented topology: the server and the
+# firewalls speak plain HTTP behind it. Upstream names are resolved per request (a
+# restarted container may come back on another address, and firewall-2 starts later).
+resolver ${NGINX_LOCAL_RESOLVERS} valid=2s ipv6=off;
+
+ssl_certificate /e2e/tls/cert.pem;
+ssl_certificate_key /e2e/tls/key.pem;
+client_max_body_size 4m;
+proxy_http_version 1.1;
+proxy_buffering off;
+proxy_request_buffering off;
+proxy_read_timeout 1200s;
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto https;
+
+server {
+  listen 443 ssl;
+  server_name portal.e2e.test sync.e2e.test;
+  location / {
+    set $upstream server:8080;
+    proxy_pass http://$upstream;
+  }
+}
+
+server {
+  listen 443 ssl;
+  server_name fw1.e2e.test;
+  location / {
+    set $upstream firewall-1:8080;
+    proxy_pass http://$upstream;
+  }
+}
+
+server {
+  listen 443 ssl;
+  server_name fw2.e2e.test;
+  location / {
+    set $upstream firewall-2:8080;
+    proxy_pass http://$upstream;
+  }
+}
+
+server {
+  listen 443 ssl;
+  server_name fw-standalone.e2e.test;
+  location / {
+    set $upstream firewall-standalone:8080;
+    proxy_pass http://$upstream;
+  }
+}

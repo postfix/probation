@@ -1,0 +1,15 @@
+# The canary overlay (E2E-031, nightly, never blocks): the same stack, except that the
+# fakes are not started and the server and the firewalls also join `edge`, so they reach
+# the real registries, OSV and the leaked-password range API. They trust the system
+# roots as well as the e2e CA (the sync API and the portal still sit behind the gateway).
+x-live: &live
+  environment:
+    SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+    SSL_CERT_DIR: /e2e/ca
+  networks: [e2e, edge]
+
+services:
+  server: *live
+  firewall-1: *live
+  firewall-2: *live
+  firewall-standalone: *live
