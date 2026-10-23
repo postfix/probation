@@ -1618,6 +1618,22 @@ async fn t_portal_limits() {
             .await,
         1
     );
+    // A service value that is no number is refused, not taken as "no limit".
+    let before = state(&fx.db).await;
+    let typo = root
+        .submit(
+            "/admin",
+            "/admin/limits",
+            &[
+                ("kind", "org"),
+                ("rate", "6000"),
+                ("keys", "20"),
+                ("service", "5O"),
+            ],
+        )
+        .await;
+    assert_eq!(typo.status, StatusCode::CONFLICT, "{}", typo.body);
+    assert_eq!(state(&fx.db).await, before);
     // A new organisation row starts from the platform default.
     assert!(input(&root.get("/admin").await, "own-rate").contains("value=\"6000\""));
 }
@@ -1893,6 +1909,11 @@ async fn t_portal_ranges_approve() {
             &[("email", "x@probation.test")],
         )
         .await;
+    // ... and started a settings rollout (S7-1).
+    let (firewall, _) = register(&fx.db, "fw").await;
+    let pushed = push_settings(&mut kim_browser, &[firewall], "sync_interval_seconds = 30").await;
+    assert_eq!(pushed.status, StatusCode::SEE_OTHER, "{}", pushed.body);
+    let rollout = last_rollout(&fx.db).await;
     sqlx::query(
         "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
          WHERE id = $1",
@@ -1909,6 +1930,13 @@ async fn t_portal_ranges_approve() {
             .await
             .unwrap();
     assert!(still, "the range stays approved");
+    let creator: Option<i32> =
+        sqlx::query_scalar("SELECT created_by FROM settings_rollouts WHERE id = $1")
+            .bind(rollout)
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    assert_eq!(creator, None, "the rollout stays, its creator erased");
     assert!(root.get("/admin").await.has("192.0.2.0/24"));
 }
 
@@ -2019,6 +2047,27 @@ async fn t_fleet_unhealthy() {
     set_seen(3 * 86_400 + 1).await;
     let row = fleet_row(&root.get("/fleet").await, id);
     assert!(row.contains("Unhealthy: missed 3 check-ins"), "{row}");
+
+    // A rollout step times out after 3 × the reported period, taken as 1 s to 1 day:
+    // the huge period neither breaks the page nor keeps the step waiting forever.
+    let pushed = push_settings(&mut root, &[id], "sync_interval_seconds = 30").await;
+    assert_eq!(pushed.status, StatusCode::SEE_OTHER, "{}", pushed.body);
+    let huge = last_rollout(&fx.db).await;
+    assert_eq!(root.get("/fleet").await.status, StatusCode::OK);
+    assert_eq!(rollout_state(&fx.db, huge).await.1, ["sent"]);
+    sqlx::query("UPDATE settings_rollout_steps SET sent_at = now() - make_interval(secs => 3 * 86400 + 1) WHERE rollout_id = $1")
+        .bind(huge)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    assert_eq!(root.get("/fleet").await.status, StatusCode::OK);
+    assert_eq!(rollout_state(&fx.db, huge).await.1, ["timed_out"]);
+    // A period of 0 is taken as 1 s: a step just sent is not timed out at once.
+    check_in(&fx, &token, report(0, None, 0)).await;
+    push_settings(&mut root, &[id], "sync_interval_seconds = 40").await;
+    let zero = last_rollout(&fx.db).await;
+    assert_eq!(root.get("/fleet").await.status, StatusCode::OK);
+    assert_eq!(rollout_state(&fx.db, zero).await.1, ["sent"]);
 }
 
 /// T-fleet-settings-push (C22, C35, C70, C71, C118): settings for two firewalls reach
@@ -3084,6 +3133,40 @@ async fn t_automation_body_limit() {
         &token,
         &acme_layer,
         many(blocklist_json::MAX_ENTRIES + 1, "one"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+    assert_eq!(state(&fx.db).await, before, "nothing written");
+    // 5001 copies of one record in add mode: the file cap, not the layer cap, refuses it.
+    let record =
+        serde_json::json!({"ecosystem": "npm", "name": "same", "version": null, "reason": "r"});
+    let copies = serde_json::json!({
+        "schema_version": 1,
+        "blocked_packages": vec![record; blocklist_json::MAX_ENTRIES + 1],
+        "blocked_hashes": [],
+    });
+    let (status, text) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &token,
+        &acme_layer,
+        copies.to_string().into_bytes(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+    // A reason one byte over `MAX_REASON_BYTES`.
+    let long = serde_json::json!({
+        "schema_version": 1,
+        "blocked_packages": [{"ecosystem": "npm", "name": "long", "version": null,
+                              "reason": "r".repeat(blocklist_json::MAX_REASON_BYTES + 1)}],
+        "blocked_hashes": [],
+    });
+    let (status, text) = blocklist_call(
+        &fx,
+        reqwest::Method::POST,
+        &token,
+        &acme_layer,
+        long.to_string().into_bytes(),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");

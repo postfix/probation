@@ -368,7 +368,8 @@ pub(crate) async fn settle(
 }
 
 /// Halts each running rollout whose released step has not reported success within 3 of
-/// its firewall's intervals (C71).
+/// its firewall's intervals (C71), the reported period taken as 1 s to 1 day, as
+/// `health` takes it.
 // ponytail: run when the fleet page is read, not by a job; the next firewall gets
 // nothing either way, so only the stored state waits for a reader.
 async fn expire(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -378,8 +379,8 @@ async fn expire(pool: &PgPool) -> Result<(), sqlx::Error> {
              FROM settings_rollouts AS r, firewalls AS f
              WHERE r.id = s.rollout_id AND r.state = 'running' AND f.id = s.firewall_id
                AND s.state = 'sent'
-               AND s.sent_at < now() - make_interval(secs => 3 * LEAST(86400, COALESCE(
-                       (f.last_report -> 'report' ->> 'effective_period_seconds')::double precision, 60)))
+               AND s.sent_at < now() - make_interval(secs => 3 * LEAST(86400, GREATEST(1, COALESCE(
+                       (f.last_report -> 'report' ->> 'effective_period_seconds')::double precision, 60))))
              RETURNING s.rollout_id
          )
          UPDATE settings_rollouts SET state = 'halted' WHERE id IN (SELECT rollout_id FROM late)",
