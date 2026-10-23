@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":11,"boundary":{"kind":"slice","number":5},"reopened":false,"history":[]}
+{"generation":12,"boundary":{"kind":"slice","number":6},"reopened":false,"history":[]}
 
 ## Gate 1 progress
 
@@ -131,7 +131,8 @@
   - proof: cargo test --test key_canary; cargo test --test managed_sync; cargo test --test origin_guard; cargo test --test managed_mode; cargo test --test authorization_read_once; cargo test --workspace; router molecule-verify --slice 3; C123 smtc callers query; analyzers at documented roots -> key_canary ok. 2 passed; managed_sync ok. 33 passed (S3-11); origin_guard 26; managed_mode 10; authorization_read_once 4; workspace all ok; molecule-verify slice 1-3 obligations 9/9 PASS; C123 exactly 1 site; analyzers pass (outbound-timeout-guard pin refreshed, 02de667); evidence/slice-3.md; final verification on 08b6d69; reviews: qa=VERIFIED
 - [x] Slice 4 — `probation-server` on Postgres answers the real sync API; keys and layers via the bootstrap CLI, edited atomically with audit
   - proof: docker compose -f docker-compose.test.yml up -d postgres; cargo test -p probation-server --test sync_api; --test policy_edit; --test tenancy; --test propagation -- --nocapture; cargo test -p probation-server --doc; cargo test --workspace; clippy; fmt; cargo package --workspace --exclude probation-server --locked; router molecule-verify --slice 4; analyzers at crates/probation-server -> sync_api ok. 6 passed; policy_edit ok. 8 passed; tenancy ok. 3 passed; propagation ok. 3 passed (edits p99 5.002 s, revocations p99 4.954 s <= 10 s interval); doctest ok. 1 passed; workspace 609 passed 0 failed; clippy/fmt clean; package probation + probation-policy only; molecule-verify slice 4 PASS 12/12; analyzers 0 findings; evidence/slice-4.md; final verification on 7d9dda9; reviews: qa=VERIFIED
-- [ ] Slice 5 — people sign up, verify, sign in (password, OAuth, SSO), link methods, use TOTP, delete and restore in the portal
+- [x] Slice 5 — people sign up, verify, sign in (password, OAuth, SSO), link methods, use TOTP, delete and restore in the portal
+  - proof: cargo test -p probation-server --test accounts; cargo test --workspace; clippy -D warnings; fmt --check; router molecule-check; router molecule-verify --slice 5; 4 analyzers; C123 smtc callers query; node crates/probation-server/tests/a11y/axe.mjs --slice 5; post-merge cargo test -p probation-server on management-server b2ebbe3 -> accounts ok. 29 passed; workspace 634 passed 0 failed 21 ignored; clippy/fmt clean; molecule-check PASS; molecule-verify slice 5 PASS 12/12; analyzers 0 findings at crates/probation-server and pass conditions at documented roots; C123 exactly 1 site; A11Y slice 5: 22 pages, 0 problems; mutants R4 N1 N2 N5 killed; F4 SSO org check added at a6009c8 (accounts 29 passed); after merge on b2ebbe3: accounts 29, policy_edit 8, propagation 3, sync_api 6, tenancy 3, lib 3, doctest 1 all ok; S5-7 TOTP reset moved to slice 6 (04, 485f724); evidence/slice-5.md; reviews: qa=VERIFIED
 - [ ] Slice 6 — org admins, group admins and users manage members, groups, invitations, keys, policy, activity, audit, ranges and org deletion in the portal
 - [ ] Slice 7 — global admins manage organisations, personal accounts, platform policy, ranges, limits, the fleet, blocklist import/export and retention
 - [ ] Slice 8 — scripted sign-up to `npm install` in under 10 minutes; propagation, overhead and accessibility measured; both images build
