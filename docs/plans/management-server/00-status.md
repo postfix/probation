@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":10,"boundary":{"kind":"slice","number":4},"reopened":false,"history":[]}
+{"generation":11,"boundary":{"kind":"slice","number":5},"reopened":false,"history":[]}
 
 ## Gate 1 progress
 
@@ -129,7 +129,8 @@
   - proof: cargo test --test managed_mode; cargo test -p probation-policy --lib tests::t_resolve_empty_platform; cargo test --test authorization_read_once; cargo test --test key_canary; cargo bench --bench warm_metadata --bench artifact_throughput -- --managed; cargo test --workspace; clippy -D warnings; fmt --check; cargo llvm-cov --fail-under-lines 98; docker build .; router molecule-check; router molecule-verify --slice 2; C123 smtc callers query -> managed_mode ok. 10 passed; t_resolve_empty_platform ok. 1 passed; authorization_read_once ok. 4 passed; key_canary ok. 1 passed; --managed overhead PASS, throughput PASS on reruns (89.4% once at load 18.45, then 110.7/109.6/99.1%; S2-4); workspace 36 ok; clippy/fmt clean; llvm-cov 98.46%; docker exit 0; molecule-check PASS; authenticate-checks-retired-first PASS (2/2 controls); C123 query exactly 1 site; evidence/slice-2.md; reviews: qa=VERIFIED, code-review=SHIP, security=CLEAR, adversarial=PASS
 - [x] Slice 3 — a managed firewall syncs, enforces the network lock and readiness, serves stale during outages, ships activity and applies settings pushes
   - proof: cargo test --test key_canary; cargo test --test managed_sync; cargo test --test origin_guard; cargo test --test managed_mode; cargo test --test authorization_read_once; cargo test --workspace; router molecule-verify --slice 3; C123 smtc callers query; analyzers at documented roots -> key_canary ok. 2 passed; managed_sync ok. 33 passed (S3-11); origin_guard 26; managed_mode 10; authorization_read_once 4; workspace all ok; molecule-verify slice 1-3 obligations 9/9 PASS; C123 exactly 1 site; analyzers pass (outbound-timeout-guard pin refreshed, 02de667); evidence/slice-3.md; final verification on 08b6d69; reviews: qa=VERIFIED
-- [ ] Slice 4 — `probation-server` on Postgres answers the real sync API; keys and layers via the bootstrap CLI, edited atomically with audit
+- [x] Slice 4 — `probation-server` on Postgres answers the real sync API; keys and layers via the bootstrap CLI, edited atomically with audit
+  - proof: docker compose -f docker-compose.test.yml up -d postgres; cargo test -p probation-server --test sync_api; --test policy_edit; --test tenancy; --test propagation -- --nocapture; cargo test -p probation-server --doc; cargo test --workspace; clippy; fmt; cargo package --workspace --exclude probation-server --locked; router molecule-verify --slice 4; analyzers at crates/probation-server -> sync_api ok. 6 passed; policy_edit ok. 8 passed; tenancy ok. 3 passed; propagation ok. 3 passed (edits p99 5.002 s, revocations p99 4.954 s <= 10 s interval); doctest ok. 1 passed; workspace 609 passed 0 failed; clippy/fmt clean; package probation + probation-policy only; molecule-verify slice 4 PASS 12/12; analyzers 0 findings; evidence/slice-4.md; final verification on 7d9dda9; reviews: qa=VERIFIED
 - [ ] Slice 5 — people sign up, verify, sign in (password, OAuth, SSO), link methods, use TOTP, delete and restore in the portal
 - [ ] Slice 6 — org admins, group admins and users manage members, groups, invitations, keys, policy, activity, audit, ranges and org deletion in the portal
 - [ ] Slice 7 — global admins manage organisations, personal accounts, platform policy, ranges, limits, the fleet, blocklist import/export and retention
