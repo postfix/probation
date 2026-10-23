@@ -97,7 +97,8 @@ pub async fn migrate(owner: &PgPool) -> Result<(), sqlx::migrate::MigrateError> 
 /// Serves the sync and automation APIs, and the portal when `portal` is given, on
 /// `config.server.listen` until SIGTERM or SIGINT; prunes `change_log`, activity and the
 /// audit log by their retention once an hour (C26). On the signal it stops taking
-/// connections, lets requests in flight and job runs in progress finish, and returns.
+/// connections and lets requests in flight and job runs in progress finish, for
+/// `DRAIN` at most or until a second signal, and returns.
 pub async fn serve(
     config: Config,
     pool: PgPool,
@@ -132,27 +133,47 @@ pub async fn serve(
         ));
         router = router.merge(portal::router(Arc::new(portal::Portal::new(deps))));
     }
-    let served = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let mut stopped = stopping.clone();
+    let drained = async move {
+        let served = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = stopped.changed().await;
+        })
+        .await;
+        for job in jobs {
+            let _ = job.await;
+        }
+        served
+    };
+    let signals = async move {
         tokio::select! {
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
         }
         tracing::info!("stopping: finishing the requests in flight");
-    })
-    .await;
-    stop.send_replace(true);
-    for job in jobs {
-        let _ = job.await;
+        stop.send_replace(true);
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+            () = tokio::time::sleep(DRAIN) => {}
+        }
+        tracing::warn!("stopping now: requests or jobs still running are dropped");
+    };
+    tokio::select! {
+        served = drained => served,
+        () = signals => Ok(()),
     }
-    served
 }
 
+/// How long `serve` waits, after SIGTERM or SIGINT, for requests in flight and job runs
+/// in progress; a second signal ends the wait at once.
+const DRAIN: Duration = Duration::from_secs(20);
+
 /// Runs `job` now and then every `period` until `stopping` turns true; a run in progress
-/// finishes first.
+/// finishes first, and none starts after it turned.
 pub(crate) fn every<F, Fut>(
     period: Duration,
     stopping: &tokio::sync::watch::Receiver<bool>,
@@ -167,9 +188,11 @@ where
         let mut ticks = tokio::time::interval(period);
         loop {
             tokio::select! {
-                _ = ticks.tick() => job().await,
+                biased;
                 _ = stopping.changed() => return,
+                _ = ticks.tick() => {}
             }
+            job().await;
         }
     })
 }

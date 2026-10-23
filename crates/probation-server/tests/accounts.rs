@@ -52,6 +52,7 @@ impl Fixture {
             &self.db.app,
             &mailer,
             &accounts::SecretBox::new(common::SECRET_KEY),
+            &tokio::sync::watch::channel(false).1,
         )
         .await
         .expect("the outbox runs");
@@ -651,9 +652,14 @@ async fn outbox_body_sealed_at_rest() {
     assert!(!rows[0].contains(BASE_URL), "{}", rows[0]);
     // Under another key the body does not open: nothing is sent, and the row waits.
     let mailer: Arc<dyn Mailer> = fx.mail.clone();
-    let sent = accounts::deliver_outbox(&fx.db.app, &mailer, &accounts::SecretBox::new([8; 32]))
-        .await
-        .unwrap();
+    let sent = accounts::deliver_outbox(
+        &fx.db.app,
+        &mailer,
+        &accounts::SecretBox::new([8; 32]),
+        &tokio::sync::watch::channel(false).1,
+    )
+    .await
+    .unwrap();
     assert_eq!(sent, 0);
     assert!(fx.mail.to("ana@acme.test").is_empty());
     fx.outbox_due().await;
@@ -664,6 +670,85 @@ async fn outbox_body_sealed_at_rest() {
         confirmed.has("Your email address is confirmed"),
         "{}",
         confirmed.body
+    );
+}
+
+/// F12: a row queued before bodies were sealed (a plain `body`) is still sent.
+#[tokio::test]
+async fn outbox_sends_a_row_queued_before_sealing() {
+    let fx = Fixture::start().await;
+    sqlx::query(
+        "INSERT INTO email_outbox (to_address, template, payload)
+         VALUES ('old@acme.test', 'verify', '{\"subject\": \"Old\", \"body\": \"queued in plain text\"}')",
+    )
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    fx.deliver().await;
+    let sent = fx.mail.to("old@acme.test");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Old");
+    assert_eq!(sent[0].body, "queued in plain text");
+}
+
+/// A relay that asks the jobs to stop as it takes its first mail.
+struct StopAfterOne {
+    stop: tokio::sync::watch::Sender<bool>,
+    sent: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Mailer for StopAfterOne {
+    async fn deliver(&self, _mail: &Mail) -> Result<(), String> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        self.stop.send_replace(true);
+        Ok(())
+    }
+}
+
+/// F8: an outbox run stops between mails once the server stops, so a slow relay cannot
+/// hold a clean stop up for a whole batch.
+#[tokio::test]
+async fn outbox_run_stops_between_mails() {
+    let fx = Fixture::start().await;
+    for email in ["a@acme.test", "b@acme.test", "c@acme.test"] {
+        let page = fx
+            .browser()
+            .submit(
+                "/signup",
+                "/signup",
+                &[
+                    ("email", email),
+                    ("password", PASSWORD),
+                    ("kind", "personal"),
+                ],
+            )
+            .await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    }
+    let mailer = Arc::new(StopAfterOne {
+        stop: tokio::sync::watch::channel(false).0,
+        sent: AtomicUsize::new(0),
+    });
+    let stopping = mailer.stop.subscribe();
+    let jobs = accounts::spawn_jobs(
+        fx.db.app.clone(),
+        Some(mailer.clone()),
+        accounts::SecretBox::new(common::SECRET_KEY),
+        &stopping,
+    );
+    for job in jobs {
+        tokio::time::timeout(Duration::from_secs(10), job)
+            .await
+            .expect("the jobs stop")
+            .unwrap();
+    }
+    assert_eq!(mailer.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fx.db
+            .count("SELECT count(*) FROM email_outbox WHERE sent_at IS NULL")
+            .await,
+        2
     );
 }
 

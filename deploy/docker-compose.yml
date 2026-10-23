@@ -21,6 +21,8 @@ services:
       timeout: 6s
       retries: 3
       start_period: 10s
+    # Longer than the 20 s the server gives requests in flight and job runs.
+    stop_grace_period: 30s
 
   firewall:
     # docker build -t probation .

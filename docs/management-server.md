@@ -105,9 +105,10 @@ Unknown keys are refused at start, and every change needs a restart. Every setti
 | `[portal.smtp] from` | required in `[portal.smtp]` | The sender address. |
 
 Without `[portal.smtp]` mail stays in the `email_outbox` table, and nobody can confirm
-an email address. Each waiting mail's body, with its links, is sealed under
-`PROBATION_SERVER_SECRET_KEY`, so the table does not show them; a sent mail keeps no
-body.
+an email address. A mail's body, with its links, is sealed under
+`PROBATION_SERVER_SECRET_KEY` when it is queued, so the table does not show them; a
+sent mail keeps no body. Mail queued by a server built before bodies were sealed stays
+in plain text until it is sent.
 
 An organisation's own SSO (OIDC) is set on its organisation page, not in this file.
 Its redirect URI is `<base_url>sso/<org id>/callback`; the page shows it.

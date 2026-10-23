@@ -9,61 +9,134 @@ use std::time::{Duration, Instant};
 use common::{Db, client};
 use reqwest::StatusCode;
 
+/// `probation-server serve` on a free loopback port, once it listens. The portal and an
+/// SMTP relay are set too, so the outbox and purge jobs run as well as the prune; nothing
+/// is queued, so the relay is never called.
+struct Server {
+    process: std::process::Child,
+    port: u16,
+    _dir: tempfile::TempDir,
+}
+
+impl Server {
+    async fn start(db: &Db) -> Server {
+        let dir = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let config = dir.path().join("server.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[server]\nlisten = \"127.0.0.1:{port}\"\n\n[portal]\nbase_url = \"http://127.0.0.1:{port}/\"\n\n[portal.smtp]\nhost = \"127.0.0.1\"\nport = 1\nfrom = \"probation@example.org\"\n"
+            ),
+        )
+        .unwrap();
+        let mut process = std::process::Command::new(env!("CARGO_BIN_EXE_probation-server"))
+            .args(["serve", "--config"])
+            .arg(&config)
+            .env("PROBATION_SERVER_DATABASE_URL", &db.app_url)
+            .env("PROBATION_SERVER_SECRET_KEY", "07".repeat(32))
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            if let Some(status) = process.try_wait().unwrap() {
+                panic!("serve exited before listening: {status}");
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "serve listens");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Server {
+            process,
+            port,
+            _dir: dir,
+        }
+    }
+
+    fn sigterm(&self) {
+        let sent = std::process::Command::new("kill")
+            .args(["-TERM", &self.process.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    }
+
+    /// Its exit status, which must come within `limit`.
+    async fn exit_within(&mut self, limit: Duration) -> std::process::ExitStatus {
+        let waiting = Instant::now();
+        loop {
+            if let Some(status) = self.process.try_wait().unwrap() {
+                return status;
+            }
+            if waiting.elapsed() > limit {
+                let _ = self.process.kill();
+                panic!("serve still runs {limit:?} later");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A connection whose request never finishes: a body of 1000 bytes announced, 10
+    /// sent.
+    async fn stalled_request(&self) -> tokio::net::TcpStream {
+        use tokio::io::AsyncWriteExt;
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", self.port))
+            .await
+            .unwrap();
+        stream
+            .write_all(
+                b"PUT /api/v1/blocklist/org-1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer aut_x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"schema\":",
+            )
+            .await
+            .unwrap();
+        // Let the server take the request in before the signal.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stream
+    }
+}
+
 /// F8: SIGTERM stops `serve`, its background jobs included, with exit code 0 within a
 /// few seconds.
 #[tokio::test]
 async fn sigterm_stops_serve_with_success() {
     let db = Db::fresh().await;
-    let dir = tempfile::tempdir().unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let config = dir.path().join("server.toml");
-    // The portal and an SMTP relay too, so the outbox and purge jobs run as well as the
-    // prune; nothing is queued, so the relay is never called.
-    std::fs::write(
-        &config,
-        format!(
-            "[server]\nlisten = \"127.0.0.1:{port}\"\n\n[portal]\nbase_url = \"http://127.0.0.1:{port}/\"\n\n[portal.smtp]\nhost = \"127.0.0.1\"\nport = 1\nfrom = \"probation@example.org\"\n"
-        ),
-    )
-    .unwrap();
-    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_probation-server"))
-        .args(["serve", "--config"])
-        .arg(&config)
-        .env("PROBATION_SERVER_DATABASE_URL", &db.app_url)
-        .env("PROBATION_SERVER_SECRET_KEY", "07".repeat(32))
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    while tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .is_err()
-    {
-        if let Some(status) = server.try_wait().unwrap() {
-            panic!("serve exited before listening: {status}");
-        }
-        assert!(started.elapsed() < Duration::from_secs(20), "serve listens");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let sent = std::process::Command::new("kill")
-        .args(["-TERM", &server.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(sent.success());
-    let signalled = Instant::now();
-    let status = loop {
-        if let Some(status) = server.try_wait().unwrap() {
-            break status;
-        }
-        if signalled.elapsed() > Duration::from_secs(5) {
-            let _ = server.kill();
-            panic!("serve still runs 5 s after SIGTERM");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let mut server = Server::start(&db).await;
+    server.sigterm();
+    let status = server.exit_within(Duration::from_secs(5)).await;
+    assert!(status.success(), "{status}");
+}
+
+/// F8: a request that never finishes holds `serve` up for the 20 s drain at most.
+#[tokio::test]
+async fn stalled_request_holds_shutdown_for_the_drain_only() {
+    let db = Db::fresh().await;
+    let mut server = Server::start(&db).await;
+    let _stalled = server.stalled_request().await;
+    server.sigterm();
+    let status = server.exit_within(Duration::from_secs(25)).await;
+    assert!(status.success(), "{status}");
+}
+
+/// F8: a second SIGTERM during the drain stops `serve` at once.
+#[tokio::test]
+async fn second_sigterm_ends_the_drain() {
+    let db = Db::fresh().await;
+    let mut server = Server::start(&db).await;
+    let _stalled = server.stalled_request().await;
+    server.sigterm();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        server.process.try_wait().unwrap().is_none(),
+        "still draining"
+    );
+    server.sigterm();
+    let status = server.exit_within(Duration::from_secs(3)).await;
     assert!(status.success(), "{status}");
 }
 

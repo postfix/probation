@@ -125,3 +125,64 @@ must be retired again. Docs only, no test.
 - C123 query (`smtc callers --name get|get_all --callsites-matching '*AUTHORIZATION'
   --argument-index 0|1` at the absolute `src` and `crates/probation-policy/src`): one
   site over the eight runs, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.
+
+## Review round on 7a86ad0
+
+### F8 (major): the drain had no deadline
+
+- Tests (tests/serve.rs, now over a small `Server` helper):
+  `stalled_request_holds_shutdown_for_the_drain_only` opens a connection that announces a
+  1000-byte body and sends 10 bytes, then sends SIGTERM, and wants exit 0 within 25 s.
+  `second_sigterm_ends_the_drain` does the same, checks that the process is still
+  draining 1 s later, then sends a second SIGTERM and wants exit 0 within 3 s.
+- Red: `cargo test -p probation-server --test serve`: `serve still runs 25s later` and
+  `serve still runs 3s later`.
+- Fix: the first signal turns the stop channel, which both starts the graceful shutdown
+  and stops the jobs. `serve` then races "the server drained and the jobs ended" against
+  "`DRAIN` (20 s) passed or a second SIGTERM/SIGINT came", logs `stopping now: requests or
+  jobs still running are dropped` if the second wins, and returns `Ok`.
+- Green: 5 passed; the deadline case logs the warning 20.0 s after the signal, the
+  second-signal case 1 s after it.
+- Header-read and request timeouts: not added. `axum::serve` 0.8 builds its hyper
+  connection with no timer and exposes no builder, so hyper's `header_read_timeout`
+  cannot be set without replacing `axum::serve` with a hyper-util accept loop. A tower
+  timeout layer would need `tower`'s `timeout` feature plus a `HandleErrorLayer`, and would
+  not cover header reads. The drain deadline bounds shutdown either way.
+- `deploy/docker-compose.yml` gives the server `stop_grace_period: 30s`, above the drain;
+  operations.md §16 and api.md §3 describe the 20 s drain and the second signal.
+
+### Minor: jobs could run after stop, and an outbox run ignored stop
+
+- Test: `outbox_run_stops_between_mails` (tests/accounts.rs): three sign-ups queue three
+  mails, `spawn_jobs` runs with a relay that turns the stop channel as it takes its first
+  mail, the jobs must end within 10 s with 1 mail sent and 2 rows unsent.
+- Red: `cargo test -p probation-server --test accounts outbox`: `left: 3, right: 1`.
+- Fix: `every` selects `biased` with the stop branch first and runs the job after the
+  select, so no run starts once stop has turned. `deliver_outbox` takes the stop receiver
+  and checks it before each mail. The test fixtures pass a receiver that never turns.
+- Green: same command, 3 passed.
+
+### Minor (F12): mail queued before sealing; mixed versions
+
+- Test: `outbox_sends_a_row_queued_before_sealing` (tests/accounts.rs): a row with a plain
+  `payload.body` is sent with its subject and body. It passed when first run: the
+  fallback was already in 7a86ad0, so this test only adds coverage and has no red.
+- Docs: management-server.md now says a body is sealed when it is queued, and mail queued
+  by an older server stays in plain text until sent; operations.md's backup note says
+  "sealed bodies of unsent mail". The server upgrade steps say to stop every instance,
+  and never to run an old and a new server on one database (an old one sends a sealed
+  mail with an empty body and marks it sent). No compatibility code.
+
+### Checks (review round)
+
+- `cargo test -j 16 --workspace --no-fail-fast -- --test-threads=16`: the first run had 1
+  failure outside this change, `tests/content_store.rs`
+  `an_open_during_eviction_is_refused_and_a_second_eviction_stands_aside` ("a second pass
+  over the same key stands aside"). Nothing under `src/` or that test changed on this
+  branch. It passed 5 of 5 runs alone. The test relies on the first `evict` yielding
+  inside the removal before the second is polled, so it is timing dependent. The rerun of
+  the whole suite: exit 0, 49 binaries, 720 passed, 0 failed, 21 ignored.
+- clippy `-D warnings` and `fmt --check`: clean.
+- `router molecule-verify`: PASS, 12 checks, 0 findings.
+- The 4 SMTC analyzers at `crates/probation-server`: 0 findings each.
+- C123 query: one site, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.

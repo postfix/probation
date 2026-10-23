@@ -428,7 +428,7 @@ Back up Postgres the way you back up any Postgres database (`pg_dump`, or your
 provider's snapshots). The server keeps nothing else, except its settings file
 and its environment. Keep `PROBATION_SERVER_SECRET_KEY` with the backups, but
 apart from them: without it the authenticator secrets, SSO client secrets and
-unsent mail in the backup cannot be read.
+sealed bodies of unsent mail in the backup cannot be read.
 
 To restore:
 
@@ -538,9 +538,13 @@ drop it.
 ### Upgrading the management server
 
 1. Back up the database.
-2. Stop the server.
+2. Stop the server: every instance of it, if you run more than one.
 3. Run `probation-server migrate` with the new binary.
 4. Start the new server.
+
+Never run an old and a new server on one database at once. For example, a server
+built before outbox mail was sealed sends a sealed mail with an empty body and marks
+it sent, so its link is lost. Stop every old instance before you start a new one.
 
 Firewalls keep serving from their cache while the server is stopped (section 13),
 so a server upgrade needs no firewall downtime. Only keys a firewall has never
@@ -1307,8 +1311,10 @@ lock. The image has no curl: its health check is `probation-server health`, whic
 exits `0` when `http://127.0.0.1:8080/health/ready` answers `200` (`--url` for
 another address). Both compose files use it.
 
-`SIGTERM` or `SIGINT` stops the server cleanly: it stops taking connections, lets
-requests in flight and a background job run in progress finish, and exits `0`.
+`SIGTERM` or `SIGINT` stops the server cleanly: it stops taking connections, starts
+no new background job run, gives requests in flight and a run in progress up to 20
+seconds to finish (the outbox stops between mails), and exits `0`. A second signal
+ends the wait at once. Give the container a stop grace period above 20 seconds.
 
 The fleet page shows each firewall's health from its reports:
 

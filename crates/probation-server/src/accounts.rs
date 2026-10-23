@@ -295,15 +295,20 @@ fn outbox_aad(id: i64) -> String {
     format!("outbox:{id}")
 }
 
-/// Sends every due outbox row once. A refused send is retried later with backoff; a sent
-/// row keeps no body, so no link outlives its delivery in the outbox.
+/// Sends every due outbox row once, or until `stopping` turns true. A refused send is
+/// retried later with backoff; a sent row keeps no body, so no link outlives its delivery
+/// in the outbox.
 pub async fn deliver_outbox(
     pool: &PgPool,
     mailer: &Arc<dyn Mailer>,
     secrets: &SecretBox,
+    stopping: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<usize, sqlx::Error> {
     let mut sent = 0;
     for _ in 0..100 {
+        if *stopping.borrow() {
+            break;
+        }
         let mut tx = pool.begin().await?;
         let row: Option<(i64, String, Value)> = sqlx::query_as(
             "SELECT id, to_address, payload FROM email_outbox
@@ -3560,10 +3565,12 @@ pub fn spawn_jobs(
     if let Some(mailer) = mailer {
         let outbox = pool.clone();
         let secrets = Arc::new(secrets);
+        let stop = stopping.clone();
         jobs.push(crate::every(Duration::from_secs(30), stopping, move || {
             let (outbox, mailer, secrets) = (outbox.clone(), mailer.clone(), secrets.clone());
+            let stop = stop.clone();
             async move {
-                if let Err(err) = deliver_outbox(&outbox, &mailer, &secrets).await {
+                if let Err(err) = deliver_outbox(&outbox, &mailer, &secrets, &stop).await {
                     tracing::warn!(error = %err, "outbox run failed");
                 }
             }

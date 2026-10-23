@@ -54,6 +54,7 @@ impl Fixture {
             &self.db.app,
             &mailer,
             &accounts::SecretBox::new(common::SECRET_KEY),
+            &tokio::sync::watch::channel(false).1,
         )
         .await
         .expect("the outbox runs");

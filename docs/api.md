@@ -550,7 +550,8 @@ Environment variables:
 Serves the sync API, the automation API and `GET /health/live` and `GET /health/ready`,
 and the portal when the settings file has a `[portal]` section. Once an hour it prunes
 the change log, activity and the audit log by their retention. `SIGTERM` or `SIGINT`
-stops it: requests in flight and job runs in progress finish, and it exits `0`.
+stops it: requests in flight and job runs in progress get up to 20 seconds to finish
+(a second signal ends the wait), and it exits `0`.
 
 | Flag | Meaning |
 | --- | --- |
