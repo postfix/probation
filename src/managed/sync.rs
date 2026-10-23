@@ -10,6 +10,7 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use url::Url;
 
+use self::SyncFailure::{Unreachable, Unreadable};
 use super::cache::{KeyCache, Policies};
 use super::lock::NetworkLock;
 use crate::config::{FirewallToken, ManagementConfig};
@@ -53,12 +54,15 @@ pub enum Synced {
     BatchRejected,
 }
 
-/// The server could not be reached (connect error, timeout, 5xx, 429, or 403
-/// `FIREWALL_SOURCE_REFUSED`); the caller re-queues the batch.
+/// No answer this firewall can apply; the caller re-queues the batch.
 #[derive(Debug)]
-pub struct Unreachable;
-
-struct Failed;
+pub enum SyncFailure {
+    /// Connect error, timeout, 5xx, 429, or 403 `FIREWALL_SOURCE_REFUSED`.
+    Unreachable,
+    /// A 2xx whose body does not decode (F3): most likely a server newer than this
+    /// firewall, which no number of retries fixes.
+    Unreadable,
+}
 
 impl KeySync {
     pub(super) fn new(
@@ -97,9 +101,12 @@ impl KeySync {
     }
 
     /// One sync round. Only a server answer may shrink the key cache.
-    pub async fn fetch_changes(&self, request: &ChangesRequest) -> Result<Synced, Unreachable> {
+    pub async fn fetch_changes(&self, request: &ChangesRequest) -> Result<Synced, SyncFailure> {
+        // The `Err(_)` arm keeps the text the source obligations' controls mutate
+        // (molecule-contracts.json).
         let answer = match self.request_changes(request).await {
             Ok(answer) => answer,
+            Err(Unreadable) => return Err(Unreadable),
             Err(_) => return Err(Unreachable),
         };
         self.mark_reachable();
@@ -118,8 +125,8 @@ impl KeySync {
         Ok(Synced::Applied)
     }
 
-    async fn request_changes(&self, request: &ChangesRequest) -> Result<Answer, Failed> {
-        let body = serde_json::to_vec(request).map_err(|_| Failed)?;
+    async fn request_changes(&self, request: &ChangesRequest) -> Result<Answer, SyncFailure> {
+        let body = serde_json::to_vec(request).map_err(|_| Unreachable)?;
         // One deadline for the whole exchange: the send below, then the body.
         let deadline = tokio::time::Instant::now() + self.timeout;
         let sending = self
@@ -131,25 +138,25 @@ impl KeySync {
             .send();
         let response = tokio::time::timeout(self.timeout, sending)
             .await
-            .map_err(|_| Failed)?
-            .map_err(|_| Failed)?;
+            .map_err(|_| Unreachable)?
+            .map_err(|_| Unreachable)?;
         let status = response.status();
         if status == StatusCode::UNAUTHORIZED {
             return Ok(Answer::Retired);
         }
         if status == StatusCode::TOO_MANY_REQUESTS || source_refused(&response) {
-            return Err(Failed);
+            return Err(Unreachable);
         }
         if status.is_client_error() {
             return Ok(Answer::Rejected);
         }
         if !status.is_success() {
-            return Err(Failed);
+            return Err(Unreachable);
         }
         let bytes = tokio::time::timeout_at(deadline, read_bounded(response))
             .await
-            .map_err(|_| Failed)??;
-        let changes: ChangesResponse = serde_json::from_slice(&bytes).map_err(|_| Failed)?;
+            .map_err(|_| Unreachable)??;
+        let changes: ChangesResponse = serde_json::from_slice(&bytes).map_err(|_| Unreadable)?;
         if changes.retired {
             return Ok(Answer::Retired);
         }
@@ -233,11 +240,11 @@ fn source_refused(response: &reqwest::Response) -> bool {
 }
 
 /// The body, refused past `MAX_ANSWER_BYTES` however it is framed.
-async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, Failed> {
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, SyncFailure> {
     let mut answer = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| Failed)? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| Unreachable)? {
         if answer.len() + chunk.len() > MAX_ANSWER_BYTES {
-            return Err(Failed);
+            return Err(Unreachable);
         }
         answer.extend_from_slice(&chunk);
     }

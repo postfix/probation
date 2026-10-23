@@ -2835,3 +2835,71 @@ async fn t_sync_reset_to_a_lower_revision() {
     drop(app);
     h.server.shutdown().await;
 }
+
+/// F2: the activity queued since the last round goes out on every graceful stop, not
+/// only before a restart for a settings push.
+#[tokio::test]
+async fn t_activity_flushed_on_stop() {
+    let h = harness(|_, config| {
+        // One round at start and no other before the stop.
+        config.sync_interval_seconds = NonZeroU64::new(3600).unwrap();
+    })
+    .await;
+    wait_for("the first round", Duration::from_secs(5), || {
+        !h.sync.changes_requests().is_empty()
+    })
+    .await;
+    let app = h.managed();
+    app.managed()
+        .unwrap()
+        .activity()
+        .record_activity(org(ACME), event(KeyId(77), ActivityResult::Blocked));
+    drop(app);
+    let restart = tokio::time::timeout(
+        Duration::from_millis(100),
+        h.server.running().restart_requested(),
+    )
+    .await;
+    assert!(restart.is_err(), "no settings push, so no restart");
+    h.server.shutdown().await;
+    let delivered = activity(&h.sync);
+    assert!(
+        delivered.iter().any(|event| event.key_id == KeyId(77)),
+        "the queued event went out before the stop: {delivered:#?}"
+    );
+}
+
+/// F3: a `200` this firewall cannot read is not an outage. Readiness fails and the next
+/// report says why, until the server answers in a form it reads again.
+#[tokio::test]
+async fn t_sync_unreadable_answer() {
+    let h = harness(|_, _| {}).await;
+    h.server
+        .wait_for_status("/health/ready", 200, Duration::from_secs(5))
+        .await;
+    // A layer kind this firewall does not know, as a newer server might send.
+    h.sync.answer_changes_raw(Some(
+        r#"{"revision":1,"changed_keys":[],"changed_layers":[{"kind":"Galaxy","id":1}],"changed_places":[],"changed_limits":[],"network_lock":null,"settings":null,"reset":false,"retired":false}"#,
+    ));
+    h.sync.sync_rounds(2).await;
+    assert_eq!(
+        h.server.status("/health/ready").await,
+        503,
+        "reported on readiness"
+    );
+    let report = h.sync.changes_requests().last().unwrap().report.clone();
+    let error = report
+        .last_apply_error
+        .expect("the report carries the cause");
+    assert!(
+        error.contains("could not be read")
+            && error.contains(&format!("(v{})", env!("CARGO_PKG_VERSION"))),
+        "{error}"
+    );
+    h.sync.answer_changes_raw(None);
+    h.sync.sync_rounds(1).await;
+    h.server
+        .wait_for_status("/health/ready", 200, Duration::from_secs(5))
+        .await;
+    h.server.shutdown().await;
+}

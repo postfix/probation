@@ -1722,6 +1722,8 @@ pub mod sync {
         layers_status: Mutex<Option<StatusCode>>,
         /// A status, and the `x-probation-error` code it carries, for every `changes`.
         changes_status: Mutex<Option<(StatusCode, Option<&'static str>)>>,
+        /// A `200` body sent as is for every `changes`, in place of the change log.
+        changes_body: Mutex<Option<&'static str>>,
         /// Every request body, as sent, with the path it was sent to.
         bodies: Mutex<Vec<(&'static str, String)>>,
         /// The change log: the current revision and every row.
@@ -2101,6 +2103,12 @@ pub mod sync {
             *self.state.changes_status.lock().unwrap() = status;
         }
 
+        /// Every later `changes` is answered `200` with `body` as is; `None` goes back to
+        /// the change log.
+        pub fn answer_changes_raw(&self, body: Option<&'static str>) {
+            *self.state.changes_body.lock().unwrap() = body;
+        }
+
         /// Every body sent to this server, as `(path, body)`, in order.
         pub fn bodies(&self) -> Vec<(&'static str, String)> {
             self.state.bodies.lock().unwrap().clone()
@@ -2332,6 +2340,9 @@ pub mod sync {
                     .insert("x-probation-error", code.parse().unwrap());
             }
             return response;
+        }
+        if let Some(body) = *state.changes_body.lock().unwrap() {
+            return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
         }
         let revision = state.revision.load(Ordering::SeqCst);
         let mut answer = ChangesResponse {

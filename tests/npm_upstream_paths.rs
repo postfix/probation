@@ -294,3 +294,31 @@ async fn the_package_named_npm_gets_its_tarball_at_its_unprefixed_path() {
     );
     harness.server.shutdown().await;
 }
+
+/// F10: an npm tarball is fetched only from the npm origin. A document whose
+/// `dist.tarball` names the PyPI files host is refused, and that host is never asked.
+#[tokio::test]
+async fn a_tarball_on_another_ecosystems_host_is_refused_unfetched() {
+    let name = "fixture-widget";
+    let harness = harness(name, PUBLISHED).await;
+    harness.registry.answer(
+        &npm_upstream_path(name),
+        FakeAnswer::Body(
+            document(name, PUBLISHED).replace("https://npm.invalid/", "https://files.invalid/"),
+        ),
+    );
+
+    let response = harness
+        .server
+        .get(&format!("/npm/{name}/-/{}", filename(name)))
+        .await;
+    assert_ne!(response.status().as_u16(), 200);
+    let calls = harness.registry.calls();
+    assert!(
+        calls
+            .iter()
+            .all(|url| url.host_str() != Some("files.invalid")),
+        "{calls:?}"
+    );
+    harness.server.shutdown().await;
+}

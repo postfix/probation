@@ -749,6 +749,7 @@ impl Managed {
     /// Writes `<data_dir>/managed-cache.json` off the async runtime (C115).
     pub async fn save_snapshot(&self) {
         let snapshot = Snapshot {
+            version: cache::SNAPSHOT_VERSION,
             cursor: self.sync.cursor(),
             keys: self.cache.saved(),
             layers: self.policies.saved(),

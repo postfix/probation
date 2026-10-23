@@ -911,6 +911,9 @@ impl Policies {
 /// from (C19, C115). Key hashes only, never a key.
 #[derive(Serialize, Deserialize)]
 pub(super) struct Snapshot {
+    /// [`SNAPSHOT_VERSION`] when written; 0 for a file written before the field was.
+    #[serde(default)]
+    pub version: u32,
     pub cursor: u64,
     pub keys: Vec<SavedKey>,
     pub layers: Vec<SavedLayer>,
@@ -938,6 +941,9 @@ pub(super) struct SavedLayer {
     pub layer: Layer,
 }
 
+/// The snapshot format this firewall writes. A file from a newer one is not read.
+pub(super) const SNAPSHOT_VERSION: u32 = 1;
+
 const SNAPSHOT: &str = "managed-cache.json";
 const PREVIOUS_SNAPSHOT: &str = "managed-cache.prev.json";
 
@@ -955,7 +961,11 @@ pub(super) fn write_snapshot(data_dir: &Path, snapshot: &Snapshot) -> io::Result
 pub(super) fn read_snapshot(data_dir: &Path) -> Option<Snapshot> {
     let read = |path: PathBuf| -> Option<Snapshot> {
         let bytes = std::fs::read(&path).ok()?;
-        match serde_json::from_slice(&bytes) {
+        match serde_json::from_slice::<Snapshot>(&bytes) {
+            Ok(snapshot) if snapshot.version > SNAPSHOT_VERSION => {
+                tracing::warn!(path = %path.display(), version = snapshot.version, "the cache snapshot is from a newer firewall");
+                None
+            }
             Ok(snapshot) => Some(snapshot),
             Err(err) => {
                 tracing::warn!(path = %path.display(), error = %err, "the cache snapshot cannot be read");
@@ -1415,6 +1425,7 @@ mod tests {
         cache.insert(KeyHash([9; 32]), principal(&policies));
         policies.mark_stale(&[PLATFORM], 7);
         let snapshot = |cursor| Snapshot {
+            version: SNAPSHOT_VERSION,
             cursor,
             keys: cache.saved(),
             layers: policies.saved(),
@@ -1432,5 +1443,54 @@ mod tests {
         assert_eq!(again.stale(), vec![PLATFORM], "the stale marker survives");
         std::fs::remove_file(dir.path().join(PREVIOUS_SNAPSHOT)).unwrap();
         assert!(read_snapshot(dir.path()).is_none());
+    }
+
+    /// F6: `managed-cache.json` as the firewall at ce42bc9 wrote it, before the format
+    /// had a version, still loads whole, so an upgrade keeps serving through an outage.
+    #[test]
+    fn a_snapshot_from_before_versioning_still_loads() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/managed");
+        let snapshot = read_snapshot(&fixtures).expect("the golden snapshot loads");
+        assert_eq!(snapshot.version, 0);
+        assert_eq!(snapshot.cursor, 42);
+        let [key] = &snapshot.keys[..] else {
+            panic!("one key");
+        };
+        assert_eq!(key.hash, KeyHash([7; 32]));
+        assert_eq!(key.rate_limit, NonZeroU32::new(600));
+        assert_eq!(key.rate_limit_source, LimitSource::Override);
+        assert_eq!(key.org, Some(OrgId(10)));
+        assert_eq!(key.chain.len(), 2);
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[1].layer.blocks.len(), 1);
+        assert_eq!(snapshot.layers[1].layer.exceptions.len(), 1);
+        assert_eq!(snapshot.network_lock[0].cidr, "192.0.2.0/24");
+        let org = snapshot.layers[1].place;
+        let policies = Policies::default();
+        policies.restore(snapshot.layers);
+        assert_eq!(policies.stale(), vec![org], "the stale marker survives");
+    }
+
+    /// F6: what this version writes carries its format version, and a snapshot from a
+    /// newer format is not read as this one: the previous file is tried instead.
+    #[test]
+    fn a_snapshot_from_a_newer_format_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = |cursor| Snapshot {
+            version: SNAPSHOT_VERSION,
+            cursor,
+            keys: Vec::new(),
+            layers: Vec::new(),
+            network_lock: Vec::new(),
+        };
+        write_snapshot(dir.path(), &snapshot(1)).unwrap();
+        write_snapshot(dir.path(), &snapshot(2)).unwrap();
+        assert_eq!(read_snapshot(dir.path()).unwrap().version, SNAPSHOT_VERSION);
+        let newer = format!(
+            "{{\"version\":{},\"cursor\":3,\"keys\":[],\"layers\":[],\"network_lock\":[]}}",
+            SNAPSHOT_VERSION + 1
+        );
+        std::fs::write(dir.path().join(SNAPSHOT), newer).unwrap();
+        assert_eq!(read_snapshot(dir.path()).unwrap().cursor, 1);
     }
 }

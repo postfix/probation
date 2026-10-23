@@ -85,13 +85,32 @@ fn negotiate(headers: &HeaderMap) -> Representation {
     let accepts_abbreviated = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|accept| accept.contains(ABBREVIATED_ACCEPT));
+        .is_some_and(|accept| accept.split(',').any(names_abbreviated));
 
     if accepts_abbreviated {
         Representation::NpmAbbreviated
     } else {
         Representation::NpmFull
     }
+}
+
+/// One `Accept` entry whose media type is exactly [`ABBREVIATED_ACCEPT`], in any case,
+/// with a quality above 0. A `q` that does not parse counts as 1, as it would without
+/// one.
+fn names_abbreviated(entry: &str) -> bool {
+    let mut parts = entry.split(';');
+    let media = parts.next().unwrap_or_default().trim();
+    let quality = parts
+        .filter_map(|parameter| {
+            let (name, value) = parameter.split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case("q")
+                .then(|| value.trim().parse::<f32>().ok())
+                .flatten()
+        })
+        .next()
+        .unwrap_or(1.0);
+    media.eq_ignore_ascii_case(ABBREVIATED_ACCEPT) && quality > 0.0
 }
 
 fn respond(rendered: npm::Rendered) -> Response {
@@ -101,4 +120,48 @@ fn respond(rendered: npm::Rendered) -> Response {
         HeaderValue::from_static(rendered.content_type),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accepting(accept: &str) -> Representation {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            HeaderValue::from_str(accept).expect("a header"),
+        );
+        negotiate(&headers)
+    }
+
+    /// F14: the abbreviated form only for an entry naming it with a quality above 0.
+    #[test]
+    fn only_an_acceptable_entry_selects_the_abbreviated_form() {
+        for accept in [
+            "application/vnd.npm.install-v1+json",
+            "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*",
+            "Application/VND.npm.Install-v1+JSON;q=0.5",
+        ] {
+            assert!(
+                matches!(accepting(accept), Representation::NpmAbbreviated),
+                "{accept}"
+            );
+        }
+        for accept in [
+            "application/vnd.npm.install-v1+json;q=0, application/json",
+            "application/vnd.npm.install-v1+json; q=0.0",
+            "application/vnd.npm.install-v1+jsonx",
+            "application/json",
+        ] {
+            assert!(
+                matches!(accepting(accept), Representation::NpmFull),
+                "{accept}"
+            );
+        }
+        assert!(matches!(
+            negotiate(&HeaderMap::new()),
+            Representation::NpmFull
+        ));
+    }
 }

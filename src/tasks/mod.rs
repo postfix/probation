@@ -28,7 +28,7 @@ pub struct Tasks {
 /// with the *drain* token rather than `shutdown`. They are only adopted here, so the
 /// existing `Tasks::join` waits for them along with everything else.
 /// `drain` is cancelled once the last request is answered; the policy sync waits for
-/// it to send the activity those requests recorded before a restart (C105).
+/// it to send the activity those requests recorded before the process stops (C105, F2).
 pub fn spawn(
     app: Arc<App>,
     shutdown: CancellationToken,

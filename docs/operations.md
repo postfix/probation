@@ -170,7 +170,8 @@ a push.
 
 `SIGINT` (Ctrl-C) and `SIGTERM` (`docker stop`, `systemctl stop`, plain `kill`)
 both shut it down cleanly: queued log records are delivered and a summary is
-printed. A signal that arrives while the service is still starting is acted on as
+printed. A managed firewall also sends the activity queued since its last sync in
+one last call to the server, waiting at most `request_timeout_seconds`. A signal that arrives while the service is still starting is acted on as
 soon as startup finishes. An abrupt stop is still safe. Nothing gets corrupted.
 
 Requests already in progress get 30 seconds to finish; after that their
@@ -646,7 +647,10 @@ no one client can hold more than a fair share.
 
 For npm and PyPI traffic, the firewall refuses on its own: cross-site redirects,
 URLs with embedded credentials, unusual ports, non-HTTPS upstreams, and DNS
-answers pointing at local or private addresses. It cannot detect a custom NAT64
+answers pointing at local or private addresses. An artifact is fetched only from
+its own ecosystem's hosts: npm tarballs from the npm upstream, PyPI files from
+the PyPI files or index upstream. An npm document that names the PyPI files host
+for a tarball is refused, and that host is never asked. It cannot detect a custom NAT64
 range specific to your network. The standard one is covered. **None of this
 covers OSV traffic**: the OSV client is a plain HTTP client that only talks to
 one fixed Google-run URL.
@@ -969,6 +973,8 @@ there is always an audit trail of every decision.
 | warn | `the management server could not be reached; serving from the cache` | The server is down, or refused this firewall's address. |
 | error | `the management server refused this firewall's token` | A key lookup got `401`: the firewall was retired or its token is not valid (section 13). A sync that finds this logs nothing; `/health/ready` turns `503`. |
 | error | `the management server refused an empty sync; treating it as unreachable` | The server rejects every sync. `/health/ready` is `503`. |
+| error | `the management server's answer could not be read; this firewall (v…) may be older than the server; serving from the cache` | The server answered in a form this firewall cannot decode, most likely because the server was upgraded first. `/health/ready` is `503` and the fleet page shows the error. Upgrade the firewall. |
+| warn | `the activity queued before the stop could not be delivered` | The last call on a stop failed; those activity rows are lost. |
 | error | `a settings push was refused` | The push failed its checks; it is reported on the fleet page. |
 | error | `the pushed settings fail at start; restoring the previous ones` | A push broke the start and was rolled back. |
 
@@ -1124,8 +1130,11 @@ firewall has no entry for, inside `lookup_budget_per_second`).
 
 Put the addresses of your reverse proxies in `[management] trusted_proxies`. From
 those peers only, the client is the rightmost `X-Forwarded-For` entry that is not
-itself a listed proxy. From any other peer the header is ignored. PROXY protocol
-is not supported. Log lines always keep the TCP peer.
+itself a listed proxy. From any other peer the header is ignored. An entry may
+be a bare address, `ip:port`, `[v6]` or `[v6]:port`; any other entry, such as
+`unknown`, refuses the request with `403`. The RFC 7239 `Forwarded` header is
+not read, and PROXY protocol is not supported. Log lines always keep the TCP
+peer.
 
 **Behind a proxy that is not listed, every client is the proxy.** All of them
 share one network-lock address, so if the proxy's address is inside an
@@ -1265,7 +1274,7 @@ free connection (§4 there).
 | Endpoint | What it tells you |
 | --- | --- |
 | `GET /health/live` | The process is up. Still `200` with an expired blocklist or broken storage. |
-| `GET /health/ready` | Standalone: the blocklist is valid **and** storage works. Managed: storage works, a cache was loaded or a sync applied, the firewall is not retired, and the server does not refuse its syncs. `503` otherwise. Never checks upstream npm/PyPI. |
+| `GET /health/ready` | Standalone: the blocklist is valid **and** storage works. Managed: storage works, a cache was loaded or a sync applied, the firewall is not retired, the server does not refuse its syncs, and its last answer could be read. `503` otherwise. Never checks upstream npm/PyPI. |
 | `GET /health/delivery` | **For alerts only, never a health probe.** `503` if a log record was lost in the last 60 seconds. |
 
 Point the liveness probe at `/health/live` and the readiness probe at
