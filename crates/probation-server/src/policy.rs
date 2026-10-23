@@ -539,7 +539,7 @@ pub fn router(pool: PgPool) -> Router {
 }
 
 /// The token's actor and layer when the request names that layer: 401 for no live
-/// token, 403 for another layer (T9).
+/// token, 403 for another layer (T9), 503 when the store cannot tell.
 async fn token_layer(
     pool: &PgPool,
     headers: &HeaderMap,
@@ -550,7 +550,10 @@ async fn token_layer(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let found = match secret {
-        Some(secret) => Tenancy::new(pool.clone()).automation(secret).await,
+        Some(secret) => Tenancy::new(pool.clone())
+            .automation(secret)
+            .await
+            .map_err(|err| store_failure(StoreError::from(err)))?,
         None => None,
     };
     let Some((actor, place)) = found else {

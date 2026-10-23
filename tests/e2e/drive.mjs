@@ -11,11 +11,11 @@
 //    edits and revocations each. Prints the two `propagation … p99` lines.
 //
 // The mail the portal would send is read from its outbox (no SMTP relay is configured,
-// S8-3); everything else goes through the portal, firewall-2 and the organisation's
+// S8-3) and opened with E2E_SECRET_KEY, as the server seals each body (T16); everything else goes through the portal, firewall-2 and the organisation's
 // limits through the operator's global admin from `admin bootstrap` (S8-14).
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
+import { createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -43,6 +43,20 @@ function sql(statement) {
     ["-c", '$E2E_COMPOSE exec -T postgres psql -U probation -d probation -tAc "$1"', "_", statement],
     { encoding: "utf8" },
   ).trim();
+}
+
+/// The body of the newest outbox mail to `address`: AES-256-GCM, nonce then ciphertext
+/// then tag, base64url, the row id as associated data (accounts::enqueue).
+function lastMail(address) {
+  const [id, sealed] = sql(
+    `SELECT id || ' ' || (payload->>'sealed_body') FROM email_outbox WHERE to_address = '${address}' ORDER BY id DESC LIMIT 1`,
+  ).split(" ");
+  expect(sealed, `no mail to ${address} in the outbox`);
+  const bytes = Buffer.from(sealed, "base64url");
+  const body = createDecipheriv("aes-256-gcm", Buffer.from(env.E2E_SECRET_KEY, "hex"), bytes.subarray(0, 12))
+    .setAAD(Buffer.from(`outbox:${id}`))
+    .setAuthTag(bytes.subarray(bytes.length - 16));
+  return Buffer.concat([body.update(bytes.subarray(12, bytes.length - 16)), body.final()]).toString("utf8");
 }
 
 function unescape(html) {
@@ -189,9 +203,7 @@ async function signUpToInstall() {
     org_name: user.org,
   });
   expect(page.status === 200, `sign-up: ${page.status}\n${page.body}`);
-  const mail = sql(
-    `SELECT payload->>'body' FROM email_outbox WHERE to_address = '${user.email}' ORDER BY id DESC LIMIT 1`,
-  );
+  const mail = lastMail(user.email);
   const link = mail.match(/\/verify-email\?token=\S+/);
   expect(link, `no confirmation link in the mail: ${mail}`);
   page = await browser.get(link[0]);

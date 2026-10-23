@@ -22,6 +22,8 @@ use sqlx::PgPool;
 
 /// The compose file's Postgres, as its superuser.
 const DEFAULT_ADMIN_URL: &str = "postgres://probation:probation@127.0.0.1:55432/probation";
+/// `PROBATION_SERVER_SECRET_KEY` of the portals the tests serve.
+pub const SECRET_KEY: [u8; 32] = [7; 32];
 /// The login role the app pool connects as.
 const APP_ROLE: &str = "probation_app_test";
 

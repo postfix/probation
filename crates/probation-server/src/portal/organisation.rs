@@ -635,6 +635,7 @@ pub(crate) async fn invite(
         &form.role,
         group.as_ref(),
         &portal.config.base_url,
+        &portal.secrets,
     )
     .await;
     after(&portal, &signed_in, &place, done).await

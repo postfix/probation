@@ -1,4 +1,4 @@
-//! `probation-server`: config, Postgres pool, `serve`, `migrate` and `admin`.
+//! `probation-server`: config, Postgres pool, `serve`, `migrate`, `health` and `admin`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -35,6 +35,12 @@ enum Command {
     },
     /// Apply the database migrations as the owner role.
     Migrate,
+    /// Exit 0 when the server at `--url` answers 2xx: the container's health check, as the
+    /// image has no curl.
+    Health {
+        #[arg(long, default_value = "http://127.0.0.1:8080/health/ready")]
+        url: url::Url,
+    },
     #[command(subcommand)]
     Admin(AdminCommand),
 }
@@ -100,6 +106,22 @@ async fn run(command: Command) -> Result<(), String> {
             probation_server::serve(config, pool, portal)
                 .await
                 .map_err(|err| format!("serve: {err}"))
+        }
+        Command::Health { url } => {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|err| err.to_string())?;
+            let answer = client
+                .get(url.clone())
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+                .map_err(|err| format!("{url}: {err}"))?;
+            match answer.status() {
+                status if status.is_success() => Ok(()),
+                status => Err(format!("{url}: {status}")),
+            }
         }
         Command::Migrate => {
             // No statement timeout: a migration may run longer than a request.

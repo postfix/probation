@@ -277,12 +277,25 @@ fn source_address(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> Optio
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
     {
-        let ip = entry.parse::<IpAddr>().ok()?.to_canonical();
+        let ip = forwarded_ip(entry)?.to_canonical();
         if !is_trusted(&ip) {
             return Some(ip);
         }
     }
     Some(peer)
+}
+
+/// The address of one `X-Forwarded-For` entry: a bare address, `ip:port`, `[v6]` or
+/// `[v6]:port`, as proxies write them. `None` for anything else, `unknown` included.
+pub(crate) fn forwarded_ip(entry: &str) -> Option<IpAddr> {
+    if let Ok(ip) = entry.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    if let Ok(addr) = entry.parse::<SocketAddr>() {
+        return Some(addr.ip());
+    }
+    let bracketed = entry.strip_prefix('[')?.strip_suffix(']')?;
+    bracketed.parse::<std::net::Ipv6Addr>().ok().map(IpAddr::V6)
 }
 
 #[derive(Debug)]
@@ -881,4 +894,66 @@ async fn links(conn: &mut PgConnection, chain: &[PlaceRef]) -> Result<Vec<ChainL
         });
     }
     Ok(links)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1: behind a trusted proxy, an `X-Forwarded-For` entry with a port or brackets
+    /// names its address; anything else that is not an address still refuses (C113).
+    #[test]
+    fn forwarded_entries_with_ports_and_brackets() {
+        let peer: IpAddr = "10.0.0.1".parse().unwrap();
+        let trusted: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
+        let from = |entry: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", entry.parse().unwrap());
+            source_address(peer, &headers, &trusted)
+        };
+        for (entry, ip) in [
+            ("192.0.2.7", "192.0.2.7"),
+            ("192.0.2.7:4711", "192.0.2.7"),
+            ("[2001:db8::7]", "2001:db8::7"),
+            ("[2001:db8::7]:4711", "2001:db8::7"),
+            ("2001:db8::7", "2001:db8::7"),
+            ("[::ffff:192.0.2.7]:80", "192.0.2.7"),
+            ("192.0.2.7:4711, 10.0.0.2:80", "192.0.2.7"),
+        ] {
+            assert_eq!(from(entry), Some(ip.parse().unwrap()), "{entry}");
+        }
+        for entry in [
+            "unknown",
+            "192.0.2.7:port",
+            "[192.0.2.7]",
+            "[2001:db8::7",
+            "2001:db8::7]:80",
+            "_hidden",
+        ] {
+            assert_eq!(from(entry), None, "{entry}");
+        }
+    }
+    #[test]
+    fn forwarded_ip_forms() {
+        for (entry, ip) in [
+            ("192.0.2.7", "192.0.2.7"),
+            ("192.0.2.7:4711", "192.0.2.7"),
+            ("2001:db8::7", "2001:db8::7"),
+            ("[2001:db8::7]", "2001:db8::7"),
+            ("[2001:db8::7]:4711", "2001:db8::7"),
+        ] {
+            assert_eq!(forwarded_ip(entry), Some(ip.parse().unwrap()), "{entry}");
+        }
+        for entry in [
+            "",
+            "unknown",
+            "[]",
+            "[192.0.2.7]",
+            "[192.0.2.7]:80",
+            "192.0.2.7:",
+            "::1]:80",
+        ] {
+            assert_eq!(forwarded_ip(entry), None, "{entry}");
+        }
+    }
 }

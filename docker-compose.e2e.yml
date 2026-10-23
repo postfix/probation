@@ -33,6 +33,13 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
+    # The image has no curl: the binary asks its own /health/ready (Postgres answers).
+    healthcheck:
+      test: ["CMD", "probation-server", "health"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
 
   # TLS for the sync API, as a deployment's reverse proxy gives it: a firewall only
   # talks to an https server (C34).

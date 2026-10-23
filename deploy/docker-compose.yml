@@ -14,6 +14,13 @@ services:
     ports:
       - "127.0.0.1:8090:8080"
     restart: unless-stopped
+    # The image has no curl: the binary asks its own /health/ready (Postgres answers).
+    healthcheck:
+      test: ["CMD", "probation-server", "health"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
 
   firewall:
     # docker build -t probation .

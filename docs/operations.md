@@ -427,8 +427,8 @@ exits.
 Back up Postgres the way you back up any Postgres database (`pg_dump`, or your
 provider's snapshots). The server keeps nothing else, except its settings file
 and its environment. Keep `PROBATION_SERVER_SECRET_KEY` with the backups, but
-apart from them: without it the authenticator secrets and SSO client secrets in
-the backup cannot be read.
+apart from them: without it the authenticator secrets, SSO client secrets and
+unsent mail in the backup cannot be read.
 
 To restore:
 
@@ -440,12 +440,20 @@ To restore:
 4. Before starting the server, list the security changes made after the backup
    was taken, from your own records (tickets, chat) or from the audit log of any
    newer copy of the database: key revocations, member removals, suspensions,
-   policy blocks, firewall retirements and settings pushes. The restored database does not have them.
-   Re-apply the key revocations now with
+   policy blocks, firewall registrations, firewall retirements and settings
+   pushes. The restored database does not have them.
+   Re-apply the user and service key revocations now with
    `probation-server admin revoke-key --key-id N`, which needs no running server.
+   It does not revoke automation (`aut_`) tokens or firewall (`fwt_`) tokens.
 5. Start `probation-server` and re-apply the rest on the portal before you open
-   it to everyone else. Until each one is back, firewalls enforce the restored
-   database's version of it.
+   it to everyone else: automation token revocations included. Until each one is
+   back, firewalls enforce the restored database's version of it. Two firewall
+   changes need their own step:
+   - **A firewall registered after the backup** is not in the restored database:
+     its token gets `401` on every sync. Register it again on the fleet page and
+     install the new token on it.
+   - **A firewall retired after the backup** is live again in the restored
+     database: its token syncs again. Retire it again on the fleet page.
 
 Why step 3: every change the server makes gets the next revision number, and each
 firewall remembers the last revision it applied. A restored database counts from
@@ -1070,10 +1078,9 @@ Clients get a fresh URL from current metadata.
    other older version is refused. See section 5.
 8. **A standalone firewall has no admin API.** Everything is config files,
    signals, and logs. Managed mode moves policy to the server.
-9. **No health endpoint on the management server.** (Section 16.)
-10. **No live reload.** Every config change and every settings push restarts the
+9. **No live reload.** Every config change and every settings push restarts the
     firewall.
-11. **Managed firewalls cannot sync through an egress proxy.** (Section 6.)
+10. **Managed firewalls cannot sync through an egress proxy.** (Section 6.)
 
 ## 13. Managed mode
 
@@ -1110,8 +1117,9 @@ firewalls on the fleet page; each gets its own token, shown once.
 `revoke-key`, `after-restore`), with every flag and what each prints, are in
 [api.md](api.md#3-commands) §3. The `admin` commands are for the operator of the
 server's host: they need `PROBATION_SERVER_DATABASE_URL`, and no API route
-reaches them. `admin revoke-key` revokes a user or service key, not a firewall
-token: retire a firewall on the fleet page.
+reaches them. `admin revoke-key` revokes a user or service key only, not an
+automation (`aut_`) token or a firewall (`fwt_`) token: revoke an automation token
+on the portal, and retire a firewall on the fleet page.
 
 ### `trusted_proxies`: who the client is
 
@@ -1289,7 +1297,18 @@ in section 8.
 
 ### The management server
 
-The server has no health endpoint. Watch the process, its log, and Postgres.
+| Endpoint | What it tells you |
+| --- | --- |
+| `GET /health/live` | The process answers. Always `200`. |
+| `GET /health/ready` | Postgres answers `SELECT 1` within 2 seconds: `200`, otherwise `503`. |
+
+Both are unauthenticated and outside the portal's sessions, CSRF and the network
+lock. The image has no curl: its health check is `probation-server health`, which
+exits `0` when `http://127.0.0.1:8080/health/ready` answers `200` (`--url` for
+another address). Both compose files use it.
+
+`SIGTERM` or `SIGINT` stops the server cleanly: it stops taking connections, lets
+requests in flight and a background job run in progress finish, and exits `0`.
 
 The fleet page shows each firewall's health from its reports:
 

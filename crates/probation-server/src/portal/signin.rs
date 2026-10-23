@@ -168,7 +168,16 @@ pub(crate) async fn signup(
         Err(err) => return unavailable(err),
     }
     let hash = portal.passwords.hash_blocking(form.password.clone()).await;
-    match accounts::sign_up(&portal.pool, &portal.config.base_url, &email, &hash, kind).await {
+    match accounts::sign_up(
+        &portal.pool,
+        &portal.config.base_url,
+        &portal.secrets,
+        &email,
+        &hash,
+        kind,
+    )
+    .await
+    {
         Ok(()) => render(
             StatusCode::OK,
             &signup_page(
@@ -205,8 +214,13 @@ pub(crate) async fn resend(
     };
     if allowed
         && !email.is_empty()
-        && let Err(err) =
-            accounts::resend_verification(&portal.pool, &portal.config.base_url, &email).await
+        && let Err(err) = accounts::resend_verification(
+            &portal.pool,
+            &portal.config.base_url,
+            &portal.secrets,
+            &email,
+        )
+        .await
     {
         return unavailable(err);
     }
@@ -817,8 +831,13 @@ pub(crate) async fn reset(
     };
     if allowed
         && let Some(email) = accounts::normal_email(&form.email)
-        && let Err(err) =
-            accounts::request_reset(&portal.pool, &portal.config.base_url, &email).await
+        && let Err(err) = accounts::request_reset(
+            &portal.pool,
+            &portal.config.base_url,
+            &portal.secrets,
+            &email,
+        )
+        .await
     {
         return unavailable(err);
     }

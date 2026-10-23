@@ -265,25 +265,43 @@ async fn name_taken(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::E
 }
 
 /// Writes one mail to the outbox in the caller's transaction; the outbox job sends it.
+/// The body, which carries the links, is sealed under the row's id (T16).
 pub(crate) async fn enqueue(
     conn: &mut PgConnection,
+    secrets: &SecretBox,
     to: &str,
     template: &str,
     subject: &str,
     body: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO email_outbox (to_address, template, payload) VALUES ($1, $2, $3)")
-        .bind(to)
-        .bind(template)
-        .bind(json!({"subject": subject, "body": body}))
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO email_outbox (to_address, template, payload) VALUES ($1, $2, '{}') RETURNING id",
+    )
+    .bind(to)
+    .bind(template)
+    .fetch_one(&mut *conn)
+    .await?;
+    let sealed = URL_SAFE_NO_PAD.encode(secrets.seal(&outbox_aad(id), body.as_bytes()));
+    sqlx::query("UPDATE email_outbox SET payload = $2 WHERE id = $1")
+        .bind(id)
+        .bind(json!({"subject": subject, "sealed_body": sealed}))
         .execute(conn)
         .await
         .map(drop)
 }
 
+/// The associated data of an outbox row's sealed body: its row's id.
+fn outbox_aad(id: i64) -> String {
+    format!("outbox:{id}")
+}
+
 /// Sends every due outbox row once. A refused send is retried later with backoff; a sent
 /// row keeps no body, so no link outlives its delivery in the outbox.
-pub async fn deliver_outbox(pool: &PgPool, mailer: &Arc<dyn Mailer>) -> Result<usize, sqlx::Error> {
+pub async fn deliver_outbox(
+    pool: &PgPool,
+    mailer: &Arc<dyn Mailer>,
+    secrets: &SecretBox,
+) -> Result<usize, sqlx::Error> {
     let mut sent = 0;
     for _ in 0..100 {
         let mut tx = pool.begin().await?;
@@ -297,15 +315,28 @@ pub async fn deliver_outbox(pool: &PgPool, mailer: &Arc<dyn Mailer>) -> Result<u
         let Some((id, to, payload)) = row else {
             break;
         };
-        let text = |field: &str| payload[field].as_str().unwrap_or_default().to_owned();
-        let mail = Mail {
-            to,
-            subject: text("subject"),
-            body: text("body"),
+        let body = match payload["sealed_body"].as_str() {
+            Some(sealed) => URL_SAFE_NO_PAD
+                .decode(sealed)
+                .ok()
+                .and_then(|sealed| secrets.open(&outbox_aad(id), &sealed))
+                .and_then(|body| String::from_utf8(body).ok()),
+            // Queued before bodies were sealed.
+            None => payload["body"].as_str().map(str::to_owned),
         };
-        let outcome = match tokio::time::timeout(MAIL_TIMEOUT, mailer.deliver(&mail)).await {
-            Ok(outcome) => outcome,
-            Err(_) => Err("timed out".to_owned()),
+        let outcome = match body {
+            Some(body) => {
+                let mail = Mail {
+                    to,
+                    subject: payload["subject"].as_str().unwrap_or_default().to_owned(),
+                    body,
+                };
+                match tokio::time::timeout(MAIL_TIMEOUT, mailer.deliver(&mail)).await {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err("timed out".to_owned()),
+                }
+            }
+            None => Err("the body does not open under PROBATION_SERVER_SECRET_KEY".to_owned()),
         };
         match outcome {
             Ok(()) => {
@@ -383,6 +414,7 @@ pub(crate) fn base_path(base: &Url) -> String {
 pub async fn sign_up(
     pool: &PgPool,
     base: &Url,
+    secrets: &SecretBox,
     email: &str,
     password_hash: &str,
     kind: SignupKind,
@@ -401,7 +433,7 @@ pub async fn sign_up(
         if taken {
             if allowed {
                 let (subject, body) = already_mail(base);
-                enqueue(&mut tx, email, "already", &subject, &body).await?;
+                enqueue(&mut tx, secrets, email, "already", &subject, &body).await?;
             }
             return tx.commit().await;
         }
@@ -424,7 +456,7 @@ pub async fn sign_up(
             continue;
         };
         if allowed {
-            send_verify(&mut tx, base, method, email, kind.payload()).await?;
+            send_verify(&mut tx, base, secrets, method, email, kind.payload()).await?;
         }
         return tx.commit().await;
     }
@@ -433,6 +465,7 @@ pub async fn sign_up(
 async fn send_verify(
     conn: &mut PgConnection,
     base: &Url,
+    secrets: &SecretBox,
     method: i32,
     email: &str,
     payload: Value,
@@ -449,7 +482,7 @@ async fn send_verify(
     .execute(&mut *conn)
     .await?;
     let (subject, body) = verify_mail(base, &token);
-    enqueue(conn, email, "verify", &subject, &body).await
+    enqueue(conn, secrets, email, "verify", &subject, &body).await
 }
 
 /// "Send the link again": a new link for an address whose password method is not yet
@@ -457,6 +490,7 @@ async fn send_verify(
 pub async fn resend_verification(
     pool: &PgPool,
     base: &Url,
+    secrets: &SecretBox,
     email: &str,
 ) -> Result<(), sqlx::Error> {
     let pending: Option<(i32, Option<Value>)> = sqlx::query_as(
@@ -480,6 +514,7 @@ pub async fn resend_verification(
     send_verify(
         &mut tx,
         base,
+        secrets,
         method,
         email,
         payload.unwrap_or_else(|| json!({})),
@@ -1463,7 +1498,12 @@ const RESET_MINUTES: i32 = 60;
 
 /// Mails a reset link when the address has an email-and-password method on a live
 /// login; nothing otherwise. The link is built from the configured base URL (T14).
-pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(), sqlx::Error> {
+pub async fn request_reset(
+    pool: &PgPool,
+    base: &Url,
+    secrets: &SecretBox,
+    email: &str,
+) -> Result<(), sqlx::Error> {
     // A member who joined through company SSO, now turned off, has no password yet: the
     // link sets one on their SSO method's login (C62). An address that has a password
     // method anywhere is that method's alone (C91).
@@ -1493,7 +1533,15 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
     let body = format!(
         "Open this link to choose a new password for Probation:\n\n{link}\n\nThe link works once and expires in {RESET_MINUTES} minutes. If you did not ask for it, ignore this mail.\n"
     );
-    enqueue(&mut tx, email, "reset", "Choose a new password", &body).await?;
+    enqueue(
+        &mut tx,
+        secrets,
+        email,
+        "reset",
+        "Choose a new password",
+        &body,
+    )
+    .await?;
     tx.commit().await
 }
 
@@ -3500,33 +3548,43 @@ impl Mailer for SmtpMailer {
     }
 }
 
-/// The portal's background work: the outbox every 30 seconds (when SMTP is set) and the
-/// daily purge (C33).
-pub fn spawn_jobs(pool: PgPool, mailer: Option<Arc<dyn Mailer>>) {
+/// The portal's background work, until `stopping` turns true: the outbox every 30 seconds
+/// (when SMTP is set) and the daily purge (C33).
+pub fn spawn_jobs(
+    pool: PgPool,
+    mailer: Option<Arc<dyn Mailer>>,
+    secrets: SecretBox,
+    stopping: &tokio::sync::watch::Receiver<bool>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut jobs = Vec::new();
     if let Some(mailer) = mailer {
         let outbox = pool.clone();
-        tokio::spawn(async move {
-            let mut every = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                every.tick().await;
-                if let Err(err) = deliver_outbox(&outbox, &mailer).await {
+        let secrets = Arc::new(secrets);
+        jobs.push(crate::every(Duration::from_secs(30), stopping, move || {
+            let (outbox, mailer, secrets) = (outbox.clone(), mailer.clone(), secrets.clone());
+            async move {
+                if let Err(err) = deliver_outbox(&outbox, &mailer, &secrets).await {
                     tracing::warn!(error = %err, "outbox run failed");
                 }
             }
-        });
+        }));
     } else {
         tracing::warn!("[portal.smtp] is not set: mail stays in the outbox");
     }
-    tokio::spawn(async move {
-        let mut every_day = tokio::time::interval(Duration::from_secs(24 * 3600));
-        loop {
-            every_day.tick().await;
-            match purge(&pool).await {
-                Ok((logins, personal, orgs)) => {
-                    tracing::info!(logins, personal, orgs, "purge erased")
+    jobs.push(crate::every(
+        Duration::from_secs(24 * 3600),
+        stopping,
+        move || {
+            let pool = pool.clone();
+            async move {
+                match purge(&pool).await {
+                    Ok((logins, personal, orgs)) => {
+                        tracing::info!(logins, personal, orgs, "purge erased")
+                    }
+                    Err(err) => tracing::warn!(error = %err, "purge failed"),
                 }
-                Err(err) => tracing::warn!(error = %err, "purge failed"),
             }
-        }
-    });
+        },
+    ));
+    jobs
 }

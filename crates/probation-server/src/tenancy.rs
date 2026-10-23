@@ -434,11 +434,14 @@ impl Tenancy {
     /// only an `aut_` credential of kind automation whose creator's login is live and
     /// still holds, at this use, the role that let it create the token (an org admin of
     /// the layer's organisation, or a global admin), and whose organisation or personal
-    /// account is not suspended (C78). Anything else, a store error included, is `None`
-    /// (401).
-    pub async fn automation(&self, secret: &str) -> Option<(Actor, Authorized<Place>)> {
+    /// account is not suspended (C78). Anything else is `Ok(None)` (401); a store error
+    /// is `Err` (503).
+    pub async fn automation(
+        &self,
+        secret: &str,
+    ) -> Result<Option<(Actor, Authorized<Place>)>, sqlx::Error> {
         if !secret.starts_with(crate::keys::KeyKind::Automation.prefix()) {
-            return None;
+            return Ok(None);
         }
         let found = async {
             let mut conn = self.pool.acquire().await?;
@@ -471,8 +474,8 @@ impl Tenancy {
                     .map(|place| (KeyId(id as u64), created_by, place)),
             )
         };
-        match found.await {
-            Ok(Some((token_id, created_by, place))) if !place.suspended => Some((
+        Ok(match found.await? {
+            Some((token_id, created_by, place)) if !place.suspended => Some((
                 Actor::Automation(AutomationActor {
                     token_id,
                     place: place.place,
@@ -480,12 +483,8 @@ impl Tenancy {
                 }),
                 Authorized(place),
             )),
-            Ok(_) => None,
-            Err(err) => {
-                tracing::error!(error = %err, "automation could not read the store");
-                None
-            }
-        }
+            _ => None,
+        })
     }
 
     /// The session's login with its role on `place`.
@@ -1450,6 +1449,7 @@ const INVITATION_DAYS: i32 = 7;
 /// invites a member, group admin or org admin of their own organisation only, with a
 /// group of it; a group admin runs a group, so they are invited into one (C59). The
 /// address is only where the link goes: whoever signs in and opens it accepts it.
+#[allow(clippy::too_many_arguments)]
 pub async fn invite(
     pool: &PgPool,
     actor: &Actor,
@@ -1458,6 +1458,7 @@ pub async fn invite(
     role: &str,
     group: Option<&Authorized<Place>>,
     base: &url::Url,
+    secrets: &crate::accounts::SecretBox,
 ) -> Result<(), ChangeError> {
     if !runs_org(actor, org) || org.place().kind != LayerKind::Org || !ORG_ROLES.contains(&role) {
         return Err(ChangeError::Denied);
@@ -1500,6 +1501,7 @@ pub async fn invite(
     );
     crate::accounts::enqueue(
         &mut tx,
+        secrets,
         &email,
         "invitation",
         "Your Probation invitation",
@@ -2227,6 +2229,7 @@ pub async fn invite_global_admin(
     actor: &Actor,
     email: &str,
     base: &url::Url,
+    secrets: &crate::accounts::SecretBox,
 ) -> Result<(), ChangeError> {
     if !global_admin_on(actor, PLATFORM) {
         return Err(ChangeError::Denied);
@@ -2254,6 +2257,7 @@ pub async fn invite_global_admin(
     );
     crate::accounts::enqueue(
         &mut tx,
+        secrets,
         &email,
         "invitation",
         "Your Probation global admin invitation",

@@ -50,9 +50,13 @@ impl Fixture {
     /// Sends every due mail through the fake SMTP.
     async fn deliver(&self) {
         let mailer: Arc<dyn Mailer> = self.mail.clone();
-        accounts::deliver_outbox(&self.db.app, &mailer)
-            .await
-            .expect("the outbox runs");
+        accounts::deliver_outbox(
+            &self.db.app,
+            &mailer,
+            &accounts::SecretBox::new(common::SECRET_KEY),
+        )
+        .await
+        .expect("the outbox runs");
     }
 
     /// A confirmed login with an email-and-password method and nothing else.
@@ -131,7 +135,7 @@ async fn serve(db: &Db, mail: Arc<FakeMail>, net: Arc<dyn Outbound>) -> SocketAd
         config: config(),
         outbound: net,
         mailer: Some(mail),
-        secret_key: [7; 32],
+        secret_key: common::SECRET_KEY,
         password_params: argon2::Params::new(8, 1, 1, None).unwrap(),
         trusted_proxies: vec!["127.0.0.0/8".parse().unwrap()],
     });

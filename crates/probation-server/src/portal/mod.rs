@@ -115,12 +115,6 @@ pub(crate) struct Provider {
 }
 
 impl Portal {
-    /// Starts the portal's jobs (outbox, purge) and answers its routes.
-    pub fn launch(deps: PortalDeps) -> Router {
-        accounts::spawn_jobs(deps.pool.clone(), deps.mailer.clone());
-        router(Arc::new(Portal::new(deps)))
-    }
-
     pub fn new(deps: PortalDeps) -> Portal {
         Portal {
             pool: deps.pool,
@@ -796,10 +790,35 @@ pub(crate) fn client_ip(
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
     {
-        let ip = entry.parse::<IpAddr>().ok()?.to_canonical();
+        let ip = crate::sync::forwarded_ip(entry)?.to_canonical();
         if !is_trusted(&ip) {
             return Some(ip);
         }
     }
     Some(peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1: the portal reads `X-Forwarded-For` as `sync` does, ports and brackets
+    /// included; anything else that is not an address still refuses (C113).
+    #[test]
+    fn forwarded_entries_with_ports_and_brackets() {
+        let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let trusted: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
+        let from = |entry: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", entry.parse().unwrap());
+            client_ip(peer, &headers, &trusted)
+        };
+        assert_eq!(from("192.0.2.7:4711"), Some("192.0.2.7".parse().unwrap()));
+        assert_eq!(from("[2001:db8::7]"), Some("2001:db8::7".parse().unwrap()));
+        assert_eq!(
+            from("[2001:db8::7]:4711"),
+            Some("2001:db8::7".parse().unwrap())
+        );
+        assert_eq!(from("unknown"), None);
+    }
 }

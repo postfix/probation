@@ -95,19 +95,23 @@ pub async fn migrate(owner: &PgPool) -> Result<(), sqlx::migrate::MigrateError> 
 }
 
 /// Serves the sync and automation APIs, and the portal when `portal` is given, on
-/// `config.server.listen` until the process is stopped; prunes `change_log`, activity
-/// and the audit log by their retention once an hour (C26).
+/// `config.server.listen` until SIGTERM or SIGINT; prunes `change_log`, activity and the
+/// audit log by their retention once an hour (C26). On the signal it stops taking
+/// connections, lets requests in flight and job runs in progress finish, and returns.
 pub async fn serve(
     config: Config,
     pool: PgPool,
     portal: Option<portal::PortalDeps>,
 ) -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let (stop, stopping) = tokio::sync::watch::channel(false);
     let retention = config.server.change_log_retention_days;
     let pruner = pool.clone();
-    tokio::spawn(async move {
-        let mut every_hour = tokio::time::interval(Duration::from_secs(3600));
-        loop {
-            every_hour.tick().await;
+    let mut jobs = vec![every(Duration::from_secs(3600), &stopping, move || {
+        let pruner = pruner.clone();
+        async move {
             if let Err(err) = sync::prune_change_log(&pruner, retention).await {
                 tracing::warn!(error = %err, "change_log prune failed");
             }
@@ -115,25 +119,90 @@ pub async fn serve(
                 tracing::warn!(error = %err, "retention prune failed");
             }
         }
-    });
+    })];
     let listener = tokio::net::TcpListener::bind(config.server.listen).await?;
     let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies));
     let mut router = build_router(state);
     if let Some(deps) = portal {
-        router = router.merge(portal::Portal::launch(deps));
+        jobs.extend(accounts::spawn_jobs(
+            deps.pool.clone(),
+            deps.mailer.clone(),
+            accounts::SecretBox::new(deps.secret_key),
+            &stopping,
+        ));
+        router = router.merge(portal::router(Arc::new(portal::Portal::new(deps))));
     }
-    axum::serve(
+    let served = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
+    .with_graceful_shutdown(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        tracing::info!("stopping: finishing the requests in flight");
+    })
+    .await;
+    stop.send_replace(true);
+    for job in jobs {
+        let _ = job.await;
+    }
+    served
 }
 
-/// Every API route the server answers: the sync API and the automation blocklist API
-/// (C86). Serve it with connect info: the sync API checks the firewall's address (T31).
+/// Runs `job` now and then every `period` until `stopping` turns true; a run in progress
+/// finishes first.
+pub(crate) fn every<F, Fut>(
+    period: Duration,
+    stopping: &tokio::sync::watch::Receiver<bool>,
+    mut job: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send,
+{
+    let mut stopping = stopping.clone();
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(period);
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => job().await,
+                _ = stopping.changed() => return,
+            }
+        }
+    })
+}
+
+/// Every API route the server answers: the sync API, the automation blocklist API
+/// (C86) and the health probes. Serve it with connect info: the sync API checks the
+/// firewall's address (T31).
 pub fn build_router(state: Arc<sync::SyncState>) -> axum::Router {
     let automation = policy::router(state.pool().clone());
-    sync::router(state).merge(automation)
+    let health = health(state.pool().clone());
+    sync::router(state).merge(automation).merge(health)
+}
+
+/// `GET /health/live`: 200 while the process answers. `GET /health/ready`: 200 while the
+/// database answers `SELECT 1` within two seconds, 503 otherwise. Outside sessions, CSRF
+/// and the network lock, for an orchestrator's probes.
+fn health(pool: PgPool) -> axum::Router {
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/health/live", get(|| async { StatusCode::OK }))
+        .route(
+            "/health/ready",
+            get(|State(pool): State<PgPool>| async move {
+                let select = sqlx::query("SELECT 1").execute(&pool);
+                match tokio::time::timeout(Duration::from_secs(2), select).await {
+                    Ok(Ok(_)) => StatusCode::OK,
+                    _ => StatusCode::SERVICE_UNAVAILABLE,
+                }
+            }),
+        )
+        .with_state(pool)
 }
 
 /// `probation-server admin …`: the supported first-run path, before the portal exists
@@ -277,7 +346,8 @@ pub mod admin {
         accounts::operator_reset_link(pool, base_url, email).await
     }
 
-    /// `admin revoke-key`: the host operator revokes any key by id.
+    /// `admin revoke-key`: the host operator revokes a user or service key by id, never
+    /// an automation or firewall token.
     pub async fn revoke_key(pool: &PgPool, key_id: KeyId) -> Result<(), RevokeError> {
         keys::revoke_as_operator(pool, key_id).await
     }

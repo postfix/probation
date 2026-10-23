@@ -48,9 +48,13 @@ impl Fixture {
     /// Sends every due mail through the fake SMTP.
     async fn deliver(&self) {
         let mailer: Arc<dyn Mailer> = self.mail.clone();
-        accounts::deliver_outbox(&self.db.app, &mailer)
-            .await
-            .expect("the outbox runs");
+        accounts::deliver_outbox(
+            &self.db.app,
+            &mailer,
+            &accounts::SecretBox::new(common::SECRET_KEY),
+        )
+        .await
+        .expect("the outbox runs");
     }
 
     /// Makes every waiting outbox row due now (the fake clock).
@@ -84,7 +88,7 @@ async fn serve(db: &Db, mail: Arc<FakeMail>, net: Arc<dyn Outbound>) -> SocketAd
         config: config(),
         outbound: net,
         mailer: Some(mail),
-        secret_key: [7; 32],
+        secret_key: common::SECRET_KEY,
         // Cheap hashing keeps 100 sign-in attempts fast in a debug build.
         password_params: argon2::Params::new(8, 1, 1, None).unwrap(),
         trusted_proxies: vec!["127.0.0.0/8".parse().unwrap()],
@@ -622,6 +626,45 @@ async fn t_portal_signup_creates_org() {
     let reused = browser.get(&link).await;
     assert!(reused.has("This link has expired or was already used"));
     assert_eq!(fx.db.count("SELECT count(*) FROM orgs").await, 1);
+}
+
+/// F12: an unsent outbox row keeps its body sealed (T16), so its confirm link cannot be
+/// read from the database; the outbox job opens it and the mail carries the link.
+#[tokio::test]
+async fn outbox_body_sealed_at_rest() {
+    let fx = Fixture::start().await;
+    let mut browser = fx.browser();
+    let fields = [
+        ("email", "ana@acme.test"),
+        ("password", PASSWORD),
+        ("kind", "personal"),
+    ];
+    let page = browser.submit("/signup", "/signup", &fields).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let rows: Vec<String> =
+        sqlx::query_scalar("SELECT row_to_json(o)::text FROM email_outbox AS o")
+            .fetch_all(&fx.db.owner)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].contains("token="), "{}", rows[0]);
+    assert!(!rows[0].contains(BASE_URL), "{}", rows[0]);
+    // Under another key the body does not open: nothing is sent, and the row waits.
+    let mailer: Arc<dyn Mailer> = fx.mail.clone();
+    let sent = accounts::deliver_outbox(&fx.db.app, &mailer, &accounts::SecretBox::new([8; 32]))
+        .await
+        .unwrap();
+    assert_eq!(sent, 0);
+    assert!(fx.mail.to("ana@acme.test").is_empty());
+    fx.outbox_due().await;
+    fx.deliver().await;
+    let link = fx.mail.link("ana@acme.test", "/verify-email?token=");
+    let confirmed = browser.get(&link).await;
+    assert!(
+        confirmed.has("Your email address is confirmed"),
+        "{}",
+        confirmed.body
+    );
 }
 
 /// T-portal-signup-personal (C6): a personal account whose chain is platform -> personal.
@@ -1440,19 +1483,21 @@ async fn t_portal_auth_links() {
         .await
         .unwrap();
     let base = url::Url::parse(BASE_URL).unwrap();
-    accounts::request_reset(&single, &base, "vic@home.test")
+    let secrets = accounts::SecretBox::new(common::SECRET_KEY);
+    accounts::request_reset(&single, &base, &secrets, "vic@home.test")
         .await
         .expect("a reset on one connection");
     accounts::sign_up(
         &single,
         &base,
+        &secrets,
         "solo@home.test",
         "not-a-hash",
         accounts::SignupKind::Personal,
     )
     .await
     .expect("a sign-up on one connection");
-    accounts::resend_verification(&single, &base, "solo@home.test")
+    accounts::resend_verification(&single, &base, &secrets, "solo@home.test")
         .await
         .expect("a resend on one connection");
 }
