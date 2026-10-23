@@ -546,6 +546,12 @@ seen are refused (`401`) until the server is back.
   standalone.
 - Upgrade managed firewalls one at a time, after the server. The fleet page shows
   the version each firewall reports.
+- A firewall older than the server may get answers it cannot read. It keeps
+  serving its cache and stays ready, so a load balancer does not take it out.
+  However, policy edits the new server makes stop reaching it. It logs
+  `the management server's answer could not be read; this firewall (v…) may be
+  older than the server` at error level, and the fleet page shows the same text.
+  Alert on that line, and upgrade the firewalls soon after the server.
 - The sync API is versioned in its path (`/api/v1/`). The report field
   `failed_revision` is optional both ways, so firewalls and servers built before
   and after it was added read each other's reports.
@@ -973,7 +979,7 @@ there is always an audit trail of every decision.
 | warn | `the management server could not be reached; serving from the cache` | The server is down, or refused this firewall's address. |
 | error | `the management server refused this firewall's token` | A key lookup got `401`: the firewall was retired or its token is not valid (section 13). A sync that finds this logs nothing; `/health/ready` turns `503`. |
 | error | `the management server refused an empty sync; treating it as unreachable` | The server rejects every sync. `/health/ready` is `503`. |
-| error | `the management server's answer could not be read; this firewall (v…) may be older than the server; serving from the cache` | The server answered in a form this firewall cannot decode, most likely because the server was upgraded first. `/health/ready` is `503` and the fleet page shows the error. Upgrade the firewall. |
+| error | `the management server's answer could not be read; this firewall (v…) may be older than the server; serving from the cache` | The server answered a sync, key lookup or layers call in a form this firewall cannot decode, most likely because the server was upgraded past it. The firewall stays ready and serves its cache, including the old version of any layer it could not read, so policy edits stop reaching it. The fleet page shows the error. **Alert on this line**, because `/health/ready` stays `200`. Upgrade the firewall. |
 | warn | `the activity queued before the stop could not be delivered` | The last call on a stop failed; those activity rows are lost. |
 | error | `a settings push was refused` | The push failed its checks; it is reported on the fleet page. |
 | error | `the pushed settings fail at start; restoring the previous ones` | A push broke the start and was rolled back. |
@@ -1274,7 +1280,7 @@ free connection (§4 there).
 | Endpoint | What it tells you |
 | --- | --- |
 | `GET /health/live` | The process is up. Still `200` with an expired blocklist or broken storage. |
-| `GET /health/ready` | Standalone: the blocklist is valid **and** storage works. Managed: storage works, a cache was loaded or a sync applied, the firewall is not retired, the server does not refuse its syncs, and its last answer could be read. `503` otherwise. Never checks upstream npm/PyPI. |
+| `GET /health/ready` | Standalone: the blocklist is valid **and** storage works. Managed: storage works, a cache was loaded or a sync applied, the firewall is not retired, and the server does not refuse its syncs. `503` otherwise. An answer the firewall cannot read does not make it `503`; alert on its log line instead (section 8). Never checks upstream npm/PyPI. |
 | `GET /health/delivery` | **For alerts only, never a health probe.** `503` if a log record was lost in the last 60 seconds. |
 
 Point the liveness probe at `/health/live` and the readiness probe at

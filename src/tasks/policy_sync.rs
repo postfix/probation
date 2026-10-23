@@ -55,11 +55,15 @@ pub async fn run(app: Arc<App>, shutdown: CancellationToken, drain: Cancellation
         return;
     }
     let request = request(&app, managed, &batch);
-    if managed.sync().fetch_changes(&request).await.is_err() {
+    let result = managed.sync().fetch_changes(&request).await;
+    if !matches!(result, Ok(Synced::Applied)) {
         tracing::warn!(
             events = batch.events.len(),
             "the activity queued before the stop could not be delivered"
         );
+    }
+    if matches!(result, Ok(Synced::BatchRejected)) {
+        managed.activity().count_rejected(batch);
     }
 }
 
@@ -96,13 +100,9 @@ async fn sync_once(app: &App, managed: &Managed, round: &mut Round) {
             round.rejected = true;
         }
         Err(SyncFailure::Unreadable) => {
-            let error = format!(
-                "the management server's answer could not be read; this firewall (v{}) may be older than the server",
-                env!("CARGO_PKG_VERSION")
-            );
-            tracing::error!("{error}; serving from the cache");
+            managed.note_unreadable();
             managed.activity().requeue(batch);
-            managed.note_unreachable(Some(error));
+            managed.note_unreachable(None);
         }
         Err(SyncFailure::Unreachable) => {
             tracing::warn!("the management server could not be reached; serving from the cache");

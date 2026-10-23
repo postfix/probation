@@ -1722,8 +1722,8 @@ pub mod sync {
         layers_status: Mutex<Option<StatusCode>>,
         /// A status, and the `x-probation-error` code it carries, for every `changes`.
         changes_status: Mutex<Option<(StatusCode, Option<&'static str>)>>,
-        /// A `200` body sent as is for every `changes`, in place of the change log.
-        changes_body: Mutex<Option<&'static str>>,
+        /// A `200` body sent as is, by route, in place of the real answer.
+        raw: Mutex<HashMap<&'static str, &'static str>>,
         /// Every request body, as sent, with the path it was sent to.
         bodies: Mutex<Vec<(&'static str, String)>>,
         /// The change log: the current revision and every row.
@@ -2103,10 +2103,14 @@ pub mod sync {
             *self.state.changes_status.lock().unwrap() = status;
         }
 
-        /// Every later `changes` is answered `200` with `body` as is; `None` goes back to
-        /// the change log.
-        pub fn answer_changes_raw(&self, body: Option<&'static str>) {
-            *self.state.changes_body.lock().unwrap() = body;
+        /// Every later call to `route` (`/api/v1/sync/changes`, `lookup` or `layers`)
+        /// is answered `200` with `body` as is; `None` goes back to the real answer.
+        pub fn answer_raw(&self, route: &'static str, body: Option<&'static str>) {
+            let mut raw = self.state.raw.lock().unwrap();
+            match body {
+                Some(body) => raw.insert(route, body),
+                None => raw.remove(route),
+            };
         }
 
         /// Every body sent to this server, as `(path, body)`, in order.
@@ -2258,7 +2262,16 @@ pub mod sync {
         if let Some(status) = status {
             return status.into_response();
         }
+        if let Some(raw) = raw(&state, "/api/v1/sync/lookup") {
+            return raw;
+        }
         Json(answer).into_response()
+    }
+
+    /// The raw `200` a test set for `route`, if any.
+    fn raw(state: &State_, route: &str) -> Option<Response> {
+        let body = *state.raw.lock().unwrap().get(route)?;
+        Some(([(header::CONTENT_TYPE, "application/json")], body).into_response())
     }
 
     async fn layers(
@@ -2305,6 +2318,9 @@ pub mod sync {
         if let Some(status) = status {
             return status.into_response();
         }
+        if let Some(raw) = raw(&state, "/api/v1/sync/layers") {
+            return raw;
+        }
         Json(answer).into_response()
     }
 
@@ -2341,8 +2357,8 @@ pub mod sync {
             }
             return response;
         }
-        if let Some(body) = *state.changes_body.lock().unwrap() {
-            return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
+        if let Some(raw) = raw(&state, "/api/v1/sync/changes") {
+            return raw;
         }
         let revision = state.revision.load(Ordering::SeqCst);
         let mut answer = ChangesResponse {

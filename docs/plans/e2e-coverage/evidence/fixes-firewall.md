@@ -103,3 +103,57 @@ Source: `00-inventory.md` §1.3. Branch `fix-firewall-defects`, based on `manage
   - Workspace tests ran against a private Postgres (`PROBATION_SERVER_TEST_DATABASE_URL`): 713 passed, 1 failed, 21 ignored.
   - The one failure was `admin_fleet::t_sync_ranges`: "purged: 200 OK within one interval, still 403 Forbidden". It asserts a firewall sees a range purge within one 2 s interval, measured by wall clock. It passed 3/3 alone and in its whole binary (29/29), and it touches no file this commit changed. The failure is that 2 s wall-clock bound being missed under the full parallel run, so it is reported here and was not changed.
   - fmt and clippy `-D warnings`: clean.
+
+# Review round on f311d6e
+
+## R1: F3 completion (lookup and layers)
+
+- Root cause: `src/managed/client.rs` `call` mapped a `200` body that fails to decode to `CallError::Unreachable`, for both `lookup` and `layers`. `Managed::after_answer` cleared `sync_error`, then called `fetch_layers`, and skipped `rebuild` without a word when that failed. So a newer server's layer (a new `Block` variant, say) was never applied, the old layer kept serving, the firewall looked healthy, and nothing was reported.
+- Fix:
+  - `CallError::Unreadable` covers a 2xx that does not decode.
+  - `Managed::failed` maps it to `note_unreadable()` plus `note_server_down()`, then `Failed::Unreachable`. A key never seen gets `401`, an expired entry is served stale, and a stale layer stays in use (C19).
+  - `Managed::note_unreadable` is shared with the `changes` path. It logs at error level with the firewall version and stores the text in a new `version_skew` field.
+  - `after_answer` clears `version_skew` before its `layers` call, and that call sets the field again when the answer is unreadable. A readable `changes` answer therefore clears it, but a layers failure in the same round does not get wiped.
+- Tests (`tests/managed_sync.rs`, using the new fake hook `FakeSyncServer::answer_raw(route, body)`):
+  - `t_sync_unreadable_layers`: unknown `Block` variant `Quarantine` after a block edit of Acme's layer.
+    - Red: `layers: FirewallReport { … last_apply_error: None, … }`.
+    - Green: the error is reported with `failed_revision` 0. Readiness stays 200, `left-pad` is still 200 under the stale layer, it is `403 BLOCKED` once the layer is readable, and the error clears.
+  - `t_sync_unreadable_lookup`: unknown `KeyLookup` status `quarantined`.
+    - Red: `lookup: FirewallReport { … last_apply_error: None, … }`.
+    - Green: the never-seen key gets 401, the error is reported, readiness stays 200, and the key is 200 once lookups are readable.
+
+## R2: an unreadable answer keeps the firewall ready (user decision 2026-10-23)
+
+- The `changes` path no longer calls `note_unreachable(Some(..))`, which had set `sync_error` and so failed readiness. It now calls `note_unreadable()` and `note_unreachable(None)` and re-queues the batch. `healthy()` reads `sync_error` only, and `report()` reads `version_skew` as well.
+- `t_sync_unreadable_answer` was rewritten.
+  - Red against f311d6e: `still ready, left: 503, right: 200`.
+  - Green: readiness stays 200, the key is still served, the skew error is reported, and it clears after readable answers.
+- Docs:
+  - `SPEC.md` §10 and the §11 `/health/ready` row.
+  - `docs/operations.md`: the alert table row ("Alert on this line"), the `/health/ready` row, and a new item under "Mixed versions" in section 5.
+
+## R3: F2 final flush ignored `Ok(Synced::BatchRejected)`
+
+- Fix: `!matches!(result, Ok(Synced::Applied))` logs the warning, and a `BatchRejected` result also goes to `count_rejected(batch)`. The count is held only in memory, so after the process exits it is not observable.
+- Test: `t_activity_flush_refused_on_stop` queues 7 events, makes the server answer `413`, then stops the firewall.
+  - Red: `lines_containing_all(["could not be delivered", "events=7"])` was 0, expected 1.
+  - Green: ok.
+
+## R4: a version-skew error never halts a settings rollout
+
+- The server's S7-14 rule (`crates/probation-server/src/fleet.rs` `settle`) fails a step when `failed_revision` is absent or equals the rollout id. Rollout ids are `GENERATED ALWAYS AS IDENTITY` and so are ≥ 1.
+- `report()` resolves the error in this order: a real apply or sync error, with its own `failed_revision`, as before; otherwise the version-skew text with `failed_revision: Some(0)`. Revision 0 is the no-push revision, which no rollout has, so the step is never failed for it and the fleet page still shows the text.
+- No server change was needed. `assert_skew_reported` asserts `failed_revision == Some(0)` in all three F3 tests.
+
+## Checks for this round
+
+- `cargo test -j 16 --workspace --no-fail-fast -- --test-threads=16`, with `PROBATION_SERVER_TEST_DATABASE_URL` set to a private podman Postgres on 127.0.0.1:55438: 717 passed, 0 failed, 21 ignored.
+- `cargo clippy -j 16 --workspace --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+- `router molecule-verify --plan-root docs/plans/management-server`: PASS 12/12.
+- SMTC analyzers:
+  - client-data @ `src`: 0.
+  - consumer-identity @ `src`: 1, at `src/http/logging.rs:217`.
+  - enqueue @ `src/osv/mod.rs`: 0.
+  - outbound @ `src/osv/batcher.rs`: 10, at 234, 329, 370, 413, 439, 483, 484, 509, 510, 549.
+  - All four hold.
+- C123: one site, `src/managed/mod.rs:281` `headers.get(AUTHORIZATION)`. It is the same call; it moved 5 lines because of the new `version_skew` field.
