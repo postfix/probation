@@ -119,3 +119,15 @@ Round 3 rechecks (2026-10-23):
 - `cargo clippy --workspace --all-targets -j 8 -- -D warnings` clean; `cargo fmt --all -- --check` clean.
 - `router molecule-verify --plan-root docs/plans/management-server --slice 6`: PASS, 12 of 12, no findings.
 - `node crates/probation-server/tests/a11y/axe.mjs --slice 6` on a reseeded database: `A11Y slice 6: 26 pages, 0 problems`, exit 0.
+
+## Round 4 (slice 5 a6009c8 and the plan's 485f724/861441d merged; AC3)
+
+tdd: T-portal-sso-removed-not-rejoined, extended (AC3, S6-SEC-4: an invitation created before the removal, here one the removed org admin sent to himself, is refused and clears nothing; after removal the person has no live key and the session sees no place; still blocked while the removed login is in its 30-day deletion window) — red: `panicked at crates/probation-server/tests/portal_places.rs:2877:5: assertion left == right failed; left: 303 right: 403` (the pre-removal link re-admitted him) — green: `cargo test -p probation-server --test portal_places t_portal_sso_removed_not_rejoined` passed (1 passed); mutant F rechecked on the extended test: `panicked at crates/probation-server/tests/portal_places.rs:2916:5: after a leave, SSO adds him again`
+
+Round 4 rechecks (2026-10-23):
+- `cargo test -p probation-server --test portal_places`: `test result: ok. 36 passed` (the witness in 04 since 485f724).
+- `cargo test --workspace -j 8 --no-fail-fast -- --test-threads=8`: exit 0; 46 result lines, 676 passed, 0 failed, 21 ignored (accounts 29, policy_edit 8, portal_places 36, propagation 3, sync_api 6, tenancy 3, doctest 1, authorization_read_once 4, key_canary 2).
+- `cargo clippy --workspace --all-targets -j 8 -- -D warnings` clean; `cargo fmt --all -- --check` clean.
+- `router molecule-check`: PASS. `router molecule-verify --plan-root docs/plans/management-server --slice 6`: PASS, 12 of 12, no findings.
+- The 4 analyzers at `--root crates/probation-server`: 0 findings each. C123 SMTC query: one site in all eight runs, `src/managed/mod.rs:276`.
+- `node crates/probation-server/tests/a11y/axe.mjs --slice 6` on a reseeded database: `A11Y slice 6: 26 pages, 0 problems`, exit 0.

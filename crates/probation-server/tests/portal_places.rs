@@ -2829,17 +2829,61 @@ async fn t_portal_sso_removed_not_rejoined() {
     save_sso(&mut ana, acme, &on).await;
     let org_page = format!("/org/{}", acme.id);
 
-    // Dave joins through SSO; removed, his next SSO sign-in does not add him back.
+    // Dave joins through SSO and becomes an org admin with a key. Before he is removed
+    // he sends an invitation to his own address (S6-SEC-4).
     let mut dave = fx.browser();
     sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
     let dave_login = login_of_subject(&fx.db, "acme-dave").await;
     assert!(is_member(&fx.db, acme, dave_login).await);
+    sqlx::query("UPDATE memberships SET role = 'org_admin' WHERE login_id = $1")
+        .bind(dave_login)
+        .execute(&fx.db.owner)
+        .await
+        .unwrap();
+    create_key(&mut dave, "dave laptop").await;
+    invite(
+        &mut dave,
+        &world,
+        &[
+            ("email", "acme-dave@acme.test"),
+            ("role", "org_admin"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let old_link = invitation_link(&fx, "acme-dave@acme.test").await;
+
+    // Removed, his next SSO sign-in leaves him no member, with no key and no place.
     remove_member(&fx, &mut ana, acme, dave_login).await;
     sign_out(&mut dave).await;
     sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
     assert!(
         !is_member(&fx.db, acme, dave_login).await,
         "removed: SSO does not re-add"
+    );
+    let live_keys: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM keys WHERE owner_login = $1 AND revoked_at IS NULL",
+    )
+    .bind(dave_login)
+    .fetch_one(&fx.db.owner)
+    .await
+    .unwrap();
+    assert_eq!(live_keys, 0, "no keys");
+    let keys_page = dave.get("/keys").await;
+    assert!(keys_page.has("You have no place yet"), "{}", keys_page.body);
+
+    // The invitation made before the removal is refused, and clears nothing (AC3).
+    let stale = accept(&mut dave, &old_link).await;
+    assert_eq!(stale.status, StatusCode::FORBIDDEN, "{}", stale.body);
+    assert!(
+        !is_member(&fx.db, acme, dave_login).await,
+        "an older link does not re-admit"
+    );
+    sign_out(&mut dave).await;
+    sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
+    assert!(
+        !is_member(&fx.db, acme, dave_login).await,
+        "the removal stands"
     );
 
     // An accepted invitation brings him back.
@@ -2901,6 +2945,20 @@ async fn t_portal_sso_removed_not_rejoined() {
     assert!(
         !is_member(&fx.db, acme, new_rob).await,
         "blocked while the removed login exists"
+    );
+    // Still blocked while the removed login is in its 30-day deletion window.
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now(), restore_until = now() + interval '30 days' WHERE id = $1",
+    )
+    .bind(rob)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    sign_out(&mut fresh).await;
+    sso_sign_in(&fx, &mut fresh, acme, "acme-rob").await;
+    assert!(
+        !is_member(&fx.db, acme, new_rob).await,
+        "blocked during the deletion window"
     );
 
     // Sam is removed, and his login is erased by the purge after its 30 days: a new

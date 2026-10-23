@@ -987,7 +987,8 @@ async fn end_membership(
         // The organisation's SSO does not add them back while this login exists, under
         // it or a new login with the same SSO identity; an invitation does (C128, C130).
         sqlx::query(
-            "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2)
+             ON CONFLICT (org_id, login_id) DO UPDATE SET removed_at = now()",
         )
         .bind(org)
         .bind(login)
@@ -997,7 +998,8 @@ async fn end_membership(
             "INSERT INTO org_sso_removals (org_id, issuer, subject, login_id)
              SELECT org_id, issuer, subject, login_id FROM sign_in_methods
              WHERE login_id = $1 AND org_id = $2
-             ON CONFLICT (org_id, issuer, subject) DO UPDATE SET login_id = EXCLUDED.login_id",
+             ON CONFLICT (org_id, issuer, subject)
+             DO UPDATE SET login_id = EXCLUDED.login_id, removed_at = now()",
         )
         .bind(login)
         .bind(org)
@@ -1454,6 +1456,28 @@ pub async fn accept_invitation(
     let Some((id, org, group, role)) = taken else {
         return Ok(None);
     };
+    // A removal is lifted only by an invitation created after it: a link from before,
+    // one the removed org admin sent themselves included, is refused (AC3, S6-SEC-4).
+    let removed_after: bool = sqlx::query_scalar(
+        "WITH sent AS (SELECT created_at FROM invitations WHERE id = $3)
+         SELECT EXISTS (SELECT 1 FROM org_removals, sent
+                        WHERE org_id = $1 AND login_id = $2 AND removed_at >= sent.created_at)
+             OR EXISTS (SELECT 1 FROM org_sso_removals AS r
+                          JOIN sign_in_methods AS m
+                            ON m.org_id = r.org_id AND m.issuer = r.issuer AND m.subject = r.subject,
+                          sent
+                        WHERE r.org_id = $1 AND m.login_id = $2 AND r.removed_at >= sent.created_at)",
+    )
+    .bind(org)
+    .bind(login)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if removed_after {
+        return Err(ChangeError::Refused(
+            "This invitation was sent before you were removed from the organisation, so it no longer lets you in. Ask an org admin for a new one.".to_owned(),
+        ));
+    }
     let member: Option<i32> = sqlx::query_scalar(
         "INSERT INTO memberships (login_id, org_id, group_id, role) VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING RETURNING id",
