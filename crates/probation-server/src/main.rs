@@ -2,17 +2,22 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use ipnet::IpNet;
 use probation_policy::api::KeyId;
+use probation_server::accounts::{GuardedClient, Mailer, SmtpMailer};
 use probation_server::admin::{self, Bootstrap, BootstrapError};
 use probation_server::keys::RevokeError;
+use probation_server::portal::PortalDeps;
 
 /// The app role's connection (a login role in `probation_app`).
 const DATABASE_URL: &str = "PROBATION_SERVER_DATABASE_URL";
 /// The migration owner role's connection, used only by `migrate` (T17).
 const MIGRATE_DATABASE_URL: &str = "PROBATION_SERVER_MIGRATE_DATABASE_URL";
+/// Seals secrets at rest (T16).
+const SECRET_KEY: &str = "PROBATION_SERVER_SECRET_KEY";
 
 #[derive(Parser)]
 #[command(version, about = "The probation management server")]
@@ -23,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the firewall sync API.
+    /// Serve the firewall sync API, and the portal when `[portal]` is set.
     Serve {
         #[arg(long)]
         config: PathBuf,
@@ -75,7 +80,8 @@ async fn run(command: Command) -> Result<(), String> {
         Command::Serve { config } => {
             let config = probation_server::Config::load(&config)?;
             let pool = pool(DATABASE_URL).await?;
-            probation_server::serve(config, pool)
+            let portal = portal_deps(&config, &pool)?;
+            probation_server::serve(config, pool, portal)
                 .await
                 .map_err(|err| format!("serve: {err}"))
         }
@@ -131,6 +137,57 @@ async fn run(command: Command) -> Result<(), String> {
             }
         }
     }
+}
+
+/// The portal's secrets come from the environment, never from the settings file
+/// (02 § External); each one a configured part needs must be set.
+fn portal_deps(
+    config: &probation_server::Config,
+    pool: &sqlx::PgPool,
+) -> Result<Option<PortalDeps>, String> {
+    let Some(mut portal) = config.portal.clone() else {
+        return Ok(None);
+    };
+    let required = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
+    for (variable, provider) in [
+        ("PROBATION_SERVER_GOOGLE_CLIENT_SECRET", &mut portal.google),
+        ("PROBATION_SERVER_GITHUB_CLIENT_SECRET", &mut portal.github),
+        (
+            "PROBATION_SERVER_MICROSOFT_CLIENT_SECRET",
+            &mut portal.microsoft,
+        ),
+    ] {
+        if let Some(provider) = provider {
+            provider.client_secret = required(variable)?;
+        }
+    }
+    let secret_key: [u8; 32] = hex::decode(required(SECRET_KEY)?.trim())
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| format!("{SECRET_KEY} must be 64 hex characters (32 bytes)"))?;
+    let mailer = match &portal.smtp {
+        Some(smtp) => {
+            let password = std::env::var("PROBATION_SERVER_SMTP_PASSWORD").unwrap_or_default();
+            let mailer = SmtpMailer::new(
+                &smtp.host,
+                smtp.port,
+                smtp.username.as_deref(),
+                &password,
+                &smtp.from,
+            )?;
+            Some(Arc::new(mailer) as Arc<dyn Mailer>)
+        }
+        None => None,
+    };
+    Ok(Some(PortalDeps {
+        pool: pool.clone(),
+        config: portal,
+        outbound: Arc::new(GuardedClient::new()),
+        mailer,
+        secret_key,
+        password_params: argon2::Params::default(),
+        trusted_proxies: config.server.trusted_proxies.clone(),
+    }))
 }
 
 async fn pool(variable: &str) -> Result<sqlx::PgPool, String> {

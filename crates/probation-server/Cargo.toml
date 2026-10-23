@@ -10,27 +10,40 @@ repository = "https://github.com/postfix/probation"
 publish = false
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "tracing"] }
+aes-gcm = "0.10.3"
+argon2 = "0.6"
+askama = "0.16"
+async-trait = "0.1.92"
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "query", "tokio", "tracing"] }
+base64 = "0.22"
 clap = { version = "4.6.7", features = ["derive"] }
 getrandom = "0.3.4"
+hex = "0.4.3"
+hmac = "0.13"
 ipnet = { version = "2.12.2", features = ["serde"] }
 jiff = "0.2.37"
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "aws-lc-rs", "webpki-roots", "hostname"] }
 probation-policy = { path = "../probation-policy", version = "0.2.2" }
+qrcodegen = "1.8"
+reqwest = { version = "0.13.5", features = ["form"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha1 = "0.11"
+sha2 = "0.11"
 # Runtime-checked queries only: no `query!`, so building needs no database. `macros`
 # is for `migrate!`, which embeds `migrations/` at compile time.
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json", "ipnet", "tls-rustls-aws-lc-rs"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+subtle = "2.6.1"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 toml = "1.1.6"
+totp-rs = "6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
 # The real firewall, for the tests that run one against this server (03 § Files).
 probation = { path = "../..", features = ["test-support"] }
-async-trait = "0.1.92"
 bytes = "1.12.1"
-reqwest = { version = "0.13.5" }
 tempfile = "3.27.0"
-url = "2.5.8"
