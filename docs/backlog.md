@@ -143,3 +143,14 @@ often a credential has to be withdrawn.
 **Decide revocation first.** Expiry, rotation, storage and the operator workflow all fall out of
 that one answer, and it is a product question, not an implementation one.
 
+
+---
+
+## B5 — Flaky test: `decision_log_delivery::tp16_unopenable_log_path_fails_startup`
+
+**Found:** 2026-10-22, slice 2 verification of `docs/plans/management-server/` (S2-8), carried
+here by slice 8. The test binds port 0, reads the free port, drops the listener, and later asserts
+that nothing answers on that port. A parallel test can be given the same port in between, so the
+"nothing serves" check sometimes sees another test's server. Fix: hold the listener for the
+assertion, or check for the refused startup in a way that does not depend on a free port staying
+free.

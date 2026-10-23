@@ -12,6 +12,8 @@ listen = "127.0.0.1:8088"
 base_url = "http://127.0.0.1:8088"
 # Unresolvable on purpose: a new password fails closed instead of calling out.
 leaked_password_url = "https://pwned.invalid/range/"
+# The keys page shows the .npmrc and pip.conf lines with this address (slice 8).
+firewall_url = "https://packages.example.org"
 
 [portal.google]
 client_id = "a11y-google"

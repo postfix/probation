@@ -1,0 +1,29 @@
+# Example systemd unit for a managed firewall run from the binary
+# (docs/management-server.md). Install as /etc/systemd/system/probation.service.
+[Unit]
+Description=Probation package firewall
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=probation
+Group=probation
+ExecStartPre=/usr/local/bin/probation check-config /etc/probation/config.toml
+ExecStart=/usr/local/bin/probation serve --config /etc/probation/config.toml
+# Required. A settings push from the fleet page is written under data_dir and the
+# firewall exits with code 75 for systemd to restart it onto the new settings (C105).
+# An overlay that fails validation at start is swapped back for the previous one, so
+# this never loops on a bad push.
+Restart=on-failure
+RestartSec=2
+# Longer than the 30 s the firewall gives requests in flight, so its log drain runs.
+TimeoutStopSec=45
+# data_dir = "/var/lib/probation" in config.toml.
+StateDirectory=probation
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

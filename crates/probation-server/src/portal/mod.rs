@@ -49,6 +49,11 @@ pub struct PortalConfig {
     pub leaked_password_url: Url,
     #[serde(default)]
     pub smtp: Option<SmtpConfig>,
+    /// The firewalls' address as clients reach it (`https://packages.example.org`): the
+    /// `.npmrc` and `pip.conf` lines on the keys page are built from it. Unset, they
+    /// show a `FIREWALL` placeholder.
+    #[serde(default)]
+    pub firewall_url: Option<Url>,
 }
 
 fn default_leaked_password_url() -> Url {

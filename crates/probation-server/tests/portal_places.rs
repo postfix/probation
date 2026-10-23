@@ -121,6 +121,7 @@ fn config() -> PortalConfig {
         microsoft: Some(provider("microsoft")),
         leaked_password_url: url::Url::parse("https://api.pwnedpasswords.com/range/").unwrap(),
         smtp: None,
+        firewall_url: Some(url::Url::parse("https://fw.acme.test:8443").unwrap()),
     }
 }
 
@@ -717,14 +718,21 @@ async fn t_portal_keys_create_once() {
     assert_eq!(created.status, StatusCode::OK, "{}", created.body);
     let secret = shown_key(&created);
     assert!(secret.starts_with("prb_") && secret.len() == 36, "{secret}");
+    // The lines carry `[portal] firewall_url`, ready to paste (S6-10).
     assert!(
-        created.has(&format!("_authToken={secret}")),
-        "the .npmrc lines"
+        created.has(&format!(
+            "registry=https://fw.acme.test:8443/npm/\n//fw.acme.test:8443/npm/:_authToken={secret}"
+        )),
+        "the .npmrc lines: {}",
+        created.body
     );
     assert!(
-        created.has(&format!("https://key:{secret}@")),
+        created.has(&format!(
+            "index-url = https://key:{secret}@fw.acme.test:8443/pypi/simple/"
+        )),
         "the pip.conf line"
     );
+    assert!(!created.has("FIREWALL"), "no placeholder once it is set");
 
     let (owner, place_kind, place_id, last4, hash): (i32, String, i32, String, Vec<u8>) =
         sqlx::query_as("SELECT owner_login, place_kind, place_id, last4, hash FROM keys")

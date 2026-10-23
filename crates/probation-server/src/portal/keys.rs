@@ -33,6 +33,9 @@ pub(crate) struct KeysView {
     /// A key just created: shown once.
     pub new_key: Option<String>,
     pub error: Option<String>,
+    /// (scheme, host and path) of `[portal] firewall_url` for the setup lines, or of a
+    /// `FIREWALL` placeholder when it is not set.
+    pub firewall: (String, String),
 }
 
 pub(crate) struct ServiceView {
@@ -97,6 +100,15 @@ async fn view(
         service: service_view(portal, signed_in, account).await?,
         new_key,
         error,
+        firewall: match &portal.config.firewall_url {
+            Some(url) => (
+                url.scheme().to_owned(),
+                url[url::Position::BeforeHost..url::Position::AfterPath]
+                    .trim_end_matches('/')
+                    .to_owned(),
+            ),
+            None => ("https".to_owned(), "FIREWALL".to_owned()),
+        },
     })
 }
 

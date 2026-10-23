@@ -1081,6 +1081,34 @@ fn t_config_management_required() {
         !format!("{management:?}").contains("fwt_secret"),
         "the token never reaches a printed configuration"
     );
+
+    // The sample's commented-out `[management]` section, uncommented, is a whole
+    // managed configuration with the documented defaults (S2-8).
+    let (_, commented) = sample
+        .split_once("\n# [management]\n")
+        .expect("the sample carries a commented [management] section");
+    let mut uncommented = String::from("[management]\n");
+    for line in commented.lines() {
+        match line.strip_prefix("# ") {
+            Some(setting) if setting.contains(" = ") => {
+                let setting = if setting.starts_with("token_file") {
+                    format!("token_file = {token_file:?}")
+                } else {
+                    setting.to_owned()
+                };
+                uncommented.push_str(&setting);
+                uncommented.push('\n');
+            }
+            _ => {}
+        }
+    }
+    let sample_managed = Config::from_toml_str(&format!("{sample}\n{uncommented}"))
+        .unwrap_or_else(|err| panic!("{uncommented}: {err}"));
+    let management = sample_managed.management.expect("managed mode");
+    assert_eq!(management.url.as_str(), "https://manage.example.org/");
+    assert_eq!(management.key_cache_ttl_seconds.get(), 300);
+    assert_eq!(management.client_lookup_allowance_per_second.get(), 5);
+    assert!(management.trusted_proxies.is_empty());
 }
 
 /// T-pypi-root-index-empty (T8, C1): in managed mode the root index lists no project,

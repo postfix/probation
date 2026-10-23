@@ -156,14 +156,21 @@ async fn run_managed() -> Vec<(String, bool)> {
 
     // Throughput in alternating one-second rounds, so drift on the host lands on both,
     // and with the side that goes first swapped each round, so warm-up order does not.
+    // The verdict is the median of the per-round ratios, so one round that a burst of
+    // host load lands on cannot decide it (S2-4, S2-8).
     let mut served = [0.0f64; 2];
+    let mut ratios = Vec::with_capacity(THROUGHPUT_SECONDS as usize);
     for round in 0..THROUGHPUT_SECONDS as usize {
+        let mut this_round = [0.0f64; 2];
         for side in [round % 2, 1 - round % 2] {
             let (client, url) = &sides[side];
-            served[side] += rate(client, url, Duration::from_secs(1)).await;
+            this_round[side] = rate(client, url, Duration::from_secs(1)).await;
+            served[side] += this_round[side];
         }
+        ratios.push(this_round[1] / this_round[0]);
     }
-    let ratio = served[1] / served[0];
+    ratios.sort_by(f64::total_cmp);
+    let ratio = ratios[ratios.len() / 2];
     println!(
         "  throughput: standalone {:.0}/s, managed {:.0}/s",
         served[0] / THROUGHPUT_SECONDS as f64,
@@ -178,7 +185,11 @@ async fn run_managed() -> Vec<(String, bool)> {
             overhead <= 1.0,
         ),
         (
-            format!("managed throughput {:.1}% >= 90%", ratio * 100.0),
+            format!(
+                "managed throughput {:.1}% >= 90% (median of {} rounds)",
+                ratio * 100.0,
+                ratios.len()
+            ),
             ratio >= 0.9,
         ),
     ]

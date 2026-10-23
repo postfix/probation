@@ -104,3 +104,31 @@ osv_mode = "enforce"
 # `serve` binds plain HTTP.
 # tls_cert_path = "/etc/probation/tls/cert.pem"
 # tls_key_path = "/etc/probation/tls/key.pem"
+
+# Managed mode (docs/management-server.md): the firewall serves each request under
+# its own API key's policy, which it fetches from a management server. Without this
+# section it runs standalone, on `blocklist_file`. Every key below is local: the
+# management server can never push it. How often the firewall asks the server what
+# changed is `sync_interval_seconds` (top level, default 60).
+#
+# [management]
+# The server's sync API. https only, loopback included.
+# url = "https://manage.example.org"
+# The firewall token the fleet page or `probation-server admin bootstrap` printed,
+# in a file of its own (never in this file).
+# token_file = "/etc/probation/firewall.token"
+# How long a cached key and its policy are served without a sync confirming them.
+# key_cache_ttl_seconds = 300
+# key_cache_max_entries = 100000
+# Lookups a second for keys this firewall has no entry for, and one client
+# address's share of them.
+# lookup_budget_per_second = 50
+# client_lookup_allowance_per_second = 5
+# Each sync starts this much before the interval ends; at most half of it.
+# sync_margin_seconds = 5
+# A call to the server gives up after this; at most `sync_margin_seconds`.
+# request_timeout_seconds = 2
+# Reverse proxies in front of this firewall whose `X-Forwarded-For` is believed for
+# the network lock and the per-client lookup allowance. Empty: the peer address is
+# the client (docs/operations.md §13).
+# trusted_proxies = []

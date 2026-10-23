@@ -25,7 +25,7 @@ const DEFAULT_ADMIN_URL: &str = "postgres://probation:probation@127.0.0.1:55432/
 /// The login role the app pool connects as.
 const APP_ROLE: &str = "probation_app_test";
 
-fn admin_url() -> String {
+pub fn admin_url() -> String {
     std::env::var("PROBATION_SERVER_TEST_DATABASE_URL")
         .unwrap_or_else(|_| DEFAULT_ADMIN_URL.to_owned())
 }

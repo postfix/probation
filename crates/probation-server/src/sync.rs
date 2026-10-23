@@ -28,8 +28,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::{PgConnection, PgPool};
 
+use crate::audit;
 use crate::policy::{StoreError, load_layer};
-use crate::tenancy::{PLATFORM, kind_of, kind_str};
+use crate::tenancy::{Actor, PLATFORM, kind_of, kind_str};
 
 /// Requests a second one firewall token may make to this server copy (T31): above the
 /// firewall's lookup budget of 50.
@@ -120,6 +121,53 @@ pub async fn prune_change_log(pool: &PgPool, retention_days: u32) -> Result<(), 
     }
     let () = tx.commit().await?;
     Ok(())
+}
+
+/// `change_counter` before and after `after_restore`: (value, pruned_through).
+#[derive(Debug)]
+pub struct Raised {
+    pub before: (i64, i64),
+    pub after: i64,
+}
+
+/// `admin after-restore` (C129): after the database was restored from a backup, sets
+/// `value := greatest(value, now in microseconds since the Unix epoch) + 1`, then
+/// `pruned_through := value`, in one transaction with an audit row. Both then lie above
+/// every revision issued before the restore, so every firewall's cursor is below
+/// `pruned_through` (or above `value`) and it resets at its next sync, missing nothing.
+/// The clock is the database's (`clock_timestamp()`); it must never step backwards
+/// across runs, and fewer than one change a microsecond keeps the counter from running
+/// ahead of it. Neither number ever goes down.
+pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let before: (i64, i64) =
+        sqlx::query_as("SELECT value, pruned_through FROM change_counter WHERE id = 1 FOR UPDATE")
+            .fetch_one(&mut *tx)
+            .await?;
+    let after: i64 = sqlx::query_scalar(
+        "UPDATE change_counter
+         SET value = greatest(value, floor(extract(epoch FROM clock_timestamp()) * 1000000)::bigint) + 1
+         WHERE id = 1 RETURNING value",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE change_counter SET pruned_through = value WHERE id = 1")
+        .execute(&mut *tx)
+        .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor: &Actor::Operator,
+            org_id: None,
+            action: "admin.after_restore",
+            subject: "change_counter".to_owned(),
+            before: Some(serde_json::json!({"value": before.0, "pruned_through": before.1})),
+            after: Some(serde_json::json!({"value": after, "pruned_through": after})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(Raised { before, after })
 }
 
 pub struct SyncState {

@@ -56,6 +56,9 @@ enum AdminCommand {
         #[arg(long)]
         key_id: u64,
     },
+    /// After restoring the database from a backup, before starting the server: every
+    /// firewall resets its cache at its next sync (docs/operations.md).
+    AfterRestore,
 }
 
 #[tokio::main]
@@ -135,6 +138,17 @@ async fn run(command: Command) -> Result<(), String> {
                 Err(RevokeError::Denied) => Err("revoke refused".to_owned()),
                 Err(RevokeError::Store(err)) => Err(format!("revoke-key: {err}")),
             }
+        }
+        Command::Admin(AdminCommand::AfterRestore) => {
+            let pool = pool(DATABASE_URL).await?;
+            let raised = probation_server::sync::after_restore(&pool)
+                .await
+                .map_err(|err| format!("after-restore: {err}"))?;
+            println!(
+                "change_counter raised from value {} (pruned_through {}) to {}; every firewall resets at its next sync",
+                raised.before.0, raised.before.1, raised.after
+            );
+            Ok(())
         }
     }
 }

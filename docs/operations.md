@@ -854,3 +854,119 @@ covered. They need whatever client-side overrides they always needed.
     (`artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh`).
     Its timing margin is tuned for debug builds. The behavior it tests is
     fine.
+
+## 13. Managed mode
+
+With a `[management]` section a firewall serves each request under its own API
+key's policy, fetched from `probation-server`. Setting it up is in
+[management-server.md](management-server.md). This section covers what changes
+for the operator.
+
+### Behind a reverse proxy: list it in `trusted_proxies`
+
+A managed firewall uses the client's address twice: for the network lock (an
+organisation that registered its address ranges is refused from anywhere
+else, and the 403 names the address it saw) and for the per-client lookup
+allowance (5 lookups a second for keys the firewall has no entry for, in
+front of `lookup_budget_per_second`).
+
+Put the addresses of your reverse proxies in `[management] trusted_proxies`.
+From those peers only, the client is the rightmost `X-Forwarded-For` entry
+that is not itself a listed proxy. From any other peer the header is ignored.
+PROXY protocol is not supported. Log lines always keep the TCP peer.
+
+**Behind a proxy that is not listed, every client is the proxy.** All of them
+share one network-lock address, so a lock either refuses everyone or no one,
+and they share one lookup allowance, so one client sending made-up keys slows
+new keys down for everyone. Direct connections need nothing.
+
+The management server has the same rule on its own side: `[server]
+trusted_proxies` decides whose `X-Forwarded-For` is read for a firewall
+token's source check and for sign-in throttling.
+
+### The management server needs TLS in front of it
+
+`probation-server` listens on plain HTTP only. Terminate TLS on a reverse
+proxy and publish the server's port only to that proxy. Firewalls refuse a
+management `url` that is not `https`, even on loopback, because their token
+and every key hash travel it.
+
+### Firewalls reach the server directly, never through an egress proxy
+
+The firewall's sync client ignores `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`
+and `NO_PROXY`, so an environment variable cannot redirect the token and key
+hashes somewhere else. A site that can reach the management server only
+through an egress proxy cannot run managed today; allow the firewall's
+address through to the server.
+
+### When the server is down
+
+A firewall keeps serving every key and policy it has cached, past their TTL,
+until the server answers again; it does not wait on a dead server. A key it
+has never seen gets `401` until then. Its cache is written to
+`<data_dir>/managed-cache.json` after every sync, so a restart during an
+outage keeps serving too.
+
+### Backing up and restoring the server's database
+
+Back up Postgres the way you back up any Postgres database (`pg_dump`, or
+your provider's snapshots). Keep `PROBATION_SERVER_SECRET_KEY` with the
+backups, but apart from them: without it the authenticator secrets and SSO
+client secrets in the backup cannot be read.
+
+To restore:
+
+1. Stop `probation-server`.
+2. Restore the database.
+3. Run `probation-server admin after-restore` (with
+   `PROBATION_SERVER_DATABASE_URL` set as for `serve`).
+4. Start `probation-server`.
+
+Why step 3: every change the server makes gets the next revision number, and
+each firewall remembers the last revision it applied. A restored database
+counts from an older number, so the changes made after the restore reuse
+numbers a firewall has already seen, and that firewall would skip them,
+including revocations. `admin after-restore` raises the revision counter, in
+one transaction with an audit log row, to the database clock in microseconds
+since 1970 plus one (or one past its current value, if that is higher), and
+marks everything up to there as pruned. At its next sync every firewall
+drops its cached keys and policies and refills them from the restored
+database. Nothing is missed; expect one burst of key lookups as caches
+refill. Running it again is harmless: the counter only moves up.
+
+It relies on two things:
+
+- **The clock never steps backwards.** The command reads the clock of the
+  Postgres server (`clock_timestamp()`) inside its transaction. If that clock
+  has gone backwards since the backup was taken, whether by a restore of the
+  host, a VM snapshot or an NTP step, the new counter can land on a number a
+  firewall has already seen, by up to the size of the step. If you know the
+  clock stepped back, wait at least that long before running the command.
+- **Fewer than one change per microsecond.** The counter then never runs
+  ahead of the clock, so each run lands above every number issued before it.
+
+The same holds for a backup restored twice, a backup taken right after an
+earlier `after-restore`, and a backup that predates one.
+
+### Release recovery: checking the `probation-policy` crate first
+
+The release workflow publishes `probation-policy` and then `probation`, which
+depends on it at the same version. If the `probation` step fails after
+`probation-policy X.Y.Z` reached crates.io, finish with
+`cargo publish -p probation` from the tagged commit, but only after these two
+checks pass:
+
+```sh
+# 1. The crate name still belongs to this project.
+cargo owner --list probation-policy
+
+# 2. The published probation-policy X.Y.Z is the one this commit builds.
+cargo package -p probation-policy --locked
+sha256sum target/package/probation-policy-X.Y.Z.crate
+curl -s https://index.crates.io/pr/ob/probation-policy \
+  | jq -r 'select(.vers == "X.Y.Z") | .cksum'
+```
+
+The owners must be the project's own, and the two checksums must be equal.
+If either check fails, publish nothing: someone else controls what
+`probation` would depend on.

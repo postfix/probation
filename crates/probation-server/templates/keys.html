@@ -12,12 +12,13 @@
 <h2 id="new-key-heading">Copy this key now. You will not be able to see it again.</h2>
 <pre><code id="new-key">{{ secret }}</code></pre>
 <h3>Point npm at Probation: add to <code>.npmrc</code></h3>
-<pre>registry=https://FIREWALL/npm/
-//FIREWALL/npm/:_authToken={{ secret }}</pre>
+{% let (scheme, host) = view.firewall %}
+<pre>registry={{ scheme }}://{{ host }}/npm/
+//{{ host }}/npm/:_authToken={{ secret }}</pre>
 <h3>Point pip at Probation: add to <code>pip.conf</code></h3>
 <pre>[global]
-index-url = https://key:{{ secret }}@FIREWALL/pypi/simple/</pre>
-<p class="mut">Replace FIREWALL with the address of your Probation firewall. uv and Poetry use the same index URL.</p>
+index-url = {{ scheme }}://key:{{ secret }}@{{ host }}/pypi/simple/</pre>
+<p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}uv and Poetry use the same index URL.</p>
 </section>
 {% endif %}
 <section aria-labelledby="own-heading">

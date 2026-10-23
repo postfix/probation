@@ -74,6 +74,7 @@ fn config() -> PortalConfig {
         microsoft: Some(provider("microsoft")),
         leaked_password_url: url::Url::parse("https://api.pwnedpasswords.com/range/").unwrap(),
         smtp: None,
+        firewall_url: None,
     }
 }
 
