@@ -57,6 +57,23 @@ impl Config {
         if config.server.change_log_retention_days == 0 {
             return Err("server.change_log_retention_days must not be zero".to_owned());
         }
+        // The address people paste into `.npmrc` and `pip.conf`, with their key next to
+        // it: it needs a host, and https unless that host is this machine (C34).
+        if let Some(url) = config.portal.as_ref().and_then(|p| p.firewall_url.as_ref()) {
+            let loopback = match url.host() {
+                Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+                Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+                Some(url::Host::Domain(name)) => name == "localhost",
+                None => {
+                    return Err("portal.firewall_url must have a host".to_owned());
+                }
+            };
+            if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+                return Err(
+                    "portal.firewall_url must use https (http only to this machine)".to_owned(),
+                );
+            }
+        }
         Ok(config)
     }
 }
@@ -136,8 +153,9 @@ pub mod admin {
         pub firewall_sources: Vec<IpNet>,
         /// The global admin's email address; the host operator vouches for it.
         pub email: String,
-        /// `[portal] base_url`: the set-password link is built from it.
-        pub base_url: url::Url,
+        /// `[portal] base_url`, which the set-password link is built from; `None` for a
+        /// server without the portal, which gets no link.
+        pub base_url: Option<url::Url>,
     }
 
     /// What `bootstrap` created. The key and the firewall token are shown once.
@@ -149,7 +167,8 @@ pub mod admin {
         pub firewall_id: i32,
         pub firewall_token: String,
         /// Sets the global admin's first password; single-use, a reset link's lifetime.
-        pub set_password_link: String,
+        /// `None` without `[portal]`.
+        pub set_password_link: Option<String>,
     }
 
     #[derive(Debug)]
@@ -200,7 +219,10 @@ pub mod admin {
         let method = accounts::insert_unset_password(&mut tx, login_id, &email)
             .await?
             .ok_or(BootstrapError::EmailTaken)?;
-        let set_password_link = accounts::reset_link(&mut tx, &input.base_url, method).await?;
+        let set_password_link = match &input.base_url {
+            Some(base) => Some(accounts::reset_link(&mut tx, base, method).await?),
+            None => None,
+        };
         let org = tenancy::create_org(&mut tx, &input.org_name).await?;
         let key = keys::insert(
             &mut tx,
@@ -258,5 +280,48 @@ pub mod admin {
     /// `admin revoke-key`: the host operator revokes any key by id.
     pub async fn revoke_key(pool: &PgPool, key_id: KeyId) -> Result<(), RevokeError> {
         keys::revoke_as_operator(pool, key_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    /// T-portal-firewall-url-checked: `[portal] firewall_url` goes into the lines people
+    /// paste into `.npmrc` and `pip.conf`, so it needs a host, and https unless the host
+    /// is this machine.
+    #[test]
+    fn t_portal_firewall_url_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |url: &str| {
+            let path = dir.path().join("server.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"https://portal.test/\"\nfirewall_url = \"{url}\"\n"
+                ),
+            )
+            .unwrap();
+            Config::load(&path)
+        };
+        for good in [
+            "https://packages.example.org",
+            "https://packages.example.org:8443/probation/",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080",
+        ] {
+            assert!(load(good).is_ok(), "{good}: {:?}", load(good).err());
+        }
+        for bad in [
+            "http://packages.example.org",
+            "http://10.0.0.5:8080",
+            "ftp://packages.example.org",
+            "file:///etc/probation",
+            "mailto:ops@example.org",
+        ] {
+            let refused = load(bad).expect_err(bad);
+            assert!(refused.contains("portal.firewall_url"), "{bad}: {refused}");
+        }
     }
 }

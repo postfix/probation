@@ -48,12 +48,14 @@ trusted_proxies = ["10.0.0.0/8"]
 # resets its cache when it comes back.
 change_log_retention_days = 7
 
-# Leave the whole section out to serve only the sync and automation APIs.
+# Leave the whole section out to serve only the sync and automation APIs. Then
+# `admin bootstrap` prints no sign-in link (§4) and nobody can sign in until you add it.
 [portal]
 # The portal's public address: every emailed link is built from it.
 base_url = "https://manage.example.org/"
 # The firewalls' public address, as npm and pip reach it. The keys page builds the
-# .npmrc and pip.conf lines from it; unset, they show a FIREWALL placeholder.
+# .npmrc and pip.conf lines from it; unset, they show a FIREWALL placeholder. It needs
+# a host and https (http only for a loopback host); anything else is refused at start.
 firewall_url = "https://packages.example.org"
 # leaked_password_url = "https://api.pwnedpasswords.com/range/"   # the default
 
@@ -117,20 +119,26 @@ Secrets come only from the environment, never from the file:
    once, for 60 minutes, and is built from `[portal] base_url`) to choose the
    password, then sign in: the portal first asks for an authenticator app, and `/admin`
    and the fleet page open once it is set up (C24). Bootstrap refuses to run a second
-   time. `--firewall-source` (repeatable) lists the addresses the token is accepted
+   time. Without a `[portal]` section in the settings file it still creates everything
+   but prints, instead of a link, `note: no [portal] base_url: no sign-in link; add
+   [portal] and run `admin reset-link` later`. `--firewall-source` (repeatable) lists the addresses the token is accepted
    from; behind a load balancer, list the balancer in `[server] trusted_proxies` and
    give the firewall's own address here.
 
    Lost the link, or it expired? `probation-server admin reset-link --config … --email
-   ops@example.org` prints a fresh one for that global admin (audited). It changes only
-   the password: an authenticator already set up is still asked for.
+   ops@example.org` prints a fresh one for that global admin (audited). A new link
+   cancels every older one, and setting a password through one cancels the rest. It
+   changes only the password: an authenticator already set up is still asked for.
 
 3. Start the server (`probation-server serve --config …`), with its port published only
    to your TLS proxy.
 
 4. Configure each firewall: start from `config.sample.toml`, uncomment its
    `[management]` section, set `url` to the server's https address and put the token in
-   the file `token_file` names. Set `sync_interval_seconds` (default 60): that is how
+   the file `token_file` names. In the container image, the `config.toml` you mount
+   must set `listen = "0.0.0.0:8080"` (the sample's `127.0.0.1` is unreachable from
+   outside the container), and the token file must be readable by the image's
+   `firewall` user. Set `sync_interval_seconds` (default 60): that is how
    long an edit or a revocation may take to reach the firewall. Start it with a restart
    policy (§5).
 

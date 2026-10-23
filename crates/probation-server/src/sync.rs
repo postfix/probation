@@ -137,7 +137,9 @@ pub struct Raised {
 /// `pruned_through` (or above `value`) and it resets at its next sync, missing nothing.
 /// The clock is the database's (`clock_timestamp()`); it must never step backwards
 /// across runs, and fewer than one change a microsecond keeps the counter from running
-/// ahead of it. Neither number ever goes down.
+/// ahead of it. Neither number ever goes down. It also moves the settings rollouts' id
+/// sequence a million past the highest id it or the table holds, so a rollout created
+/// after the restore never reuses an id a firewall still reports as applied.
 pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let before: (i64, i64) =
@@ -154,6 +156,15 @@ pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
     sqlx::query("UPDATE change_counter SET pruned_through = value WHERE id = 1")
         .execute(&mut *tx)
         .await?;
+    // A firewall reports the id of the last settings rollout it applied, which may be one
+    // the restore lost; new rollouts start a million ids further, so none takes it.
+    let rollouts_from: i64 = sqlx::query_scalar(
+        "SELECT setval('settings_rollouts_id_seq',
+                       greatest((SELECT last_value FROM settings_rollouts_id_seq),
+                                (SELECT coalesce(max(id), 0) FROM settings_rollouts)) + 1000000)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -162,7 +173,11 @@ pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
             action: "admin.after_restore",
             subject: "change_counter".to_owned(),
             before: Some(serde_json::json!({"value": before.0, "pruned_through": before.1})),
-            after: Some(serde_json::json!({"value": after, "pruned_through": after})),
+            after: Some(serde_json::json!({
+                "value": after,
+                "pruned_through": after,
+                "settings_rollouts_id_after": rollouts_from,
+            })),
         },
     )
     .await?;

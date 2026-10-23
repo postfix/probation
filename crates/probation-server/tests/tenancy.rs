@@ -17,6 +17,7 @@ use probation_server::keys::{self, RevokeError};
 use probation_server::portal::{self, Portal, PortalConfig, PortalDeps};
 use probation_server::tenancy::{NotFound, PLATFORM, Session, authorize};
 use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
 
 fn stricter(layer: &mut Layer) {
     layer.blocks.push(Block::Package {
@@ -580,17 +581,115 @@ async fn t_grant_bootstrap() {
             .output()
             .expect("the binary runs")
     };
-    let fresh = reset_link("ops@example.test");
-    assert!(
-        fresh.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fresh.stderr)
-    );
-    let fresh = String::from_utf8(fresh.stdout).unwrap();
-    let path = fresh
-        .trim()
-        .strip_prefix("set_password_link=https://portal.test")
-        .unwrap_or_else(|| panic!("{fresh}"));
-    assert_eq!(admin.get(path).await.0, StatusCode::OK);
+    let printed_path = |output: std::process::Output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let printed = String::from_utf8(output.stdout).unwrap();
+        printed
+            .trim()
+            .strip_prefix("set_password_link=https://portal.test")
+            .unwrap_or_else(|| panic!("{printed}"))
+            .to_owned()
+    };
+    let first_reset = printed_path(reset_link("ops@example.test"));
+    assert_eq!(admin.get(&first_reset).await.0, StatusCode::OK);
+    // A new link cancels every older one, the bootstrap link included.
+    let second_reset = printed_path(reset_link("ops@example.test"));
+    assert_eq!(admin.get(&first_reset).await.0, StatusCode::GONE);
+    assert_eq!(admin.get(path).await.0, StatusCode::GONE);
+    // Setting a password through one link burns any other live link of the sign-in,
+    // here one written straight into the table.
+    let stray = "stray-reset-token";
+    sqlx::query(
+        "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
+         SELECT $1, id, 'reset', now() + interval '1 hour' FROM sign_in_methods
+         WHERE kind = 'password' AND email = 'ops@example.test'",
+    )
+    .bind(Sha256::digest(stray.as_bytes()).to_vec())
+    .execute(&db.owner)
+    .await
+    .unwrap();
+    let stray_path = format!("/reset/confirm?token={stray}");
+    assert_eq!(admin.get(&stray_path).await.0, StatusCode::OK);
+    let (_, _, form) = admin.get(&second_reset).await;
+    let again = "bootstrap admin second passphrase";
+    let (status, _, done) = admin
+        .post(
+            "/reset/confirm",
+            &[
+                ("csrf", &hidden(&form, "csrf")),
+                ("token", second_reset.split_once("token=").unwrap().1),
+                ("new", again),
+                ("again", again),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(admin.get(&stray_path).await.0, StatusCode::GONE);
     assert!(!reset_link("nobody@example.test").status.success());
+}
+
+/// T-grant-bootstrap without the portal (S8-17): a settings file with no `[portal]`
+/// still bootstraps everything, prints a note instead of a link, and `admin
+/// reset-link` gives the link once `[portal]` is added.
+#[tokio::test]
+async fn t_grant_bootstrap_without_portal() {
+    let db = Db::fresh().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    std::fs::write(&config, "[server]\nlisten = \"127.0.0.1:0\"\n").unwrap();
+    let done = bootstrap(&db, &config);
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let printed = String::from_utf8(done.stdout).unwrap();
+    assert!(
+        printed.contains(
+            "note: no [portal] base_url: no sign-in link; add [portal] and run `admin reset-link` later"
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains("set_password_link="), "{printed}");
+    assert!(
+        printed
+            .lines()
+            .any(|line| line.starts_with("firewall_token=fwt_"))
+    );
+    assert_eq!(
+        db.count(
+            "SELECT count(*) FROM sign_in_methods AS m JOIN memberships AS g ON g.login_id = m.login_id
+             WHERE g.role = 'global_admin' AND m.email = 'ops@example.test' AND m.verified_at IS NOT NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(db.count("SELECT count(*) FROM email_tokens").await, 0);
+
+    std::fs::write(
+        &config,
+        format!("[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"{BASE_URL}\"\n"),
+    )
+    .unwrap();
+    let later = Command::new(env!("CARGO_BIN_EXE_probation-server"))
+        .args(["admin", "reset-link", "--config"])
+        .arg(&config)
+        .args(["--email", "ops@example.test"])
+        .env("PROBATION_SERVER_DATABASE_URL", &db.app_url)
+        .output()
+        .unwrap();
+    assert!(
+        later.status.success(),
+        "{}",
+        String::from_utf8_lossy(&later.stderr)
+    );
+    assert!(
+        String::from_utf8(later.stdout)
+            .unwrap()
+            .starts_with("set_password_link=https://portal.test/reset/confirm?token=")
+    );
 }

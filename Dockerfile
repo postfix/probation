@@ -42,6 +42,9 @@ RUN cargo build --release --locked --bin probation
 
 FROM docker.io/library/debian:bookworm-slim
 
+LABEL org.opencontainers.image.title="probation" \
+      org.opencontainers.image.licenses="Elastic-2.0"
+
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*

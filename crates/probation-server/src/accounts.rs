@@ -1499,12 +1499,13 @@ pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(),
 
 /// A link that sets the password of the email-and-password `method`: a hashed,
 /// single-use reset token with a reset link's lifetime, written in the caller's
-/// transaction.
+/// transaction. Every older link of the method stops working.
 pub(crate) async fn reset_link(
     conn: &mut PgConnection,
     base: &Url,
     method: i32,
 ) -> Result<String, sqlx::Error> {
+    burn_reset_links(conn, method).await?;
     let token = random_token();
     sqlx::query(
         "INSERT INTO email_tokens (token_hash, method_id, purpose, expires_at)
@@ -1516,6 +1517,18 @@ pub(crate) async fn reset_link(
     .execute(conn)
     .await?;
     Ok(format!("{}reset/confirm?token={token}", base_path(base)))
+}
+
+/// Marks every unused reset link of `method` used.
+async fn burn_reset_links(conn: &mut PgConnection, method: i32) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE email_tokens SET used_at = now()
+         WHERE method_id = $1 AND purpose = 'reset' AND used_at IS NULL",
+    )
+    .bind(method)
+    .execute(conn)
+    .await
+    .map(drop)
 }
 
 /// `admin bootstrap`'s global admin: an email-and-password method with no password
@@ -1613,6 +1626,7 @@ pub(crate) async fn reset_password(
     let Some((method, login_id, kind, email)) = used else {
         return Ok(false);
     };
+    burn_reset_links(&mut tx, method).await?;
     if kind == "password" {
         sqlx::query("UPDATE sign_in_methods SET password_hash = $2 WHERE id = $1")
             .bind(method)

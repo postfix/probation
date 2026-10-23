@@ -874,7 +874,10 @@ minutes, never mailed. Open it, choose the password and sign in; the portal then
 asks for an authenticator app before `/admin` and the fleet page work. If the
 link is lost or expired, `probation-server admin reset-link --config … --email
 <address>` prints a new one for a global admin; it is audited and does not skip
-an authenticator that is already set up. Treat both links like passwords: anyone
+an authenticator that is already set up. Each new link cancels the older ones,
+and setting a password through one cancels the rest. Without a `[portal]`
+section, bootstrap creates everything but prints a note instead of a link; add
+`[portal]` and run `admin reset-link`. Treat both links like passwords: anyone
 who opens one first sets the password.
 
 ### Behind a reverse proxy: list it in `trusted_proxies`
@@ -935,7 +938,15 @@ To restore:
 2. Restore the database.
 3. Run `probation-server admin after-restore` (with
    `PROBATION_SERVER_DATABASE_URL` set as for `serve`).
-4. Start `probation-server`.
+4. Before starting the server, list the security changes made after the backup
+   was taken, from your tickets or an audit-log export taken before the
+   failure: key revocations, member removals, suspensions, policy blocks and
+   settings pushes. The restored database does not have them. Re-apply the key
+   revocations now with `probation-server admin revoke-key --key-id N`, which
+   needs no running server.
+5. Start `probation-server` and re-apply the rest on the portal before you
+   open it to everyone else. Until each one is back, firewalls enforce the
+   restored database's version of it.
 
 Why step 3: every change the server makes gets the next revision number, and
 each firewall remembers the last revision it applied. A restored database
@@ -946,8 +957,10 @@ one transaction with an audit log row, to the database clock in microseconds
 since 1970 plus one (or one past its current value, if that is higher), and
 marks everything up to there as pruned. At its next sync every firewall
 drops its cached keys and policies and refills them from the restored
-database. Nothing is missed; expect one burst of key lookups as caches
-refill. Running it again is harmless: the counter only moves up.
+database, so every firewall matches the restored database (which is why step
+4 matters); expect one burst of key lookups as caches refill. The command also
+moves the settings rollouts' ids a million past the highest one, so a firewall
+still reporting a push the restore lost never completes a new one. Running it again is harmless: the counter only moves up.
 
 It relies on two things:
 

@@ -23,7 +23,7 @@ use probation_policy::api::{
 use probation_server::fleet::{self, Registered};
 use probation_server::keys::{self, NewKey};
 use probation_server::sync::{self, ChangeKind};
-use probation_server::tenancy::Actor;
+use probation_server::tenancy::{Actor, PLATFORM};
 use reqwest::StatusCode;
 use sqlx::{Connection, PgConnection};
 
@@ -196,6 +196,25 @@ impl World {
             .unwrap();
     }
 
+    /// A settings push to the firewall registered as `id`; the rollout's id.
+    async fn push(&self, id: i32) -> i32 {
+        let (actor, _) = self.db.as_admin(self.admin, PLATFORM).await;
+        fleet::push_settings(&self.db.app, &actor, &[id], "sync_interval_seconds = 30")
+            .await
+            .unwrap()
+    }
+
+    async fn step(&self, rollout: i32, firewall: i32) -> String {
+        sqlx::query_scalar(
+            "SELECT state FROM settings_rollout_steps WHERE rollout_id = $1 AND firewall_id = $2",
+        )
+        .bind(rollout)
+        .bind(firewall)
+        .fetch_one(&self.db.owner)
+        .await
+        .unwrap()
+    }
+
     async fn audit_rows(&self) -> i64 {
         self.db
             .count("SELECT count(*) FROM audit_log WHERE action = 'admin.after_restore'")
@@ -205,8 +224,18 @@ impl World {
 
 /// `changes` since `since`, as the firewall with `token` sends it.
 async fn changes(url: &url::Url, token: &str, since: u64) -> ChangesResponse {
+    changes_reporting(url, token, since, 0).await
+}
+
+/// `changes`, reporting `settings_revision` as the settings the firewall runs.
+async fn changes_reporting(
+    url: &url::Url,
+    token: &str,
+    since: u64,
+    settings_revision: u64,
+) -> ChangesResponse {
     let report = FirewallReport {
-        settings_revision: 0,
+        settings_revision,
         last_apply_error: None,
         status: ReportStatus {
             upstreams: Upstreams {
@@ -268,6 +297,8 @@ async fn t_ops_after_restore_resets_fleet() {
     // Fakes that sync only when this test says so.
     let c = world.firewall("c").await;
     let d = world.firewall("d").await;
+    // A fake that runs settings pushed before the restore.
+    let e = world.firewall("e").await;
     let (k, k2) = (world.key("k").await, world.key("k2").await);
     let fa = Firewall::start(world.url.clone(), &a.token, 2, 1).await;
     let fb = Firewall::start(world.url.clone(), &b.token, 2, 1).await;
@@ -281,6 +312,10 @@ async fn t_ops_after_restore_resets_fleet() {
     // The backup; then firewall B stops at cursor b_cursor while A goes further.
     let backup = world.backup().await;
     let (backed_up, _) = world.counter().await;
+    // A push made after the backup, which E applies and keeps reporting.
+    let lost_rollout = world.push(e.id).await;
+    changes_reporting(&world.url, &e.token, 0, lost_rollout as u64).await;
+    assert_eq!(world.step(lost_rollout, e.id).await, "applied");
     let c_cursor = backed_up as u64;
     world.filler().await;
     settle().await;
@@ -314,6 +349,15 @@ async fn t_ops_after_restore_resets_fleet() {
     assert_eq!(world.audit_rows().await, 1, "one audit row");
     assert!(printed.contains(&after.0.to_string()), "{printed}");
     world.server_up().await;
+    // A push made after the restore gets an id no firewall can still report, so E's
+    // report of the lost push does not mark it applied.
+    let new_rollout = world.push(e.id).await;
+    assert!(
+        new_rollout > lost_rollout,
+        "{new_rollout} after {lost_rollout}"
+    );
+    changes_reporting(&world.url, &e.token, after.0 as u64, lost_rollout as u64).await;
+    assert_eq!(world.step(new_rollout, e.id).await, "sent");
     for firewall in [&fa, &fb] {
         answers(
             firewall,

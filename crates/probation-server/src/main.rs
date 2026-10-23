@@ -119,7 +119,9 @@ async fn run(command: Command) -> Result<(), String> {
             firewall,
             firewall_sources,
         }) => {
-            let base_url = base_url(&config)?;
+            let base_url = probation_server::Config::load(&config)?
+                .portal
+                .map(|portal| portal.base_url);
             let pool = pool(DATABASE_URL).await?;
             let input = Bootstrap {
                 org_name: org,
@@ -139,7 +141,12 @@ async fn run(command: Command) -> Result<(), String> {
                     println!("firewall_token={}", done.firewall_token);
                     // Printed here only, never mailed: the operator opens it, or hands it
                     // to the admin, before it expires.
-                    println!("set_password_link={}", done.set_password_link);
+                    match done.set_password_link {
+                        Some(link) => println!("set_password_link={link}"),
+                        None => println!(
+                            "note: no [portal] base_url: no sign-in link; add [portal] and run `admin reset-link` later"
+                        ),
+                    }
                     Ok(())
                 }
                 Err(BootstrapError::AlreadyDone) => Err(

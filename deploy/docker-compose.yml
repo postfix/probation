@@ -19,8 +19,12 @@ services:
     # docker build -t probation .
     image: probation:latest
     volumes:
-      # config.sample.toml with its [management] section filled in.
+      # config.sample.toml with its [management] section filled in, and with
+      # listen = "0.0.0.0:8080": the sample's 127.0.0.1 is unreachable from outside
+      # the container.
       - ./config.toml:/etc/probation/config.toml:ro
+      # Readable by the image's `firewall` user (for example mode 0644, or owned by
+      # its uid), or the firewall cannot start.
       - ./firewall.token:/etc/probation/firewall.token:ro
       - firewall-data:/var/lib/probation
     ports:

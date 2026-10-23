@@ -14,14 +14,20 @@
 # Needs docker with compose (podman and podman-compose do), node 20 or later, npm,
 # openssl and curl, and outbound https to registry.npmjs.org, api.osv.dev and
 # api.pwnedpasswords.com. Environment:
-#   E2E_WORK          the directory for generated files (default: a new mktemp -d)
+#   E2E_WORK          the directory for generated files (default: a new mktemp -d,
+#                     removed at the end unless E2E_KEEP is set)
 #   E2E_SKIP_BUILD=1  use the images already built
 #   E2E_KEEP=1        leave the stack running afterwards
 #   E2E_PORTAL_PORT, E2E_FIREWALL_1_PORT, E2E_FIREWALL_2_PORT  (18088, 18443, 18444)
+# On a failure the stack's logs are printed before it is taken down.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-E2E_WORK=${E2E_WORK:-$(mktemp -d)}
+made_work=
+if [ -z "${E2E_WORK:-}" ]; then
+  E2E_WORK=$(mktemp -d)
+  made_work=1
+fi
 mkdir -p "$E2E_WORK"
 E2E_WORK=$(cd "$E2E_WORK" && pwd)
 export E2E_WORK
@@ -33,10 +39,41 @@ export E2E_SECRET_KEY
 export E2E_COMPOSE="docker compose -p probation-e2e -f $root/docker-compose.e2e.yml"
 
 stop() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "E2E FAIL (exit $status); the stack's logs follow" >&2
+    # podman-compose has no --no-color and stops at a service never started.
+    $E2E_COMPOSE logs --no-color >&2 ||
+      for service in postgres server sync firewall-1 firewall-2; do
+        $E2E_COMPOSE logs "$service" >&2 || true
+      done
+  fi
   if [ -z "${E2E_KEEP:-}" ]; then
     $E2E_COMPOSE down -v >/dev/null 2>&1 || true
+    if [ -n "$made_work" ]; then
+      rm -rf "$E2E_WORK"
+    fi
   fi
+  exit "$status"
 }
+
+# Runs the rest of the line once a second until it succeeds; fails after $1 tries.
+wait_for() {
+  local tries=$1 what=$2
+  shift 2
+  for _ in $(seq "$tries"); do
+    "$@" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "E2E FAIL: $what not ready after $tries s" >&2
+  return 1
+}
+
+stack_ready() {
+  curl -sf --cacert "$E2E_WORK/ca/ca.pem" "https://localhost:$E2E_FIREWALL_1_PORT/health/ready" &&
+    curl -sf "http://127.0.0.1:$E2E_PORTAL_PORT/signin"
+}
+
 trap stop EXIT
 
 # One CA, and one certificate for the sync proxy (`sync`) and the firewalls
@@ -105,10 +142,7 @@ fi
 
 # What the operator does once (docs/management-server.md).
 $E2E_COMPOSE up -d postgres
-for _ in $(seq 60); do
-  $E2E_COMPOSE exec -T postgres pg_isready -U probation >/dev/null 2>&1 && break
-  sleep 1
-done
+wait_for 60 postgres $E2E_COMPOSE exec -T postgres pg_isready -U probation
 $E2E_COMPOSE run --rm --no-deps server migrate
 $E2E_COMPOSE exec -T postgres psql -U probation -d probation -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE probation_e2e LOGIN PASSWORD 'probation' IN ROLE probation_app"
@@ -119,10 +153,6 @@ sed -n 's/^firewall_token=//p' "$E2E_WORK/bootstrap.out" >"$E2E_WORK/firewall-1.
 test -s "$E2E_WORK/firewall-1.token"
 $E2E_COMPOSE up -d --no-deps server sync firewall-1
 
-for _ in $(seq 120); do
-  curl -sf --cacert "$E2E_WORK/ca/ca.pem" "https://localhost:$E2E_FIREWALL_1_PORT/health/ready" >/dev/null &&
-    curl -sf "http://127.0.0.1:$E2E_PORTAL_PORT/signin" >/dev/null && break
-  sleep 1
-done
+wait_for 120 "firewall-1 and the portal" stack_ready
 
 NODE_EXTRA_CA_CERTS="$E2E_WORK/ca/ca.pem" node "$root/tests/e2e/drive.mjs"
