@@ -135,4 +135,7 @@ was measured and what it means for sizing your own setup.
 - [`docs/plans/`](docs/plans/): the design and planning history, one folder per
   feature.
 
-Licensed under Apache-2.0; see [`LICENSE`](LICENSE).
+Licensed under the [Elastic License 2.0](LICENSE) (SPDX `Elastic-2.0`) for
+every release after 0.2.2. You may use, copy and modify Probation, but you may not provide it
+to others as a hosted or managed service. Releases up to 0.2.2 remain under
+Apache-2.0.

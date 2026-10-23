@@ -3,7 +3,7 @@ name = "probation-server"
 version = "0.2.2"
 edition = "2024"
 rust-version = "1.96.0"
-license = "Apache-2.0"
+license = "Elastic-2.0"
 description = "The probation management server: keys, layer policies and the firewall sync API."
 repository = "https://github.com/postfix/probation"
 # Ships as its own container image, never to crates.io (C102, C117).

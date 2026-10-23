@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slice 7 done: global admins, fleet, automation, blocklists and retention</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d2127; --muted: #5b6470; --line: #d5dae0; --panel: #f5f7f9;
+    --ok: #1f7a3d; --ok-bg: #e7f4ec; --bad: #a3262a; --bad-bg: #fbeaea; --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --accent: #2457a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e4e7eb; --muted: #9aa3ad; --line: #353b43; --panel: #1e2228;
+      --ok: #6fd393; --ok-bg: #173323; --bad: #f08b8e; --bad-bg: #3a1d1f; --warn: #f1c46b; --warn-bg: #3a2f14;
+      --accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
+  p, li { overflow-wrap: anywhere; }
+  ul, ol { padding-left: 1.2rem; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0; }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { background: var(--panel); }
+  .pass { color: var(--ok); font-weight: 600; }
+  .note { color: var(--warn); font-weight: 600; }
+  figure { margin: 8px 0; }
+  svg { display: block; width: 100%; max-width: 640px; height: auto; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 11px; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ok { fill: var(--ok-bg); stroke: var(--ok); }
+  svg .bad { fill: var(--bad-bg); stroke: var(--bad); }
+  svg .warn { fill: var(--warn-bg); stroke: var(--warn); }
+  svg .edge { stroke: var(--muted); fill: none; stroke-width: 1.3; }
+  svg .edge-label { fill: var(--muted); font-size: 9.5px; }
+  svg .head { fill: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .question { margin-top: 28px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; font-weight: 600; font-size: 1.05rem; }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 32px; }
+    table { font-size: 0.85rem; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Slice 7 done: global admins, fleet, automation, blocklists and retention</h1>
+<p class="muted">qa = VERIFIED; code-review, security and adversarial = FIXED. Commit 9d5c953 on <code>management-server</code>. Managed mode still ships with slice 8.</p>
+
+<h2>Delivered</h2>
+<p><strong>What now works.</strong> A global admin runs the whole service from the portal. An org admin can drive blocklists from a script.</p>
+<ul>
+  <li><strong>Global admin pages (<code>/admin</code>):</strong> organisations (suspend, re-activate, open as org admin), personal accounts (suspend, revoke keys, reset authenticator, delete, restore), global admins (invite, remove; the last one cannot be removed), the platform policy, limits, and IP ranges (approve or refuse). A suspended organisation or account shows a banner, and its keys stop working within one sync interval.</li>
+  <li><strong>Fleet pages (<code>/fleet</code>):</strong> register a firewall (its token is shown once), see health in words ("Unhealthy: missed 3 check-ins"), push settings in staggered rollouts, and retire a firewall (you type its name).</li>
+  <li><strong>Automation tokens:</strong> an org admin (or a global admin for the platform) creates a token. A script uses it on <code>/api/v1/blocklist/{layer}</code>. The token can change only the blocks of its layer, and it works only while its creator still holds the admin role.</li>
+  <li><strong>Blocklists:</strong> import, export and push in the blocklist file format. Each block may carry a <code>reason</code>. A policy without reasons keeps its old fingerprint, byte for byte.</li>
+  <li><strong>Retention:</strong> the global admin sets how many days Activity (default 90) and the audit log (default 365) are kept, from 7 to 36500 days. The prune jobs run.</li>
+</ul>
+
+<h3>Settings rollout flow</h3>
+<figure aria-labelledby="flow-cap">
+<svg viewBox="0 0 640 260" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">Staggered settings rollout</title>
+  <desc id="flow-desc">A global admin pushes settings as TOML on the fleet page. The server checks them and refuses local-only keys and firewalls still in another rollout. Each firewall gets its step when it checks in through sync changes, restarts to apply it, and reports. A success releases the next step. A failed step halts the rollout and offers Skip only. A timed-out step halts the rollout and offers Resume or Skip.</desc>
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+  <rect class="box" x="10" y="20" width="140" height="56" rx="6"/>
+  <text x="80" y="42" text-anchor="middle">Global admin</text>
+  <text x="80" y="60" text-anchor="middle">/fleet/settings (TOML)</text>
+  <rect class="ok" x="190" y="20" width="150" height="56" rx="6"/>
+  <text x="265" y="38" text-anchor="middle">push_settings</text>
+  <text x="265" y="54" text-anchor="middle">checks keys, locks rows,</text>
+  <text x="265" y="68" text-anchor="middle">writes the rollout</text>
+  <rect class="bad" x="380" y="20" width="250" height="56" rx="6"/>
+  <text x="505" y="38" text-anchor="middle">Refused, nothing written:</text>
+  <text x="505" y="54" text-anchor="middle">a local-only key, or a firewall</text>
+  <text x="505" y="68" text-anchor="middle">still in another rollout (S7-8)</text>
+  <rect class="ok" x="190" y="120" width="150" height="56" rx="6"/>
+  <text x="265" y="138" text-anchor="middle">Firewall checks in</text>
+  <text x="265" y="154" text-anchor="middle">/api/v1/sync/changes,</text>
+  <text x="265" y="168" text-anchor="middle">restarts to apply (C105)</text>
+  <rect class="ok" x="10" y="200" width="140" height="50" rx="6"/>
+  <text x="80" y="220" text-anchor="middle">Success: fleet::settle</text>
+  <text x="80" y="236" text-anchor="middle">releases the next step</text>
+  <rect class="bad" x="190" y="200" width="150" height="50" rx="6"/>
+  <text x="265" y="220" text-anchor="middle">Apply failed: halted,</text>
+  <text x="265" y="236" text-anchor="middle">Skip only (S7-9)</text>
+  <rect class="warn" x="380" y="200" width="160" height="50" rx="6"/>
+  <text x="460" y="220" text-anchor="middle">Timed out: halted,</text>
+  <text x="460" y="236" text-anchor="middle">Resume or Skip</text>
+  <path class="edge" d="M150,48 L188,48" marker-end="url(#arr)"/>
+  <path class="edge" d="M340,48 L378,48" marker-end="url(#arr)"/>
+  <text class="edge-label" x="359" y="42" text-anchor="middle">no</text>
+  <path class="edge" d="M265,76 L265,118" marker-end="url(#arr)"/>
+  <text class="edge-label" x="271" y="102">accepted: one step at a time</text>
+  <path class="edge" d="M220,176 L100,198" marker-end="url(#arr)"/>
+  <path class="edge" d="M265,176 L265,198" marker-end="url(#arr)"/>
+  <path class="edge" d="M310,176 L440,198" marker-end="url(#arr)"/>
+  <path class="edge" d="M60,200 L60,170 L188,150" marker-end="url(#arr)"/>
+  <text class="edge-label" x="66" y="164">next firewall</text>
+</svg>
+<figcaption id="flow-cap" class="muted">Text version: the admin pushes settings as TOML lines. <code>push_settings</code> refuses a local-only key (one shared list, <code>LOCAL_ONLY_SETTINGS</code>) or a firewall with a pending or sent step in a running or halted rollout; nothing is written then. Otherwise each firewall gets its step when it checks in, restarts to apply it and reports. Success releases the next step (<code>fleet::settle</code>, S7-4). A failed apply halts the rollout with Skip only, because a firewall never retries a failed revision. A timeout halts it with Resume or Skip. Tested by T-fleet-settings-push and T-fleet-push-staggered with fake firewalls.</figcaption>
+</figure>
+
+<h3>Interface changes (added)</h3>
+<pre><code class="language-rust">// crates/probation-policy: shared limits and the blocklist file format
+pub const LOCAL_ONLY_SETTINGS: &amp;[&amp;str];      // keys a push may never set; firewall and server use one list (S7-5)
+pub const MAX_LAYER_BLOCKS: usize = 5_000;      // blocks per layer, checked in check_edit
+// blocklist_json.rs
+pub const MAX_ENTRIES: usize = 5_000;           // records per file; import answers 422 above it
+pub const MAX_REASON_BYTES: usize = 256;
+pub fn import(text: &amp;str) -&gt; Result&lt;Vec&lt;Block&gt;, String&gt;;   // blocks in file order; blank reason = none
+pub fn export(blocks: &amp;[Block], revision: u64, generated_at: &amp;str, expires_at: &amp;str) -&gt; String;
+// every Block variant gains (S7-3, serde default; left out when None):
+reason: Option&lt;String&gt;,
+
+// crates/probation-server routes
+/admin  /admin/orgs/{id}/suspend  /admin/personal/{id}/delete  /admin/admins/invite
+/admin/ranges/{id}/approve  /admin/limits  /admin/retention  /admin/tokens  /admin/blocklist
+/fleet  /fleet/register  /fleet/settings  /fleet/rollouts/{id}/resume  /fleet/rollouts/{id}/skip  /fleet/{id}/retire
+/org/{id}/automation  /org/{id}/automation/revoke
+/api/v1/blocklist/{layer}    // automation token only; changes blocks, nothing else</code></pre>
+<p class="muted">Existing sync and portal routes are unchanged, except that the org token revoke route is <code>POST /org/{id}/automation/revoke</code> with the token id in the form.</p>
+
+<h3>Review fixes (9, all with tests)</h3>
+<ol>
+  <li><strong>Token creator check (B1):</strong> an automation token works only while its creator is still an org admin of that organisation, or a global admin. The check runs at every use.</li>
+  <li><strong>Login erase after range approval (M1):</strong> the purge can now erase a global admin who approved a range or sent an invitation. The range stays approved.</li>
+  <li><strong>Overlapping rollouts refused (M2):</strong> a push to a firewall still in another rollout is refused, and nothing is written.</li>
+  <li><strong>Resume only after a timeout (M3):</strong> a failed step offers Skip only; the page says to push corrected settings.</li>
+  <li><strong>A removed admin's invitations (M4):</strong> removing a global admin deletes their open global-admin links, and a link works only while its sender is a live global admin.</li>
+  <li><strong>Retention cap (M5):</strong> at most 36500 days, in the form and in the database. The activity and audit prunes run independently.</li>
+  <li><strong>Blocklist caps (M6):</strong> 5000 records per file, 256 bytes per reason, 5000 blocks per layer.</li>
+  <li><strong>Limits form (minor):</strong> "no limit" stays blank and is not saved as 0; "Set own limits" starts from the organisation default.</li>
+  <li><strong>Period clamp (minor):</strong> the server takes a reported check-in period as at most 86400 s, so health and rollout timeouts still work.</li>
+</ol>
+
+<h3>Differences from the mockups</h3>
+<ul>
+  <li>Fleet settings are one TOML text box ("Settings, as lines of the firewall's <code>config.toml</code>"), not one field per setting.</li>
+  <li>Retention is set for the platform on <code>/admin</code>. Per-organisation overrides exist in the database (S4-11, S7-11), but there is no per-organisation retention screen.</li>
+  <li>Suspend (organisation), Revoke keys and Delete (personal account) open a confirmation page. Retire asks for the typed name. Remove, Re-activate and Make active act on one press.</li>
+</ul>
+
+<h2>Proof</h2>
+<table>
+  <caption class="sr-only">Executed checks for slice 7</caption>
+  <thead><tr><th>Executed witness</th><th style="width:40%">Observed result and limit</th></tr></thead>
+  <tbody>
+    <tr><td><code>cargo test -p probation-server --test admin_fleet</code></td><td><span class="pass">ok. 29 passed</span>; each review fix extends one of the 29 tests</td></tr>
+    <tr><td><code>cargo test --workspace --no-fail-fast</code> (after merge)</td><td><span class="pass">705 passed, 0 failed, 21 ignored</span></td></tr>
+    <tr><td>post-merge <code>cargo test -p probation-server</code> on 98d97a6</td><td><span class="pass">ok</span>: admin_fleet 29, portal_places 36, accounts 29, policy_edit 8, propagation 3, sync_api 6, tenancy 3</td></tr>
+    <tr><td><code>node crates/probation-server/tests/a11y/axe.mjs --slice 7</code></td><td><span class="pass">12 pages, 0 problems</span>; manual items (screen reader, 320 px, 200% zoom) not checked</td></tr>
+    <tr><td>molecule-check; molecule-verify --slice 7; 4 analyzers; C123 query; clippy, fmt</td><td><span class="pass">PASS, 12/12; 0 findings; 1 site; clean</span></td></tr>
+    <tr><td><code>cargo package --workspace --exclude probation-server --locked</code></td><td><span class="pass">probation-0.2.2 and probation-policy-0.2.2 only</span></td></tr>
+    <tr><td>review mutants</td><td><span class="pass">13 killed</span></td></tr>
+  </tbody>
+</table>
+
+<h2>Limits</h2>
+<ul>
+  <li><strong>S7-14 (backlog):</strong> a stale <code>last_apply_error</code> can mark a rollout step failed when the push answer was lost. Reviewers accepted this as fail-safe. Optional fix: a <code>failed_revision</code> field in <code>FirewallReport</code>.</li>
+  <li><strong>Firewall address placeholder:</strong> the <code>.npmrc</code> and <code>pip.conf</code> lines still say <code>FIREWALL</code>; this moved to slice 8 (S7-2).</li>
+  <li>Blocklist size residual: one change touching three or more full layers (5000 blocks each) could pass the firewall's 8 MiB answer cap (S7-12).</li>
+  <li>Not tested on their own: the role re-check under the lock in <code>create_token</code>, and the link deletion in <code>mark_login_deleted</code>; the use-time and accept-time checks cover both.</li>
+  <li>Carried from earlier slices: <code>router check</code> still reports missing review verdicts for slices 3-6.</li>
+  <li>Render: not inspected.</li>
+</ul>
+
+<h2>Next</h2>
+<p><strong>Slice 8 (last):</strong> a scripted new organisation goes from sign-up to <code>npm install</code> through a managed firewall in under 10 minutes; propagation, overhead and accessibility are measured; both images build. It also takes the firewall address setting (S7-2).</p>
+
+<h2>Recommendation</h2>
+<p>Continue to slice 8. Slice 7 is VERIFIED with all four reviews fixed, all suites pass after the merge, and its open items are small and recorded.</p>
+
+<p class="muted">Status: slices 1-7 done; slice 8 open. Branch <code>management-server</code>, HEAD 9d5c953. Presentation setting: auto.</p>
+<p class="muted">Sources: 00-status.md (Slice 7 proof); evidence/slice-7.md (S7-1 to S7-14); evidence/tdd-slice-7.md; 04-slices.md (rows 7 and 8); crates/probation-policy/src/{lib.rs,blocklist_json.rs}; crates/probation-server/templates/{fleet,global-admin}.html; crates/probation-server/src route tables.</p>
+
+<p class="question">Continue to slice 8, or re-steer?</p>
+</main>
+</body>
+</html>
