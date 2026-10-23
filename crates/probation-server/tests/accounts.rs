@@ -2090,6 +2090,44 @@ async fn t_oidc_issuer_scoped() {
             .await,
         1
     );
+
+    // F4 (S5-ADV-6): a flow started for Acme is refused at Globex's callback, even with
+    // its own state, nonce and PKCE verifier, as an IdP mix-up would bring it there.
+    let mut mixed = fx.browser();
+    let started = mixed
+        .get(&format!("/sso/{acme}/start"))
+        .await
+        .location
+        .unwrap();
+    let rerouted = started
+        .replace("https://idp.acme.test/", "https://idp.globex.test/")
+        .replace("client_id=acme-client", "client_id=globex-client")
+        .replace(
+            &format!("sso%2F{acme}%2Fcallback"),
+            &format!("sso%2F{globex}%2Fcallback"),
+        );
+    assert_ne!(rerouted, started);
+    let logins = fx.db.count("SELECT count(*) FROM logins").await;
+    let back = fx
+        .net
+        .authorize(&rerouted, serde_json::json!({"sub": "mixed-up"}));
+    assert!(
+        back.starts_with(&format!("/sso/{globex}/callback?")),
+        "{back}"
+    );
+    let refused = mixed.get(&back).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(
+        fx.db.count("SELECT count(*) FROM logins").await,
+        logins,
+        "no login"
+    );
+    assert_eq!(
+        session_row(&fx.db, &mixed)
+            .await
+            .and_then(|(login, _)| login),
+        None
+    );
 }
 
 /// A loopback listener that counts the connections it accepts.
