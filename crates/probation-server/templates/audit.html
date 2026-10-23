@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Audit log</h1>
+<p>Every change an admin can make (policies, keys, membership, admin roles, company SSO, network lock, deleting or restoring an organisation, firewall settings, and every service operator action): who made it, when, and what it was before and after.</p>
+{% match view %}
+{% when None %}
+<p>Only org admins, group admins and global admins see the audit log.</p>
+{% when Some(view) %}
+<p class="mut">You see the entries of {{ view.scope }}. "(operator)" marks a change a global admin made. Key secrets never appear in the log, only key names.</p>
+{% if view.rows.is_empty() %}
+<p class="mut">No changes recorded yet.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Changes, newest first (times in UTC)</caption>
+<thead><tr><th scope="col">When</th><th scope="col">Who</th>{% if view.everywhere %}<th scope="col">Where</th>{% endif %}<th scope="col">Kind</th><th scope="col">What changed</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+<tbody>
+{% for row in view.rows %}
+<tr><td>{{ row.at }}</td><td>{{ row.who }}</td>{% if view.everywhere %}<td>{{ row.place }}</td>{% endif %}<td>{{ row.kind }}</td><td>{{ row.subject }}</td><td><code>{{ row.before }}</code></td><td><code>{{ row.after }}</code></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+{% endmatch %}
+{% endblock %}

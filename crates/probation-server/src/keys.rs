@@ -95,6 +95,8 @@ pub(crate) async fn insert(
 pub enum KeyError {
     /// The actor's role on the place does not manage its keys.
     Denied,
+    /// The account already holds this many keys of the kind, its limit (C51, C53).
+    Limit(i64),
     Store(sqlx::Error),
 }
 
@@ -121,6 +123,9 @@ pub async fn create(
         return Err(KeyError::Denied);
     }
     let mut tx = pool.begin().await?;
+    if let Some(limit) = at_limit(&mut tx, kind, place).await? {
+        return Err(KeyError::Limit(limit));
+    }
     let key = insert(&mut tx, kind, place.place(), place.owner_login(), name).await?;
     let () = audit::record(
         &mut tx,
@@ -141,6 +146,144 @@ pub async fn create(
     .await?;
     let () = tx.commit().await?;
     Ok(key)
+}
+
+/// One API key as the keys page lists it: its name and last 4 characters, never the
+/// key (C99).
+pub struct KeyRow {
+    pub id: i64,
+    pub name: String,
+    pub last4: String,
+    pub created: String,
+}
+
+/// The live user keys of `place` (a user place or a personal account), oldest first.
+pub async fn own(pool: &PgPool, place: &Authorized<Place>) -> Result<Vec<KeyRow>, sqlx::Error> {
+    let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT id, name, last4, to_char(created_at, 'DD Mon YYYY') FROM keys
+         WHERE kind = 'user' AND place_kind = $1 AND place_id = $2 AND revoked_at IS NULL
+         ORDER BY id",
+    )
+    .bind(crate::tenancy::kind_str(place.place().kind))
+    .bind(place.place().id as i32)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, last4, created)| KeyRow {
+            id,
+            name,
+            last4,
+            created,
+        })
+        .collect())
+}
+
+/// One live service key as the keys page lists it: where it is attached and who
+/// created it (from its audit row: a service key has no owner, so it survives staff
+/// changes, C14).
+pub struct ServiceKeyRow {
+    pub id: i64,
+    pub name: String,
+    pub last4: String,
+    pub created: String,
+    /// "Frontend group" or "Acme organisation".
+    pub attached: String,
+    pub created_by: String,
+}
+
+/// The live service keys of organisation `org`, or of one of its groups.
+pub async fn service(
+    pool: &PgPool,
+    org: i32,
+    group: Option<i32>,
+) -> Result<Vec<ServiceKeyRow>, sqlx::Error> {
+    type Row = (i64, String, String, String, String, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT k.id, k.name, k.last4, to_char(k.created_at, 'DD Mon YYYY'),
+                CASE k.place_kind WHEN 'org' THEN o.name || ' organisation' ELSE g.name || ' group' END,
+                (SELECT m.email FROM audit_log AS a JOIN sign_in_methods AS m ON m.login_id = a.actor_login
+                 WHERE a.action = 'key.create' AND a.subject = 'key:' || k.id AND m.email IS NOT NULL
+                 ORDER BY m.id LIMIT 1)
+         FROM keys AS k
+         JOIN orgs AS o ON o.id = $1
+         LEFT JOIN groups AS g ON k.place_kind = 'group' AND g.id = k.place_id
+         WHERE k.kind = 'service' AND k.revoked_at IS NULL
+           AND ((k.place_kind = 'org' AND k.place_id = $1 AND $2::integer IS NULL)
+                OR (k.place_kind = 'group' AND g.org_id = $1 AND ($2::integer IS NULL OR g.id = $2)))
+         ORDER BY k.id",
+    )
+    .bind(org)
+    .bind(group)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, name, last4, created, attached, created_by)| ServiceKeyRow {
+                id,
+                name,
+                last4,
+                created,
+                attached,
+                created_by: created_by.unwrap_or_default(),
+            },
+        )
+        .collect())
+}
+
+/// The limit a new key of `kind` on `place` would pass, if any: a member's own keys in
+/// an organisation and a personal account's keys count against `max_keys`, an
+/// organisation's service keys against `max_service_keys` (C28, C51). Lowering a limit
+/// below the count stops nothing that exists (C53). The account row is locked first, so
+/// two creations cannot both see room.
+async fn at_limit(
+    conn: &mut PgConnection,
+    kind: KeyKind,
+    place: &Authorized<Place>,
+) -> Result<Option<i64>, sqlx::Error> {
+    let (scope, account) = match place.org() {
+        Some(org) => ("org", org),
+        None => ("personal", place.place().id as i32),
+    };
+    let lock = if scope == "org" {
+        "SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT 1 FROM personal_accounts WHERE id = $1 FOR UPDATE"
+    };
+    sqlx::query(lock).bind(account).execute(&mut *conn).await?;
+    let (max_keys, max_service_keys): (i32, Option<i32>) = sqlx::query_as(
+        "SELECT max_keys, max_service_keys FROM limits
+         WHERE scope_kind = $1 AND (scope_id = $2 OR scope_id IS NULL)
+         ORDER BY scope_id NULLS LAST LIMIT 1",
+    )
+    .bind(scope)
+    .bind(account)
+    .fetch_one(&mut *conn)
+    .await?;
+    let (count, limit): (i64, Option<i32>) = if kind == KeyKind::Service {
+        let count = sqlx::query_scalar(
+            "SELECT count(*) FROM keys
+             WHERE kind = 'service' AND revoked_at IS NULL
+               AND ((place_kind = 'org' AND place_id = $1)
+                    OR (place_kind = 'group' AND place_id IN (SELECT id FROM groups WHERE org_id = $1)))",
+        )
+        .bind(account)
+        .fetch_one(&mut *conn)
+        .await?;
+        (count, max_service_keys)
+    } else {
+        let count = sqlx::query_scalar(
+            "SELECT count(*) FROM keys
+             WHERE kind = 'user' AND revoked_at IS NULL AND place_kind = $1 AND place_id = $2",
+        )
+        .bind(crate::tenancy::kind_str(place.place().kind))
+        .bind(place.place().id as i32)
+        .fetch_one(&mut *conn)
+        .await?;
+        (count, Some(max_keys))
+    };
+    Ok(limit.map(i64::from).filter(|limit| count >= *limit))
 }
 
 #[derive(Debug)]

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>API keys</h1>
+{% match view %}
+{% when None %}
+<p>You have no place yet. Create an organisation or add a personal account in <a href="/account">Account settings</a>, then come back for a key.</p>
+{% when Some(view) %}
+<p>An API key lets npm or pip download through Probation. Every key belongs to the place selected at the top (here: {{ view.account }}), and that decides which rules apply to every download made with it.</p>
+{% if let Some(error) = view.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% if let Some(secret) = view.new_key %}
+<section aria-labelledby="new-key-heading">
+<h2 id="new-key-heading">Copy this key now. You will not be able to see it again.</h2>
+<pre><code id="new-key">{{ secret }}</code></pre>
+<h3>Point npm at Probation: add to <code>.npmrc</code></h3>
+<pre>registry=https://FIREWALL/npm/
+//FIREWALL/npm/:_authToken={{ secret }}</pre>
+<h3>Point pip at Probation: add to <code>pip.conf</code></h3>
+<pre>[global]
+index-url = https://key:{{ secret }}@FIREWALL/pypi/simple/</pre>
+<p class="mut">Replace FIREWALL with the address of your Probation firewall. uv and Poetry use the same index URL.</p>
+</section>
+{% endif %}
+<section aria-labelledby="own-heading">
+<h2 id="own-heading">Your keys in {{ view.account }}</h2>
+{% if view.own.is_empty() %}
+<p class="mut">You have no keys in {{ view.account }} yet. Create one, then paste the lines it shows into .npmrc or pip.conf.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Your keys in {{ view.account }}</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Ends with</th><th scope="col">Created</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for key in view.own %}
+<tr><td>{{ key.name }}</td><td><code>…{{ key.last4 }}</code></td><td>{{ key.created }}</td>
+<td><form method="post" action="/keys/{{ key.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Revoke {{ key.name }}">Revoke</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/keys" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="key-name">New key name</label>
+<input id="key-name" name="name" required maxlength="100" autocomplete="off">
+<button type="submit" class="pri">Create key</button>
+</form>
+<p class="mut">Revoking a key stops anything still using it within about 1 minute; this cannot be undone. Keys do not expire. A key stops working only when it is revoked, when its owner is removed from {{ view.account }}, or when {{ view.account }} is deleted.</p>
+</section>
+{% if let Some(service) = view.service %}
+<section aria-labelledby="service-heading">
+<h2 id="service-heading">Service keys</h2>
+<p>A service key belongs to {{ view.account }}, not to a person, so it keeps working when people leave. Every download made with it gets the policy of the group (or of the organisation) it is attached to. Push it to company devices with your device management tool (for example Intune).</p>
+{% if service.keys.is_empty() %}
+<p class="mut">There are no service keys yet.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Service keys</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Ends with</th><th scope="col">Attached to</th><th scope="col">Created by</th><th scope="col">Created</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for key in service.keys %}
+<tr><td>{{ key.name }}</td><td><code>…{{ key.last4 }}</code></td><td>{{ key.attached }}</td><td>{{ key.created_by }}</td><td>{{ key.created }}</td>
+<td><form method="post" action="/keys/{{ key.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Revoke service key {{ key.name }}">Revoke</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/keys/service">
+<fieldset><legend>New service key</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="row">
+<label for="service-name">Name</label>
+<input id="service-name" name="name" required maxlength="100" autocomplete="off">
+<label for="service-attach">Attach to</label>
+<select id="service-attach" name="attach">{% for (value, label) in service.attach %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+<button type="submit" class="pri">Create service key</button>
+</div>
+</fieldset>
+</form>
+<p class="mut">Org admins can attach to any group or to the organisation itself. Group admins see only their own group, and can revoke any service key attached to it, whoever created it.</p>
+</section>
+{% endif %}
+{% endmatch %}
+{% endblock %}

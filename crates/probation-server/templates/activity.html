@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Activity</h1>
+{% match view %}
+{% when None %}
+<p>You have no place yet. Create an organisation or add a personal account in <a href="/account">Account settings</a>.</p>
+{% when Some(view) %}
+<p>Downloads that Probation stopped in {{ view.account }}. <b>Blocked</b> means a rule refused it; <b>Held</b> means the version is too new and is waiting out the freeze. <b>Would have blocked (log only)</b> means OSV reports the package as malicious, but the OSV check is set to Log only, so it was let through and recorded. Other allowed downloads are not listed.</p>
+<p class="mut">You see {{ view.scope }}. Requests made with no key belong to no account and are not shown.</p>
+{% if view.rows.is_empty() %}
+<p class="mut">Nothing has been blocked or held in {{ view.account }} in the last {{ view.retention_days }} days. When Probation stops a download it will appear here.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Blocked and held downloads, newest first (times in UTC)</caption>
+<thead><tr><th scope="col">Time</th><th scope="col">Key</th><th scope="col">Ecosystem</th><th scope="col">Package@version</th><th scope="col">Result</th><th scope="col">Rule</th><th scope="col">Layer</th></tr></thead>
+<tbody>
+{% for row in view.rows %}
+<tr><td>{{ row.at }}</td><td>{{ row.key }}<br><span class="mut">{{ row.whose }}</span></td><td>{{ row.ecosystem }}</td><td>{{ row.package }}</td><td>{{ row.result }}</td><td>{{ row.rule }}</td><td>{{ row.layer }}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<p class="mut">Kept for {{ view.retention_days }} days (set by the service operator).</p>
+{% endmatch %}
+{% endblock %}

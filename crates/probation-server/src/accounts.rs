@@ -240,13 +240,28 @@ pub(crate) fn normal_email(email: &str) -> Option<String> {
     .then_some(email)
 }
 
-/// Whether an organisation of that name exists (names are unique case-insensitively, so
-/// `/o/<name>` and the typed name on `/signin` find one organisation, C37).
+/// An organisation name as it is stored: inner whitespace collapsed to one space, none
+/// at the ends.
+pub(crate) fn org_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether an organisation of that name exists. Names are unique ignoring case and
+/// whitespace, so `/o/<name>` and the typed name on `/signin` find one organisation
+/// (C37), and two places in the switcher never read alike.
 pub(crate) async fn org_name_taken(pool: &PgPool, name: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-        .bind(name)
-        .fetch_one(pool)
-        .await
+    let mut conn = pool.acquire().await?;
+    name_taken(&mut conn, name).await
+}
+
+async fn name_taken(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM orgs
+                        WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower($1))",
+    )
+    .bind(org_name(name))
+    .fetch_one(conn)
+    .await
 }
 
 /// Writes one mail to the outbox in the caller's transaction; the outbox job sends it.
@@ -509,23 +524,14 @@ pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::
     let Some(login_id) = confirmed else {
         return Ok(Verified::BadLink);
     };
-    let actor = Actor::Login {
-        login_id,
-        global_admin: false,
-        roles: Vec::new(),
-    };
+    let actor = Actor::own_account(login_id, false);
     match payload["kind"].as_str() {
         Some("org") => {
-            let name = payload["org_name"].as_str().unwrap_or_default();
-            let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))",
-            )
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
+            let name = org_name(payload["org_name"].as_str().unwrap_or_default());
+            let taken = name_taken(&mut tx, &name).await?;
             // Taken meanwhile: the login is confirmed and creates one from Account settings.
             if !taken && !name.is_empty() {
-                create_org(&mut tx, &actor, name).await?;
+                create_org(&mut tx, &actor, &name).await?;
             }
         }
         Some("personal") => create_personal(&mut tx, &actor).await?,
@@ -598,6 +604,8 @@ pub struct Session {
     /// What the session waits for before it is signed in (TOTP, an OAuth round trip,
     /// the choice for a deleted login).
     pub(crate) pending: Option<Value>,
+    /// The place chosen with the switcher ("org:3", "personal:5"), unchecked.
+    pub(crate) place: Option<String>,
 }
 
 impl Session {
@@ -624,6 +632,7 @@ type SessionRow = (
     bool,
     Option<i32>,
     Option<Value>,
+    Option<String>,
 );
 
 pub(crate) async fn load_session(
@@ -631,20 +640,21 @@ pub(crate) async fn load_session(
     token: &str,
 ) -> Result<Option<Session>, sqlx::Error> {
     let row: Option<SessionRow> = sqlx::query_as(
-        "SELECT id_hash, login_id, csrf_token, totp_ok, scope_org_id, pending FROM sessions
+        "SELECT id_hash, login_id, csrf_token, totp_ok, scope_org_id, pending, place FROM sessions
          WHERE id_hash = $1 AND expires_at > now()",
     )
     .bind(token_hash(token))
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(id_hash, login_id, csrf, totp_ok, scope_org_id, pending)| Session {
+        |(id_hash, login_id, csrf, totp_ok, scope_org_id, pending, place)| Session {
             id_hash,
             login_id,
             csrf,
             totp_ok,
             scope_org_id,
             pending,
+            place,
         },
     ))
 }
@@ -676,6 +686,7 @@ pub(crate) async fn open_session_in(
         totp_ok,
         scope_org_id,
         pending,
+        place: None,
     };
     let minutes = if login_id.is_some() {
         SESSION_MINUTES
@@ -751,6 +762,20 @@ pub(crate) async fn password_method(
     }))
 }
 
+/// Whether the login has an email-and-password address it has not confirmed (C41).
+pub(crate) async fn unconfirmed(
+    conn: &mut PgConnection,
+    login_id: i32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sign_in_methods
+                        WHERE login_id = $1 AND kind = 'password' AND verified_at IS NULL)",
+    )
+    .bind(login_id)
+    .fetch_one(conn)
+    .await
+}
+
 /// A login whose email-and-password address is not confirmed yet can do nothing but
 /// confirm it (C41). Answers that address.
 pub(crate) async fn unconfirmed_email(
@@ -767,31 +792,74 @@ pub(crate) async fn unconfirmed_email(
 }
 
 /// What the top bar shows for a login: a name (its first method's email) and its live
-/// places, personal account first.
+/// places, personal account first; only the organisation of a session opened through
+/// that organisation's SSO (T2).
 pub(crate) async fn top_bar(
     pool: &PgPool,
     login_id: i32,
-) -> Result<(String, Vec<String>), sqlx::Error> {
+    scope_org_id: Option<i32>,
+) -> Result<(String, Vec<SwitcherPlace>), sqlx::Error> {
     let name: Option<String> = sqlx::query_scalar(
         "SELECT email FROM sign_in_methods WHERE login_id = $1 AND email IS NOT NULL ORDER BY id LIMIT 1",
     )
     .bind(login_id)
     .fetch_optional(pool)
     .await?;
-    let places: Vec<String> = sqlx::query_scalar(
-        "SELECT label FROM (
-             SELECT 0 AS rank, 'Personal account' AS label, 0 AS id FROM personal_accounts
-             WHERE login_id = $1 AND deleted_at IS NULL
+    let rows: Vec<(bool, String, i32)> = sqlx::query_as(
+        "SELECT rank = 0, label, id FROM (
+             SELECT 0 AS rank, 'Personal account' AS label, id FROM personal_accounts
+             WHERE login_id = $1 AND deleted_at IS NULL AND $2::integer IS NULL
              UNION ALL
              SELECT 1, o.name || ' (organisation)', o.id FROM memberships AS m
              JOIN orgs AS o ON o.id = m.org_id
-             WHERE m.login_id = $1 AND o.deleted_at IS NULL
+             WHERE m.login_id = $1 AND o.deleted_at IS NULL AND ($2::integer IS NULL OR o.id = $2)
          ) AS places ORDER BY rank, id",
     )
     .bind(login_id)
+    .bind(scope_org_id)
     .fetch_all(pool)
     .await?;
+    let places = rows
+        .into_iter()
+        .map(|(personal, label, id)| {
+            let (value, kind) = if personal {
+                ("personal".to_owned(), LayerKind::Personal)
+            } else {
+                (format!("org:{id}"), LayerKind::Org)
+            };
+            SwitcherPlace {
+                label,
+                value,
+                place: PlaceRef {
+                    kind,
+                    id: id as u32,
+                },
+            }
+        })
+        .collect();
     Ok((name.unwrap_or_else(|| format!("Login {login_id}")), places))
+}
+
+/// One of a login's places in the switcher: its label, the value the form posts
+/// ("personal" or "org:<id>"), and the place itself.
+pub(crate) struct SwitcherPlace {
+    pub label: String,
+    pub value: String,
+    pub place: PlaceRef,
+}
+
+/// Remembers the place chosen with the switcher; every page checks it again.
+pub(crate) async fn choose_place(
+    pool: &PgPool,
+    session: &Session,
+    place: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET place = $2 WHERE id_hash = $1")
+        .bind(&session.id_hash)
+        .bind(place)
+        .execute(pool)
+        .await
+        .map(drop)
 }
 
 /// Secrets at rest (T16): AES-256-GCM under `PROBATION_SERVER_SECRET_KEY`, with the
@@ -876,11 +944,7 @@ pub(crate) async fn login_actor(
     .bind(login_id)
     .fetch_one(conn)
     .await?;
-    Ok(Actor::Login {
-        login_id,
-        global_admin,
-        roles: Vec::new(),
-    })
+    Ok(Actor::own_account(login_id, global_admin))
 }
 
 /// A login must keep its authenticator while it is an org admin of a live organisation
@@ -1022,10 +1086,13 @@ pub(crate) async fn totp_uri(
 }
 
 /// Turns the authenticator on once `code` matches the pending secret; audited with the
-/// secret redacted (T16).
+/// secret redacted (T16). Every other session of the login ends: one opened with a
+/// password alone must not become an admin session (C24, T15); `session` proved the
+/// code and stays.
 pub(crate) async fn totp_enable(
     pool: &PgPool,
     secrets: &SecretBox,
+    session: &Session,
     login_id: i32,
     code: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -1047,6 +1114,7 @@ pub(crate) async fn totp_enable(
         .bind(step)
         .execute(&mut *tx)
         .await?;
+    end_sessions(&mut tx, login_id, Some(&session.id_hash)).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -1096,6 +1164,67 @@ pub(crate) async fn totp_disable(pool: &PgPool, login_id: i32) -> Result<bool, s
     .await?;
     let () = tx.commit().await?;
     Ok(true)
+}
+
+/// An org admin resets the authenticator of a member whose login belongs to their
+/// organisation alone; any other login's, and any org admin's or one who was an org
+/// admin there in the last 30 days (S6-4), is reset by a global admin (C39, C76). The authenticator, its backup codes and every session of the login
+/// go in one transaction, with the audit row; a refusal writes nothing.
+pub(crate) async fn reset_totp(
+    pool: &PgPool,
+    actor: &Actor,
+    member: &tenancy::Authorized<tenancy::Place>,
+) -> Result<(), tenancy::ChangeError> {
+    use tenancy::{ChangeError, Role};
+    let global = actor.is_global_admin();
+    let runs = matches!(
+        actor.role(member.place()),
+        Some(Role::OrgAdmin | Role::GlobalAdmin)
+    );
+    let (Some(login), Some(org), true) = (member.owner_login(), member.org(), runs) else {
+        return Err(ChangeError::Denied);
+    };
+    let mut tx = pool.begin().await?;
+    // Under the organisation's lock, so no role change slips in between (S6-4).
+    tenancy::lock_org(&mut tx, org).await?;
+    let (org_only, org_admin): (bool, bool) = sqlx::query_as(
+        "SELECT NOT EXISTS (SELECT 1 FROM personal_accounts WHERE login_id = $1)
+                    AND NOT EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id IS DISTINCT FROM $2),
+                EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id = $2 AND role = 'org_admin')
+                    OR EXISTS (SELECT 1 FROM former_org_admins
+                               WHERE login_id = $1 AND org_id = $2 AND until > now() - interval '30 days')",
+    )
+    .bind(login)
+    .bind(org)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !global && (!org_only || org_admin) {
+        return Err(ChangeError::Denied);
+    }
+    let removed = sqlx::query("DELETE FROM totp WHERE login_id = $1")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query("DELETE FROM backup_codes WHERE login_id = $1")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?;
+    end_sessions(&mut tx, login, None).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: Some(org),
+            action: "totp.reset",
+            subject: format!("login:{login}"),
+            before: Some(json!({"totp": if removed > 0 { "on" } else { "off" }})),
+            after: Some(json!({"totp": "off"})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
 }
 
 impl Session {
@@ -1335,9 +1464,19 @@ const RESET_MINUTES: i32 = 60;
 /// Mails a reset link when the address has an email-and-password method on a live
 /// login; nothing otherwise. The link is built from the configured base URL (T14).
 pub async fn request_reset(pool: &PgPool, base: &Url, email: &str) -> Result<(), sqlx::Error> {
+    // A member who joined through company SSO, now turned off, has no password yet: the
+    // link sets one on their SSO method's login (C62). An address that has a password
+    // method anywhere is that method's alone (C91).
     let method: Option<i32> = sqlx::query_scalar(
         "SELECT m.id FROM sign_in_methods AS m JOIN logins AS l ON l.id = m.login_id
-         WHERE m.kind = 'password' AND lower(m.email) = $1 AND l.deleted_at IS NULL",
+         WHERE lower(m.email) = $1 AND l.deleted_at IS NULL
+           AND (m.kind = 'password'
+                OR (m.kind = 'oidc'
+                    AND NOT EXISTS (SELECT 1 FROM sign_in_methods AS p
+                                    WHERE p.kind = 'password'
+                                      AND (p.login_id = m.login_id OR lower(p.email) = $1))
+                    AND EXISTS (SELECT 1 FROM orgs AS o WHERE o.id = m.org_id AND o.sso_issuer IS NULL)))
+         ORDER BY m.kind = 'password' DESC, m.id LIMIT 1",
     )
     .bind(email)
     .fetch_optional(pool)
@@ -1387,22 +1526,43 @@ pub(crate) async fn reset_password(
     new_hash: &str,
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let login: Option<i32> = sqlx::query_scalar(
+    let used: Option<(i32, i32, String, Option<String>)> = sqlx::query_as(
         "WITH used AS (
              UPDATE email_tokens SET used_at = now()
              WHERE token_hash = $1 AND purpose = 'reset' AND used_at IS NULL AND expires_at > now()
              RETURNING method_id
          )
-         UPDATE sign_in_methods SET password_hash = $2
-         WHERE id = (SELECT method_id FROM used) RETURNING login_id",
+         SELECT m.id, m.login_id, m.kind, m.email FROM sign_in_methods AS m
+         WHERE m.id = (SELECT method_id FROM used) FOR UPDATE",
     )
     .bind(token_hash(token))
-    .bind(new_hash)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(login_id) = login else {
+    let Some((method, login_id, kind, email)) = used else {
         return Ok(false);
     };
+    if kind == "password" {
+        sqlx::query("UPDATE sign_in_methods SET password_hash = $2 WHERE id = $1")
+            .bind(method)
+            .bind(new_hash)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        // An SSO member's first password, after their organisation turned SSO off (C62).
+        let added = sqlx::query(
+            "INSERT INTO sign_in_methods (login_id, kind, subject, email, password_hash, verified_at)
+             VALUES ($1, 'password', $2, $2, $3, now()) ON CONFLICT DO NOTHING",
+        )
+        .bind(login_id)
+        .bind(email.as_deref().map(str::to_lowercase))
+        .bind(new_hash)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if added == 0 {
+            return Ok(false);
+        }
+    }
     end_sessions(&mut tx, login_id, None).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
@@ -1454,21 +1614,16 @@ pub(crate) async fn add_org(
     login_id: i32,
     name: &str,
 ) -> Result<Result<(), &'static str>, sqlx::Error> {
-    let name = name.trim();
-    if let Some(problem) = org_name_problem(name) {
+    let name = org_name(name);
+    if let Some(problem) = org_name_problem(&name) {
         return Ok(Err(problem));
     }
     let mut tx = pool.begin().await?;
-    let taken: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orgs WHERE lower(name) = lower($1))")
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
-    if taken {
+    if name_taken(&mut tx, &name).await? {
         return Ok(Err(ORG_NAME_TAKEN));
     }
     let actor = login_actor(&mut tx, login_id).await?;
-    create_org(&mut tx, &actor, name).await?;
+    create_org(&mut tx, &actor, &name).await?;
     let () = tx.commit().await?;
     Ok(Ok(()))
 }
@@ -1911,11 +2066,20 @@ pub(crate) async fn identity_login(
     .fetch_optional(&mut *tx)
     .await?;
     if let Some((login, method)) = found {
-        // Past its 30 days the old login is erased now, and the method starts anew.
-        if login_state(pool, login).await? != LoginState::Expired {
-            return Ok((login, method));
+        match login_state(pool, login).await? {
+            // Every sign-in through an organisation's SSO joins it, unless an org admin
+            // removed this login or identity there (C5, C128, C130).
+            LoginState::Live => {
+                if let Some(org) = identity.org {
+                    join_through_sso(&mut tx, login, org).await?;
+                    let () = tx.commit().await?;
+                }
+                return Ok((login, method));
+            }
+            LoginState::Deleted { .. } => return Ok((login, method)),
+            // Past its 30 days the old login is erased now, and the method starts anew.
+            LoginState::Expired => erase_login(&mut tx, login).await?,
         }
-        erase_login(&mut tx, login).await?;
     }
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
@@ -1928,14 +2092,21 @@ pub(crate) async fn identity_login(
     Ok((login, method))
 }
 
-/// A login that signs in through, or links, an organisation's SSO joins it (C5).
+/// A login that signs in through, or links, an organisation's SSO joins it (C5), unless
+/// an org admin removed it, or the SSO identity it holds, there while the removed login
+/// exists; only an invitation brings it back (C128, C130).
 async fn join_through_sso(
     conn: &mut PgConnection,
     login: i32,
     org: i32,
 ) -> Result<(), sqlx::Error> {
     let joined = sqlx::query(
-        "INSERT INTO memberships (login_id, org_id, role) VALUES ($1, $2, 'member')
+        "INSERT INTO memberships (login_id, org_id, role)
+         SELECT $1, $2, 'member'
+         WHERE NOT EXISTS (SELECT 1 FROM org_removals WHERE login_id = $1 AND org_id = $2)
+           AND NOT EXISTS (SELECT 1 FROM org_sso_removals AS r JOIN sign_in_methods AS m
+                             ON m.org_id = r.org_id AND m.issuer = r.issuer AND m.subject = r.subject
+                           WHERE m.login_id = $1 AND r.org_id = $2)
          ON CONFLICT DO NOTHING",
     )
     .bind(login)
@@ -1995,6 +2166,151 @@ pub(crate) async fn sso_idp(
             redirect_uri,
         })
     }))
+}
+
+/// An organisation's company SSO as its page shows it: issuer, client id and required
+/// tenant, never the secret.
+pub(crate) async fn sso_settings(
+    pool: &PgPool,
+    org: i32,
+) -> Result<Option<(String, String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT sso_issuer, sso_client_id, sso_allowed_tenant FROM orgs
+         WHERE id = $1 AND sso_issuer IS NOT NULL AND sso_client_id IS NOT NULL",
+    )
+    .bind(org)
+    .fetch_optional(pool)
+    .await
+}
+
+/// What the organisation page's SSO form saves.
+pub(crate) struct SsoForm<'a> {
+    pub enabled: bool,
+    pub issuer: &'a str,
+    pub client_id: &'a str,
+    /// Empty keeps the stored one.
+    pub client_secret: &'a str,
+    pub allowed_tenant: &'a str,
+}
+
+/// Saves `org`'s company SSO, or turns it off, as only its org admin may (C21, C57,
+/// C62). The client secret is sealed with the organisation's id as AAD and never shown
+/// or audited (T16); members who joined through SSO stay when it is turned off (C62).
+pub(crate) async fn save_sso(
+    pool: &PgPool,
+    secrets: &SecretBox,
+    actor: &Actor,
+    org: &tenancy::Authorized<tenancy::Place>,
+    form: SsoForm<'_>,
+) -> Result<(), tenancy::ChangeError> {
+    use tenancy::{ChangeError, Role};
+    let refuse = |reason: &str| Err(ChangeError::Refused(reason.to_owned()));
+    let (Some(org_id), true) = (
+        org.org(),
+        matches!(
+            actor.role(org.place()),
+            Some(Role::OrgAdmin | Role::GlobalAdmin)
+        ),
+    ) else {
+        return Err(ChangeError::Denied);
+    };
+    let issuer = form.issuer.trim().trim_end_matches('/');
+    let client_id = form.client_id.trim();
+    let tenant = form.allowed_tenant.trim();
+    if form.enabled {
+        if Url::parse(issuer).map_or(true, |url| url.scheme() != "https") {
+            return refuse("Enter the issuer as an https URL.");
+        }
+        if client_id.is_empty() {
+            return refuse("Enter the client ID your provider gave you.");
+        }
+        let shared = issuer == GOOGLE_ISSUER
+            || issuer.starts_with("https://login.microsoftonline.com/common");
+        if shared && tenant.is_empty() {
+            return refuse(
+                "A shared issuer needs the tenant your people sign in from: the Google Workspace domain (hd) or the Microsoft tenant id (tid).",
+            );
+        }
+    }
+    let mut tx = pool.begin().await?;
+    let before: (Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT sso_issuer, sso_client_id, sso_allowed_tenant, sso_client_secret_enc IS NOT NULL
+         FROM orgs WHERE id = $1 FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let sealed = match (form.enabled, form.client_secret.trim()) {
+        (false, _) => None,
+        // The stored secret stays only with the issuer and client it was given for.
+        (true, "")
+            if before.3
+                && before.0.as_deref() == Some(issuer)
+                && before.1.as_deref() == Some(client_id) =>
+        {
+            Some(None)
+        }
+        (true, "") => return refuse("Enter the client secret your provider gave you."),
+        (true, secret) => Some(Some(
+            secrets.seal(&sso_secret_aad(org_id), secret.as_bytes()),
+        )),
+    };
+    let saved = if form.enabled {
+        sqlx::query(
+            "UPDATE orgs SET sso_issuer = $2, sso_client_id = $3, sso_allowed_tenant = $4,
+                 sso_client_secret_enc = coalesce($5, sso_client_secret_enc)
+             WHERE id = $1",
+        )
+        .bind(org_id)
+        .bind(issuer)
+        .bind(client_id)
+        .bind((!tenant.is_empty()).then_some(tenant))
+        .bind(sealed.flatten())
+        .execute(&mut *tx)
+        .await
+    } else {
+        sqlx::query(
+            "UPDATE orgs SET sso_issuer = NULL, sso_client_id = NULL, sso_allowed_tenant = NULL,
+                 sso_client_secret_enc = NULL WHERE id = $1",
+        )
+        .bind(org_id)
+        .execute(&mut *tx)
+        .await
+    };
+    match saved {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+            return refuse("Another organisation already uses this issuer and client ID.");
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let redacted = |on: bool| on.then_some("[redacted]");
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: Some(org_id),
+            action: "sso.save",
+            subject: format!("org:{org_id}"),
+            before: Some(json!({
+                "enabled": before.0.is_some(),
+                "issuer": before.0,
+                "client_id": before.1,
+                "allowed_tenant": before.2,
+                "client_secret": redacted(before.3),
+            })),
+            after: Some(json!({
+                "enabled": form.enabled,
+                "issuer": form.enabled.then_some(issuer),
+                "client_id": form.enabled.then_some(client_id),
+                "allowed_tenant": (form.enabled && !tenant.is_empty()).then_some(tenant),
+                "client_secret": redacted(form.enabled),
+            })),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
 }
 
 /// The organisation `/o/<name>` or the typed name on `/signin` means, when it has SSO
@@ -2801,6 +3117,7 @@ pub(crate) async fn start_new_login(
     let Some((kind, issuer, subject, org, email, hash, verified)) = method else {
         return Ok(None);
     };
+    // The removals of the erased login go with it (C130).
     erase_login(&mut tx, old_login).await?;
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
@@ -2839,17 +3156,17 @@ pub(crate) async fn start_new_login(
     Ok(Some(login))
 }
 
-/// The daily purge (C33): erases logins and personal accounts whose 30 days have
-/// passed, each in its own transaction, so one that cannot be erased is logged and
-/// does not hold back the others. Returns how many logins and personal accounts it
-/// erased.
-pub async fn purge(pool: &PgPool) -> Result<(u64, u64), sqlx::Error> {
+/// The daily purge (C33): erases logins, personal accounts and organisations whose 30
+/// days have passed, each in its own transaction, so one that cannot be erased is logged
+/// and does not hold back the others. Returns how many logins, personal accounts and
+/// organisations it erased.
+pub async fn purge(pool: &PgPool) -> Result<(u64, u64, u64), sqlx::Error> {
     let logins: Vec<i32> = sqlx::query_scalar(
         "SELECT id FROM logins WHERE deleted_at IS NOT NULL AND restore_until <= now()",
     )
     .fetch_all(pool)
     .await?;
-    let mut erased = (0, 0);
+    let mut erased = (0, 0, 0);
     for login in logins {
         match erase_expired(pool, login).await {
             Ok(()) => erased.0 += 1,
@@ -2872,6 +3189,23 @@ pub async fn purge(pool: &PgPool) -> Result<(u64, u64), sqlx::Error> {
             Err(err) => {
                 tracing::error!(personal, error = %err, "purge could not erase a personal account")
             }
+        }
+    }
+    let orgs: Vec<i32> = sqlx::query_scalar(
+        "SELECT id FROM orgs WHERE deleted_at IS NOT NULL AND restore_until <= now()",
+    )
+    .fetch_all(pool)
+    .await?;
+    for org in orgs {
+        let erase = async {
+            let mut tx = pool.begin().await?;
+            let erased = tenancy::erase_org(&mut tx, org).await?;
+            tx.commit().await.map(|()| erased)
+        };
+        match erase.await {
+            Ok(true) => erased.2 += 1,
+            Ok(false) => {}
+            Err(err) => tracing::error!(org, error = %err, "purge could not erase an organisation"),
         }
     }
     // Expired sessions and old sign-in failures go too.
@@ -2964,7 +3298,9 @@ pub fn spawn_jobs(pool: PgPool, mailer: Option<Arc<dyn Mailer>>) {
         loop {
             every_day.tick().await;
             match purge(&pool).await {
-                Ok((logins, personal)) => tracing::info!(logins, personal, "purge erased"),
+                Ok((logins, personal, orgs)) => {
+                    tracing::info!(logins, personal, orgs, "purge erased")
+                }
                 Err(err) => tracing::warn!(error = %err, "purge failed"),
             }
         }

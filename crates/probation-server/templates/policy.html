@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Policy</h1>
+<p>The same editor is used at every layer. Each layer inherits everything above it. You can always make things stricter; you can make them looser only where the layer above allows it.</p>
+<nav aria-label="Layers" class="row">
+<span>Layers:</span>
+{% for (href, label, current) in view.layers %}<a href="{{ href }}"{% if *current %} aria-current="page"{% endif %}>{{ label }}</a>
+{% endfor %}
+</nav>
+<p class="mut">Chain: {{ view.chain }}.</p>
+<h2>{{ view.label }}</h2>
+{% if let Some(error) = view.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% if !view.editable %}<p class="mut">You can see this layer but not change it.</p>{% endif %}
+
+<section aria-labelledby="settings-heading">
+<h2 id="settings-heading">Freeze and OSV</h2>
+<form method="post" action="/policy/{{ view.id }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="revision" value="{{ view.revision }}">
+<input type="hidden" name="action" value="save">
+<fieldset><legend>Freeze</legend>
+<div class="row">
+<label for="freeze">Hold new versions for</label>
+<input id="freeze" name="freeze" type="number" min="0" max="365" value="{{ view.freeze }}" aria-describedby="freeze-help">
+<label for="unit">Unit</label>
+<select id="unit" name="unit"><option value="hours"{% if view.unit == "hours" %} selected{% endif %}>hours</option><option value="days"{% if view.unit == "days" %} selected{% endif %}>days</option></select>
+</div>
+<p class="mut" id="freeze-help">Empty inherits the layer above. Anything from 0 hours to 365 days; applies to both npm and PyPI. {{ view.freeze_above }}</p>
+{% if view.freeze_not_in_effect %}<p class="err">This freeze is {{ view.not_in_effect }}.</p>{% endif %}
+</fieldset>
+<fieldset><legend>OSV malicious-package check</legend>
+{% for (value, label) in view.osv_choices %}<label><input type="radio" name="osv" value="{{ value }}"{% if view.osv == *value %} checked{% endif %}> {{ label }}</label>
+{% endfor %}
+<p class="mut">{{ view.osv_above }} Log only and Off both loosen the check, so they need "Allow turning OSV off" from the layer above.</p>
+{% if view.osv_not_in_effect %}<p class="err">This OSV setting is {{ view.not_in_effect }}.</p>{% endif %}
+</fieldset>
+{% if !view.switches.is_empty() %}
+<fieldset><legend>What the layer below may loosen</legend>
+{% for switch in view.switches %}<label><input type="checkbox" name="{{ switch.name }}"{% if switch.checked %} checked{% endif %}{% if switch.disabled %} disabled{% endif %}> {{ switch.label }}{% if switch.disabled %} <span class="mut">(the layer above does not allow this, so it cannot be passed down)</span>{% endif %}{% if switch.not_in_effect %} <span class="mut">({{ view.not_in_effect }})</span>{% endif %}</label>
+{% if switch.disabled && switch.checked %}<input type="hidden" name="{{ switch.name }}" value="on">{% endif %}
+{% endfor %}
+</fieldset>
+{% endif %}
+{% if view.editable %}<p class="row"><button type="submit" class="pri">Save changes</button> <span class="mut">Changes reach every firewall within about 1 minute.</span></p>{% endif %}
+</form>
+</section>
+
+<section aria-labelledby="blocks-heading">
+<h2 id="blocks-heading">Blocks</h2>
+{% if view.blocks.is_empty() %}
+<p class="mut">No blocks yet, here or above.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Blocks of this layer and the layers above</caption>
+<thead><tr><th scope="col">Ecosystem</th><th scope="col">Package</th><th scope="col">What is blocked</th><th scope="col">Set by</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for block in view.blocks %}
+<tr><td>{{ block.ecosystem }}</td><td>{{ block.package }}</td><td>{{ block.what }}</td><td>{{ block.set_by }}</td>
+<td>{% match block.own %}{% when Some(index) %}{% if view.editable %}<form method="post" action="/policy/{{ view.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ view.revision }}"><input type="hidden" name="action" value="remove_block"><input type="hidden" name="index" value="{{ index }}"><button type="submit" aria-label="Remove the block on {{ block.package }} {{ block.what }}">Remove</button></form>{% endif %}{% when None %}<span class="mut">read-only</span>{% endmatch %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+{% if view.editable %}
+<form method="post" action="/policy/{{ view.id }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="revision" value="{{ view.revision }}">
+<input type="hidden" name="action" value="add_block">
+<fieldset><legend>Add a block</legend>
+<div class="row">
+<label for="block-ecosystem">Ecosystem</label>
+<select id="block-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option></select>
+<label for="block-name">Package name</label>
+<input id="block-name" name="name" autocomplete="off">
+<label for="block-what">What</label>
+<select id="block-what" name="what"><option value="package">Whole package</option><option value="version">One version</option><option value="file">One exact file</option></select>
+<label for="block-version">Version</label>
+<input id="block-version" name="version" autocomplete="off">
+<label for="block-algorithm">File digest</label>
+<select id="block-algorithm" name="algorithm"><option value="sha256">sha256</option><option value="sha512">sha512</option></select>
+<label for="block-digest">Digest (hex)</label>
+<input id="block-digest" name="digest" autocomplete="off">
+<button type="submit" class="pri">Add block</button>
+</div>
+<p class="mut">An exact file is named by its digest alone, in either ecosystem.</p>
+</fieldset>
+</form>
+{% endif %}
+</section>
+
+<section aria-labelledby="exceptions-heading">
+<h2 id="exceptions-heading">Exceptions</h2>
+<p class="mut">An exception lets one package (or one version of it) through checks that would otherwise stop it. An exception to a rule set higher up needs every layer between the rule's owner and this one to allow it.</p>
+{% if !view.exceptions.is_empty() %}
+<div class="wrap"><table>
+<caption class="mut">Exceptions of this layer and the layers above</caption>
+<thead><tr><th scope="col">Ecosystem</th><th scope="col">Package</th><th scope="col">Covers</th><th scope="col">Lets it through</th><th scope="col">Set by</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for exception in view.exceptions %}
+<tr><td>{{ exception.ecosystem }}</td><td>{{ exception.package }}</td><td>{{ exception.covers }}</td><td>{{ exception.lifts }}{% if exception.not_in_effect %} <b>({{ view.not_in_effect }})</b>{% endif %}</td><td>{{ exception.set_by }}</td>
+<td>{% match exception.own %}{% when Some(index) %}{% if view.editable %}<form method="post" action="/policy/{{ view.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ view.revision }}"><input type="hidden" name="action" value="remove_exception"><input type="hidden" name="index" value="{{ index }}"><button type="submit" aria-label="Remove the exception on {{ exception.package }}">Remove</button></form>{% endif %}{% when None %}<span class="mut">read-only</span>{% endmatch %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+{% if view.editable %}
+<form method="post" action="/policy/{{ view.id }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="revision" value="{{ view.revision }}">
+<input type="hidden" name="action" value="add_exception">
+<fieldset><legend>Add an exception</legend>
+<div class="row">
+<label for="exception-ecosystem">Ecosystem</label>
+<select id="exception-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option></select>
+<label for="exception-name">Package name</label>
+<input id="exception-name" name="name" autocomplete="off">
+<label for="exception-version">Exact version <span class="mut">(empty: the whole package, also future versions)</span></label>
+<input id="exception-version" name="version" autocomplete="off">
+</div>
+<p>Let it through:</p>
+<label><input type="checkbox" name="lifts_block"> Blocklist</label>
+<label><input type="checkbox" name="lifts_freeze"> Freeze</label>
+<label><input type="checkbox" name="lifts_osv"> OSV</label>
+<button type="submit" class="pri">Add exception</button>
+</fieldset>
+</form>
+{% endif %}
+</section>
+{% endblock %}

@@ -1456,13 +1456,13 @@ async fn t_portal_auth_links() {
         .expect("a resend on one connection");
 }
 
-/// The place switcher's options on `page`.
+/// The place switcher's option labels on `page`.
 fn switcher(page: &Page) -> Vec<String> {
     let select = between(&page.body, "<select id=\"place-switcher\"", "</select>");
     select
-        .split("<option>")
+        .split("<option")
         .skip(1)
-        .map(|option| option.trim_end_matches("</option>").to_owned())
+        .map(|option| between(option, ">", "</option>").to_owned())
         .collect()
 }
 

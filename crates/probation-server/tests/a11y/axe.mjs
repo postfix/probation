@@ -1,8 +1,11 @@
 // A11Y-axe and the automatable part of A11Y-keyboard (03 § Test plan, C84: WCAG 2.2 AA).
 //
 //   node crates/probation-server/tests/a11y/axe.mjs --slice 5
+//   node crates/probation-server/tests/a11y/axe.mjs --slice 6
 //
 // against the portal served with tests/portal.toml on a database seeded by tests/seed.sql.
+// The slice 6 run turns on an authenticator for oli@acme.test, so run it once per seeded
+// database, after the slice 5 run.
 // Playwright Chromium signs in through the real sign-in form with the seeded logins,
 // visits every page and state of the slice, runs axe-core on each, and walks each page
 // with the Tab key: the focus order follows the DOM, every focused control shows a focus
@@ -22,8 +25,8 @@ const slice = (() => {
   const at = process.argv.indexOf('--slice');
   return at >= 0 ? process.argv[at + 1] : undefined;
 })();
-if (slice !== '5') {
-  console.error('usage: node axe.mjs --slice 5 (slices 6 and 7 add their pages here)');
+if (slice !== '5' && slice !== '6') {
+  console.error('usage: node axe.mjs --slice 5|6 (slice 7 adds its pages here)');
   process.exit(2);
 }
 
@@ -155,8 +158,118 @@ function totp(base32, at = Date.now() / 1000) {
   return String((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0');
 }
 
+/** Turns the signed-in login's authenticator on from Account settings. */
+async function turnTotpOn(page) {
+  await go(page, '/account');
+  await submit(page, 'form[action="/account/totp/setup"] button[type=submit]');
+  const key = await page.locator('#totp-key').textContent();
+  await page.locator('#code').fill(totp(key));
+  await submit(page, 'form[action="/account/totp/enable"] button[type=submit]');
+}
+
+/** Every page and state of slice 6: keys, policy, activity, organisation, audit log. */
+async function slice6(browser) {
+  // Mia, a member: her keys, a key shown once, a refused name, her own policy layer,
+  // her activity, her organisation page with her leave request, and the audit log.
+  {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, 'mia@acme.test');
+    await go(page, '/keys');
+    await audit(page, 'API keys (member)');
+    await page.locator('#key-name').fill('a11y laptop');
+    await submit(page, 'form[action="/keys"] button[type=submit]');
+    if (!(await page.locator('#new-key').count())) throw new Error('no key was shown once');
+    await audit(page, 'API keys: new key shown once');
+    await page.locator('#key-name').fill('   ');
+    await submit(page, 'form[action="/keys"] button[type=submit]');
+    await audit(page, 'API keys: error');
+    await go(page, '/policy');
+    await audit(page, 'Policy (own layer)');
+    await go(page, '/activity');
+    await audit(page, 'Activity (member)');
+    await go(page, '/org');
+    await audit(page, 'Organisation (member, leave request waiting)');
+    await go(page, '/audit');
+    await audit(page, 'Audit log (member: not shown)');
+    await context.close();
+  }
+
+  // Bob, a group admin (no authenticator needed, C24): his group's policy and a refused
+  // looser freeze, and its log.
+  {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, 'bob@acme.test');
+    await go(page, '/policy');
+    await audit(page, 'Policy (group layer)');
+    await page.locator('#freeze').fill('1');
+    await submit(page, 'form:has(input[name=action][value=save]) button[type=submit]');
+    await audit(page, 'Policy: looser change refused');
+    await go(page, '/keys');
+    await audit(page, 'API keys (group admin)');
+    await go(page, '/audit');
+    await audit(page, 'Audit log (group admin)');
+    await context.close();
+  }
+
+  // Oli, an org admin: an authenticator first (C24), then the organisation page and
+  // its states, service keys, the organisation's policy, activity and audit log.
+  {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, 'oli@acme.test');
+    await turnTotpOn(page);
+    await go(page, '/org');
+    if (!/\/org\/\d+$/.test(page.url())) throw new Error(`/org did not open Acme: ${page.url()}`);
+    await audit(page, 'Organisation (org admin)');
+    await page.locator('#invite-email').fill('erin@acme.test');
+    await submit(page, 'form[action$="/invitations"] button[type=submit]');
+    await audit(page, 'Organisation: invitation waiting');
+    await page.locator('#range-cidr').fill('192.0.2.300/24');
+    await submit(page, 'form[action$="/ranges"] button[type=submit]');
+    await audit(page, 'Organisation: range refused as invalid');
+    await page.locator('#group-name').fill('Data');
+    await submit(page, 'form[action$="/groups"] button[type=submit]');
+    await page.locator('a[href$="/delete"]').first().click();
+    await page.waitForLoadState('load');
+    await audit(page, 'Delete a group: confirmation');
+    await go(page, '/invite?token=not-a-token');
+    await audit(page, 'Invitation link expired');
+    await go(page, '/keys');
+    await page.locator('#service-name').fill('Frontend devices');
+    await submit(page, 'form[action="/keys/service"] button[type=submit]');
+    await audit(page, 'API keys (org admin, service key shown once)');
+    await go(page, '/policy');
+    await audit(page, 'Policy (organisation layer)');
+    await go(page, '/activity');
+    await audit(page, 'Activity (org admin)');
+    await go(page, '/audit');
+    await audit(page, 'Audit log (org admin)');
+    await context.close();
+  }
+
+  // Pat, a personal account only; and the global admin's audit log.
+  for (const [email, pages] of [
+    ['pat@home.test', [['/keys', 'API keys (personal account)'], ['/policy', 'Policy (personal account)'], ['/activity', 'Activity (personal account, empty)'], ['/org', 'Organisation (no organisation)'], ['/audit', 'Audit log (personal account)']]],
+    ['admin@probation.test', [['/audit', 'Audit log (global admin)']]],
+  ]) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await signIn(page, email);
+    for (const [path, name] of pages) {
+      await go(page, path);
+      await audit(page, name);
+    }
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
+  if (slice === '6') {
+    await slice6(browser);
+  } else {
   // Signed out.
   {
     const context = await browser.newContext();
@@ -254,6 +367,7 @@ try {
     if (!page.url().endsWith(path)) throw new Error(`${email} did not reach ${path}: ${page.url()}`);
     await audit(page, name);
     await context.close();
+  }
   }
 } finally {
   await browser.close();
