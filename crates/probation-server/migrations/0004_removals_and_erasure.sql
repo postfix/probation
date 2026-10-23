@@ -1,19 +1,21 @@
 -- Slice 6 follow-ups: removed members and erasing logins.
 
--- A member an org admin removed (or whose leave an org admin approved) is not added back
--- by the organisation's SSO, by sign-in or by linking; only accepting an invitation
--- clears the row (C128).
+-- A member an org admin removed is not added back by the organisation's SSO, by sign-in
+-- or by linking; accepting an invitation clears the row, and it goes with the login when
+-- that is erased. An approved leave writes none (C128, C130).
 CREATE TABLE org_removals (
     org_id integer NOT NULL REFERENCES orgs (id) ON DELETE CASCADE,
     login_id integer NOT NULL REFERENCES logins (id) ON DELETE CASCADE,
     PRIMARY KEY (org_id, login_id)
 );
--- The same by the SSO identity the member signed in with, so a new login holding that
--- identity (after the old one was erased, say) is not added back either.
+-- The same by the SSO identity the removed login held, so a new login with that identity
+-- (after the method was unlinked, say) is not added back either while the removed login
+-- exists; erasing the removed login erases this too (C130).
 CREATE TABLE org_sso_removals (
     org_id integer NOT NULL REFERENCES orgs (id) ON DELETE CASCADE,
     issuer text NOT NULL,
     subject text NOT NULL,
+    login_id integer NOT NULL REFERENCES logins (id) ON DELETE CASCADE,
     PRIMARY KEY (org_id, issuer, subject)
 );
 -- When a login stopped being an org admin of an organisation (demoted, removed or left).

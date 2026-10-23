@@ -346,6 +346,7 @@ pub(crate) async fn totp_enable(
     match accounts::totp_enable(
         &portal.pool,
         &portal.secrets,
+        &signed_in.session,
         signed_in.login_id,
         &form.code,
     )

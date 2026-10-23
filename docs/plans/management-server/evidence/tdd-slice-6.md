@@ -103,3 +103,19 @@ Rework rechecks (2026-10-23):
 - `cargo clippy --workspace --all-targets -j 8 -- -D warnings` clean; `cargo fmt --all -- --check` clean.
 - `node crates/probation-server/tests/a11y/axe.mjs --slice 6` on a reseeded database: `A11Y slice 6: 26 pages, 0 problems`, exit 0.
 - The 4 analyzers at `--root crates/probation-server`: 0 findings each. C123 SMTC query: one site in all eight runs, `src/managed/mod.rs:276` `headers.get(AUTHORIZATION)` (the line moved with slice 3's merged changes).
+
+## Round 3 (after 62abc00: slice 5 merged, C130, re-check items)
+
+The C128 cases left T-portal-sso-off-members-stay for the new T-portal-sso-removed-not-rejoined, so the file has 36 tests.
+
+tdd: T-portal-sso-removed-not-rejoined (C128, C130: removed, SSO does not re-add; an accepted invitation brings them back; after an approved leave SSO adds them again; unlinking and signing in as a new login is still blocked while the removed login exists; once the removed login is erased, a new login with that identity joins) — red: `panicked at crates/probation-server/tests/portal_places.rs:2809:5: after a leave, SSO adds him again` (leave approval wrote a removal, and an existing login's SSO sign-in never joined) — green: `cargo test -p probation-server --test portal_places t_portal_sso_removed_not_rejoined` passed (1 passed); mutant F (the accepted invitation's DELETE of `org_sso_removals` disabled): `panicked at crates/probation-server/tests/portal_places.rs:2809:5: after a leave, SSO adds him again`
+tdd: T-portal-admin-totp-required, extended (a group admin with a password alone saves the group's policy, C24) — red: `panicked at crates/probation-server/tests/portal_places.rs:1738:5: assertion left == right failed; left: (303, Some("/account#totp-heading")) right: (303, Some("/policy/group-1"))` — green: `cargo test -p probation-server --test portal_places t_portal_admin_totp_required` passed (1 passed)
+tdd: T-portal-admin-totp-required, extended (turning the authenticator on ends the login's other sessions, so a password session opened before never acts as an admin) — red: `panicked at crates/probation-server/tests/portal_places.rs:1751:5: assertion left == right failed; left: None right: Some("/signin")` — green: `cargo test -p probation-server --test portal_places t_portal_admin_totp_required` passed (1 passed)
+tdd: T-portal-totp-reset-scope, extended (an org admin removed, re-invited and accepted is still reset only by a global admin) — passed on first run (`former_org_admins` came in the rework); red (mutant D3: `stopped_admin` dropped from `end_membership`): `panicked at crates/probation-server/tests/portal_places.rs:2634:5: assertion left == right failed; left: 303 right: 403` — green: `cargo test -p probation-server --test portal_places t_portal_totp_reset_scope` passed (1 passed)
+
+Round 3 rechecks (2026-10-23):
+- `cargo test -p probation-server --test portal_places`: `test result: ok. 36 passed` (the slice row's witness says 35; T-portal-sso-removed-not-rejoined is new).
+- `cargo test --workspace -j 8 --no-fail-fast -- --test-threads=8`: exit 0; 46 result lines, 676 passed, 0 failed, 21 ignored (accounts 29, policy_edit 8, portal_places 36, propagation 3, sync_api 6, tenancy 3, server lib 3, doctest 1, authorization_read_once 4, key_canary 2).
+- `cargo clippy --workspace --all-targets -j 8 -- -D warnings` clean; `cargo fmt --all -- --check` clean.
+- `router molecule-verify --plan-root docs/plans/management-server --slice 6`: PASS, 12 of 12, no findings.
+- `node crates/probation-server/tests/a11y/axe.mjs --slice 6` on a reseeded database: `A11Y slice 6: 26 pages, 0 problems`, exit 0.

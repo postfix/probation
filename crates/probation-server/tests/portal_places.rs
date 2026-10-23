@@ -1731,9 +1731,36 @@ async fn t_portal_admin_totp_required() {
     assert!(!activity_page.has("pkg-max"), "{}", activity_page.body);
     let audit_page = ana.get("/audit").await;
     assert!(audit_page.has("Only org admins"), "{}", audit_page.body);
+    // C24 asks the authenticator of global and org admins only: a group admin with a
+    // password alone runs their group.
+    let mut bob = fx.signed_in("bob@acme.test").await;
+    let group_saved = policy_action(&mut bob, world.frontend, &save("4", "days", "on")).await;
+    assert_eq!(
+        (group_saved.status, group_saved.location),
+        (StatusCode::SEE_OTHER, Some(policy_path(world.frontend))),
+        "{}",
+        group_saved.body
+    );
 
     let org_page = format!("/org/{}", world.acme.id);
+    // A password session opened before the authenticator was turned on ends then: it
+    // never becomes an admin session without the code.
+    let mut earlier = fx.signed_in("ana@acme.test").await;
     turn_totp_on(&mut ana).await;
+    let ended = earlier.get("/keys").await;
+    assert_eq!(ended.location.as_deref(), Some("/signin"), "{}", ended.body);
+    let late_save = earlier
+        .post_raw(
+            &policy_path(world.acme),
+            &[("csrf", &csrf), ("action", "save")],
+        )
+        .await;
+    assert_eq!(
+        late_save.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        late_save.body
+    );
     assert!(
         ana.get("/activity").await.has("pkg-max"),
         "with the authenticator, all of Acme"
@@ -2570,6 +2597,42 @@ async fn t_portal_totp_reset_scope() {
     let by_root = root_browser.submit(&org_page, &reset(oli_place), &[]).await;
     assert_eq!(by_root.status, StatusCode::SEE_OTHER, "{}", by_root.body);
     assert_eq!(totp_rows(&fx.db, oli).await, 0);
+
+    // Nor does removing an org admin and inviting them back: Pia, an org admin of Acme
+    // alone, is removed, re-invited as a member and accepts; Ana's reset is refused.
+    let pia = fx.person("pia@acme.test").await;
+    fx.db.member(pia, world.acme, None, "org_admin").await;
+    let mut pia_browser = admin_browser(&fx, "pia@acme.test").await;
+    remove_member(&fx, &mut ana, world.acme, pia).await;
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "pia@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let link = invitation_link(&fx, "pia@acme.test").await;
+    assert_eq!(
+        accept(&mut pia_browser, &link).await.status,
+        StatusCode::SEE_OTHER
+    );
+    let pia_place: i32 = sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1")
+        .bind(pia)
+        .fetch_one(&fx.db.owner)
+        .await
+        .unwrap();
+    let refused = ana
+        .submit(
+            &org_page,
+            &format!("/org/members/{pia_place}/totp-reset"),
+            &[],
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(totp_rows(&fx.db, pia).await, 1);
 }
 
 /// Saves `org`'s company SSO on its organisation page.
@@ -2709,7 +2772,163 @@ async fn link_sso(fx: &Fixture, browser: &mut Browser, org: &str, sub: &str) -> 
     browser.get(&back).await
 }
 
-/// T-portal-sso-off-members-stay (C62): when SSO is turned off, the members who joined
+/// Signs in through `org`'s SSO as the IdP subject `sub`; the portal's answer.
+async fn sso_sign_in(fx: &Fixture, browser: &mut Browser, org: PlaceRef, sub: &str) -> Page {
+    let claims = serde_json::json!({"sub": sub, "email": format!("{sub}@acme.test")});
+    oauth(fx, browser, &format!("/sso/{}/start", org.id), claims).await
+}
+
+async fn login_of_subject(db: &Db, sub: &str) -> i32 {
+    sqlx::query_scalar("SELECT login_id FROM sign_in_methods WHERE subject = $1")
+        .bind(sub)
+        .fetch_one(&db.owner)
+        .await
+        .unwrap()
+}
+
+async fn is_member(db: &Db, org: PlaceRef, login: i32) -> bool {
+    memberships_in(db, org)
+        .await
+        .iter()
+        .any(|(member, _)| *member == login)
+}
+
+/// Ana removes `login`'s membership from its row on the organisation page.
+async fn remove_member(fx: &Fixture, ana: &mut Browser, org: PlaceRef, login: i32) {
+    let place: i32 =
+        sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1 AND org_id = $2")
+            .bind(login)
+            .bind(org.id as i32)
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    let org_page = format!("/org/{}", org.id);
+    let removed = ana
+        .submit(&org_page, &format!("/org/members/{place}/remove"), &[])
+        .await;
+    assert_eq!(removed.status, StatusCode::SEE_OTHER, "{}", removed.body);
+}
+
+/// T-portal-sso-removed-not-rejoined (C128, C130): a member an org admin removed is not
+/// added back by the organisation's SSO while the removed login exists, not even as a
+/// new login after unlinking the method; an accepted invitation brings them back; an
+/// approved leave does not block SSO; once the removed login is erased, a new login with
+/// that SSO identity joins again.
+#[tokio::test]
+async fn t_portal_sso_removed_not_rejoined() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let acme = world.acme;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
+    let on = [
+        ("enabled", "on"),
+        ("issuer", "https://idp.acme.test"),
+        ("client_id", "acme-client"),
+        ("client_secret", "acme-secret"),
+    ];
+    save_sso(&mut ana, acme, &on).await;
+    let org_page = format!("/org/{}", acme.id);
+
+    // Dave joins through SSO; removed, his next SSO sign-in does not add him back.
+    let mut dave = fx.browser();
+    sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
+    let dave_login = login_of_subject(&fx.db, "acme-dave").await;
+    assert!(is_member(&fx.db, acme, dave_login).await);
+    remove_member(&fx, &mut ana, acme, dave_login).await;
+    sign_out(&mut dave).await;
+    sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
+    assert!(
+        !is_member(&fx.db, acme, dave_login).await,
+        "removed: SSO does not re-add"
+    );
+
+    // An accepted invitation brings him back.
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "acme-dave@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let link = invitation_link(&fx, "acme-dave@acme.test").await;
+    let accepted = accept(&mut dave, &link).await;
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert!(is_member(&fx.db, acme, dave_login).await, "invited back");
+
+    // An approved leave is not a removal: his next SSO sign-in adds him again (C130).
+    dave.submit(&org_page, &format!("/org/{}/leave", acme.id), &[])
+        .await;
+    let request = leave_request_of(&fx.db, dave_login).await;
+    let approved = ana
+        .submit(&org_page, &format!("/org/leave/{request}/approve"), &[])
+        .await;
+    assert_eq!(approved.status, StatusCode::SEE_OTHER, "{}", approved.body);
+    assert!(!is_member(&fx.db, acme, dave_login).await);
+    sign_out(&mut dave).await;
+    sso_sign_in(&fx, &mut dave, acme, "acme-dave").await;
+    assert!(
+        is_member(&fx.db, acme, dave_login).await,
+        "after a leave, SSO adds him again"
+    );
+
+    // Rob links Acme's SSO to his password login and is removed. He unlinks the method
+    // and signs in through SSO, which makes a new login: it does not join while his
+    // removed login exists.
+    let rob = fx.person("rob@acme.test").await;
+    let mut rob_browser = fx.signed_in("rob@acme.test").await;
+    link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
+    assert!(is_member(&fx.db, acme, rob).await);
+    remove_member(&fx, &mut ana, acme, rob).await;
+    let method: i32 =
+        sqlx::query_scalar("SELECT id FROM sign_in_methods WHERE subject = 'acme-rob'")
+            .fetch_one(&fx.db.owner)
+            .await
+            .unwrap();
+    rob_browser
+        .submit(
+            "/account",
+            &format!("/account/methods/{method}/remove"),
+            &[],
+        )
+        .await;
+    let mut fresh = fx.browser();
+    sso_sign_in(&fx, &mut fresh, acme, "acme-rob").await;
+    let new_rob = login_of_subject(&fx.db, "acme-rob").await;
+    assert_ne!(new_rob, rob, "a new login");
+    assert!(
+        !is_member(&fx.db, acme, new_rob).await,
+        "blocked while the removed login exists"
+    );
+
+    // Sam is removed, and his login is erased by the purge after its 30 days: a new
+    // login with his SSO identity joins again (C130).
+    let mut sam = fx.browser();
+    sso_sign_in(&fx, &mut sam, acme, "acme-sam").await;
+    let sam_login = login_of_subject(&fx.db, "acme-sam").await;
+    remove_member(&fx, &mut ana, acme, sam_login).await;
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
+         WHERE id = $1",
+    )
+    .bind(sam_login)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    accounts::purge(&fx.db.app).await.expect("the purge runs");
+    let mut again = fx.browser();
+    sso_sign_in(&fx, &mut again, acme, "acme-sam").await;
+    let new_sam = login_of_subject(&fx.db, "acme-sam").await;
+    assert_ne!(new_sam, sam_login, "a new login");
+    assert!(
+        is_member(&fx.db, acme, new_sam).await,
+        "the erased login took its removal with it"
+    );
+}
+
+/// T-portal-sso-off-members-stay (C62)/// T-portal-sso-off-members-stay (C62): when SSO is turned off, the members who joined
 /// through it stay, and a reset email lets one set a password and sign in with it.
 #[tokio::test]
 async fn t_portal_sso_off_members_stay() {
@@ -2739,148 +2958,6 @@ async fn t_portal_sso_off_members_stay() {
         joined.body
     );
     let members = memberships_in(&fx.db, world.acme).await.len();
-    let dave_login: i32 =
-        sqlx::query_scalar("SELECT login_id FROM sign_in_methods WHERE subject = 'acme-dave'")
-            .fetch_one(&fx.db.owner)
-            .await
-            .unwrap();
-    let dave_member = || async {
-        memberships_in(&fx.db, world.acme)
-            .await
-            .iter()
-            .any(|(login, _)| *login == dave_login)
-    };
-
-    // C128: an admin removes Dave; a later SSO sign-in does not add him back, a new
-    // invitation does.
-    let place: i32 = sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1")
-        .bind(dave_login)
-        .fetch_one(&fx.db.owner)
-        .await
-        .unwrap();
-    let org_page = format!("/org/{}", world.acme.id);
-    let removed = ana
-        .submit(&org_page, &format!("/org/members/{place}/remove"), &[])
-        .await;
-    assert_eq!(removed.status, StatusCode::SEE_OTHER, "{}", removed.body);
-    sign_out(&mut dave).await;
-    let again = oauth(
-        &fx,
-        &mut dave,
-        &format!("/sso/{}/start", world.acme.id),
-        serde_json::json!({"sub": "acme-dave", "email": "dave@acme.test"}),
-    )
-    .await;
-    assert_eq!(
-        again.location.as_deref(),
-        Some("/account"),
-        "{}",
-        again.body
-    );
-    assert!(
-        !dave_member().await,
-        "a removed member is not added back by SSO"
-    );
-    invite(
-        &mut ana,
-        &world,
-        &[
-            ("email", "dave@acme.test"),
-            ("role", "member"),
-            ("group", "none"),
-        ],
-    )
-    .await;
-    let link = invitation_link(&fx, "dave@acme.test").await;
-    let accepted = accept(&mut dave, &link).await;
-    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
-    assert!(dave_member().await, "the invitation brings him back");
-    sign_out(&mut dave).await;
-    oauth(
-        &fx,
-        &mut dave,
-        &format!("/sso/{}/start", world.acme.id),
-        serde_json::json!({"sub": "acme-dave", "email": "dave@acme.test"}),
-    )
-    .await;
-    assert_eq!(memberships_in(&fx.db, world.acme).await.len(), members);
-
-    // Nor does unlinking Acme's SSO and linking it again bring a removed member back:
-    // Rob signs in with a password and links Acme's SSO, which adds him (C5).
-    let rob = fx.person("rob@acme.test").await;
-    let mut rob_browser = fx.signed_in("rob@acme.test").await;
-    link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
-    let rob_place: i32 = sqlx::query_scalar("SELECT id FROM memberships WHERE login_id = $1")
-        .bind(rob)
-        .fetch_one(&fx.db.owner)
-        .await
-        .unwrap();
-    ana.submit(&org_page, &format!("/org/members/{rob_place}/remove"), &[])
-        .await;
-    let sso_method: i32 =
-        sqlx::query_scalar("SELECT id FROM sign_in_methods WHERE subject = 'acme-rob'")
-            .fetch_one(&fx.db.owner)
-            .await
-            .unwrap();
-    rob_browser
-        .submit(
-            "/account",
-            &format!("/account/methods/{sso_method}/remove"),
-            &[],
-        )
-        .await;
-    link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
-    assert!(
-        memberships_in(&fx.db, world.acme)
-            .await
-            .iter()
-            .all(|(login, _)| *login != rob),
-        "relinking SSO does not bring a removed member back"
-    );
-
-    // Nor does a new login with the same SSO identity: Rob deletes his login, the purge
-    // erases it after 30 days, and his next SSO sign-in makes a new login (B2).
-    let deleted = rob_browser
-        .submit("/account", "/account/delete", &[("confirm", "delete")])
-        .await;
-    assert_eq!(
-        deleted.location.as_deref(),
-        Some("/signin"),
-        "{}",
-        deleted.body
-    );
-    sqlx::query(
-        "UPDATE logins SET deleted_at = now() - interval '31 days', restore_until = now() - interval '1 day'
-         WHERE id = $1",
-    )
-    .bind(rob)
-    .execute(&fx.db.owner)
-    .await
-    .unwrap();
-    accounts::purge(&fx.db.app).await.expect("the purge runs");
-    let mut again = fx.browser();
-    let back = oauth(
-        &fx,
-        &mut again,
-        &format!("/sso/{}/start", world.acme.id),
-        serde_json::json!({"sub": "acme-rob"}),
-    )
-    .await;
-    assert_eq!(back.location.as_deref(), Some("/account"), "{}", back.body);
-    let new_rob: i32 =
-        sqlx::query_scalar("SELECT login_id FROM sign_in_methods WHERE subject = 'acme-rob'")
-            .fetch_one(&fx.db.owner)
-            .await
-            .unwrap();
-    assert_ne!(new_rob, rob, "a new login");
-    assert!(
-        memberships_in(&fx.db, world.acme)
-            .await
-            .iter()
-            .all(|(login, _)| *login != new_rob),
-        "a new login with a removed member's SSO identity does not join"
-    );
-
     let off = save_sso(
         &mut ana,
         world.acme,

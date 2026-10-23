@@ -59,7 +59,7 @@ pub struct Session {
     login_id: i32,
     scope_org_id: Option<i32>,
     /// The session passed a second factor: its provider's (OAuth, SSO) or the login's
-    /// authenticator. Without it, no admin role is held (C24, C60).
+    /// authenticator. Without it, no global or org admin role is held (C24, C60).
     second_factor: bool,
 }
 
@@ -645,8 +645,9 @@ fn at(place: PlaceRef, (org, group, owner_login, status, org_name, group_name): 
 
 /// The login's role on `place` (C4, C27); none in a suspended organisation or personal
 /// account except for a global admin (C78).
-/// `admin`: whether the session may hold an admin role (it passed a second factor);
-/// without it, an admin gets the role a plain member has there.
+/// `admin`: whether the session may hold a global or org admin role (it passed a second
+/// factor); without it, such an admin gets the role a plain member has there. A group
+/// admin needs no second factor (C24).
 fn role_for(login_id: i32, memberships: &[Membership], place: &Place, admin: bool) -> Option<Role> {
     if admin && memberships.iter().any(|m| m.org.is_none()) {
         return Some(Role::GlobalAdmin);
@@ -662,9 +663,7 @@ fn role_for(login_id: i32, memberships: &[Membership], place: &Place, admin: boo
         .find(|m| m.org.is_some() && m.org == place.org)?;
     Some(match place.place.kind {
         _ if admin && membership.role == "org_admin" => Role::OrgAdmin,
-        LayerKind::Group
-            if admin && membership.role == "group_admin" && membership.group == place.group =>
-        {
+        LayerKind::Group if membership.role == "group_admin" && membership.group == place.group => {
             Role::GroupAdmin
         }
         LayerKind::User if place.place.id as i32 == membership.id => Role::Owner,
@@ -945,9 +944,15 @@ fn last_admin_refusal() -> ChangeError {
 
 /// Ends the membership `id` in `org` under the organisation row's lock: refused for the
 /// last org admin; the member's keys are revoked with a `key` row each (C52), and their
-/// own layer and any leave request go with the membership, and the organisation's SSO
-/// will not add them back (C128). Writes no audit row.
-async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<(), ChangeError> {
+/// own layer and any leave request go with the membership. When an org admin removed
+/// them (`removed`), the organisation's SSO will not add them back; an approved leave
+/// does not block it (C128, C130). Writes no audit row.
+async fn end_membership(
+    conn: &mut PgConnection,
+    org: i32,
+    id: i32,
+    removed: bool,
+) -> Result<(), ChangeError> {
     lock_org(conn, org).await?;
     let exists: Option<i32> = sqlx::query_scalar(
         "SELECT login_id FROM memberships WHERE id = $1 AND org_id = $2 FOR UPDATE",
@@ -978,24 +983,27 @@ async fn end_membership(conn: &mut PgConnection, org: i32, id: i32) -> Result<()
         .bind(org)
         .execute(&mut *conn)
         .await?;
-    // The organisation's SSO does not add them back, under this login or another one
-    // with the same SSO identity; an invitation does (C128).
-    sqlx::query(
-        "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-    )
-    .bind(org)
-    .bind(login)
-    .execute(&mut *conn)
-    .await?;
-    sqlx::query(
-        "INSERT INTO org_sso_removals (org_id, issuer, subject)
-         SELECT org_id, issuer, subject FROM sign_in_methods WHERE login_id = $1 AND org_id = $2
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(login)
-    .bind(org)
-    .execute(&mut *conn)
-    .await?;
+    if removed {
+        // The organisation's SSO does not add them back while this login exists, under
+        // it or a new login with the same SSO identity; an invitation does (C128, C130).
+        sqlx::query(
+            "INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(org)
+        .bind(login)
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO org_sso_removals (org_id, issuer, subject, login_id)
+             SELECT org_id, issuer, subject, login_id FROM sign_in_methods
+             WHERE login_id = $1 AND org_id = $2
+             ON CONFLICT (org_id, issuer, subject) DO UPDATE SET login_id = EXCLUDED.login_id",
+        )
+        .bind(login)
+        .bind(org)
+        .execute(&mut *conn)
+        .await?;
+    }
     sqlx::query("DELETE FROM memberships WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)
@@ -1020,7 +1028,7 @@ pub async fn remove_member(
     let org = member.org().ok_or(ChangeError::NotFound)?;
     let id = member.place().id as i32;
     let mut tx = pool.begin().await?;
-    end_membership(&mut tx, org, id).await?;
+    end_membership(&mut tx, org, id, true).await?;
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -1102,7 +1110,7 @@ pub async fn approve_leave(
     let Some((id, login)) = member else {
         return Err(ChangeError::NotFound);
     };
-    end_membership(&mut tx, org_id, id).await?;
+    end_membership(&mut tx, org_id, id, false).await?;
     let () = audit::record(
         &mut tx,
         audit::Entry {

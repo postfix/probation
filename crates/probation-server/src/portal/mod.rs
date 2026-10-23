@@ -525,7 +525,7 @@ pub(crate) struct SignedIn {
     pub session: accounts::Session,
     pub login_id: i32,
     /// The session passed a second factor: its provider's (an OAuth or SSO sign-in) or
-    /// the login's authenticator. Every admin role depends on it (C24, C60, T15).
+    /// the login's authenticator. Global and org admin roles depend on it (C24, C60, T15).
     pub second_factor: bool,
 }
 

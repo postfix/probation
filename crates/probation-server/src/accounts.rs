@@ -1086,10 +1086,13 @@ pub(crate) async fn totp_uri(
 }
 
 /// Turns the authenticator on once `code` matches the pending secret; audited with the
-/// secret redacted (T16).
+/// secret redacted (T16). Every other session of the login ends: one opened with a
+/// password alone must not become an admin session (C24, T15); `session` proved the
+/// code and stays.
 pub(crate) async fn totp_enable(
     pool: &PgPool,
     secrets: &SecretBox,
+    session: &Session,
     login_id: i32,
     code: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -1111,6 +1114,7 @@ pub(crate) async fn totp_enable(
         .bind(step)
         .execute(&mut *tx)
         .await?;
+    end_sessions(&mut tx, login_id, Some(&session.id_hash)).await?;
     let actor = login_actor(&mut tx, login_id).await?;
     let () = audit::record(
         &mut tx,
@@ -2053,11 +2057,20 @@ pub(crate) async fn identity_login(
     .fetch_optional(&mut *tx)
     .await?;
     if let Some((login, method)) = found {
-        // Past its 30 days the old login is erased now, and the method starts anew.
-        if login_state(pool, login).await? != LoginState::Expired {
-            return Ok((login, method));
+        match login_state(pool, login).await? {
+            // Every sign-in through an organisation's SSO joins it, unless an org admin
+            // removed this login or identity there (C5, C128, C130).
+            LoginState::Live => {
+                if let Some(org) = identity.org {
+                    join_through_sso(&mut tx, login, org).await?;
+                    let () = tx.commit().await?;
+                }
+                return Ok((login, method));
+            }
+            LoginState::Deleted { .. } => return Ok((login, method)),
+            // Past its 30 days the old login is erased now, and the method starts anew.
+            LoginState::Expired => erase_login(&mut tx, login).await?,
         }
-        erase_login(&mut tx, login).await?;
     }
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
@@ -2071,8 +2084,8 @@ pub(crate) async fn identity_login(
 }
 
 /// A login that signs in through, or links, an organisation's SSO joins it (C5), unless
-/// an org admin removed it, or the SSO identity it holds, there; only an invitation
-/// brings it back (C128).
+/// an org admin removed it, or the SSO identity it holds, there while the removed login
+/// exists; only an invitation brings it back (C128, C130).
 async fn join_through_sso(
     conn: &mut PgConnection,
     login: i32,
@@ -3095,23 +3108,11 @@ pub(crate) async fn start_new_login(
     let Some((kind, issuer, subject, org, email, hash, verified)) = method else {
         return Ok(None);
     };
-    // Starting over does not undo a removal (C128).
-    let removed_from: Vec<i32> =
-        sqlx::query_scalar("SELECT org_id FROM org_removals WHERE login_id = $1")
-            .bind(old_login)
-            .fetch_all(&mut *tx)
-            .await?;
+    // The removals of the erased login go with it (C130).
     erase_login(&mut tx, old_login).await?;
     let login: i32 = sqlx::query_scalar("INSERT INTO logins DEFAULT VALUES RETURNING id")
         .fetch_one(&mut *tx)
         .await?;
-    for org in removed_from {
-        sqlx::query("INSERT INTO org_removals (org_id, login_id) VALUES ($1, $2)")
-            .bind(org)
-            .bind(login)
-            .execute(&mut *tx)
-            .await?;
-    }
     sqlx::query(
         "INSERT INTO sign_in_methods (login_id, kind, issuer, subject, org_id, email, password_hash, verified_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN now() END)",

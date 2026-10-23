@@ -4,8 +4,8 @@
 //   node crates/probation-server/tests/a11y/axe.mjs --slice 6
 //
 // against the portal served with tests/portal.toml on a database seeded by tests/seed.sql.
-// The slice 6 run turns on authenticators for bob@acme.test and oli@acme.test, so run it
-// once per seeded database, after the slice 5 run.
+// The slice 6 run turns on an authenticator for oli@acme.test, so run it once per seeded
+// database, after the slice 5 run.
 // Playwright Chromium signs in through the real sign-in form with the seeded logins,
 // visits every page and state of the slice, runs axe-core on each, and walks each page
 // with the Tab key: the focus order follows the DOM, every focused control shows a focus
@@ -195,13 +195,12 @@ async function slice6(browser) {
     await context.close();
   }
 
-  // Bob, a group admin (an authenticator first: admin roles need one, C24): his
-  // group's policy and a refused looser freeze, and its log.
+  // Bob, a group admin (no authenticator needed, C24): his group's policy and a refused
+  // looser freeze, and its log.
   {
     const context = await browser.newContext();
     const page = await context.newPage();
     await signIn(page, 'bob@acme.test');
-    await turnTotpOn(page);
     await go(page, '/policy');
     await audit(page, 'Policy (group layer)');
     await page.locator('#freeze').fill('1');
