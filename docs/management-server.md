@@ -99,7 +99,7 @@ Unknown keys are refused at start, and every change needs a restart. Every setti
 | `[portal] firewall_url` | unset | The firewalls' public address, as npm and pip reach it. The keys page builds the `.npmrc` and `pip.conf` lines from it; unset, they show a `FIREWALL` placeholder. It needs a host and `https` (`http` only for `localhost` or a loopback address); anything else is refused at start. |
 | `[portal] leaked_password_url` | `https://api.pwnedpasswords.com/range/` | The range API that new passwords are checked against. |
 | `[portal.google]`, `[portal.github]`, `[portal.microsoft]` | absent | A sign-in provider each. Only `client_id` goes here; the client secret comes from the environment. Register `<base_url>oauth/google/callback` (or `github`, `microsoft`) as the redirect URI at the provider. |
-| `[portal.smtp] host` | required in `[portal.smtp]` | The mail relay. STARTTLS only. |
+| `[portal.smtp] host` | required in `[portal.smtp]` | The mail relay. STARTTLS only. Its certificate is checked against the system certificate store, which honours `SSL_CERT_FILE` and `SSL_CERT_DIR`, so a relay signed by a private CA works once that CA is in the store. |
 | `[portal.smtp] port` | `587` | |
 | `[portal.smtp] username` | unset | Signs in to the relay with `PROBATION_SERVER_SMTP_PASSWORD`. |
 | `[portal.smtp] from` | required in `[portal.smtp]` | The sender address. |

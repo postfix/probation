@@ -2308,6 +2308,7 @@ dependencies = [
  "percent-encoding",
  "quoted_printable",
  "rustls",
+ "rustls-native-certs",
  "socket2",
  "tokio",
  "tokio-rustls",
