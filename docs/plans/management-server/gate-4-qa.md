@@ -3,40 +3,54 @@
 READY
 
 ## Overall assessment
-This is the fourth review of the combined design, reopened for C123. It covers 01-product.md (approved scope), 02-architecture.md, 03-program-design.md, 04-slices.md, molecule-flow.json, molecule-contracts.json, the `managed-*` analyzer specs and controls, read together as one decision. The round-3 findings are fixed. AA1: the T-edit-parent-chain row in 03 § Test plan now tells a correct parent chain apart from a sibling group's chain or an organisation-only chain, and it checks the returned stored layer. AA2: the slice 2 witness for T-resolve-empty-platform now requires `test result: ok. 1 passed`, so it fails before the test exists. The C123 disposition entry now sits at the end of 03 § Review dispositions. Nothing blocks. The machine checks give these results: `router check` reports no findings; `molecule-check` returns PASS; source verification passes for the 3 obligations whose source exists, with every control detected; the other 9 obligations are PENDING on absent sources, each assigned to the slice that creates it. The C123 SMTC query returns exactly one site on the current tree. Decisions that were already approved and are not affected by C123 stay approved.
+This is a fresh review after commit 09d5f4a, which fixes AD1. `after-restore` now sets `value := greatest(value, now_us) + 1`, then `pruned_through := value`. Under the two stated assumptions, the counter is never more than one revision ahead of the clock. The clock never steps back, and changes arrive at fewer than one per microsecond. Each run therefore lands strictly above every revision issued before it, and that includes these cases:
+- a backup restored twice;
+- a backup taken right after an earlier `after-restore`;
+- a backup that predates an earlier `after-restore`.
+
+Because `pruned_through` equals `value`, every pre-restore cursor resets. Cursors below the new value reset by the floor rule, and any cursor ahead of it resets by the C126 rule. The planned test now restores twice a backup taken right after an earlier `after-restore`, the case AD1 named. `git diff 861441d 09d5f4a` changes the same sentence in 02, 03 C129 and 04 slice 8, plus one test row. It adds no contradiction.
+
+`router check` reports no findings, and `molecule-check` is PASS. Source verification is PASS for 9 obligations. The 3 slice-4 obligations are PENDING because their source is absent on this branch. Everything approved before stays approved. There are no blocking findings. Note N2 below is optional.
 
 ## Questions and findings
-None.
+None blocking.
 
-AA1 is resolved. 03 § Test plan, row "parent chain for edits", now sets up a user U in group G, where G has `shorter_freeze` off, next to a sibling group G2 in the same organisation, where it is on. The row asserts three things:
-- `PolicyStore::parent_policy` returns `resolve` of [Platform], [Platform, Org] and [Platform, Org, G].
-- For each place, the returned stored layer equals that place's own stored layer.
-- `check_edit` with U's parent refuses a new shorter freeze (`NotAllowedByParent { ShorterFreeze }`) and accepts a re-save of U's unchanged kept 1-day freeze (C47).
-
-If the implementation picked G2 or stopped at the organisation, the parent's `allow.shorter_freeze` would be on and the refusal assertion would fail. If it returned the wrong current layer, the stored-layer assertion would fail. The slice 4 `policy_edit` witness still names 8 tests, and the count matches its list.
-
-AA2 is resolved. Slice 2's direct witness reads `cargo test -p probation-policy --lib tests::t_resolve_empty_platform` prints `test result: ok. 1 passed`. Today the filter matches no test and prints `0 passed`, so the witness fails before the test is written.
+**N2: non-blocking wording note (C129 clock).** Locations: 02 line 82, 03 C129 (line 26) and 04 slice 8 (line 98). The bound needs the clock that `after-restore` reads never to step backwards between runs. The text names only a rollback caused by a database restore; an NTP step backwards would matter in the same way, by up to the size of the step. The text also does not say which clock is read: Postgres `clock_timestamp()` in the transaction, or the CLI host's clock. If the author wants it exact, name the clock and state the assumption as "never steps backwards across runs". This does not affect readiness: the stated scope already covers the intended operations, and the residual is limited to the size of a clock step.
 
 ## What was checked
-- **Evidence and clarifications.** I read all of 01–04 and the molecule files. I also read evidence/smtc-argument-matching.md, evidence/red-team.md § "C123 re-review", evidence/slice-1.md, evidence/slice-2.md and controls/managed-contracts.json. All design inventories (C2, C34, C35, C86, C95–C125, C108) are resolved and each names its decision source. C123, C124 and C125 each record the user's answer and date. Nothing open is deferred to Engineering. Result: pass.
-- **Architecture and interfaces (sf-codebase-design).** I checked 02 § Fit and § Flow and 03 § Modules and interfaces. `PolicyStore::parent_policy` is a deep seam: the portal, the automation push and the bootstrap CLI all get both the parent `EffectivePolicy` and the current stored layer from this one function, so chain selection is decided in one place and tested at that interface. C123 changes no caller-visible guarantee. "Exactly one `Authorization` read, and only the hash leaves" stays the same promise; only its check changed. Result: pass.
-- **Contracts, flows and model.** `router molecule-check`: PASS (3 flows: `managed-request`, `policy-edit`, `sync-changes`). Required outcomes still trace to C8, C13, C19, C20, C25, C30, C55, C66, C72, C81, C92, C96 and C120. No obligation was deleted or weakened in this round. Result: pass.
-- **Source obligations.** Preparation's `sourceVerification` is PENDING, which means no failures. Three obligations PASS on existing source with zero production findings, and every control produces findings:
-  - `authenticate-checks-retired-first` (src/managed/mod.rs, slice 2): 3/3 operations guarded; controls `retired-check-removed` and `retired-check-after-lookup` each give 3 findings.
-  - `decide-exceptions-first` (src/policy/effective.rs, slice 1): 2 controls, each detected.
-  - `check-edit-loosening-search-first` (crates/probation-policy/src/edit.rs, slice 1): 2 controls, each detected.
-
-  Nine obligations are PENDING on absent sources: slice 3 for src/managed/sync.rs and activity.rs, slice 4 for crates/probation-server tenancy.rs and policy.rs. Each `bySlice` matches the slice's Source evidence line in 04. I did not run the full `molecule-verify` because PENDING obligations remain. Result: pass for planning.
-- **Security coverage (T19 re-model, C123).** I checked 03 § Threat model, § Security coverage and § Invariants. The T19 row is now a token-allowlist test, the C123 SMTC query and T-key-canary, with T19a–h assigned and no new risk acceptance. The premise in evidence/smtc-argument-matching.md still holds: on the current tree, `smtc callers --name get|get_all --callsites-matching '*AUTHORIZATION' --argument-index 0|1` over absolute `src` and `crates/probation-policy/src` returns exactly one site, `headers.get(AUTHORIZATION)` in src/managed/mod.rs. A grep of current source agrees with the pinned allowlist: `AUTHORIZATION` appears only in src/managed/mod.rs and in the src/config.rs default, and `siem_auth_header` only in src/config.rs and src/delivery/mod.rs. The line format in § Invariants & spec dispositions is valid (KEEP, UNKNOWN, existing check, one-off, deferred to slice 4). Result: pass.
-- **Test plan (sf-tdd).** Each changed row names its seam, its input and an assertion that tells correct behaviour from a defect. T-edit-parent-chain tests at the public `parent_policy`/`check_edit` interface with literal outcomes. Its `resolve` comparison is not tautological, because the property under test is which chain is selected, not how the merge works. T-resolve-empty-platform pins C125's fail-open default with literal values (freeze 0, OSV Off, no source layer). Result: pass.
-- **Delivery.** Slice order still delivers each guarantee before anything relies on it: shared rules (1), then the managed firewall against a fake server (2–3), then the real server (4), the portal (5–7) and finally E2E (8). Each witness names exact counts and a reason it fails today. The C123 test and query are in the Recheck of slices 2–8. Slice 2's Temporary behavior is explicit. Result: pass.
-- **Repository evidence.** 03 § Repository evidence still assesses the effect on existing callers, with links. Result: pass.
+- **Inputs and dispatch.**
+  - `router check`: no findings. The last history entry is `hand -> qa`.
+  - `gate-qa prepare --gate design`: PREPARED.
+  - Tracked and read: 01–04, molecule-flow.json, molecule-contracts.json, evidence/slice-3.md to slice-7.md, red-team.md and tdd-slice-3.md.
+  - Reviewed `git diff 861441d 09d5f4a` (02, 03 and 04; 4 lines changed).
+- **AD1: resolved.**
+  - Clock bound: after a run at clock T, `value` is T + 1. Later writes add fewer than one revision per microsecond, so every revision issued before a later restore at T2 is at most T2.
+  - The next run sets at least T2 + 1. That is strictly higher, whichever backup is restored, so two runs can no longer produce the same N.
+  - With `pruned_through := value`, the reset rule (`since < pruned_through` or `since > value`) resets every cursor issued before the restore.
+  - Headroom: epoch microseconds are about 2^50.6, far below 2^63. This is consistent with the C126 rule that a cursor of i64::MAX gets a reset.
+  - The invariant `pruned_through ≤ value` holds, so a firewall that has adopted `value` is not reset again on every sync.
+  - The test row exercises the formerly failing case and keeps the prune-after-restore case (AC1).
+- **Earlier findings stay resolved.**
+  - AC1: the prune job never lowers `pruned_through`, in 04 slice 4, 03 T-sync-api-contract and C129, and the test covers it.
+  - AC3: an invitation re-admits a removed login only if it was created after the removal (`created_at` after `removed_at`), in 02, C130, 04 slice 6 and T-portal-sso-removed-not-rejoined.
+  - N1: fixed.
+  - AB1–AB4 and the user answers ABQ1/ABQ2 (C129 and C130) stay resolved, as reviewed in the two earlier rounds.
+- **Clarification inventory.** C126–C130 each have an ID, class, status, owner, selected policy and a user source. No open questions remain.
+- **Molecule model.**
+  - `router molecule-check`: PASS. The model and sidecar are unchanged in 09d5f4a. `assumptions[6]` ("holds once the operator has run … after-restore") is accurate.
+  - Source verification (from preparation): 9 obligations PASS, with every control detected.
+  - `authorize-may-edit-first`, `save-edit-audit-before-commit` and `save-edit-change-before-commit` are PENDING; slice 4 delivers their source. Full `molecule-verify` was not run because obligations are PENDING.
+  - Each `bySlice` precedes its consumers.
+- **Design and contracts (sf-codebase-design).** The `after-restore` CLI seam keeps a one-statement contract with stated invariants: a monotonic counter, `pruned_through = value` after a run, and `pruned_through ≤ value`. The sync interface and the firewall are unchanged.
+- **Test plan (sf-tdd).** T-ops-after-restore-resets-fleet tests through the public seams: the CLI, the sync API and two real firewalls with Postgres. Each of its three cases has an expected result that tells the behaviour apart from the AC1 and AD1 defects.
+- **Security coverage.** The T7 row and the "Revocations not skipped (C20, T7)" row cite C129 and its test. T31 is preserved because the command has no API route. Other rows are unchanged.
+- **Delivery order.** C129 lands in slice 8, after the slice 3 firewall reset and the slice 4 server; nothing earlier relies on it. C130 lands in slice 6. Witness counts match the tests named.
+- **Repository evidence and § Invariants.** Unchanged by 09d5f4a. The line prefixes remain valid.
 
 ## Limitations
-- Model PASS covers the finite declared model only. Source PASS covers the encoded call-order properties on existing source only. Neither proves arbitrary implementation behaviour.
-- Nine source obligations remain PENDING until slices 3 and 4 create their sources.
-- Slice 2 is implemented but not committed or reviewed. `tests/authorization_read_once.rs` and `tests/key_canary.rs` do not exist yet. Their pinned allowlist and canary results are slice 2 delivery evidence and were not assessed here.
-- The C123 SMTC query result depends on the current SMTC build, which is marked as a dirty build. Each Recheck must run it again.
+- The slice 4–7 implementations are on worktree branches outside the tracked roots. Statements about them come from the evidence files.
+- The 3 slice-4 source obligations remain PENDING on this branch.
+- The C129 bound rests on the stated clock and write-rate assumptions; those are premises, not something checked.
 
 ## Next steps
-The main agent presents the reopened combined design to the user for approval and records that approval. Slice 2 delivery resumes only after that.
+The main agent presents the reopened design (C126–C130 and the fixes from rounds AB, AC and AD) to the user and records the approval. N2 is optional wording the author may apply before presenting; any edit to 02–04 would then need a fresh review.

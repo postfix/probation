@@ -75,3 +75,7 @@ tdd: T-activity-place-from-key, S4-11 organisation override (Globex keeps activi
 tdd: T-grant-bootstrap, F7 (the bootstrap audit row names the host operator: no login, global-admin flag set) — red (written first): `panicked at crates/probation-server/tests/tenancy.rs:371:5: left: (Some(1), true, "admin.bootstrap") right: (None, true, "admin.bootstrap")` — green: `cargo test -p probation-server --test tenancy` passed (3 passed)
 
 Test fix: T-firewall-token-source failed once with `sync_api.rs:549:5: the burst fits in one second` at load average 41. The cause is the wall-clock precondition: 201 sequential requests on a loaded host can take more than a second, and that proves nothing either way. A burst that does not fit is now waited out and sent again, up to five times; the rate assertions run only on a burst that fitted.
+
+## Rework 5 (re-verification nits)
+
+tdd: T-sync-api-contract, a cursor of exactly i64::MAX (a valid bigint) is answered with the reset and raises nothing; u64::MAX still answers 422 — red (written first): `panicked at crates/probation-server/tests/sync_api.rs:68:5: left: 422 right: 200` — green: `cargo test -p probation-server --test sync_api` passed (6 passed). The stale R3 comment in that test, which contradicted C126, is deleted.

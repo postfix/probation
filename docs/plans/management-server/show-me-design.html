@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reopened design: C126–C130 and Design QA fixes</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d2127; --muted: #5b6470; --line: #d5dae0; --panel: #f5f7f9;
+    --ok: #1f7a3d; --ok-bg: #e7f4ec; --bad: #a3262a; --bad-bg: #fbeaea; --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --accent: #2457a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e4e7eb; --muted: #9aa3ad; --line: #353b43; --panel: #1e2228;
+      --ok: #6fd393; --ok-bg: #173323; --bad: #f08b8e; --bad-bg: #3a1d1f; --warn: #f1c46b; --warn-bg: #3a2f14;
+      --accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
+  p, li { overflow-wrap: anywhere; }
+  ul { padding-left: 1.2rem; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .label { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+           background: var(--panel); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { background: var(--panel); }
+  .note { color: var(--warn); font-weight: 600; }
+  figure { margin: 8px 0; }
+  svg { display: block; width: 100%; max-width: 600px; height: auto; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 12px; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ok { fill: var(--ok-bg); stroke: var(--ok); }
+  svg .bad { fill: var(--bad-bg); stroke: var(--bad); }
+  svg .warn { fill: var(--warn-bg); stroke: var(--warn); }
+  svg .edge { stroke: var(--muted); fill: none; stroke-width: 1.3; }
+  svg .edge-label { fill: var(--muted); font-size: 11px; }
+  svg .head { fill: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .question { margin-top: 28px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; font-weight: 600; font-size: 1.05rem; }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 32px; }
+    table { font-size: 0.85rem; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Reopened design: C126–C130 and the Design QA fixes</h1>
+<p class="muted">Plan <code>management-server</code>. You decide only on what changed since the last approval (<code>git diff 60f007c~1 09d5f4a</code>). Everything approved earlier stays approved.</p>
+
+<h2>What problem do we have?</h2>
+<p>During delivery you answered five questions that change the approved design. These are C126–C128 (slices 3–5) and ABQ1/ABQ2 from Design QA, recorded as C129 and C130. The router refused to complete slice 3 (<code>SOURCE_CONTRACT_REQUIRED</code>) until the design is approved again. Without these changes:</p>
+<ul>
+  <li>After a database restore, a firewall whose cursor is at or below the server's revision gets no reset. It silently skips the post-restore changes that reuse its revision numbers, so it could miss a revocation (C129).</li>
+  <li>When SSO is on, a member that an admin removed is added back at their next SSO sign-in (C5, C128).</li>
+</ul>
+
+<h2>How will we solve it?</h2>
+<p><strong>Purpose.</strong> After a restore, every firewall resets once and misses nothing, and no firewall can move the shared revision. A member that an admin removed stays out until they accept an invitation created after the removal, or until the removed login is erased.</p>
+
+<h3>Flow: database restore and firewall reset (C126, C129)</h3>
+<figure aria-labelledby="flow1-cap">
+<svg viewBox="0 0 600 640" role="img" aria-labelledby="flow1-title flow1-desc">
+  <title id="flow1-title">Restore and reset flow</title>
+  <desc id="flow1-desc">The database is restored. The operator runs probation-server admin after-restore on the server host. It raises value to greatest(value, now in microseconds) plus 1, sets pruned_through to value and writes an audit row. A firewall then calls changes with its cursor since. A since that cannot be a bigint answers 422. If since is below pruned_through or above value, the server answers reset at its current revision and writes nothing. The firewall's drop_cache sets the floor and the cursor to that revision, even if it is lower, clears its records and caches and starts a new ask epoch. Answers from asks started before the reset are dropped. The next delta applies. Otherwise apply_changes applies a normal delta.</desc>
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+  <rect class="box" x="150" y="8" width="300" height="34" rx="6"/>
+  <text x="300" y="30" text-anchor="middle">Database restored from a backup</text>
+  <path class="edge" d="M300,42 V62" marker-end="url(#arr)"/>
+  <rect class="warn" x="90" y="64" width="420" height="78" rx="6"/>
+  <text x="300" y="84" text-anchor="middle" font-weight="600">Operator: probation-server admin after-restore</text>
+  <text x="300" y="102" text-anchor="middle">CLI on the server host, no API route (C129)</text>
+  <text x="300" y="120" text-anchor="middle">value := greatest(value, now µs) + 1</text>
+  <text x="300" y="136" text-anchor="middle">pruned_through := value; one audit_log row</text>
+  <path class="edge" d="M300,142 V166" marker-end="url(#arr)"/>
+  <rect class="box" x="120" y="168" width="360" height="34" rx="6"/>
+  <text x="300" y="190" text-anchor="middle">Firewall sync: POST /api/v1/sync/changes {since}</text>
+  <path class="edge" d="M480,185 H540 V228" marker-end="url(#arr)"/>
+  <text class="edge-label" x="486" y="178">not a bigint</text>
+  <rect class="bad" x="500" y="230" width="80" height="30" rx="6"/>
+  <text x="540" y="250" text-anchor="middle">422</text>
+  <path class="edge" d="M300,202 V226" marker-end="url(#arr)"/>
+  <rect class="box" x="110" y="228" width="380" height="50" rx="6"/>
+  <text x="300" y="248" text-anchor="middle">since &lt; pruned_through or since &gt; value ?</text>
+  <text x="300" y="266" text-anchor="middle" class="edge-label">server writes nothing (C126)</text>
+  <path class="edge" d="M110,253 H40 V560" marker-end="url(#arr)"/>
+  <text class="edge-label" x="44" y="300">no</text>
+  <path class="edge" d="M300,278 V304" marker-end="url(#arr)"/>
+  <text class="edge-label" x="306" y="296">yes</text>
+  <rect class="box" x="120" y="306" width="360" height="34" rx="6"/>
+  <text x="300" y="328" text-anchor="middle">reset: true at the server's current revision</text>
+  <path class="edge" d="M300,340 V364" marker-end="url(#arr)"/>
+  <rect class="warn" x="90" y="366" width="420" height="96" rx="6"/>
+  <text x="300" y="386" text-anchor="middle" font-weight="600">Firewall drop_cache (C126)</text>
+  <text x="300" y="404" text-anchor="middle">floor and cursor := reset revision (lower or higher)</text>
+  <text x="300" y="422" text-anchor="middle">clear invalidation records; new ask epoch</text>
+  <text x="300" y="440" text-anchor="middle">clear key cache, layer cache, policy interner</text>
+  <text x="300" y="456" text-anchor="middle">adopt the full network_lock</text>
+  <path class="edge" d="M300,462 V486" marker-end="url(#arr)"/>
+  <rect class="bad" x="90" y="488" width="420" height="34" rx="6"/>
+  <text x="300" y="510" text-anchor="middle">Answers from asks begun before the reset: dropped</text>
+  <path class="edge" d="M300,522 V546" marker-end="url(#arr)"/>
+  <rect class="ok" x="150" y="548" width="300" height="34" rx="6"/>
+  <text x="300" y="570" text-anchor="middle">Next delta applies; every firewall reset once</text>
+  <rect class="box" x="10" y="562" width="120" height="50" rx="6"/>
+  <text x="70" y="582" text-anchor="middle">apply_changes</text>
+  <text x="70" y="600" text-anchor="middle">(normal delta)</text>
+</svg>
+<figcaption id="flow1-cap" class="muted">Sources: 02 § Change propagation, 03 C126, C129 and § fetch_changes / apply_changes / drop_cache. Assumptions: the clock is not rolled back, and there is less than one change per microsecond.</figcaption>
+</figure>
+
+<h3>Declarations and contracts</h3>
+<p><span class="label">rust</span> Signatures are <strong>unchanged</strong>. Only the behaviour in the comments changed.</p>
+<pre aria-label="rust declarations">// Server route (proposed, sync.rs, slice 4). Signature unchanged.
+// Answers reset: true at the server's current revision when
+//   since &lt; pruned_through   (the log was pruned past the cursor), or
+//   since &gt; value            (firewall ahead of a restored database; C126).
+// A since that cannot be a bigint answers 422.
+// Never writes change_counter or pruned_through: one firewall's cursor
+// never resets another (C126).
+async fn changes(State, FirewallAuth, Json&lt;ChangesRequest&gt;) -&gt; Json&lt;ChangesResponse&gt;;
+
+impl KeySync {
+    // Firewall sync (proposed, src/managed/sync.rs, slice 3). Signature unchanged.
+    pub async fn fetch_changes(&amp;self, request: &amp;ChangesRequest) -&gt; Result&lt;Synced, Unreachable&gt;;
+
+    // Private, only on Reset. CHANGED by C126 ("raise" became "set"), in this order:
+    //   set the invalidation floor and the cursor to the reset revision,
+    //     lower or higher than before;
+    //   clear the invalidation records and start a new ask epoch;
+    //   clear the key cache, the layer cache and the compiled-policy interner;
+    //   adopt the reset answer's full network_lock.
+    // Effect: a lookup or layers answer from an ask started before the reset
+    // is dropped, not cached.
+    fn drop_cache(&amp;self);
+}</pre>
+<p><span class="label">sql</span> Schema notation from 02 § Data.</p>
+<pre aria-label="sql schema notation">-- Existing table. CHANGED rule: the prune job raises pruned_through to the
+-- highest deleted revision only when that is higher; it never lowers it.
+change_counter(id = 1, value, pruned_through)   -- pruned_through ≤ value
+
+-- NEW operator command (C129, slice 8): probation-server admin after-restore
+-- One transaction with an audit_log row (before and after values):
+--   value := greatest(value, now in microseconds since the Unix epoch) + 1
+--   pruned_through := value
+-- Values only move up. Epoch microseconds are about 2^51, below the i64 limit 2^63.
+
+-- NEW (C128, C130). Written only by an admin removal, never by an approved
+-- leave (C85), in the removal's transaction.
+org_removals(org_id, login_id → logins ON DELETE CASCADE, removed_at)
+-- one row per SSO identity of that organisation that the removed login holds
+org_sso_removals(org_id, issuer, subject, login_id → logins ON DELETE CASCADE, removed_at)
+  -- primary key (org_id, issuer, subject)
+
+-- CHANGED: new column created_at, compared with removed_at.
+invitations(token_hash, org_id null, group_id null, role, created_by, created_at, expires_at, accepted_by null)
+
+-- CHANGED (C127): name stored trimmed, each inner whitespace run collapsed to
+-- one space, unique (lower(name)). Sign-up refuses a taken name with
+-- "name taken" and writes no row.
+orgs(id, name, status[active|suspended], …)</pre>
+
+<h3>Removed members and SSO (C128, C130)</h3>
+<table>
+  <thead><tr><th style="width:55%">Case</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>An admin removed the member, who then signs in by SSO</td><td>Not added back</td></tr>
+    <tr><td>Same, after they unlink the SSO method and sign in by SSO as a new login, while the removed login exists (including its 30-day deletion window)</td><td>Not added back: the block is keyed by (org_id, issuer, subject)</td></tr>
+    <tr><td>Invitation created <em>before</em> the removal and accepted after it</td><td>Refused</td></tr>
+    <tr><td>Invitation created <em>after</em> the removal</td><td>Member again; their removal rows are deleted</td></tr>
+    <tr><td>An org admin approved their leave (C85)</td><td>No block: they rejoin at their next SSO sign-in (C5)</td></tr>
+    <tr><td>The removed login is erased (C93 after 30 days, C94 "Start a new login", the purge, C33)</td><td>Rows deleted by cascade; a new login with that identity joins by SSO</td></tr>
+  </tbody>
+</table>
+
+<h3>Security coverage (changed rows only)</h3>
+<table>
+  <thead><tr><th style="width:24%">Threat / property</th><th>Spec or obligation</th><th style="width:30%">Evidence / gap</th></tr></thead>
+  <tbody>
+    <tr><td>T7 authz freshness; "Revocations not skipped (C20, T7)"</td><td><strong>Changed</strong>: after a database restore, the operator's <code>admin after-restore</code> resets every firewall once (C129)</td><td>T-ops-after-restore-resets-fleet, planned (slice 8). Holds only once the operator has run the command</td></tr>
+    <tr><td>T31 stolen firewall token</td><td>Unchanged. New statement: <code>admin after-restore</code> is CLI only, so a firewall token cannot reset the fleet; <code>changes</code> never writes the counter (C126)</td><td>T-sync-api-contract with C126 cases, planned (slice 4)</td></tr>
+    <tr><td>T22 disclosure; accepted risk A3</td><td><strong>Widened</strong>: the sign-up "name taken" message also reveals that an organisation exists (C127), in addition to the SSO redirect</td><td>Accepted risk A3 (decision); case in T-portal-signup-creates-org (slice 5)</td></tr>
+    <tr><td>Removed member re-joins by SSO (C5, C128, C130)</td><td><strong>New</strong>: removal records block auto-join; only a newer invitation re-admits</td><td>T-portal-sso-removed-not-rejoined, planned (slice 6); test only</td></tr>
+  </tbody>
+</table>
+
+<h3>Slice order (changes only)</h3>
+<table>
+  <thead><tr><th style="width:12%">Slice</th><th>Change</th><th style="width:34%">Witness</th></tr></thead>
+  <tbody>
+    <tr><td>3</td><td>Firewall reset to a lower revision (C126)</td><td><code>managed_sync</code>: 33 passed (was 30); adds T-layer-fetch-single-flight-and-budget, T-sync-record-outlives-a-held-ask, T-sync-reset-to-a-lower-revision</td></tr>
+    <tr><td>4</td><td>Server reset for a cursor above the revision; 422; the prune job never lowers <code>pruned_through</code> (C126)</td><td>T-sync-api-contract (C126 cases)</td></tr>
+    <tr><td>5</td><td>"name taken" (C127). The org-admin TOTP reset moves out of this slice</td><td>T-portal-signup-creates-org case</td></tr>
+    <tr><td>6</td><td>Removal records and SSO block (C128, C130). The org-admin TOTP reset (C76, C39) moves here</td><td><code>portal_places</code>: 36 passed (was 35)</td></tr>
+    <tr><td>8</td><td><code>admin after-restore</code> and the restore steps in docs/operations.md (C129)</td><td><code>after_restore</code>: 1 passed</td></tr>
+  </tbody>
+</table>
+<p class="muted">Other QA fixes: the old reset wording is fixed. 03 now says a reset "sets" the floor (it used to say "raises"), and 02, 03 and molecule-flow.json now say that an answer from an ask started before the reset is dropped. New test plan rows cover C126, C129 and C128/C130, and the existing rows T-sync-api-contract and T-portal-signup-creates-org gained cases for C126 and C127. The C5 note in 01 now refers to C128 and C130.</p>
+
+<h2>How will we confirm it is solved?</h2>
+<table>
+  <thead><tr><th style="width:32%">Scenario → expected result</th><th style="width:30%">Check</th><th>Status / limits</th></tr></thead>
+  <tbody>
+    <tr><td>A firewall ahead of the server gets a reset, the held answers are dropped, the cursor adopts the lower revision, and the next delta applies</td><td>T-sync-reset-to-a-lower-revision</td><td>Planned (slice 3)</td></tr>
+    <tr><td>A <code>since</code> above the revision gets a reset, the counter is unchanged, the other firewall is not reset, i64::MAX gets a reset and u64::MAX gets 422; the prune never lowers <code>pruned_through</code></td><td>T-sync-api-contract</td><td>Planned (slice 4)</td></tr>
+    <tr><td>A taken name, in another case and with extra whitespace, shows "name taken" and writes no row</td><td>T-portal-signup-creates-org</td><td>Planned (slice 5)</td></tr>
+    <tr><td>The removal cases in the SSO table above</td><td>T-portal-sso-removed-not-rejoined</td><td>Planned (slice 6)</td></tr>
+    <tr><td>After a restore and <code>after-restore</code>, both firewalls reset and key K answers 401. There is one audit row. A prune after the command leaves <code>pruned_through</code> unchanged. A backup restored twice still resets every firewall</td><td>T-ops-after-restore-resets-fleet (Postgres, two real firewalls)</td><td>Planned (slice 8); rests on the clock and write-rate assumptions</td></tr>
+    <tr><td>The design is consistent</td><td>Design QA; router check; molecule-check</td><td>READY, no blocking findings; no findings; PASS. Source verification: 9 PASS, 3 PENDING (slice 4 source absent)</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Recommendation:</strong> Approve. Design QA is READY with no blocking findings. The counter only moves up, a firewall token still cannot reset other firewalls, and the SSO block applies only to an admin removal while the removed login exists.</p>
+
+<p><strong>Limits:</strong></p>
+<ul>
+  <li>C129 rests on two premises that are not checked: the clock is not rolled back, and changes are written at fewer than one per microsecond. A restore is safe only after the operator runs the command.</li>
+  <li><span class="note">N2 (QA, non-blocking):</span> 02–04 do not name which clock <code>after-restore</code> reads. An NTP step backwards matters like a rollback, up to the size of the step. You were told that slice 8 will use the database clock, Postgres <code>clock_timestamp()</code>. That is not yet written in 02–04, and any edit to 02–04 needs a fresh QA review.</li>
+  <li>All new checks are planned and none has run. The slice 4–7 implementations are on worktree branches, so QA relied on their evidence files.</li>
+  <li>render: not inspected.</li>
+</ul>
+
+<p>Status: the design was approved 2026-10-21 and re-approved 2026-10-22 for C123–C125. It was reopened 2026-10-23 for C126–C130. Design QA: READY (<code>docs/plans/management-server/gate-4-qa.md</code>).</p>
+
+<p class="muted">Sources: 01-product.md C5; 02-architecture.md § Data, § Endpoints, § Change propagation; 03-program-design.md C126–C130, § fetch_changes / apply_changes / drop_cache, § lookup / changes, § Test plan, T7, T22, T31, A3, § Security coverage, § Review dispositions; 04-slices.md slices 3, 4, 5, 6, 8; molecule-flow.json; gate-4-qa.md (N2).</p>
+
+<p class="question">Approve the design, or what should change?</p>
+</main>
+</body>
+</html>

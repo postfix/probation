@@ -114,3 +114,14 @@ Rechecks after the merge (`-j 8`, `--test-threads=8`):
 - The 4 analyzers at `--root crates/probation-server`: 0 findings each.
 - C123 SMTC query: one site in all eight runs, `src/managed/mod.rs:276`.
 - `node crates/probation-server/tests/a11y/axe.mjs --slice 7` on a freshly seeded database: `A11Y slice 7: 12 pages, 0 problems`, exit 0.
+
+## Verification follow-ups (2026-10-23, `-j 16`)
+
+tdd: T-automation-body-limit, 5001 copies of one record in add mode (the file cap, not the layer cap, since they dedup to one block) — red (mutant: the `MAX_ENTRIES` check disabled): `panicked at crates/probation-server/tests/admin_fleet.rs:3156:5` (200) — green: `cargo test -p probation-server --test admin_fleet t_automation_body_limit` (1 passed)
+tdd: T-automation-body-limit, a 257-byte reason — red (mutant: the reason cap doubled): `panicked at crates/probation-server/tests/admin_fleet.rs:3172:5` (200) — green: as above
+tdd: T-fleet-unhealthy, a rollout step while the firewall reports a period of 10^18 s: /fleet answers 200, the step stays sent, and it times out after 3 days + 1 s — red (mutant: `LEAST(86400, …)` removed from `fleet::expire`): `panicked at crates/probation-server/tests/admin_fleet.rs:2056:5` (/fleet answered 503: the interval overflowed) — green: `cargo test -p probation-server --test admin_fleet t_fleet_unhealthy` (1 passed)
+tdd: T-fleet-unhealthy, a period of 0 taken as 1 s (`GREATEST(1, …)` added to `fleet::expire`, as `health` clamps) — red (before the floor): `panicked at crates/probation-server/tests/admin_fleet.rs:2070:5` (the step just sent was already timed out) — green: as above
+tdd: T-portal-ranges-approve, S7-1: the purged global admin had started a rollout; it stays with `created_by` NULL — red (mutant: the ON DELETE SET NULL removed from 0005): `panicked at crates/probation-server/tests/admin_fleet.rs:1925:5` (the purge erased 0 logins) — green: `cargo test -p probation-server --test admin_fleet t_portal_ranges_approve` (1 passed)
+tdd: T-portal-limits, a service value that is no number ("5O") is refused, not saved as "no limit" — red (before the fix): `panicked at crates/probation-server/tests/admin_fleet.rs:1635:5` (303) — green: `cargo test -p probation-server --test admin_fleet t_portal_limits` (1 passed)
+
+Ledger: S7-1 resolved; S7-2 moved to slice 8 (`[portal] firewall_url`).

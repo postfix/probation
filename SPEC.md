@@ -15,7 +15,7 @@ Five features were specified later, each in its own `docs/plans/<name>/` folder,
 - **Managed mode** (`docs/plans/management-server/`), in progress and not released before that plan's last slice. With a `[management]` section a firewall serves each request under the policy of the API key it carries, looked up from a management server, keeps that policy in sync with the server, ignores its local blocklist, and applies settings the server pushes; it amends §3, §4, §9, §11 and §13 where marked "Managed mode". Config: `[management]` (`url`, `token_file`, `key_cache_ttl_seconds`, `key_cache_max_entries`, `lookup_budget_per_second`, `client_lookup_allowance_per_second`, `request_timeout_seconds`, `sync_margin_seconds`, `trusted_proxies`) and `sync_interval_seconds`. The upstream origins are configurable in any mode: `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`.
 - **Built-in TLS**: `serve` terminates TLS when `tls_cert_path` and `tls_key_path` are both set (§3 already says so). `SIGTERM` is handled like `SIGINT`.
 
-`max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is Apache-2.0.
+`max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is the Elastic License 2.0 for every release after 0.2.2; releases up to 0.2.2 were Apache-2.0.
 
 ## 1. Problem and solution
 

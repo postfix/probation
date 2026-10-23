@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slices 3 to 6 done: managed firewall, management server and portal</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d2127; --muted: #5b6470; --line: #d5dae0; --panel: #f5f7f9;
+    --ok: #1f7a3d; --ok-bg: #e7f4ec; --bad: #a3262a; --bad-bg: #fbeaea; --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --accent: #2457a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e4e7eb; --muted: #9aa3ad; --line: #353b43; --panel: #1e2228;
+      --ok: #6fd393; --ok-bg: #173323; --bad: #f08b8e; --bad-bg: #3a1d1f; --warn: #f1c46b; --warn-bg: #3a2f14;
+      --accent: #8ab4f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
+  p, li { overflow-wrap: anywhere; }
+  ul, ol { padding-left: 1.2rem; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .label { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+           background: var(--panel); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 8px 0; font-size: 0.92rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { background: var(--panel); }
+  .pass { color: var(--ok); font-weight: 600; }
+  .note { color: var(--warn); font-weight: 600; }
+  .slice { border: 1px solid var(--line); border-radius: 6px; padding: 4px 14px 10px; margin: 12px 0; }
+  figure { margin: 8px 0; }
+  svg { display: block; width: 100%; max-width: 640px; height: auto; }
+  svg text { fill: var(--fg); font-family: system-ui, sans-serif; font-size: 11px; }
+  svg .box { fill: var(--panel); stroke: var(--line); }
+  svg .ok { fill: var(--ok-bg); stroke: var(--ok); }
+  svg .edge { stroke: var(--muted); fill: none; stroke-width: 1.3; }
+  svg .edge-label { fill: var(--muted); font-size: 9.5px; }
+  svg .head { fill: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .question { margin-top: 28px; padding: 12px 14px; border: 2px solid var(--accent); border-radius: 6px; font-weight: 600; font-size: 1.05rem; }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 32px; }
+    table { font-size: 0.85rem; }
+    th, td { padding: 5px 4px; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Slices 3 to 6 done: managed firewall, management server and portal</h1>
+<p class="muted">One page for four completed slices. Each slice has qa = VERIFIED in the router. Managed mode still ships with slice 8.</p>
+
+<h2>Delivered</h2>
+<p>A person can now sign up in the portal, create API keys and edit policy. The management server (<code>probation-server</code>, on Postgres) stores each change with an audit row. A managed firewall picks up the change through the sync API and applies it to npm and pip requests.</p>
+
+<h3>Connected flow after slice 6</h3>
+<figure aria-labelledby="flow-cap">
+<svg viewBox="0 0 640 250" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">Flow from the portal to the firewall</title>
+  <desc id="flow-desc">A person uses the portal. The portal saves edits in probation-server on Postgres, with audit and a change log. The managed firewall reads the changes through the sync API and decides npm and pip requests. The firewall sends activity rows back to the server, and the portal shows them.</desc>
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+  <rect class="box" x="10" y="20" width="130" height="62" rx="6"/>
+  <text x="75" y="44" text-anchor="middle">Person in a browser</text>
+  <text x="75" y="62" text-anchor="middle">admin or member</text>
+  <rect class="ok" x="180" y="20" width="130" height="62" rx="6"/>
+  <text x="245" y="40" text-anchor="middle">Portal</text>
+  <text x="245" y="56" text-anchor="middle">sign-in: Slice 5</text>
+  <text x="245" y="72" text-anchor="middle">places, keys, policy: Slice 6</text>
+  <rect class="ok" x="350" y="20" width="130" height="62" rx="6"/>
+  <text x="415" y="40" text-anchor="middle">probation-server</text>
+  <text x="415" y="56" text-anchor="middle">Postgres, audit,</text>
+  <text x="415" y="72" text-anchor="middle">change log: Slice 4</text>
+  <rect class="ok" x="350" y="160" width="130" height="62" rx="6"/>
+  <text x="415" y="180" text-anchor="middle">Managed firewall</text>
+  <text x="415" y="196" text-anchor="middle">cache, network lock,</text>
+  <text x="415" y="212" text-anchor="middle">readiness: Slice 3</text>
+  <rect class="box" x="510" y="160" width="120" height="62" rx="6"/>
+  <text x="570" y="184" text-anchor="middle">npm / pip client</text>
+  <text x="570" y="202" text-anchor="middle">200, 401, 403, 503</text>
+  <path class="edge" d="M140,51 L178,51" marker-end="url(#arr)"/>
+  <path class="edge" d="M310,51 L348,51" marker-end="url(#arr)"/>
+  <text class="edge-label" x="329" y="44" text-anchor="middle">edit</text>
+  <path class="edge" d="M400,82 L400,158" marker-end="url(#arr)"/>
+  <text class="edge-label" x="396" y="112" text-anchor="end">/api/v1/sync/</text>
+  <text class="edge-label" x="396" y="124" text-anchor="end">lookup, layers, changes</text>
+  <path class="edge" d="M440,158 L440,84" marker-end="url(#arr)"/>
+  <text class="edge-label" x="446" y="118">activity rows</text>
+  <path class="edge" d="M510,191 L482,191" marker-end="url(#arr)"/>
+  <path class="edge" d="M350,215 L120,215 L120,84" marker-end="url(#arr)"/>
+  <text class="edge-label" x="235" y="230" text-anchor="middle">measured: edit or revoke reaches the firewall, p99 about 5 s (10 s interval)</text>
+</svg>
+<figcaption id="flow-cap" class="muted">Text version: (1) a person edits in the portal; (2) <code>probation-server</code> saves the edit with an audit row and a change-log row in one transaction; (3) the managed firewall reads <code>/api/v1/sync/changes</code>, then <code>lookup</code> and <code>layers</code>; (4) npm or pip get the answer of their key's policy; (5) the firewall uploads activity rows, which the portal's Activity page shows. Measured by <code>propagation</code> (slice 4) and the T-sync rows of <code>portal_places</code> (slice 6).</figcaption>
+</figure>
+
+<h3>Interface changes (added, not changed)</h3>
+<pre><code class="language-rust">// Slice 4: sync API on probation-server (crates/probation-server/src/sync.rs)
+POST /api/v1/sync/lookup    // a key hash -> its place and revision; needs a firewall token
+POST /api/v1/sync/layers    // the policy layers of a place
+POST /api/v1/sync/changes   // changes since a cursor; a cursor above the server's
+                            // revision gets reset: true at the server's revision (C126)
+// Slice 4: first-run CLI, stays supported
+probation-server admin bootstrap    // first global admin, an org, a key, a firewall token
+probation-server admin revoke-key
+
+// Slice 3: additive field (crates/probation-policy/src/api.rs)
+pub struct ActivityEvent {
+    // ...existing fields unchanged...
+    /// RFC 3339 UTC: when the firewall saw it, so a batch re-sent after an
+    /// outage keeps its time. Left out by older firewalls.
+    pub at: Option&lt;String&gt;,
+}
+
+// Slices 5-6: portal routes (crates/probation-server/src/portal/mod.rs), for example
+/signup /signin /reset /verify-email /totp /account /account/totp/enable
+/oauth/{provider}/start /sso/{org}/start /deleted/restore          // Slice 5
+/keys /policy/{id} /activity /audit /place /org/{id}/invitations
+/org/members/{id}/role /org/members/{id}/totp-reset /org/{id}/delete  // Slice 6</code></pre>
+<p class="muted">The standalone firewall's interfaces are unchanged. The server's <code>ActivityEvent.at</code> is clamped to [now - retention, now], and a missing value becomes now (S4-11).</p>
+
+<div class="slice">
+<h3>Slice 3: a managed firewall syncs and keeps serving</h3>
+<p><strong>What now works.</strong> The firewall syncs with the server. A revoked key answers 401 after one sync interval. A network lock refuses requests from outside an organisation's IP ranges (403). <code>/health/ready</code> is 503 until the first sync, then 200. When the server is down, known keys are served from the cache (stale serving). Blocked, held and would-block decisions go to the server as activity rows. Settings pushes are applied, and a failed push is rolled back.</p>
+<p><strong>Review findings fixed:</strong> late answers are not cached after a key, place or reset change (B1); a pushed log file is checked and a start failure rolls back (B2); IPv4-mapped ranges are read at full width (M1); <code>layers</code> calls are single-flight and inside the budget (M2); activity keeps its time across an outage (M3); no API key in SIEM output (T2); after a database restore, the firewall resets to the lower revision (C126); verification fixes: refused metadata and version requests now record activity, and a pushed <code>log_file_path</code> cannot point at the firewall's own files (S3-8).</p>
+<p><strong>Deviations that matter to you:</strong></p>
+<ul>
+  <li>A refused metadata or version request records one activity row. A listing that only hides some versions records nothing (S3-8). A refused PyPI project records one row on every request, cached or not (S3-9).</li>
+  <li>In managed mode, <code>blocklist_file</code> is optional and ignored (S3-5).</li>
+  <li>Product code came before its tests; each red line comes from a named mutant (S3-4).</li>
+</ul>
+</div>
+
+<div class="slice">
+<h3>Slice 4: probation-server on Postgres</h3>
+<p><strong>What now works.</strong> The real sync API answers a real firewall. Policy edits are atomic: the edit, the audit row and the change-log row commit together. The audit log is append-only for the app role. Tenancy keeps organisations apart. The bootstrap CLI creates the first admin, org, key and firewall token.</p>
+<p><strong>Review findings fixed:</strong> a permit for one place cannot save another place (R1, N3); the role table for keys and fleet is tested (R2); only the firewall that is ahead resets, never all firewalls (C126); the bootstrap audit row names the host operator, not the new admin (F7); activity time is kept and clamped to retention (S4-11); <code>i64::MAX</code> cursor accepted, <code>u64::MAX</code> answers 422.</p>
+<p><strong>Deviations that matter to you:</strong></p>
+<ul>
+  <li>The server listens on plain HTTP. TLS ends at a proxy in front (<code>[server] trusted_proxies</code>). Operator docs come in slice 8 (S4-1).</li>
+  <li>Tests were written after the code; reds come from named mutants (S4-10).</li>
+</ul>
+</div>
+
+<div class="slice">
+<h3>Slice 5: sign-up and sign-in in the portal</h3>
+<p><strong>What now works.</strong> People sign up (organisation or personal account), confirm the email, and sign in with a password, Google, GitHub, Microsoft or company SSO. They link and unlink sign-in methods, change and reset the password, turn on an authenticator app (TOTP) with backup codes, and delete or restore the login.</p>
+<p><strong>Review findings fixed:</strong> TOTP comes before the deleted-login choice (R1); sign-in and TOTP throttles hold under concurrent attempts (R2); mail and sign-up rate limits (R3); an SSO session cannot change the account (R4); a waiting session ends after a password reset (R5); state, nonce and tenant checks are tested (R6); N1-N5 (hash permits, mail-cap keys, pool use, pending-session ends, sign-up cap order); an SSO callback must match the flow's organisation (F4).</p>
+<p><strong>Deviations that matter to you:</strong></p>
+<ul>
+  <li>Sign-up refuses a taken organisation name, so it shows that the organisation exists (C127, accepted like A3).</li>
+  <li>SSO adds a user at sign-in; a removed member is not added back by SSO (C128).</li>
+  <li>OIDC uses <code>jsonwebtoken</code> with hand-written checks, not <code>openidconnect</code>. TOTP throttle: 5 failures in 15 minutes (S5-5).</li>
+  <li>The org-admin TOTP reset moved to slice 6 (S5-7). It is delivered there.</li>
+</ul>
+</div>
+
+<div class="slice">
+<h3>Slice 6: organisations, keys and policy in the portal</h3>
+<p><strong>What now works.</strong> Org admins, group admins and users manage members, groups, invitations, API keys, service keys, policy, IP ranges, activity, audit and organisation deletion. Admin roles need a second factor (C24). A key, member or group change reaches the firewall within one sync interval.</p>
+<p><strong>Review findings fixed:</strong> the second factor is checked on every admin action (B1); removal is remembered by SSO identity (B2); last-admin and invitation races have deterministic tests (B3, M1); the SSO secret is kept only for the same issuer and client (M2); purge and restore do not race (M3); an org admin cannot demote, reset the authenticator and promote back (M4, S6-4); the place switcher posts real values (M5); an invitation needs a live admin sender (S6-SEC-4).</p>
+<p><strong>Deviations that matter to you:</strong></p>
+<ul>
+  <li>Activity and audit have no filters; each lists the newest 500 rows. No separate confirmation before revoking a key. No organisation rename (S6-11).</li>
+  <li>The <code>.npmrc</code> and <code>pip.conf</code> lines use a <code>FIREWALL</code> placeholder; the portal has no setting for the firewall address yet (S6-10, open).</li>
+  <li>An org admin cannot reset the authenticator of someone who was an org admin there in the last 30 days; a global admin can (S6-4).</li>
+</ul>
+</div>
+
+<h2>Proof</h2>
+<table>
+  <caption class="sr-only">Executed checks per slice</caption>
+  <thead><tr><th style="width:12%">Slice</th><th>Executed witness and observed result</th><th style="width:30%">Evidence limit</th></tr></thead>
+  <tbody>
+    <tr><td>3</td><td><span class="pass">PASS</span> <code>managed_sync</code> 33, <code>key_canary</code> 2, <code>origin_guard</code> 26, <code>managed_mode</code> 10, <code>authorization_read_once</code> 4; molecule-verify slices 1-3 obligations 9/9; final verification on 08b6d69</td><td>Witness said 30; final is 33 (3 added by review, S3-11). PyPI held-only and served-file activity cases untested.</td></tr>
+    <tr><td>4</td><td><span class="pass">PASS</span> <code>sync_api</code> 6, <code>policy_edit</code> 8, <code>tenancy</code> 3, <code>propagation</code> 3 (edits p99 5.002 s, revocations p99 4.954 s, interval 10 s), doctest 1; workspace 609 passed, 0 failed; molecule-verify 12/12</td><td>No test at exactly <code>i64::MAX</code>+1.</td></tr>
+    <tr><td>5</td><td><span class="pass">PASS</span> <code>accounts</code> 29; workspace 634 passed, 0 failed, 21 ignored; A11Y slice 5: 22 pages, 0 problems; molecule-verify 12/12; analyzers 0 findings</td><td>Manual A11Y items (screen reader, 320 px, real IdP round trips) not checked.</td></tr>
+    <tr><td>6</td><td><span class="pass">PASS</span> <code>portal_places</code> 36; workspace 676 passed, 0 failed, 21 ignored; A11Y slice 6: 26 pages, 0 problems; molecule-verify 12/12; analyzers 0 findings; after merge on 60686cb: portal_places 36, accounts 29, policy_edit 8, propagation 3, sync_api 6, tenancy 3</td><td>Witness said 35; 36 since 485f724 (T-portal-sso-removed-not-rejoined). Manual A11Y items open.</td></tr>
+  </tbody>
+</table>
+<p class="muted">C123 query: exactly 1 site (<code>headers.get(AUTHORIZATION)</code>) in slices 3, 5 and 6. clippy and fmt clean in slices 4-6.</p>
+
+<h2>Limits</h2>
+<ul>
+  <li><span class="note">Review verdicts not recorded.</span> <code>router check</code> reports no saved verdict for: slice 3 code-review and adversarial; slice 4 code-review, security and adversarial; slice 5 code-review, security and adversarial; slice 6 security. The evidence lists their findings and fixes, but not a final verdict.</li>
+  <li><strong>Flaky tests (backlog):</strong> <code>tests/blocklist_reload.rs</code> timing tests fail under a full parallel run and pass alone (S6-12, pre-existing); <code>tests/content_store.rs</code> eviction test failed once (S6-5).</li>
+  <li><strong>Open minor findings:</strong> slice 3: log-only mode can wait on OSV twice (F4), the final pre-restart sync does not save the snapshot (S3-SEC-5), the settings overlay write is not crash-atomic (adversarial F2); slice 4: sync handlers read up to 2 MiB before the token check (F5/F4), <code>changes</code> is quadratic for a large log (adversarial F4); slice 6: a partly applied exception is labelled "not in effect" (S6-ADV-5), a group admin's activity view follows current membership (S6-ADV-6).</li>
+  <li>Render: not inspected.</li>
+</ul>
+
+<h2>Next</h2>
+<p><strong>Slice 7:</strong> global admins manage organisations, personal accounts, platform policy, ranges, limits, the fleet, blocklist import/export and retention. Witness: <code>admin_fleet</code> 29 passed, plus A11Y slice 7.</p>
+<ul>
+  <li>Backlog already found in slice 7 work: a stale <code>last_apply_error</code> can mark a rollout step failed when the push answer was lost (S7-14, accepted as fail-safe; optional fix: <code>failed_revision</code> in <code>FirewallReport</code>).</li>
+  <li class="muted">Lead's note, not yet in the plan documents: slice 7 differs from the mockups. Settings are one TOML text box, not one field per setting, and there is no per-organisation retention screen.</li>
+</ul>
+
+<h2>Recommendation</h2>
+<p>Continue to slice 7. Slices 3-6 are VERIFIED, all suites pass after the merges, and the design changes they needed (C126-C130) were approved on 2026-10-23. Record the missing review verdicts as a status fix; it needs no new code.</p>
+
+<h3>Decisions the lead made without asking (you can object)</h3>
+<table>
+  <thead><tr><th>Decision</th><th style="width:38%">Where recorded</th></tr></thead>
+  <tbody>
+    <tr><td>Group admins do not need TOTP. Global and org admins need a second factor (C24).</td><td>evidence/slice-6.md S6-9; T-portal-admin-totp-required</td></tr>
+    <tr><td>Turning TOTP on ends the login's other sessions.</td><td>evidence/slice-6.md S6-9; tdd-slice-6.md Round 3</td></tr>
+    <tr><td>An invitation stops working once its sender loses the admin role (or the sender's login is deleted).</td><td>evidence/slice-6.md S6-SEC-4; tdd-slice-6.md Rounds 5-6</td></tr>
+    <tr><td>Bootstrap gets <code>--email</code> with a one-time set-password link (slice 8).</td><td class="note">Lead's note only; not yet in the plan documents</td></tr>
+  </tbody>
+</table>
+
+<p class="muted">Status: slices 1-6 done; slices 7-8 open. Branch <code>management-server</code>, HEAD 12020a2. Presentation setting: auto.</p>
+<p class="muted">Sources: 00-status.md (Slices); evidence/slice-3.md, slice-4.md, slice-5.md, slice-6.md; evidence/tdd-slice-3.md to tdd-slice-6.md; 04-slices.md (slice 7 row); ../probation-slice7 evidence/slice-7.md (S7-14); crates/probation-policy/src/api.rs; crates/probation-server/src/sync.rs; crates/probation-server/src/portal/mod.rs; router check at 12020a2.</p>
+
+<p class="question">Continue to slice 7, or re-steer?</p>
+</main>
+</body>
+</html>
