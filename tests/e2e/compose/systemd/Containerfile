@@ -1,0 +1,16 @@
+# A host that runs the firewall binary under systemd with the shipped unit,
+# deploy/probation.service, unchanged (E2E-007). Built from the repository root with
+# the firewall image under test as FIREWALL_IMAGE; run with `--systemd=always`.
+ARG FIREWALL_IMAGE=localhost/probation:e2e
+FROM ${FIREWALL_IMAGE} AS firewall
+
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends systemd systemd-sysv ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --no-create-home probation
+COPY --from=firewall /usr/local/bin/probation /usr/local/bin/probation
+COPY deploy/probation.service /etc/systemd/system/probation.service
+RUN systemctl enable probation.service
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

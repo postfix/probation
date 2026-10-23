@@ -13,6 +13,7 @@
 //   POST /hibp/leak {password}        add a leaked password
 //   POST /oidc/next {...}             Oidc.next
 //   POST /oidc/rotate                 new IdP signing key
+//   GET  /siem/batches                every batch the log collector (fakes.e2e.test/siem) got
 //
 // A fault is {host?, path? (prefix), method?, mode, times?, ...}; the first that
 // matches a request applies, `times` (default unlimited) counts down. Modes:
@@ -35,9 +36,10 @@ import { Npm } from "./npm.mjs";
 import { Oidc } from "./oidc.mjs";
 import { Osv } from "./osv.mjs";
 import { Pypi } from "./pypi.mjs";
+import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), pypi: new Pypi(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc() };
+const fakes = { npm: new Npm(), pypi: new Pypi(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
   "pypi.org": fakes.pypi,
@@ -46,6 +48,7 @@ const hosts = {
   "api.pwnedpasswords.com": fakes.hibp,
   "idp.e2e.test": fakes.oidc,
   "accounts.google.com": fakes.oidc,
+  "fakes.e2e.test": fakes.siem,
 };
 let faults = [];
 let log = [];
@@ -140,6 +143,7 @@ const control = {
   "POST /hibp/leak": (body) => (fakes.hibp.leak(body.password), { ok: true }),
   "POST /oidc/next": (body) => (fakes.oidc.next(body), { ok: true }),
   "POST /oidc/rotate": () => (fakes.oidc.rotate(), { ok: true }),
+  "GET /siem/batches": () => fakes.siem.batches,
   "GET /health": () => ({ ok: true }),
 };
 

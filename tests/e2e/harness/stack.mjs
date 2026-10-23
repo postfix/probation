@@ -191,7 +191,7 @@ trusted_proxies = ["${gateway}/32"]
   async up({ build = true } = {}) {
     this.secretKey = randomBytes(32).toString("hex");
     mkdirSync(this.work, { recursive: true });
-    this.compose(["down", "-v"], { check: false, quiet: true });
+    this.down();
     this.writeFiles();
     if (build) this.build();
     configure({ bridgePort: this.bridgePort, caFile: join(this.work, "ca", "ca.pem") });
@@ -246,7 +246,14 @@ trusted_proxies = ["${gateway}/32"]
   }
 
   down() {
+    // podman-compose's `down -v` leaves the anonymous volumes of image VOLUMEs (the
+    // postgres data directory) behind; enough of them exhaust podman's locks.
+    const ids = spawnSync(this.engine, ["ps", "-aq", "--filter", `label=com.docker.compose.project=${this.project}`], { encoding: "utf8" })
+      .stdout?.trim().split("\n").filter(Boolean) ?? [];
+    const inspected = ids.length ? spawnSync(this.engine, ["inspect", ...ids], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout : "[]";
+    const anonymous = JSON.parse(inspected || "[]").flatMap((c) => (c.Mounts ?? []).filter((m) => m.Type === "volume" && /^[0-9a-f]{64}$/.test(m.Name)).map((m) => m.Name));
     this.compose(["down", "-v"], { check: false, quiet: true });
+    if (anonymous.length) spawnSync(this.engine, ["volume", "rm", "-f", ...anonymous], { encoding: "utf8" });
   }
 
   /// Every service's log, the fakes' request log and the mail sink's index, into `dir`.

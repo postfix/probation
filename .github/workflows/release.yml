@@ -39,6 +39,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          # E2E-010 builds the previous release from its tag.
+          fetch-depth: 0
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
       - run: node tests/e2e/harness/run.mjs --suite release
