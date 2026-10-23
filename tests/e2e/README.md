@@ -141,6 +141,21 @@ What `h` offers (`harness/helpers.mjs`):
 | `h.restart`, `h.stop`, `h.start`, `h.postgresDown`, `h.postgresUp`, `h.firewallReady("fw1")` | service control |
 | `h.operator`, `h.bootstrap`, `h.firewalls`, `h.syncInterval`, `h.unique()` | |
 
+The deployment and operations scenarios (E2E-005 to E2E-010) also use
+`harness/ops.mjs` (`const o = ops(h)`): the engine itself (`o.inspect`, `o.state`,
+`o.exits`, `o.logs`), one-off server commands (`o.server(["admin", ...])`), SQL as the
+app role (`o.sqlAs`), a fresh database (`o.freshDatabase`), commands in the background
+(`o.background`), the fleet page (`o.fleet`, `o.push`), the sync proxy failing
+(`o.syncProxy(false)`), and firewall containers outside compose (`o.firewall({name,
+config, token, image, volume, ...})`, removed by `o.removeExtras()`).
+`o.needs("F8", ok, message)` records a check that waits for a known product fix and lets
+the scenario go on; `o.settle()` fails it at the end. The log collector a firewall can
+ship to is `https://fakes.e2e.test/siem`; its batches are at
+`http://fakes.e2e.test:8080/siem/batches`. E2E-010 takes the previous release from
+`E2E_PREV_FIREWALL_IMAGE` and `E2E_PREV_SERVER_IMAGE`, or builds it from `E2E_PREV_REF`
+(default: the newest `v*` tag before HEAD, so the checkout needs its tags);
+`E2E_BUILD_CPUSET` pins that build to some CPUs.
+
 The fakes' seed catalogue (`fixtures/fakes/npm.mjs`, `pypi.mjs`) is all older than 200
 days.
 
