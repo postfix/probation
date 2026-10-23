@@ -51,6 +51,44 @@ pub struct Db {
     pub app_url: String,
 }
 
+/// A passing test's database goes with it; a failing test's stays for a look. The drop
+/// runs on its own thread and runtime, and `WITH (FORCE)` ends the connections the
+/// test's pools and servers still hold.
+impl Drop for Db {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("kept the database {} of a failing test", self.name);
+            return;
+        }
+        let name = self.name.clone();
+        let dropped = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| err.to_string())?;
+            runtime.block_on(async {
+                use sqlx::Connection;
+                let mut admin = sqlx::PgConnection::connect(&admin_url())
+                    .await
+                    .map_err(|err| err.to_string())?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+                )))
+                .execute(&mut admin)
+                .await
+                .map_err(|err| err.to_string())?;
+                admin.close().await.map_err(|err| err.to_string())
+            })
+        })
+        .join();
+        match dropped {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("could not drop the test database {}: {err}", self.name),
+            Err(_) => eprintln!("could not drop the test database {}", self.name),
+        }
+    }
+}
+
 impl Db {
     pub async fn fresh() -> Db {
         static NEXT: AtomicU32 = AtomicU32::new(0);

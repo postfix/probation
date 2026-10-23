@@ -2431,6 +2431,37 @@ async fn t_grant_by_invitation() {
         cal_answer.body
     );
     assert!(!is_member(&fx.db, world.acme, cal).await, "no grant");
+
+    // Nor while the sender's login is deleted (in its 30 days), though still an admin.
+    set_max_role("org_admin").await;
+    let dan = fx.person("dan@acme.test").await;
+    invite(
+        &mut max,
+        &world,
+        &[
+            ("email", "dan@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let dan_link = invitation_link(&fx, "dan@acme.test").await;
+    sqlx::query(
+        "UPDATE logins SET deleted_at = now(), restore_until = now() + interval '30 days' WHERE id = $1",
+    )
+    .bind(world.max)
+    .execute(&fx.db.owner)
+    .await
+    .unwrap();
+    let mut dan_browser = fx.signed_in("dan@acme.test").await;
+    let dan_answer = accept(&mut dan_browser, &dan_link).await;
+    assert_eq!(
+        dan_answer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        dan_answer.body
+    );
+    assert!(!is_member(&fx.db, world.acme, dan).await, "no grant");
 }
 
 /// T-portal-invitation-expiry (C43): an invitation link works for 7 days; after that it
@@ -3015,6 +3046,18 @@ async fn t_portal_sso_removed_not_rejoined() {
     let mut rob_browser = fx.signed_in("rob@acme.test").await;
     link_sso(&fx, &mut rob_browser, "Acme", "acme-rob").await;
     assert!(is_member(&fx.db, acme, rob).await);
+    // Ana invites him before the removal; the link goes to an address he also reads.
+    invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "rob@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    let rob_old_link = invitation_link(&fx, "rob@acme.test").await;
     remove_member(&fx, &mut ana, acme, rob).await;
     let method: i32 =
         sqlx::query_scalar("SELECT id FROM sign_in_methods WHERE subject = 'acme-rob'")
@@ -3035,6 +3078,19 @@ async fn t_portal_sso_removed_not_rejoined() {
     assert!(
         !is_member(&fx.db, acme, new_rob).await,
         "blocked while the removed login exists"
+    );
+    // The new login holds the removed SSO identity: the link from before the removal is
+    // refused for it too (AC3, by identity).
+    let by_identity = accept(&mut fresh, &rob_old_link).await;
+    assert_eq!(
+        by_identity.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        by_identity.body
+    );
+    assert!(
+        !is_member(&fx.db, acme, new_rob).await,
+        "no grant by an older link"
     );
     // Still blocked while the removed login is in its 30-day deletion window.
     sqlx::query(
@@ -3076,7 +3132,7 @@ async fn t_portal_sso_removed_not_rejoined() {
     );
 }
 
-/// T-portal-sso-off-members-stay (C62)/// T-portal-sso-off-members-stay (C62): when SSO is turned off, the members who joined
+/// T-portal-sso-off-members-stay (C62): when SSO is turned off, the members who joined
 /// through it stay, and a reset email lets one set a password and sign in with it.
 #[tokio::test]
 async fn t_portal_sso_off_members_stay() {

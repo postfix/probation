@@ -16,6 +16,8 @@ Started 2026-10-22 at the user's request, in worktree ../probation-slice6 (branc
 | S6-10 | open, slice 8 | The .npmrc and pip.conf lines need the firewall's public address; the portal has no setting for it. | A `FIREWALL` placeholder; slice 8's end-to-end test needs a real address. |
 | S6-11 | accepted | Mockup states not built. | Activity and audit filters (both list the newest 500 rows), a separate confirmation before revoking a key; blocklist import and export are slice 7's. No organisation rename exists, so org-name normalisation applies at sign-up and "Create organisation". |
 
+The A11Y-axe runs and the A11Y-keyboard checklist (automated walk and manual items) are recorded in [tdd-slice-6.md § A11Y-axe and A11Y-keyboard](tdd-slice-6.md#a11y-axe-and-a11y-keyboard).
+
 ## Review (2026-10-22)
 Confirmed and sent to slice 6: the admin TOTP gate for every admin action (F1/S6-SEC-1/ADV-3); the C128 removal recorded by SSO identity (ADV-1); deterministic race tests for last-admin and invitation accept (F2/F3); the SSO secret on issuer change (SEC-2); purge vs restore (ADV-2); the C39 demote/reset loophole (SEC-3, see S6-4); switcher tests posting real values (ADV-4).
 
@@ -30,4 +32,5 @@ Confirmed and sent to slice 6: the admin TOTP gate for every admin action (F1/S6
 | security S6-SEC-4 | crates/probation-server/src/tenancy.rs:898 | A removed or demoted org admin's pending invitations still grant their role, and accepting one clears the removal — fixed: an invitation stands only while its sender is a live org admin of the organisation (or a global admin), checked on accept under the organisation's lock; a demotion or removal withdraws the sender's open invitations; AC3 refuses links older than a removal (S6-8) |
 | adversarial S6-ADV-5 | crates/probation-server/src/portal/policy.rs:244 | An exception that still partly applies is labelled entirely 'not in effect' |
 | adversarial S6-ADV-6 | crates/probation-server/src/portal/activity.rs:121 | A group admin's activity view follows current group membership, so a member's history moves with them between groups |
+| S6-12 | backlog | tests/blocklist_reload.rs timing tests are flaky under a full parallel workspace run: two different tests failed, each with a fixed 2.5 s window, and each passes alone. Pre-existing; not slice 6 code. | Backlog: read the code and make them deterministic (an injected clock or an event to wait on); no load reproduction. |
 | S6-5 | backlog | tests/content_store.rs `an_open_during_eviction_is_refused_and_a_second_eviction_stands_aside` failed once in a loaded full run, then passed alone and in the full rerun. Firewall test, not slice 6. | Backlog: find the race by reading the code; no load loops. |
