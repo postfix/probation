@@ -1,6 +1,12 @@
 # Probation sample configuration (SPEC §4).
 #
 # Config changes need a restart. Blocklist changes do not.
+#
+# Managed mode (the `[management]` section at the end): settings pushed from the
+# fleet page are written to `<data_dir>/managed-settings.toml`, never to this file,
+# and merged over it at start. A push can never set `listen`, `public_url`,
+# `data_dir`, `tls_cert_path`, `tls_key_path`, `siem_url`, `siem_auth_header` or
+# `[management]`, and a pushed path must lie under `data_dir`.
 
 listen = "127.0.0.1:8080"
 public_url = "https://packages.example.org"
@@ -9,11 +15,13 @@ data_dir = "/var/lib/probation"
 # not the `blocklist.sample.json` in this repository: that sample has a far-off
 # `expires_at` so it always validates. Without a valid snapshot the service
 # starts, answers /health/live but not /health/ready, and refuses every
-# package request.
+# package request. A managed firewall ignores this file: it may leave out
+# `blocklist_file` and `blocklist_poll_seconds`.
 blocklist_file = "/etc/probation/blocklist.json"
 
 # How long a release is withheld after publication. 0 turns off the age rule
-# only; blocks still apply. At most 315360000 (ten years).
+# only; blocks still apply. At most 315360000 (ten years). In managed mode each
+# key's policy sets the cooldown instead.
 cooldown_seconds = 86400
 metadata_ttl_seconds = 300
 # How old a cached project snapshot may get since its last FULL fetch, however
@@ -95,7 +103,8 @@ osv_cache_ttl_seconds = 300
 # Optional, 500 if left out.
 osv_request_timeout_ms = 500
 # What an OSV match does: `enforce` denies, `diagnostic` logs the match and
-# allows, `off` skips the check. Optional, `enforce` if left out.
+# allows, `off` skips the check. Optional, `enforce` if left out. In managed
+# mode each key's policy sets this instead.
 osv_mode = "enforce"
 
 # TLS: `serve` terminates it itself when both keys are set (§6 of
@@ -105,11 +114,24 @@ osv_mode = "enforce"
 # tls_cert_path = "/etc/probation/tls/cert.pem"
 # tls_key_path = "/etc/probation/tls/key.pem"
 
+# Upstream registries. Each key replaces one fixed origin: npm metadata
+# (default https://registry.npmjs.org), PyPI metadata (default https://pypi.org)
+# and PyPI downloads (default https://files.pythonhosted.org). Each must be an
+# `https` origin with no username, password, query, fragment or path, and never
+# a private, loopback or link-local address. All three are optional.
+# npm_upstream_url = "https://npm-mirror.example.org"
+# pypi_upstream_url = "https://pypi-mirror.example.org"
+# pypi_artifacts_url = "https://pypi-files.example.org"
+
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this
-# section it runs standalone, on `blocklist_file`. Every key below is local: the
-# management server can never push it. How often the firewall asks the server what
-# changed is `sync_interval_seconds` (top level, default 60).
+# section it runs standalone, on `blocklist_file`. Every key in `[management]` is
+# local: the management server can never push it.
+#
+# How often a managed firewall asks the server what changed. A top-level key, so
+# it stays above `[management]`, and a push can change it. Optional, 60 if left
+# out, at most 86400.
+# sync_interval_seconds = 60
 #
 # [management]
 # The server's sync API. https only, loopback included.
@@ -118,15 +140,18 @@ osv_mode = "enforce"
 # in a file of its own (never in this file).
 # token_file = "/etc/probation/firewall.token"
 # How long a cached key and its policy are served without a sync confirming them.
+# At most 86400.
 # key_cache_ttl_seconds = 300
 # key_cache_max_entries = 100000
 # Lookups a second for keys this firewall has no entry for, and one client
 # address's share of them.
 # lookup_budget_per_second = 50
 # client_lookup_allowance_per_second = 5
-# Each sync starts this much before the interval ends; at most half of it.
+# Each sync starts this much before the interval ends; at most half of it. The
+# default is 5, or half the interval if that is less.
 # sync_margin_seconds = 5
-# A call to the server gives up after this; at most `sync_margin_seconds`.
+# A call to the server gives up after this; at most `sync_margin_seconds`. The
+# default is 2, or the margin if that is less.
 # request_timeout_seconds = 2
 # Reverse proxies in front of this firewall whose `X-Forwarded-For` is believed for
 # the network lock and the per-client lookup allowance. Empty: the peer address is
