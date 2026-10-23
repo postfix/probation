@@ -21,6 +21,8 @@ jobs:
           persist-credentials: false
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # `probation-server`'s tests need Postgres; each makes its own database in it.
+      - run: docker compose -f docker-compose.test.yml up -d --wait postgres
       - run: cargo test --workspace --locked
 
   coverage:

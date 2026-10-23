@@ -21,6 +21,8 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # `probation-server`'s tests need Postgres; each makes its own database in it.
+      - run: docker compose -f docker-compose.test.yml up -d --wait postgres
       - run: cargo test --workspace --locked
 
   codeql:
@@ -105,7 +107,9 @@ jobs:
       # publishes `probation-policy` first, waiting for it to reach the index. If that
       # wait times out after `probation-policy` is uploaded, finish with
       # `cargo publish -p probation` rather than re-running `--workspace`.
-      - run: cargo package --workspace --locked
+      # `probation-server` is `publish = false` (C117): `publish --workspace` skips it,
+      # and `package` would otherwise still package and verify it.
+      - run: cargo package --workspace --exclude probation-server --locked
       - run: cargo publish --workspace --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
