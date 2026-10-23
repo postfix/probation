@@ -657,6 +657,7 @@ fn report(settings_revision: u64, error: Option<&str>, period: u64) -> FirewallR
         },
         effective_period_seconds: period,
         version: "9.9.9".to_owned(),
+        failed_revision: None,
     }
 }
 
@@ -2288,6 +2289,32 @@ async fn t_fleet_push_staggered() {
         .await;
     assert_eq!(resumed.status, StatusCode::SEE_OTHER, "{}", resumed.body);
     assert_eq!(rollout_state(&fx.db, timed_out).await.0, "running");
+
+    // S7-14: the resumed push's answer is lost, and the firewall keeps reporting the
+    // error of the revision it refused earlier. That stale error, which names the
+    // earlier revision, does not fail the step; an error naming this one does.
+    let stale = |failed: i32| FirewallReport {
+        failed_revision: Some(failed as u64),
+        ..report(0, Some("refused"), 60)
+    };
+    for _ in 0..2 {
+        check_in(&fx, &one_token, stale(failed_rollout)).await;
+    }
+    assert_eq!(
+        rollout_state(&fx.db, timed_out).await,
+        (
+            "running".to_owned(),
+            vec!["sent".to_owned(), "pending".to_owned()]
+        )
+    );
+    check_in(&fx, &one_token, stale(timed_out)).await;
+    assert_eq!(
+        rollout_state(&fx.db, timed_out).await,
+        (
+            "halted".to_owned(),
+            vec!["failed".to_owned(), "pending".to_owned()]
+        )
+    );
 }
 
 /// T-fleet-retire (C72): a firewall registered and retired on the fleet page: its

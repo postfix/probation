@@ -878,7 +878,9 @@ an authenticator that is already set up. Each new link cancels the older ones,
 and setting a password through one cancels the rest. Without a `[portal]`
 section, bootstrap creates everything but prints a note instead of a link; add
 `[portal]` and run `admin reset-link`. Treat both links like passwords: anyone
-who opens one first sets the password.
+who opens one first sets the password. Anyone who knows the admin's address can
+request a self-service password reset, which cancels the printed link; if the link
+stops working, run `admin reset-link` again.
 
 ### Behind a reverse proxy: list it in `trusted_proxies`
 

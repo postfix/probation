@@ -163,6 +163,11 @@ pub struct FirewallReport {
     /// The sync period this firewall runs at, so the server can tell a late check-in.
     pub effective_period_seconds: u64,
     pub version: String,
+    /// The settings push the firewall refused, which `last_apply_error` is about. Absent
+    /// from an older firewall's report, and left out when there is none, so older
+    /// firewalls and servers read each other's reports (S7-14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_revision: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -395,6 +400,7 @@ mod tests {
                 },
                 effective_period_seconds: 55,
                 version: "0.2.2".to_owned(),
+                failed_revision: None,
             },
             activity: vec![ActivityEvent {
                 event_id: "1-1".to_owned(),
@@ -427,6 +433,19 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ChangesRequest>(&text).unwrap(),
             request
+        );
+        // An older firewall's report has no `failed_revision`: it still parses, and a
+        // report without one leaves the key out, so an older server reads it (S7-14).
+        assert!(!text.contains("failed_revision"), "{text}");
+        let older = text.replace(r#","version":"0.2.2""#, r#","version":"0.2.1""#);
+        let parsed = serde_json::from_str::<ChangesRequest>(&older).unwrap();
+        assert_eq!(parsed.report.failed_revision, None);
+        let mut failed = request.report.clone();
+        failed.failed_revision = Some(9);
+        assert!(
+            serde_json::to_string(&failed)
+                .unwrap()
+                .contains(r#""failed_revision":9"#)
         );
         assert!(
             !text.contains("\"at\""),

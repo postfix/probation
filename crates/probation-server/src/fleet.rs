@@ -316,8 +316,9 @@ async fn release_next(conn: &mut PgConnection, rollout: i32, log: bool) -> Resul
 /// A firewall's check-in, in the `changes` transaction that records it and before its
 /// `last_seen_at` moves. Its step of a running rollout succeeded when it reports the
 /// rollout's revision, which releases the next step under the rollout's lock (C70); it
-/// failed when the firewall reports an error after it was answered with the push (C71),
-/// which halts the rollout.
+/// failed when the firewall, answered with the push, reports an error for that revision
+/// (`failed_revision`), or any error when an older firewall names no revision (C71,
+/// S7-14), which halts the rollout.
 pub(crate) async fn settle(
     conn: &mut PgConnection,
     firewall: i32,
@@ -349,7 +350,13 @@ pub(crate) async fn settle(
         .await?;
         return release_next(conn, rollout, false).await;
     }
-    if let (true, Some(error)) = (answered, &report.last_apply_error) {
+    // The error is this step's when the firewall names the revision it refused; an older
+    // firewall names none, and its error is taken as this step's once it was answered
+    // (S7-14).
+    let this_revision = report
+        .failed_revision
+        .is_none_or(|failed| failed == rollout as u64);
+    if let (true, true, Some(error)) = (answered, this_revision, &report.last_apply_error) {
         sqlx::query(
             "UPDATE settings_rollout_steps SET state = 'failed', done_at = now(), error = $3
              WHERE rollout_id = $1 AND firewall_id = $2",

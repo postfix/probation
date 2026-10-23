@@ -782,6 +782,7 @@ impl Managed {
             status: ReportStatus { upstreams },
             effective_period_seconds: self.period.as_secs(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            failed_revision: settings.failed_revision,
         }
     }
 

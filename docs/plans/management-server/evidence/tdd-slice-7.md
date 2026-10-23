@@ -125,3 +125,10 @@ tdd: T-portal-ranges-approve, S7-1: the purged global admin had started a rollou
 tdd: T-portal-limits, a service value that is no number ("5O") is refused, not saved as "no limit" — red (before the fix): `panicked at crates/probation-server/tests/admin_fleet.rs:1635:5` (303) — green: `cargo test -p probation-server --test admin_fleet t_portal_limits` (1 passed)
 
 Ledger: S7-1 resolved; S7-2 moved to slice 8 (`[portal] firewall_url`).
+
+## S7-14 after delivery (2026-10-23, main checkout, `-j 16`)
+
+First red, all three: `cargo build --workspace --all-targets` failed with `struct FirewallReport has no field named failed_revision` (api.rs test and admin_fleet) and `no field failed_revision on type FirewallReport` (managed_sync).
+tdd: T-settings-push-allowlist (managed_sync), the report after a refused push carries `failed_revision` — red (the field added, the firewall not filling it): `panicked at tests/managed_sync.rs:2139:5: the refused push's revision (S7-14) left: None right: Some(3)` — green: `cargo test --test managed_sync t_settings_push_allowlist` (1 passed)
+tdd: T-fleet-push-staggered, a stale error naming the earlier revision after a lost push answer leaves the step sent; one naming this revision fails it — red (the field added, settle unchanged): `panicked at crates/probation-server/tests/admin_fleet.rs:2303:5: left: ("halted", ["failed", "pending"]) right: ("running", ["sent", "pending"])` — green: `cargo test -p probation-server --test admin_fleet t_fleet` (4 passed). The old rule for a report with no `failed_revision` stays covered by the test's first rollout.
+tdd: api.rs `changes_types_round_trip`, a report without `failed_revision` parses and `None` is left out — red: the compile error above; red (mutant: `skip_serializing_if` removed): `panicked at crates/probation-policy/src/api.rs:439:9` — green: `cargo test -p probation-policy` (12 passed)

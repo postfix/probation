@@ -2136,6 +2136,11 @@ async fn t_settings_push_allowlist() {
     assert!(!h.data_dir.join("managed-settings.toml").exists());
     let report = h.sync.changes_requests().last().unwrap().report.clone();
     assert!(report.last_apply_error.unwrap().contains("listen"));
+    assert_eq!(
+        report.failed_revision,
+        Some(3),
+        "the refused push's revision (S7-14)"
+    );
 
     // E: however long the reason, the report carries at most 2 KiB of it.
     h.sync
