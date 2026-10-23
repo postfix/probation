@@ -91,3 +91,7 @@ tdd: N4 (T-portal-delete-restore: a session waiting at the deleted-login choice 
 tdd: N5 (T-portal-signup-duplicate-email: past the sign-up IP cap, a weak password still shows "Use at least 12 characters.") — red: `panicked at crates/probation-server/tests/accounts.rs:753:5` (the "check your email" page) — green: `cargo test -p probation-server --test accounts` passed (29 passed)
 
 Rework 2 rechecks: `cargo test -p probation-server --test accounts` `test result: ok. 29 passed`; `cargo test -j 8 --workspace -- --test-threads=8` 45 result lines, 634 passed (one more: the N1 unit test), 0 failed, 21 ignored; clippy `-D warnings` and fmt clean; `authorization_read_once` 4 passed, `key_canary` 2 passed; the C123 query: one site, `src/managed/mod.rs:264 headers.get(AUTHORIZATION)`. No template changed, so A11Y-axe was not rerun.
+
+## Rework 3 (final QA: F4 / S5-ADV-6)
+
+tdd: F4 (T-oidc-issuer-scoped: an SSO flow started for Acme, answered by Globex's IdP with the flow's own state, nonce and PKCE challenge and returned on Globex's callback, is refused with no login and no session) — red: `panicked at crates/probation-server/tests/accounts.rs:2110:5: assertion left == right failed; left: 303 right: 400` (the mixed-up flow signed in as a Globex member) — green: `cargo test -p probation-server --test accounts` passed (29 passed); red again (mutant: the flow-organisation comparison removed): `panicked at crates/probation-server/tests/accounts.rs:2119:5: left: 303 right: 400`

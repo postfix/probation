@@ -1863,7 +1863,16 @@ pub(crate) async fn oauth_finish(
     code: &str,
 ) -> Result<Identity, OidcError> {
     let field = |name: &str| flow[name].as_str().unwrap_or_default().to_owned();
-    if field("provider") != idp.name() || field("state").is_empty() || !same(&field("state"), state)
+    // The callback's organisation must be the one the flow started for, or an IdP
+    // mix-up could finish one organisation's flow at another's (F4).
+    let idp_org = match idp.kind {
+        IdpKind::Sso { org, .. } => Some(i64::from(org)),
+        _ => None,
+    };
+    if field("provider") != idp.name()
+        || flow["org"].as_i64() != idp_org
+        || field("state").is_empty()
+        || !same(&field("state"), state)
     {
         return Err(OidcError::State);
     }
