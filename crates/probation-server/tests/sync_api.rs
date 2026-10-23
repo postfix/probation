@@ -107,6 +107,7 @@ async fn t_sync_api_contract() {
         blocks: vec![Block::Package {
             ecosystem: Ecosystem::Npm,
             name: "left-pad".to_owned(),
+            reason: None,
         }],
         ..Layer::empty(LayerKind::Org)
     };

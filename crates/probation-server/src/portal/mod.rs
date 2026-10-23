@@ -1,11 +1,13 @@
 //! The self-service portal: server-rendered pages (askama, autoescaped) behind a
 //! session cookie, with a CSRF token on every form (C101) and the CSP header on every
 //! answer (T13). One route group per mockup: sign-in and account in slice 5; keys, policy,
-//! activity, organisation and audit log in slice 6.
+//! activity, organisation and audit log in slice 6; global admin and fleet in slice 7.
 
 mod account;
 mod activity;
+mod admin;
 mod audit;
+mod fleet;
 mod keys;
 mod organisation;
 mod policy;
@@ -240,6 +242,62 @@ fn routes() -> Routes {
         get(organisation::confirm_delete_group),
     )
     .post("/org/groups/{id}/delete", post(organisation::delete_group))
+    .post("/org/{id}/automation", post(organisation::create_token))
+    .post(
+        "/org/{id}/automation/revoke",
+        post(organisation::revoke_token),
+    )
+    .get("/org/{id}/blocklist", get(organisation::export_blocklist))
+    .post("/org/{id}/blocklist", post(organisation::import_blocklist))
+    .get("/admin", get(admin::show))
+    .get("/admin/orgs/{id}/suspend", get(admin::confirm_suspend_org))
+    .post("/admin/orgs/{id}/suspend", post(admin::suspend_org))
+    .post("/admin/orgs/{id}/activate", post(admin::activate_org))
+    .post(
+        "/admin/personal/{id}/suspend",
+        post(admin::suspend_personal),
+    )
+    .post(
+        "/admin/personal/{id}/activate",
+        post(admin::activate_personal),
+    )
+    .get(
+        "/admin/personal/{id}/revoke-keys",
+        get(admin::confirm_revoke_keys),
+    )
+    .post("/admin/personal/{id}/revoke-keys", post(admin::revoke_keys))
+    .post("/admin/personal/{id}/totp-reset", post(admin::reset_totp))
+    .get(
+        "/admin/personal/{id}/delete",
+        get(admin::confirm_delete_personal),
+    )
+    .post("/admin/personal/{id}/delete", post(admin::delete_personal))
+    .post(
+        "/admin/personal/{id}/restore",
+        post(admin::restore_personal),
+    )
+    .post("/admin/ranges/{id}/approve", post(admin::approve_range))
+    .post("/admin/ranges/{id}/refuse", post(admin::refuse_range))
+    .post("/admin/ranges/{id}/delete", post(admin::delete_range))
+    .post("/admin/admins/invite", post(admin::invite_admin))
+    .post("/admin/admins/{id}/remove", post(admin::remove_admin))
+    .post("/admin/limits", post(admin::save_limits))
+    .post("/admin/limits/orgs/{id}", post(admin::save_org_limits))
+    .post(
+        "/admin/limits/orgs/{id}/reset",
+        post(admin::reset_org_limits),
+    )
+    .post("/admin/retention", post(admin::save_retention))
+    .post("/admin/tokens", post(admin::create_token))
+    .post("/admin/tokens/{id}/revoke", post(admin::revoke_token))
+    .get("/admin/blocklist", get(admin::export_blocklist))
+    .post("/admin/blocklist", post(admin::import_blocklist))
+    .get("/fleet", get(fleet::show))
+    .post("/fleet/register", post(fleet::register))
+    .post("/fleet/settings", post(fleet::push_settings))
+    .post("/fleet/{id}/retire", post(fleet::retire))
+    .post("/fleet/rollouts/{id}/resume", post(fleet::resume))
+    .post("/fleet/rollouts/{id}/skip", post(fleet::skip))
 }
 
 /// Every portal route as (method, path pattern).
@@ -339,8 +397,13 @@ pub(crate) struct Top {
     pub places: Vec<(String, String, bool)>,
     pub csrf: String,
     /// The page the navigation marks current: "account", "keys", "policy", "activity",
-    /// "org" or "audit".
+    /// "org", "audit", "admin" or "fleet".
     pub page: &'static str,
+    /// A global admin's session: the navigation links `/admin` and `/fleet`.
+    pub admin: bool,
+    /// "organisation" or "personal account" when the chosen place is suspended: the
+    /// read-only banner (C64).
+    pub suspended: Option<&'static str>,
 }
 
 pub(crate) fn render(status: StatusCode, page: &impl Template) -> Response {
@@ -533,7 +596,22 @@ impl SignedIn {
     pub(crate) async fn top(&self, portal: &Portal) -> Result<Top, sqlx::Error> {
         let (name, places) =
             accounts::top_bar(&portal.pool, self.login_id, self.session.scope_org_id).await?;
+        let place = self.chosen(&places).map(|choice| choice.place);
         let chosen = self.chosen(&places).map(|choice| choice.value.clone());
+        let tenancy = portal.tenancy();
+        let session = self.tenancy_session();
+        let suspended = match place {
+            Some(place) => tenancy
+                .authorized_place(&session, place)
+                .await
+                .ok()
+                .filter(|place| place.suspended())
+                .map(|place| match place.place().kind {
+                    probation_policy::LayerKind::Personal => "personal account",
+                    _ => "organisation",
+                }),
+            None => None,
+        };
         Ok(Top {
             name,
             places: places
@@ -545,6 +623,8 @@ impl SignedIn {
                 .collect(),
             csrf: self.session.csrf().to_owned(),
             page: "account",
+            admin: tenancy.global_admin(&session).await,
+            suspended,
         })
     }
 

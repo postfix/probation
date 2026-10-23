@@ -29,9 +29,12 @@
 {% if let Some(top) = top %}
 <nav aria-label="Portal">
 {% for (href, key, label) in [("/keys", "keys", "API keys"), ("/policy", "policy", "Policy"), ("/activity", "activity", "Activity"), ("/org", "org", "Organisation"), ("/audit", "audit", "Audit log"), ("/account", "account", "Account")] %}<a href="{{ href }}"{% if top.page == *key %} aria-current="page"{% endif %}>{{ label }}</a>
-{% endfor %}</nav>
+{% endfor %}{% if top.admin %}<a href="/admin"{% if top.page == "admin" %} aria-current="page"{% endif %}>Global admin</a>
+<a href="/fleet"{% if top.page == "fleet" %} aria-current="page"{% endif %}>Fleet</a>
+{% endif %}</nav>
 {% endif %}
 <main id="main">
+{% if let Some(top) = top %}{% if let Some(kind) = top.suspended %}<p class="err" role="status">This {{ kind }} is suspended by the service operator. You can sign in and look, but nothing can be changed, and its keys are refused until it is re-activated.</p>{% endif %}{% endif %}
 {% block content %}{% endblock %}
 </main>
 </body>

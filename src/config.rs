@@ -941,19 +941,9 @@ impl std::error::Error for ConfigError {
     }
 }
 
-/// The keys a settings push may never set. They stay local, so a bad value cannot cut
-/// the firewall off from its server, move its state, or redirect its download links
-/// and decision records (C35, C118, T5).
-const LOCAL_ONLY_KEYS: &[&str] = &[
-    "management",
-    "listen",
-    "data_dir",
-    "tls_cert_path",
-    "tls_key_path",
-    "public_url",
-    "siem_url",
-    "siem_auth_header",
-];
+/// The keys a settings push may never set: the one list the management server checks a
+/// push against too, so the two cannot drift (C35, C118, T5).
+const LOCAL_ONLY_KEYS: &[&str] = probation_policy::LOCAL_ONLY_SETTINGS;
 
 /// The path keys a push may set, each confined under `data_dir`.
 const PUSHED_PATH_KEYS: &[&str] = &["log_file_path", "blocklist_file"];

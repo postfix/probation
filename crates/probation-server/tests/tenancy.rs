@@ -17,6 +17,7 @@ fn stricter(layer: &mut Layer) {
     layer.blocks.push(Block::Package {
         ecosystem: Ecosystem::Npm,
         name: "left-pad".to_owned(),
+        reason: None,
     });
 }
 

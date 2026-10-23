@@ -2,7 +2,7 @@
 //! an `Authorized<Place>` here (404 outside the actor's places, C1, T9), and repository
 //! functions take only that; an edit is then allowed by `authorize`.
 
-use probation_policy::api::{KeyId, OrgId};
+use probation_policy::api::{KeyHash, KeyId, OrgId};
 use probation_policy::{CheckedEdit, LayerKind, PlaceRef};
 use sqlx::{PgConnection, PgPool};
 
@@ -130,6 +130,11 @@ impl Authorized<Place> {
 
     pub fn group_name(&self) -> Option<&str> {
         self.0.group_name.as_deref()
+    }
+
+    /// Its organisation or personal account is suspended (C64, C78).
+    pub fn suspended(&self) -> bool {
+        self.0.suspended
     }
 }
 
@@ -425,6 +430,64 @@ impl Tenancy {
         }
     }
 
+    /// The actor of a live automation token and the one layer it may write (C86, T9):
+    /// only an `aut_` credential of kind automation whose creator's login is live and
+    /// still holds, at this use, the role that let it create the token (an org admin of
+    /// the layer's organisation, or a global admin), and whose organisation or personal
+    /// account is not suspended (C78). Anything else, a store error included, is `None`
+    /// (401).
+    pub async fn automation(&self, secret: &str) -> Option<(Actor, Authorized<Place>)> {
+        if !secret.starts_with(crate::keys::KeyKind::Automation.prefix()) {
+            return None;
+        }
+        let found = async {
+            let mut conn = self.pool.acquire().await?;
+            let token: Option<(i64, String, i32, i32)> = sqlx::query_as(
+                "SELECT k.id, k.place_kind, k.place_id, k.owner_login FROM keys AS k
+                 JOIN logins AS l ON l.id = k.owner_login AND l.deleted_at IS NULL
+                 WHERE k.hash = $1 AND k.kind = 'automation' AND k.revoked_at IS NULL
+                   AND EXISTS (SELECT 1 FROM memberships AS m
+                               WHERE m.login_id = k.owner_login
+                                 AND (m.org_id IS NULL
+                                      OR (m.role = 'org_admin'
+                                          AND m.org_id = place_org(k.place_kind, k.place_id))))",
+            )
+            .bind(KeyHash::of(secret).0.as_slice())
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some((id, kind, place, created_by)) = token else {
+                return Ok(None);
+            };
+            let Some(kind) = kind_of(&kind) else {
+                return Ok(None);
+            };
+            let place = PlaceRef {
+                kind,
+                id: place as u32,
+            };
+            Ok::<_, sqlx::Error>(
+                load_place(&mut conn, place)
+                    .await?
+                    .map(|place| (KeyId(id as u64), created_by, place)),
+            )
+        };
+        match found.await {
+            Ok(Some((token_id, created_by, place))) if !place.suspended => Some((
+                Actor::Automation(AutomationActor {
+                    token_id,
+                    place: place.place,
+                    created_by,
+                }),
+                Authorized(place),
+            )),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::error!(error = %err, "automation could not read the store");
+                None
+            }
+        }
+    }
+
     /// The session's login with its role on `place`.
     pub async fn actor(
         &self,
@@ -696,11 +759,22 @@ fn role_on(actor: &Actor, place: PlaceRef) -> Option<Role> {
 pub struct EditPermit {
     login_id: Option<i32>,
     place: PlaceRef,
+    /// An automation token's permit: its layer's blocks only (C86).
+    blocks_only: bool,
 }
 
 impl EditPermit {
     fn granted(login_id: Option<i32>, place: PlaceRef) -> Self {
-        Self { login_id, place }
+        Self {
+            login_id,
+            place,
+            blocks_only: false,
+        }
+    }
+
+    /// The save may change the layer's blocks and nothing else.
+    pub fn blocks_only(&self) -> bool {
+        self.blocks_only
     }
 
     pub fn login_id(&self) -> Option<i32> {
@@ -713,12 +787,16 @@ impl EditPermit {
 }
 
 /// Permit `actor` to save `checked` only if their role on its place may edit that layer.
+/// A blocklist editor's permit covers the layer's blocks only, which `save_edit` checks
+/// against the stored layer under its lock (C86).
 pub fn authorize(actor: &Actor, checked: &CheckedEdit) -> Result<EditPermit, Denied> {
     let role = role_on(actor, checked.place()).ok_or(Denied)?;
     if !role.may_edit(checked.layer_kind()) {
         return Err(Denied);
     }
-    Ok(EditPermit::granted(actor.login_id(), checked.place()))
+    let mut permit = EditPermit::granted(actor.login_id(), checked.place());
+    permit.blocks_only = role == Role::BlocklistEditor;
+    Ok(permit)
 }
 
 // ---- Members, groups, invitations, leave requests, ranges, organisations ---------------
@@ -892,6 +970,9 @@ pub async fn set_role(
         .bind(role)
         .execute(&mut *tx)
         .await?;
+    if let Some(login) = member.owner_login() {
+        crate::keys::revoke_tokens_of(&mut tx, actor, login, false).await?;
+    }
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -1055,6 +1136,9 @@ pub async fn remove_member(
     let id = member.place().id as i32;
     let mut tx = pool.begin().await?;
     end_membership(&mut tx, org, id, true).await?;
+    if let Some(login) = member.owner_login() {
+        crate::keys::revoke_tokens_of(&mut tx, actor, login, false).await?;
+    }
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -1077,7 +1161,8 @@ pub async fn ask_to_leave(
     actor: &Actor,
     org: &Authorized<Place>,
 ) -> Result<(), ChangeError> {
-    let (Some(login), Some(org_id)) = (actor.login_id(), org.org()) else {
+    // A suspended organisation is read-only for its members (C64, C78).
+    let (Some(login), Some(org_id), false) = (actor.login_id(), org.org(), org.suspended()) else {
         return Err(ChangeError::Denied);
     };
     let mut tx = pool.begin().await?;
@@ -1137,6 +1222,7 @@ pub async fn approve_leave(
         return Err(ChangeError::NotFound);
     };
     end_membership(&mut tx, org_id, id, false).await?;
+    crate::keys::revoke_tokens_of(&mut tx, actor, login, false).await?;
     let () = audit::record(
         &mut tx,
         audit::Entry {
@@ -1159,7 +1245,8 @@ pub async fn cancel_leave(
     actor: &Actor,
     org: &Authorized<Place>,
 ) -> Result<(), ChangeError> {
-    let (Some(login), Some(org_id)) = (actor.login_id(), org.org()) else {
+    // A suspended organisation is read-only for its members (C64, C78).
+    let (Some(login), Some(org_id), false) = (actor.login_id(), org.org(), org.suspended()) else {
         return Err(ChangeError::Denied);
     };
     let mut tx = pool.begin().await?;
@@ -1435,16 +1522,18 @@ pub async fn invite(
     Ok(())
 }
 
-/// What a live invitation link grants: (organisation, role, group).
+/// What a live invitation link grants: (organisation, role, group); a global admin's
+/// is to "Probation" itself.
 pub async fn invitation(
     pool: &PgPool,
     token: &str,
 ) -> Result<Option<(String, String, Option<String>)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT o.name, i.role, g.name FROM invitations AS i
-         JOIN orgs AS o ON o.id = i.org_id AND o.deleted_at IS NULL
+        "SELECT coalesce(o.name, 'Probation'), i.role, g.name FROM invitations AS i
+         LEFT JOIN orgs AS o ON o.id = i.org_id
          LEFT JOIN groups AS g ON g.id = i.group_id
-         WHERE i.token_hash = $1 AND i.accepted_by IS NULL AND i.expires_at > now()",
+         WHERE i.token_hash = $1 AND i.accepted_by IS NULL AND i.expires_at > now()
+           AND (i.org_id IS NULL OR o.deleted_at IS NULL)",
     )
     .bind(crate::accounts::token_hash(token))
     .fetch_optional(pool)
@@ -1453,36 +1542,41 @@ pub async fn invitation(
 
 /// Accepts an invitation link for the signed-in `login`: the conditional update takes
 /// the link once, so under concurrent accepts exactly one login gets the grant (T3).
-/// `None` when the link is unknown, used or expired; refused, with the link left unused,
-/// when the login is a member already or its address is not confirmed (C41). Accepting
-/// lifts an earlier removal (C128).
+/// `None` when the link is unknown, used or expired; `Some(org)` with the organisation
+/// joined, or `Some(None)` for a global admin's link. Refused, with the link left unused,
+/// when the login holds that grant already or its address is not confirmed (C41).
+/// Accepting lifts an earlier removal (C128).
 pub async fn accept_invitation(
     pool: &PgPool,
     login: i32,
     token: &str,
-) -> Result<Option<i32>, ChangeError> {
+) -> Result<Option<Option<i32>>, ChangeError> {
     let mut tx = pool.begin().await?;
     if crate::accounts::unconfirmed(&mut tx, login).await? {
         return Err(ChangeError::Refused(
             "Confirm your email address first, then open the link again.".to_owned(),
         ));
     }
-    // Under the organisation's lock, as a demotion or removal that withdraws the
-    // sender's invitations takes it first.
-    let org: Option<i32> = sqlx::query_scalar(
-        "SELECT org_id FROM invitations WHERE token_hash = $1 AND org_id IS NOT NULL",
-    )
-    .bind(crate::accounts::token_hash(token))
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(org) = org else {
-        return Ok(None);
-    };
-    lock_org(&mut tx, org).await?;
-    let taken: Option<(i32, i32, Option<i32>, String)> = sqlx::query_as(
+    // Under the lock a demotion or removal that withdraws the sender's invitations takes
+    // first: the organisation's for its links, the platform's for a global admin's (C90).
+    let link: Option<Option<i32>> =
+        sqlx::query_scalar("SELECT org_id FROM invitations WHERE token_hash = $1")
+            .bind(crate::accounts::token_hash(token))
+            .fetch_optional(&mut *tx)
+            .await?;
+    match link {
+        None => return Ok(None),
+        Some(Some(org)) => lock_org(&mut tx, org).await?,
+        Some(None) => {
+            sqlx::query("SELECT 1 FROM platform_settings WHERE id = 1 FOR UPDATE")
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let taken: Option<(i32, Option<i32>, Option<i32>, String)> = sqlx::query_as(
         "UPDATE invitations SET accepted_by = $2
          WHERE token_hash = $1 AND accepted_by IS NULL AND expires_at > now()
-           AND org_id IN (SELECT id FROM orgs WHERE deleted_at IS NULL)
+           AND (org_id IS NULL OR org_id IN (SELECT id FROM orgs WHERE deleted_at IS NULL))
          RETURNING id, org_id, group_id, role",
     )
     .bind(crate::accounts::token_hash(token))
@@ -1543,7 +1637,11 @@ pub async fn accept_invitation(
     .await?;
     let Some(member) = member else {
         return Err(ChangeError::Refused(
-            "You are a member of this organisation already. The link stays unused.".to_owned(),
+            match org {
+                Some(_) => "You are a member of this organisation already. The link stays unused.",
+                None => "You are a global admin already. The link stays unused.",
+            }
+            .to_owned(),
         ));
     };
     sqlx::query("DELETE FROM org_removals WHERE org_id = $1 AND login_id = $2")
@@ -1565,7 +1663,7 @@ pub async fn accept_invitation(
         &mut tx,
         audit::Entry {
             actor: &actor,
-            org_id: Some(org),
+            org_id: org,
             action: "invitation.accept",
             subject: format!("invitation:{id}"),
             before: None,
@@ -2049,6 +2147,266 @@ pub async fn rename_group(
             subject: format!("group:{id}"),
             before: Some(serde_json::json!({"group": id, "name": old})),
             after: Some(serde_json::json!({"group": id, "name": name})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+// ---- The global admin's actions (slice 7) ---------------------------------------------
+//
+// Each is a global admin's only: the actor was loaded for the place it acts on, so its
+// role there is `GlobalAdmin` (C4). Its audit row goes to the organisation's log when it
+// acts inside one (C79), and its `change_log` rows commit with it (02 § Change
+// propagation).
+
+fn global_admin_on(actor: &Actor, place: PlaceRef) -> bool {
+    role_on(actor, place) == Some(Role::GlobalAdmin)
+}
+
+/// Suspends or re-activates an organisation or a personal account (C64, C65, C78): a
+/// `place` row makes every firewall refuse or serve its keys again within one interval.
+pub async fn set_status(
+    pool: &PgPool,
+    actor: &Actor,
+    place: &Authorized<Place>,
+    suspend: bool,
+) -> Result<(), ChangeError> {
+    if !global_admin_on(actor, place.place()) {
+        return Err(ChangeError::Denied);
+    }
+    let (sql, noun) = match place.place().kind {
+        LayerKind::Org => (
+            "UPDATE orgs SET status = $2 WHERE id = $1 AND deleted_at IS NULL AND status <> $2",
+            "org",
+        ),
+        LayerKind::Personal => (
+            "UPDATE personal_accounts SET status = $2 WHERE id = $1 AND deleted_at IS NULL AND status <> $2",
+            "personal",
+        ),
+        _ => return Err(ChangeError::NotFound),
+    };
+    let (status, old, verb) = if suspend {
+        ("suspended", "active", "suspend")
+    } else {
+        ("active", "suspended", "activate")
+    };
+    let id = place.place().id as i32;
+    let mut tx = pool.begin().await?;
+    let changed = sqlx::query(sql)
+        .bind(id)
+        .bind(status)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if changed == 0 {
+        return Ok(());
+    }
+    record_change(&mut tx, ChangeKind::Place, &place.place()).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: place.org(),
+            action: &format!("{noun}.{verb}"),
+            subject: format!("{noun}:{id}"),
+            before: Some(serde_json::json!({"status": old})),
+            after: Some(serde_json::json!({"status": status})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// Invites `email` to become a global admin, from `/admin` only: a single-use link like
+/// every grant, accepted by whoever signs in and opens it (C4, T3).
+pub async fn invite_global_admin(
+    pool: &PgPool,
+    actor: &Actor,
+    email: &str,
+    base: &url::Url,
+) -> Result<(), ChangeError> {
+    if !global_admin_on(actor, PLATFORM) {
+        return Err(ChangeError::Denied);
+    }
+    let Some(email) = crate::accounts::normal_email(email) else {
+        return Err(ChangeError::Refused(
+            "Enter the email address to send the invitation to.".to_owned(),
+        ));
+    };
+    let token = crate::accounts::random_token();
+    let mut tx = pool.begin().await?;
+    let id: i32 = sqlx::query_scalar(
+        "INSERT INTO invitations (token_hash, role, created_by, expires_at, email)
+         VALUES ($1, 'global_admin', $2, now() + make_interval(days => $3), $4) RETURNING id",
+    )
+    .bind(crate::accounts::token_hash(&token))
+    .bind(actor.login_id())
+    .bind(INVITATION_DAYS)
+    .bind(&email)
+    .fetch_one(&mut *tx)
+    .await?;
+    let body = format!(
+        "You are invited to become a global admin (service operator) of Probation.\n\nSign in (or create a login), then open this link to accept:\n\n{}invite?token={token}\n\nThe link works once and expires in {INVITATION_DAYS} days. You will set up an authenticator app before using admin features.\n",
+        crate::accounts::base_path(base)
+    );
+    crate::accounts::enqueue(
+        &mut tx,
+        &email,
+        "invitation",
+        "Your Probation global admin invitation",
+        &body,
+    )
+    .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "invitation.create",
+            subject: format!("invitation:{id}"),
+            before: None,
+            after: Some(serde_json::json!({"email": email, "role": "global_admin"})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// Ends `login`'s global admin role. Under the platform row's lock the actor must still
+/// be a global admin and another live one must remain, so two admins removing each
+/// other at once leave one (C90, T21). The automation tokens the role covered go with
+/// it (C86).
+pub async fn remove_global_admin(
+    pool: &PgPool,
+    actor: &Actor,
+    login: i32,
+) -> Result<(), ChangeError> {
+    if !global_admin_on(actor, PLATFORM) {
+        return Err(ChangeError::Denied);
+    }
+    let mut tx = pool.begin().await?;
+    let last = crate::accounts::last_global_admin(&mut tx, login).await?;
+    let (target, acting): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM memberships WHERE login_id = $1 AND org_id IS NULL),
+                EXISTS (SELECT 1 FROM memberships WHERE login_id = $2 AND org_id IS NULL)",
+    )
+    .bind(login)
+    .bind(actor.login_id())
+    .fetch_one(&mut *tx)
+    .await?;
+    if !acting {
+        return Err(ChangeError::Denied);
+    }
+    if !target {
+        return Err(ChangeError::NotFound);
+    }
+    if last {
+        return Err(ChangeError::Refused(
+            "Not removed: there must always be at least one global admin. Add another global admin first.".to_owned(),
+        ));
+    }
+    sqlx::query("DELETE FROM memberships WHERE login_id = $1 AND org_id IS NULL")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?;
+    // Their open global-admin links go with the role.
+    sqlx::query(
+        "DELETE FROM invitations WHERE created_by = $1 AND org_id IS NULL AND accepted_by IS NULL",
+    )
+    .bind(login)
+    .execute(&mut *tx)
+    .await?;
+    crate::keys::revoke_tokens_of(&mut tx, actor, login, false).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "admin.remove",
+            subject: format!("login:{login}"),
+            before: Some(serde_json::json!({"role": "global_admin"})),
+            after: None,
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// Approves or refuses a waiting network-lock range of `org`'s organisation (C77, C87).
+/// An approval that overlaps another approved range is refused (the exclusion
+/// constraint, C87). Either writes `ranges`, so every firewall gets the new table within
+/// one interval.
+pub async fn decide_range(
+    pool: &PgPool,
+    actor: &Actor,
+    org: &Authorized<Place>,
+    id: i32,
+    refusal: Option<&str>,
+) -> Result<(), ChangeError> {
+    if !global_admin_on(actor, org.place()) {
+        return Err(ChangeError::Denied);
+    }
+    let org_id = org.org().ok_or(ChangeError::NotFound)?;
+    let reason = refusal.map(str::trim);
+    if reason.is_some_and(str::is_empty) {
+        return Err(ChangeError::Refused(
+            "Give the reason the org admin will see.".to_owned(),
+        ));
+    }
+    let mut tx = pool.begin().await?;
+    let decided: Result<Option<String>, sqlx::Error> = sqlx::query_scalar(
+        "UPDATE org_ip_ranges
+         SET approved_by = CASE WHEN $3::text IS NULL THEN $4 END, refused_reason = $3
+         WHERE id = $1 AND org_id = $2 AND approved_by IS NULL AND refused_reason IS NULL
+         RETURNING cidr::text",
+    )
+    .bind(id)
+    .bind(org_id)
+    .bind(reason)
+    .bind(actor.login_id())
+    .fetch_optional(&mut *tx)
+    .await;
+    let cidr = match decided {
+        Ok(Some(cidr)) => cidr,
+        Ok(None) => return Err(ChangeError::NotFound),
+        Err(err)
+            if err
+                .as_database_error()
+                .and_then(|err| err.code())
+                .as_deref()
+                == Some("23P01") =>
+        {
+            return Err(ChangeError::Refused(
+                "Not approved: the range overlaps a range already approved. Refuse it, or remove the other range first.".to_owned(),
+            ));
+        }
+        Err(err) => return Err(err.into()),
+    };
+    record_change(&mut tx, ChangeKind::Ranges, &org_id).await?;
+    let (action, after) = match reason {
+        None => (
+            "range.approve",
+            serde_json::json!({"cidr": cidr, "status": "approved"}),
+        ),
+        Some(reason) => (
+            "range.refuse",
+            serde_json::json!({"cidr": cidr, "status": "refused", "reason": reason}),
+        ),
+    };
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: Some(org_id),
+            action,
+            subject: format!("range:{id}"),
+            before: Some(serde_json::json!({"cidr": cidr, "status": "waiting"})),
+            after: Some(after),
         },
     )
     .await?;

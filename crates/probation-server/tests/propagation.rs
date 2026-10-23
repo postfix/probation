@@ -82,6 +82,7 @@ impl World {
                 layer.blocks.push(Block::Package {
                     ecosystem: Ecosystem::Npm,
                     name: name.to_owned(),
+                    reason: None,
                 })
             })
             .await

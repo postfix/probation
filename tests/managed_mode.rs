@@ -67,6 +67,7 @@ fn package_block() -> Block {
     Block::Package {
         ecosystem: Ecosystem::Npm,
         name: LEFT_PAD.to_owned(),
+        reason: None,
     }
 }
 
@@ -674,6 +675,7 @@ async fn t_cache_no_cross_policy_leak() {
         ecosystem: Ecosystem::Npm,
         name: LEFT_PAD.to_owned(),
         version: NEW.to_owned(),
+        reason: None,
     };
     let h = harness(vec![version_block], |_| {}).await;
     for _ in 0..3 {
@@ -697,6 +699,7 @@ async fn t_download_per_waiter_decision() {
     let file_block = Block::File {
         algorithm: DigestAlgorithm::Sha256,
         digest,
+        reason: None,
     };
     let h = harness(vec![file_block], |_| {}).await;
     let gate = Gate::new();
@@ -764,6 +767,7 @@ async fn t_download_per_waiter_decision() {
     let file_block = Block::File {
         algorithm: DigestAlgorithm::Sha256,
         digest: hex(&Sha256::digest(format!("{head}{tail}").as_bytes())),
+        reason: None,
     };
     let h = harness(vec![file_block], |_| {}).await;
     h.registry
@@ -800,11 +804,13 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
         Block::File {
             algorithm: DigestAlgorithm::Sha256,
             digest: hex(&Sha256::digest(tarball.as_bytes())),
+            reason: None,
         },
         // PyPI advertises the SHA-256, so the computed one is the SHA-512.
         Block::File {
             algorithm: DigestAlgorithm::Sha512,
             digest: hex(&Sha512::digest(wheel.as_bytes())),
+            reason: None,
         },
     ];
     let h = harness(globex, |_| {}).await;

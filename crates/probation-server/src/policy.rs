@@ -1,17 +1,27 @@
 //! Edit and store layer policies. An edit runs `authorized_place` -> `check_edit`
 //! (against `parent_policy`) -> `authorize` -> `save_edit` (03 § Program behavior
 //! step 4); `save_edit` writes the layer, its `change_log` row and its audit row in one
-//! transaction.
+//! transaction. Blocklist import, export and the automation push (C80, C86) take the
+//! same path.
 
+use std::collections::HashSet;
+
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use probation_policy::{
-    Block, CheckedEdit, DigestAlgorithm, Ecosystem, EffectivePolicy, Exception, Layer, Lifts,
-    OsvSetting, PlaceRef, Switches, resolve,
+    Block, CheckedEdit, DigestAlgorithm, Ecosystem, EditRefusal, EditTarget, EffectivePolicy,
+    Exception, Layer, Lifts, OsvSetting, PlaceRef, Switches, blocklist_json, check_edit, resolve,
 };
 use sqlx::{PgConnection, PgPool};
 
 use crate::audit;
 use crate::sync::{ChangeKind, record_change};
-use crate::tenancy::{Actor, Authorized, EditPermit, Place, kind_str};
+use crate::tenancy::{Actor, Authorized, EditPermit, Place, Tenancy, authorize, kind_of, kind_str};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -32,7 +42,8 @@ pub enum SaveError {
     Conflict,
     /// The permit was granted for another place than the edit's.
     WrongPlace,
-    /// The permit was granted to another actor than the one saving.
+    /// The permit was granted to another actor than the one saving, or it covers the
+    /// layer's blocks only (an automation token's, C86) and the save changes more.
     WrongActor,
     Db(sqlx::Error),
 }
@@ -100,7 +111,7 @@ impl PolicyStore {
             return Err(SaveError::WrongActor);
         }
         let mut tx = self.pool.begin().await?;
-        let revision = update_layer(&mut tx, &checked).await?;
+        let revision = update_layer(&mut tx, &checked, permit.blocks_only()).await?;
         let () = insert_change(&mut tx, checked.place(), revision).await?;
         let () = insert_audit(&mut tx, actor, &permit, &checked).await?;
         let () = tx.commit().await?;
@@ -109,9 +120,13 @@ impl PolicyStore {
 }
 
 /// Compare-and-set on the revision the form was loaded at, then replace the layer's
-/// values, blocks and exceptions. Keeps the old layer for the audit row in a
-/// transaction-local setting.
-async fn update_layer(conn: &mut PgConnection, checked: &CheckedEdit) -> Result<i64, SaveError> {
+/// values, blocks and exceptions; with `blocks_only`, refused unless the blocks are all
+/// that change. Keeps the old layer for the audit row in a transaction-local setting.
+async fn update_layer(
+    conn: &mut PgConnection,
+    checked: &CheckedEdit,
+    blocks_only: bool,
+) -> Result<i64, SaveError> {
     let place = checked.place();
     let locked: Option<i32> = sqlx::query_scalar(
         "SELECT id FROM policy_layers
@@ -132,6 +147,13 @@ async fn update_layer(conn: &mut PgConnection, checked: &CheckedEdit) -> Result<
             StoreError::MissingLayer(_) => SaveError::Conflict,
         })?
         .ok_or(SaveError::Conflict)?;
+    let without_blocks = |layer: &Layer| Layer {
+        blocks: Vec::new(),
+        ..layer.clone()
+    };
+    if blocks_only && without_blocks(&before) != without_blocks(checked.layer()) {
+        return Err(SaveError::WrongActor);
+    }
     sqlx::query("SELECT set_config('probation.layer_before', $1, true)")
         .bind(serde_json::to_string(&before).expect("a layer encodes"))
         .execute(&mut *conn)
@@ -157,32 +179,48 @@ async fn update_layer(conn: &mut PgConnection, checked: &CheckedEdit) -> Result<
         .execute(&mut *conn)
         .await?;
     for block in &layer.blocks {
-        let (ecosystem, name, version, algorithm, digest) = match block {
-            Block::Package { ecosystem, name } => {
-                (Some(ecosystem.as_tag()), Some(name), None, None, None)
-            }
+        let (ecosystem, name, version, algorithm, digest, reason) = match block {
+            Block::Package {
+                ecosystem,
+                name,
+                reason,
+            } => (
+                Some(ecosystem.as_tag()),
+                Some(name),
+                None,
+                None,
+                None,
+                reason,
+            ),
             Block::Version {
                 ecosystem,
                 name,
                 version,
+                reason,
             } => (
                 Some(ecosystem.as_tag()),
                 Some(name),
                 Some(version),
                 None,
                 None,
+                reason,
             ),
-            Block::File { algorithm, digest } => (
+            Block::File {
+                algorithm,
+                digest,
+                reason,
+            } => (
                 None,
                 None,
                 None,
                 Some(algorithm_str(*algorithm)),
                 Some(digest),
+                reason,
             ),
         };
         sqlx::query(
-            "INSERT INTO policy_blocks (layer, ecosystem, name, version, digest_algorithm, digest)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO policy_blocks (layer, ecosystem, name, version, digest_algorithm, digest, reason)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(layer_id)
         .bind(ecosystem)
@@ -190,6 +228,7 @@ async fn update_layer(conn: &mut PgConnection, checked: &CheckedEdit) -> Result<
         .bind(version)
         .bind(algorithm)
         .bind(digest)
+        .bind(reason)
         .execute(&mut *conn)
         .await?;
     }
@@ -278,7 +317,7 @@ pub(crate) async fn load_layer(
         return Ok(None);
     };
     let blocks: Vec<BlockRow> = sqlx::query_as(
-        "SELECT ecosystem, name, version, digest_algorithm, digest FROM policy_blocks
+        "SELECT ecosystem, name, version, digest_algorithm, digest, reason FROM policy_blocks
          WHERE layer = $1 ORDER BY id",
     )
     .bind(id)
@@ -315,8 +354,9 @@ pub(crate) async fn load_layer(
     Ok(Some((layer, revision as u64)))
 }
 
-/// `policy_blocks`' ecosystem, name, version, digest algorithm and digest.
+/// `policy_blocks`' ecosystem, name, version, digest algorithm, digest and reason.
 type BlockRow = (
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -353,17 +393,19 @@ fn algorithm_str(algorithm: DigestAlgorithm) -> &'static str {
     }
 }
 
-fn block_of((ecosystem, name, version, algorithm, digest): BlockRow) -> Block {
+fn block_of((ecosystem, name, version, algorithm, digest, reason): BlockRow) -> Block {
     match (ecosystem, name, digest) {
         (Some(ecosystem), Some(name), None) => match version {
             Some(version) => Block::Version {
                 ecosystem: ecosystem_of(&ecosystem),
                 name,
                 version,
+                reason,
             },
             None => Block::Package {
                 ecosystem: ecosystem_of(&ecosystem),
                 name,
+                reason,
             },
         },
         (_, _, digest) => Block::File {
@@ -373,6 +415,228 @@ fn block_of((ecosystem, name, version, algorithm, digest): BlockRow) -> Block {
                 DigestAlgorithm::Sha256
             },
             digest: digest.unwrap_or_default(),
+            reason,
         },
     }
+}
+
+// ---- Blocklist import, export and the automation push (C80, C86) ----------------------
+
+/// The biggest blocklist an automation push may send (T24): checked before parsing.
+pub const MAX_BLOCKLIST_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug)]
+pub enum PushError {
+    /// The actor's role or token does not cover the layer (403).
+    Denied,
+    /// The file or a block in it is refused, for the reason given (422).
+    Refused(String),
+    /// The layer changed while the push was checked; send it again (409).
+    Conflict,
+    Store(StoreError),
+}
+
+impl From<StoreError> for PushError {
+    fn from(err: StoreError) -> Self {
+        PushError::Store(err)
+    }
+}
+
+impl From<sqlx::Error> for PushError {
+    fn from(err: sqlx::Error) -> Self {
+        PushError::Store(StoreError::Db(err))
+    }
+}
+
+/// A block's target, without its reason.
+fn target(block: &Block) -> Block {
+    let mut block = block.clone();
+    let (Block::Package { reason, .. }
+    | Block::Version { reason, .. }
+    | Block::File { reason, .. }) = &mut block;
+    *reason = None;
+    block
+}
+
+/// Writes `blocks` into `place`'s layer through the edit path (`check_edit` ->
+/// `authorize` -> `save_edit`): replacing its blocks, or adding those it lacks. Every
+/// other setting of the layer is saved as stored, so one kept under C47 stays.
+pub async fn push_blocks(
+    pool: &PgPool,
+    actor: &Actor,
+    place: &Authorized<Place>,
+    blocks: Vec<Block>,
+    replace: bool,
+) -> Result<i64, PushError> {
+    let store = PolicyStore::new(pool.clone());
+    let (parent, _) = store.parent_policy(place).await?;
+    let (current, revision) = store.layer(place).await?;
+    let mut proposed = current.clone();
+    if replace {
+        proposed.blocks = blocks;
+    } else {
+        let mut held: HashSet<Block> = proposed.blocks.iter().map(target).collect();
+        for block in blocks {
+            if held.insert(target(&block)) {
+                proposed.blocks.push(block);
+            }
+        }
+    }
+    let target = EditTarget {
+        place: place.place(),
+        expected_revision: revision,
+    };
+    let checked = check_edit(&parent, &current, target, proposed).map_err(|refusal| {
+        PushError::Refused(match refusal {
+            EditRefusal::Invalid(problem) => problem,
+            other => format!("{other:?}"),
+        })
+    })?;
+    let permit = authorize(actor, &checked).map_err(|_| PushError::Denied)?;
+    match store.save_edit(actor, permit, checked).await {
+        Ok(revision) => Ok(revision),
+        Err(SaveError::Conflict) => Err(PushError::Conflict),
+        Err(SaveError::WrongPlace | SaveError::WrongActor) => Err(PushError::Denied),
+        Err(SaveError::Db(err)) => Err(err.into()),
+    }
+}
+
+/// `place`'s blocks as today's blocklist file (C86), valid for a year from now.
+pub async fn export_blocks(pool: &PgPool, place: &Authorized<Place>) -> Result<String, StoreError> {
+    let (layer, revision) = PolicyStore::new(pool.clone()).layer(place).await?;
+    let now = jiff::Timestamp::now();
+    let expires = now
+        .checked_add(jiff::SignedDuration::from_hours(365 * 24))
+        .unwrap_or(now);
+    Ok(blocklist_json::export(
+        &layer.blocks,
+        revision,
+        &now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        &expires.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    ))
+}
+
+/// `org-3`, `platform-1` and the like, as the policy pages name a layer.
+pub(crate) fn layer_ref(id: &str) -> Option<PlaceRef> {
+    let (kind, id) = id.split_once('-')?;
+    Some(PlaceRef {
+        kind: kind_of(kind)?,
+        id: id.parse().ok()?,
+    })
+}
+
+/// The automation blocklist API (C86): `GET` exports, `PUT` replaces and `POST` adds to
+/// the blocks of the one layer its `aut_` token was created for. A body over
+/// `MAX_BLOCKLIST_BYTES` answers 413 before it is parsed (T24).
+pub fn router(pool: PgPool) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/blocklist/{layer}",
+            get(export_route).put(replace_route).post(add_route),
+        )
+        .layer(DefaultBodyLimit::max(MAX_BLOCKLIST_BYTES))
+        .with_state(pool)
+}
+
+/// The token's actor and layer when the request names that layer: 401 for no live
+/// token, 403 for another layer (T9).
+async fn token_layer(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    layer: &str,
+) -> Result<(Actor, Authorized<Place>), Response> {
+    let secret = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let found = match secret {
+        Some(secret) => Tenancy::new(pool.clone()).automation(secret).await,
+        None => None,
+    };
+    let Some((actor, place)) = found else {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    };
+    if layer_ref(layer) != Some(place.place()) {
+        return Err((StatusCode::FORBIDDEN, "This token writes one other layer.").into_response());
+    }
+    Ok((actor, place))
+}
+
+async fn export_route(
+    State(pool): State<PgPool>,
+    Path(layer): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let place = match token_layer(&pool, &headers, &layer).await {
+        Ok((_, place)) => place,
+        Err(answer) => return answer,
+    };
+    match export_blocks(&pool, &place).await {
+        Ok(file) => (
+            [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+            file,
+        )
+            .into_response(),
+        Err(err) => store_failure(err),
+    }
+}
+
+async fn replace_route(
+    State(pool): State<PgPool>,
+    Path(layer): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    push_route(&pool, &layer, &headers, &body, true).await
+}
+
+async fn add_route(
+    State(pool): State<PgPool>,
+    Path(layer): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    push_route(&pool, &layer, &headers, &body, false).await
+}
+
+async fn push_route(
+    pool: &PgPool,
+    layer: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    replace: bool,
+) -> Response {
+    let (actor, place) = match token_layer(pool, headers, layer).await {
+        Ok(found) => found,
+        Err(answer) => return answer,
+    };
+    let blocks = match std::str::from_utf8(body)
+        .map_err(|_| "the body is not UTF-8".to_owned())
+        .and_then(blocklist_json::import)
+    {
+        Ok(blocks) => blocks,
+        Err(problem) => return (StatusCode::UNPROCESSABLE_ENTITY, problem).into_response(),
+    };
+    match push_blocks(pool, &actor, &place, blocks, replace).await {
+        Ok(revision) => (
+            [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+            serde_json::json!({"revision": revision}).to_string(),
+        )
+            .into_response(),
+        Err(PushError::Denied) => StatusCode::FORBIDDEN.into_response(),
+        Err(PushError::Refused(problem)) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, problem).into_response()
+        }
+        Err(PushError::Conflict) => (
+            StatusCode::CONFLICT,
+            "The layer changed meanwhile; send the push again.",
+        )
+            .into_response(),
+        Err(PushError::Store(err)) => store_failure(err),
+    }
+}
+
+fn store_failure(err: StoreError) -> Response {
+    tracing::error!(?err, "a blocklist request failed in the store");
+    StatusCode::SERVICE_UNAVAILABLE.into_response()
 }

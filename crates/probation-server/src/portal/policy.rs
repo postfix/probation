@@ -456,7 +456,9 @@ fn ecosystem_label(ecosystem: Ecosystem) -> String {
 
 fn block_row(block: &Block, set_by: String, own: Option<usize>) -> BlockRow {
     let (ecosystem, package, what) = match block {
-        Block::Package { ecosystem, name } => (
+        Block::Package {
+            ecosystem, name, ..
+        } => (
             ecosystem_label(*ecosystem),
             name.clone(),
             "Whole package".to_owned(),
@@ -465,12 +467,15 @@ fn block_row(block: &Block, set_by: String, own: Option<usize>) -> BlockRow {
             ecosystem,
             name,
             version,
+            ..
         } => (
             ecosystem_label(*ecosystem),
             name.clone(),
             format!("Version {version}"),
         ),
-        Block::File { algorithm, digest } => (
+        Block::File {
+            algorithm, digest, ..
+        } => (
             "any".to_owned(),
             String::new(),
             format!(
@@ -700,11 +705,13 @@ fn new_block(form: &PolicyForm) -> Result<Block, String> {
         "package" => Ok(Block::Package {
             ecosystem: ecosystem(&form.ecosystem)?,
             name,
+            reason: None,
         }),
         "version" => Ok(Block::Version {
             ecosystem: ecosystem(&form.ecosystem)?,
             name,
             version: form.version.trim().to_owned(),
+            reason: None,
         }),
         // A file is named by its digest alone, as in today's blocklist (C119).
         "file" => Ok(Block::File {
@@ -713,6 +720,7 @@ fn new_block(form: &PolicyForm) -> Result<Block, String> {
                 _ => DigestAlgorithm::Sha256,
             },
             digest: form.digest.trim().to_ascii_lowercase(),
+            reason: None,
         }),
         _ => Err("Choose a whole package, one version or one exact file.".to_owned()),
     }

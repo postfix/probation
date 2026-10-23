@@ -2762,7 +2762,10 @@ pub(crate) enum Deletion {
 /// Locks the platform row and answers whether `login_id` is a global admin with no
 /// other live one left: every path that ends a global admin's role recounts under that
 /// lock (C90, T21).
-async fn last_global_admin(conn: &mut PgConnection, login_id: i32) -> Result<bool, sqlx::Error> {
+pub(crate) async fn last_global_admin(
+    conn: &mut PgConnection,
+    login_id: i32,
+) -> Result<bool, sqlx::Error> {
     sqlx::query("SELECT 1 FROM platform_settings WHERE id = 1 FOR UPDATE")
         .execute(&mut *conn)
         .await?;
@@ -2812,6 +2815,14 @@ async fn mark_login_deleted(conn: &mut PgConnection, login_id: i32) -> Result<()
     end_sessions(conn, login_id, None).await?;
     change_owned_keys(conn, login_id).await?;
     let actor = login_actor(conn, login_id).await?;
+    // Its automation tokens and open global-admin links go with the login (C86, T3).
+    crate::keys::revoke_tokens_of(conn, &actor, login_id, true).await?;
+    sqlx::query(
+        "DELETE FROM invitations WHERE created_by = $1 AND org_id IS NULL AND accepted_by IS NULL",
+    )
+    .bind(login_id)
+    .execute(&mut *conn)
+    .await?;
     audit::record(
         conn,
         audit::Entry {
@@ -3024,6 +3035,133 @@ pub(crate) async fn restore_login(pool: &PgPool, login_id: i32) -> Result<bool, 
     .await?;
     let () = tx.commit().await?;
     Ok(true)
+}
+
+/// A global admin deletes a personal account (C65): a `place` row stops its keys within
+/// one interval, and it stays restorable for 30 days; the login stays.
+pub(crate) async fn admin_delete_personal(
+    pool: &PgPool,
+    actor: &Actor,
+    personal: &tenancy::Authorized<tenancy::Place>,
+) -> Result<(), tenancy::ChangeError> {
+    if personal.place().kind != LayerKind::Personal
+        || actor.role(personal.place()) != Some(tenancy::Role::GlobalAdmin)
+    {
+        return Err(tenancy::ChangeError::Denied);
+    }
+    let id = personal.place().id as i32;
+    let mut tx = pool.begin().await?;
+    let deleted = sqlx::query(
+        "UPDATE personal_accounts SET deleted_at = now(), restore_until = now() + make_interval(days => $2)
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(RESTORE_DAYS)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if deleted == 0 {
+        return Err(tenancy::ChangeError::NotFound);
+    }
+    record_change(&mut tx, ChangeKind::Place, &personal_place(id)).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "personal.delete",
+            subject: format!("personal:{id}"),
+            before: Some(json!({"deleted": false})),
+            after: Some(json!({"deleted": true})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// A global admin restores a deleted personal account within its 30 days, whoever
+/// deleted it (C33, C65): a `place` row lets its keys work again within one interval.
+pub(crate) async fn admin_restore_personal(
+    pool: &PgPool,
+    actor: &Actor,
+    id: i32,
+) -> Result<(), tenancy::ChangeError> {
+    if !actor.is_global_admin() {
+        return Err(tenancy::ChangeError::Denied);
+    }
+    let mut tx = pool.begin().await?;
+    let restored = sqlx::query(
+        "UPDATE personal_accounts AS p SET deleted_at = NULL, restore_until = NULL
+         FROM logins AS l
+         WHERE p.id = $1 AND l.id = p.login_id AND l.deleted_at IS NULL
+           AND p.deleted_at IS NOT NULL AND p.restore_until > now()",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if restored == 0 {
+        return Err(tenancy::ChangeError::NotFound);
+    }
+    record_change(&mut tx, ChangeKind::Place, &personal_place(id)).await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "personal.restore",
+            subject: format!("personal:{id}"),
+            before: Some(json!({"deleted": true})),
+            after: Some(json!({"deleted": false})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
+}
+
+/// A global admin resets the authenticator of a personal account's login (C39, C65):
+/// its authenticator, backup codes and sessions go, with the audit row.
+pub(crate) async fn admin_reset_totp(
+    pool: &PgPool,
+    actor: &Actor,
+    personal: &tenancy::Authorized<tenancy::Place>,
+) -> Result<(), tenancy::ChangeError> {
+    let Some(login) = personal
+        .owner_login()
+        .filter(|_| actor.role(personal.place()) == Some(tenancy::Role::GlobalAdmin))
+    else {
+        return Err(tenancy::ChangeError::Denied);
+    };
+    let mut tx = pool.begin().await?;
+    let removed = sqlx::query("DELETE FROM totp WHERE login_id = $1")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query("DELETE FROM backup_codes WHERE login_id = $1")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE login_id = $1")
+        .bind(login)
+        .execute(&mut *tx)
+        .await?;
+    let () = audit::record(
+        &mut tx,
+        audit::Entry {
+            actor,
+            org_id: None,
+            action: "totp.reset",
+            subject: format!("login:{login}"),
+            before: Some(json!({"totp": if removed > 0 { "on" } else { "off" }})),
+            after: Some(json!({"totp": "off"})),
+        },
+    )
+    .await?;
+    let () = tx.commit().await?;
+    Ok(())
 }
 
 /// Erases a personal account's data: its keys (with their activity), its layer and the
