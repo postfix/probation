@@ -256,6 +256,24 @@ impl Browser {
     }
 }
 
+/// Opens the confirmation link and chooses `password` on its page (F7); returns the
+/// answer to that choice.
+async fn confirm(browser: &mut Browser, link: &str, password: &str) -> Page {
+    let page = browser.get(link).await;
+    let token = hidden(&page.body, "token").unwrap_or_default();
+    browser
+        .post_raw(
+            "/verify-email",
+            &[
+                ("token", &token),
+                ("new", password),
+                ("again", password),
+                ("csrf", &page.csrf()),
+            ],
+        )
+        .await
+}
+
 /// The SMTP relay: records each mail.
 #[derive(Default)]
 struct FakeMail {
@@ -903,7 +921,7 @@ async fn t_portal_place_switch() {
         .await;
     fx.deliver().await;
     let link = fx.mail.link("tony@stark.test", "/verify-email?token=");
-    stark.get(&link).await;
+    confirm(&mut stark, &link, PASSWORD).await;
     assert_eq!(
         fx.db
             .count("SELECT count(*) FROM orgs WHERE name = 'Stark Industries'")
@@ -4301,11 +4319,12 @@ async fn invitation_survives_sign_up_and_sign_in() {
     let signed_up = nia.submit("/signup", "/signup", &fields).await;
     assert_eq!(signed_up.status, StatusCode::OK, "{}", signed_up.body);
     fx.deliver().await;
-    let confirm = fx.mail.link("nia@acme.test", "/verify-email?token=");
+    let link_to_confirm = fx.mail.link("nia@acme.test", "/verify-email?token=");
+    let confirmed = confirm(&mut nia, &link_to_confirm, PASSWORD).await;
     assert!(
-        nia.get(&confirm)
-            .await
-            .has("Your email address is confirmed")
+        confirmed.has("Your email address is confirmed"),
+        "{}",
+        confirmed.body
     );
     let signed_in = sign_in(&mut nia, "nia@acme.test", PASSWORD).await;
     assert_eq!(signed_in.location.as_deref(), Some("/account"));

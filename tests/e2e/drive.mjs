@@ -206,7 +206,9 @@ async function signUpToInstall() {
   const mail = lastMail(user.email);
   const link = mail.match(/\/verify-email\?token=\S+/);
   expect(link, `no confirmation link in the mail: ${mail}`);
-  page = await browser.get(link[0]);
+  // The link's page asks for the password again; posting it confirms the address (F7).
+  const token = new URL(link[0], portal).searchParams.get("token");
+  page = await browser.submit(link[0], "/verify-email", { token, new: user.password, again: user.password });
   expect(page.body.includes("Your email address is confirmed"), `confirm: ${page.status}\n${page.body}`);
   page = await browser.submit("/signin", "/signin", { email: user.email, password: user.password });
   expect(page.status === 303 && page.location === "/account", `sign-in: ${page.status} ${page.location}`);

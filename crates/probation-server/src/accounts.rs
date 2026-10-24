@@ -538,11 +538,28 @@ pub enum Verified {
     BadLink,
 }
 
-/// Confirms the address of the link's method, once, and creates what the sign-up asked
-/// for: an organisation with the signer as its only org admin (C5) or a personal
-/// account (C6). Every session of the login ends: one opened before the address was
-/// confirmed may be someone else's, who signed up with this address.
-pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::Error> {
+/// Whether a confirmation link can still be used: its page offers the password choice.
+pub(crate) async fn verify_token_live(pool: &PgPool, token: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM email_tokens
+                        WHERE token_hash = $1 AND purpose = 'verify' AND used_at IS NULL AND expires_at > now())",
+    )
+    .bind(token_hash(token))
+    .fetch_one(pool)
+    .await
+}
+
+/// Confirms the address of the link's method, once, with the password chosen on the
+/// link's page, and creates what the sign-up asked for: an organisation with the signer
+/// as its only org admin (C5) or a personal account (C6). Only who reads the mailbox
+/// knows the password then: the one chosen at sign-up, perhaps by someone else who
+/// signed up with this address, stops working, and every session of the login ends
+/// (F7, the user's decision of 2026-10-24).
+pub async fn verify_email(
+    pool: &PgPool,
+    token: &str,
+    new_hash: &str,
+) -> Result<Verified, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let used: Option<(i32, Value)> = sqlx::query_as(
         "UPDATE email_tokens SET used_at = now()
@@ -556,10 +573,11 @@ pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Verified, sqlx::
         return Ok(Verified::BadLink);
     };
     let confirmed: Option<i32> = sqlx::query_scalar(
-        "UPDATE sign_in_methods SET verified_at = now()
+        "UPDATE sign_in_methods SET verified_at = now(), password_hash = $2
          WHERE id = $1 AND verified_at IS NULL RETURNING login_id",
     )
     .bind(method)
+    .bind(new_hash)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(login_id) = confirmed else {

@@ -52,6 +52,19 @@
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <button type="submit">Sign out</button>
 </form>
+{% when SignupView::ChoosePassword { token, error } %}
+<h1>Confirm your email</h1>
+<p>Choose your password to confirm your email address. The password chosen when the account was created stops working.</p>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/verify-email">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<label for="new">Password <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<input id="new" type="password" name="new" autocomplete="new-password" required minlength="12">
+<label for="again">Password again</label>
+<input id="again" type="password" name="again" autocomplete="new-password" required minlength="12">
+<button type="submit" class="pri">Confirm and save password</button>
+</form>
 {% when SignupView::Confirmed { next } %}
 <h1>Email confirmed</h1>
 <p class="good">Your email address is confirmed.</p>

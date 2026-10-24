@@ -261,3 +261,59 @@ must be retired again. Docs only, no test.
 - `router molecule-verify`: PASS, 12 checks, 0 findings.
 - The 4 SMTC analyzers at `crates/probation-server`: 0 findings each.
 - C123 query: one site, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.
+
+## Round 4: F7 closed by the user's decision
+
+User decision (relayed by the team lead, 2026-10-24): confirming an address sets a new
+password. The confirmation link opens a page where the user chooses a password, so only
+who reads the mailbox ends up knowing it; a link opened by a mail scanner does nothing.
+
+- Tests (tests/accounts.rs):
+  - `confirming_an_address_ends_the_logins_sessions`, extended: after the owner
+    confirms with a new password, the squatter's sign-up password is refused and the
+    owner's works.
+  - `confirming_takes_a_posted_password_once`: a GET of the link from another browser
+    shows the form and leaves the method unconfirmed with no personal account. A post
+    with a wrong CSRF token, with two passwords that differ, and with a short password
+    each confirms nothing. The real post confirms and creates the personal account
+    (C6). The used link then answers 410, opened or posted. The new password signs in.
+- Red: `cargo test -p probation-server --test accounts confirming`, 2 failed. The
+  extended test fails in `Page::csrf` with "a form with a CSRF token", because the GET
+  confirmed at once and showed no form. The new test fails at its first check: the page
+  had no `action="/verify-email"` form.
+- Fix:
+  - `GET /verify-email?token=…` only checks that the token is live
+    (`accounts::verify_token_live`) and renders the password form; 410 for a dead link.
+  - New `POST /verify-email` (`signin::confirm_email`) checks the session's CSRF token,
+    the token, that the two passwords match, and `check_new_password` (C42: length and
+    the leaked-password range API). Then `accounts::verify_email(pool, token, new_hash)`
+    does all of it in one transaction: it uses up the token, sets `verified_at` and
+    replaces `password_hash`, ends every session of the login (signed in, or pending
+    TOTP or the deleted-login choice), and creates the organisation or personal account
+    the sign-up asked for (C5/C6, unchanged).
+  - `/verify-email` was already exempt from the confirm-first redirect, so a signed-out
+    browser, or the squatter's unconfirmed one, can post it. The route table's CSRF walk
+    (T-portal-csrf) covers the new POST.
+- C41 check: an unconfirmed login cannot set up TOTP. `confirm_first` redirects every
+  route except `/verify-email*`, `/signout` and `/static/*` to `/verify-email`, and
+  `t_portal_unverified_blocked` walks the whole route table, `/account/totp/setup`
+  included, for a signed-in unconfirmed login. So a squatter has no authenticator to
+  leave behind.
+- OAuth and SSO logins: unchanged. Only email-and-password sign-ups get a verify token
+  (`send_verify`); Google, GitHub, Microsoft and company SSO methods are created
+  confirmed.
+- Test callers that confirmed by GET now go through a `confirm(browser, link, password)`
+  helper in tests/accounts.rs and tests/portal_places.rs. `tests/e2e/drive.mjs` submits
+  the link's form with the user's password (3 lines).
+- Green: `--test accounts` 34 passed, `portal_places` 37, `admin_fleet` 30, `tenancy` 4.
+- Docs: portal-guide.md §1.1 and §1.2.
+
+### Checks (round 4)
+
+- `cargo test -j 16 --workspace --no-fail-fast -- --test-threads=16`: exit 0, 49
+  binaries, 724 passed, 0 failed, 21 ignored.
+- clippy `-D warnings` and `fmt --check`: clean.
+- `router molecule-verify`: PASS, 12 checks, 0 findings.
+- The 4 SMTC analyzers at `crates/probation-server`: 0 findings each. The spec paths
+  are given as absolute paths; a relative path made the daemon fail to read the spec.
+- C123 query: one site, `src/managed/mod.rs:276` `get(AUTHORIZATION)`.

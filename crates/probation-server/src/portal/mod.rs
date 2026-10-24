@@ -178,6 +178,7 @@ fn routes() -> Routes {
     .get("/signup", get(signin::signup_form))
     .post("/signup", post(signin::signup))
     .get("/verify-email", get(signin::verify_email))
+    .post("/verify-email", post(signin::confirm_email))
     .post("/verify-email/resend", post(signin::resend))
     .get("/account", get(account::show))
     .post("/account/link/{provider}", post(account::link))

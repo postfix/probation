@@ -543,6 +543,24 @@ impl Outbound for FakeNet {
     }
 }
 
+/// Opens the confirmation link and chooses `password` on its page (F7); returns the
+/// answer to that choice.
+async fn confirm(browser: &mut Browser, link: &str, password: &str) -> Page {
+    let page = browser.get(link).await;
+    let token = hidden(&page.body, "token").unwrap_or_default();
+    browser
+        .post_raw(
+            "/verify-email",
+            &[
+                ("token", &token),
+                ("new", password),
+                ("again", password),
+                ("csrf", &page.csrf()),
+            ],
+        )
+        .await
+}
+
 /// Signs `email` up with `fields` and confirms the address through the mailed link.
 async fn sign_up(fx: &Fixture, email: &str, fields: &[(&str, &str)]) -> Browser {
     let mut browser = fx.browser();
@@ -552,7 +570,7 @@ async fn sign_up(fx: &Fixture, email: &str, fields: &[(&str, &str)]) -> Browser 
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     fx.deliver().await;
     let link = fx.mail.link(email, "/verify-email?token=");
-    let confirmed = browser.get(&link).await;
+    let confirmed = confirm(&mut browser, &link, PASSWORD).await;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
     assert!(confirmed.has("Your email address is confirmed"));
     browser
@@ -609,7 +627,7 @@ async fn t_portal_signup_creates_org() {
     // Nothing exists before the address is confirmed.
     assert_eq!(fx.db.count("SELECT count(*) FROM orgs").await, 0);
     let link = fx.mail.link("ana@acme.test", "/verify-email?token=");
-    let confirmed = browser.get(&link).await;
+    let confirmed = confirm(&mut browser, &link, PASSWORD).await;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
     assert!(confirmed.has("Your email address is confirmed"));
 
@@ -665,7 +683,7 @@ async fn outbox_body_sealed_at_rest() {
     fx.outbox_due().await;
     fx.deliver().await;
     let link = fx.mail.link("ana@acme.test", "/verify-email?token=");
-    let confirmed = browser.get(&link).await;
+    let confirmed = confirm(&mut browser, &link, PASSWORD).await;
     assert!(
         confirmed.has("Your email address is confirmed"),
         "{}",
@@ -776,7 +794,7 @@ async fn confirming_an_address_ends_the_logins_sessions() {
     let mut owner = fx.browser();
     fx.deliver().await;
     let link = fx.mail.link("victim@acme.test", "/verify-email?token=");
-    let confirmed = owner.get(&link).await;
+    let confirmed = confirm(&mut owner, &link, OWNER_PASSWORD).await;
     assert!(
         confirmed.has("Your email address is confirmed"),
         "{}",
@@ -797,6 +815,136 @@ async fn confirming_an_address_ends_the_logins_sessions() {
         .await
         .unwrap();
     assert_eq!(sessions, 0);
+    // The password chosen at sign-up stopped working; the one chosen on confirming works.
+    let squatted = sign_in(&mut squatter, "victim@acme.test", PASSWORD).await;
+    assert_ne!(
+        squatted.location.as_deref(),
+        Some("/account"),
+        "{}",
+        squatted.body
+    );
+    let mut owner = fx.browser();
+    let signed_in = sign_in(&mut owner, "victim@acme.test", OWNER_PASSWORD).await;
+    assert_eq!(
+        signed_in.location.as_deref(),
+        Some("/account"),
+        "{}",
+        signed_in.body
+    );
+}
+
+/// The password the address's owner chooses on the confirmation page.
+const OWNER_PASSWORD: &str = "only the mailbox knows this";
+
+/// F7: opening the link changes nothing (a mail scanner opens links too); the choice is
+/// a POST with the page's CSRF token, and its password must pass the rules (C42); a used
+/// link is refused, opened or posted.
+#[tokio::test]
+async fn confirming_takes_a_posted_password_once() {
+    let fx = Fixture::start().await;
+    let mut browser = fx.browser();
+    let fields = [
+        ("email", "pat@home.test"),
+        ("password", PASSWORD),
+        ("kind", "personal"),
+    ];
+    browser.submit("/signup", "/signup", &fields).await;
+    fx.deliver().await;
+    let link = fx.mail.link("pat@home.test", "/verify-email?token=");
+    let unconfirmed = |db: &Db| {
+        let db_owner = db.owner.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT verified_at IS NULL FROM sign_in_methods WHERE email = 'pat@home.test'",
+            )
+            .fetch_one(&db_owner)
+            .await
+            .unwrap()
+        }
+    };
+    let scanned = fx.browser().get(&link).await;
+    assert_eq!(scanned.status, StatusCode::OK, "{}", scanned.body);
+    assert!(scanned.has("action=\"/verify-email\""), "{}", scanned.body);
+    assert!(unconfirmed(&fx.db).await, "a GET confirms nothing");
+    assert_eq!(
+        fx.db.count("SELECT count(*) FROM personal_accounts").await,
+        0
+    );
+
+    let page = browser.get(&link).await;
+    let token = hidden(&page.body, "token").unwrap();
+    let csrf = page.csrf();
+    let post = |new: &'static str, again: &'static str, csrf: String| {
+        let token = token.clone();
+        (token, new, again, csrf)
+    };
+    for (new, again, csrf, status) in [
+        (
+            OWNER_PASSWORD,
+            OWNER_PASSWORD,
+            "not-the-token".to_owned(),
+            None,
+        ),
+        (
+            OWNER_PASSWORD,
+            "something else entirely",
+            csrf.clone(),
+            Some(StatusCode::UNPROCESSABLE_ENTITY),
+        ),
+        (
+            "short",
+            "short",
+            csrf.clone(),
+            Some(StatusCode::UNPROCESSABLE_ENTITY),
+        ),
+    ] {
+        let (token, new, again, csrf) = post(new, again, csrf);
+        let answer = browser
+            .post_raw(
+                "/verify-email",
+                &[
+                    ("token", &token),
+                    ("new", new),
+                    ("again", again),
+                    ("csrf", &csrf),
+                ],
+            )
+            .await;
+        if let Some(status) = status {
+            assert_eq!(answer.status, status, "{}", answer.body);
+        } else {
+            assert_ne!(
+                answer.status,
+                StatusCode::OK,
+                "no CSRF token, no confirmation"
+            );
+        }
+        assert!(unconfirmed(&fx.db).await);
+    }
+    let confirmed = confirm(&mut browser, &link, OWNER_PASSWORD).await;
+    assert!(
+        confirmed.has("Your email address is confirmed"),
+        "{}",
+        confirmed.body
+    );
+    assert!(!unconfirmed(&fx.db).await);
+    assert_eq!(
+        fx.db.count("SELECT count(*) FROM personal_accounts").await,
+        1
+    );
+
+    // The link works once.
+    assert_eq!(browser.get(&link).await.status, StatusCode::GONE);
+    let reused = confirm(&mut browser, &link, "yet another fine password").await;
+    assert_eq!(reused.status, StatusCode::GONE, "{}", reused.body);
+    let mut owner = fx.browser();
+    let signed_in = sign_in(&mut owner, "pat@home.test", OWNER_PASSWORD).await;
+    assert_eq!(
+        signed_in.location.as_deref(),
+        Some("/account"),
+        "{}",
+        signed_in.body
+    );
 }
 
 /// T-portal-signup-personal (C6): a personal account whose chain is platform -> personal.
@@ -884,7 +1032,7 @@ async fn t_portal_signup_duplicate_email() {
     assert_eq!(again.body, page.body, "byte for byte");
     fx.deliver().await;
     let link = fx.mail.link("dup@acme.test", "/verify-email?token=");
-    first.get(&link).await;
+    confirm(&mut first, &link, PASSWORD).await;
     let after = first.submit("/signup", "/signup", &fields).await;
     assert_eq!(after.body, page.body, "byte for byte once confirmed too");
     assert_eq!(fx.db.count("SELECT count(*) FROM sign_in_methods").await, 1);
