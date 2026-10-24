@@ -2,18 +2,21 @@ name: E2E
 
 # The e2e suites (tests/e2e/README.md) on the stack of the exact release images, offline
 # against the fakes (D1). PR: blocks the merge. Nightly: the full set; a failure opens an
-# issue. Canary: the live public registries; it alerts and never blocks anything.
+# issue. Canary: the live public registries; it alerts and never blocks anything. PBT:
+# the property-based portal tests, a shard of their own, nightly (pbt) and weekly
+# (pbt-weekly, larger); a failure opens an issue with its seed in the JUnit message.
 
 on:
   pull_request:
   schedule:
     - cron: "17 2 * * *"
+    - cron: "47 3 * * 0"
   workflow_dispatch:
     inputs:
       suite:
         description: Suite to run
         type: choice
-        options: [pr, nightly, canary]
+        options: [pr, nightly, canary, pbt, pbt-weekly]
         default: nightly
 
 # The harness builds the images, which runs dependency build scripts: no write token.
@@ -60,7 +63,7 @@ jobs:
           if-no-files-found: ignore
 
   nightly:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'nightly')
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 2 * * *') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'nightly')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -100,7 +103,7 @@ jobs:
           if-no-files-found: ignore
 
   canary:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'canary')
+    if: (github.event_name == 'schedule' && github.event.schedule == '17 2 * * *') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'canary')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Alerts only (D1, D6): no release or merge waits on this job; `report` files an issue.
@@ -137,20 +140,62 @@ jobs:
           path: target/e2e/out
           if-no-files-found: ignore
 
+  # The property-based portal tests (harness/pbt.mjs): pbt every night, pbt-weekly on
+  # Sundays. Each scenario starts a stack of its own. Replay a failure locally with the
+  # E2E_PBT_SEED, E2E_PBT_PATH and E2E_PBT_REPLAY its JUnit message names.
+  pbt:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && startsWith(inputs.suite, 'pbt'))
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (github.event.schedule == '47 3 * * 0' || inputs.suite == 'pbt-weekly') && 150 || 30 }}
+    env:
+      SUITE: ${{ (github.event.schedule == '47 3 * * 0' || inputs.suite == 'pbt-weekly') && 'pbt-weekly' || 'pbt' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: localhost/probation:e2e
+          cache-from: type=gha,scope=probation
+          cache-to: type=gha,scope=probation,mode=max
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
+          cache-to: type=gha,scope=probation-server,mode=max
+      - run: node tests/e2e/harness/run.mjs --suite "$SUITE"
+        env:
+          E2E_PREBUILT: "1"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-${{ env.SUITE }}
+          path: target/e2e/out
+          if-no-files-found: ignore
+
   # A separate job, so that the jobs that build and run the images never hold a token
   # that can write.
   report:
-    needs: [nightly, canary]
-    if: always() && github.event_name == 'schedule' && (needs.nightly.result == 'failure' || needs.canary.result == 'failure')
+    needs: [nightly, canary, pbt]
+    if: always() && github.event_name == 'schedule' && (needs.nightly.result == 'failure' || needs.canary.result == 'failure' || needs.pbt.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
       - run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "E2E nightly ($NIGHTLY) / canary ($CANARY) failed on $GITHUB_SHA" \
+            --title "E2E nightly ($NIGHTLY) / canary ($CANARY) / pbt ($PBT) failed on $GITHUB_SHA" \
             --body "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (JUnit and container logs are its artifacts). A canary failure alone means a live registry or its shapes changed; it blocks nothing."
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY: ${{ needs.nightly.result }}
           CANARY: ${{ needs.canary.result }}
+          PBT: ${{ needs.pbt.result }}

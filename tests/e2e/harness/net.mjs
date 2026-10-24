@@ -140,7 +140,7 @@ export class Portal {
       if (/max-age=0/i.test(line)) this.cookies.delete(name);
       else this.cookies.set(name, pair.slice(at + 1));
     }
-    return { status: answer.status, location: answer.headers.location ?? null, body: answer.body };
+    return { status: answer.status, location: answer.headers.location ?? null, body: answer.body, headers: answer.headers };
   }
 
   get(path) {

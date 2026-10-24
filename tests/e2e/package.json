@@ -1,16 +1,21 @@
 {
   "name": "probation-e2e",
   "private": true,
-  "description": "The e2e harness (tests/e2e/README.md). Its one dependency is Playwright, for the browser steps.",
+  "description": "The e2e harness (tests/e2e/README.md): Playwright for the browser steps, fast-check for the property-based tests.",
   "type": "module",
   "scripts": {
     "pr": "node harness/run.mjs --suite pr",
     "nightly": "node harness/run.mjs --suite nightly",
     "release": "node harness/run.mjs --suite release",
-    "canary": "node harness/run.mjs --suite canary"
+    "canary": "node harness/run.mjs --suite canary",
+    "pbt": "node harness/run.mjs --suite pbt",
+    "pbt-weekly": "node harness/run.mjs --suite pbt-weekly"
   },
   "dependencies": {
     "@axe-core/playwright": "4.14.0",
     "playwright": "1.64.1"
+  },
+  "devDependencies": {
+    "fast-check": "4.10.2"
   }
 }

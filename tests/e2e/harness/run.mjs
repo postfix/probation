@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The e2e runner (tests/e2e/README.md).
 //
-//   node tests/e2e/harness/run.mjs --suite pr|nightly|release|canary [--only ID] [--list]
+//   node tests/e2e/harness/run.mjs --suite pr|nightly|release|canary|pbt|pbt-weekly [--only ID] [--list]
 //                                  [--skip-build] [--keep]
 //
 // Brings the stack up once, runs every scenario of the suite against it (a scenario
@@ -20,7 +20,8 @@ import { parseArgs } from "node:util";
 import { helpers } from "./helpers.mjs";
 import { ROOT, Stack } from "./stack.mjs";
 
-const SUITES = ["pr", "nightly", "release", "canary"];
+// pbt and pbt-weekly: the property-based portal tests (harness/pbt.mjs), a shard of their own.
+const SUITES = ["pr", "nightly", "release", "canary", "pbt", "pbt-weekly"];
 const { values: args } = parseArgs({
   options: {
     suite: { type: "string", default: "pr" },
@@ -88,6 +89,7 @@ try {
     if (scenario.stack === "own" && !fresh) await freshStack();
     fresh = false;
     const h = helpers(stack, { log: (...line) => console.log(`[${scenario.id}]`, ...line) });
+    h.suite = args.suite;
     const started = performance.now();
     let error;
     console.log(`e2e: ${scenario.id} ${scenario.title}`);

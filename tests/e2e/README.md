@@ -8,7 +8,7 @@ offline and repeatable. The scenario catalogue is `docs/plans/e2e-coverage/00-in
 
 ```sh
 npm ci --prefix tests/e2e && npx --prefix tests/e2e playwright install chromium
-node tests/e2e/harness/run.mjs --suite pr          # or nightly, release, canary
+node tests/e2e/harness/run.mjs --suite pr          # or nightly, release, canary, pbt, pbt-weekly
 node tests/e2e/harness/run.mjs --only E2E-signup-to-install --skip-build --keep
 node tests/e2e/harness/run.mjs --suite nightly --list
 ```
@@ -185,6 +185,74 @@ bridge, against the deployed portal behind the TLS gateway. It still runs by han
 `cargo run -p probation-server -- serve --config crates/probation-server/tests/portal.toml`
 with `PORTAL_URL`.
 
+## Property-based tests
+
+`harness/pbt.mjs` and `harness/pbt-forms.mjs` test the portal with
+[fast-check](https://fast-check.dev) against the deployed stack. `harness/pbt-model.mjs`
+is the model they check against: roles and visibility as `tenancy.rs` has them, and a
+port of `crates/probation-policy`'s merge and edit check
+(`node tests/e2e/harness/pbt-model.mjs` runs its self-check).
+
+**PBT-model** (`fc.commands`, `fc.asyncModelRun`). Each run starts from a fixed cast
+(`cast` in `pbt.mjs`): two organisations, a group, members, a personal account and their
+keys. Then random commands follow: sign-up with the confirmation mail, sign-in and
+sign-out, the authenticator on and off, groups, invitations accepted or ignored, roles,
+moving and removing members, leave requests approved or refused, keys and service keys
+and their revocation, blocks (package, version, file), exceptions, freezes and switches,
+the platform's freeze and "Allow a shorter freeze" (as the operator), the place
+switcher, suspending and re-activating an organisation (as the operator), and deleting
+and restoring a login. Each command is tried by a person whose role allows it or, a
+third of the time, by anyone, so refusals are tested too. After every command:
+
+- each person's places, keys, organisation pages and policy editor match the model, and
+  another tenant's ids answer 404 and name nothing of it (C1);
+- a member who is not an org admin gets no admin forms, and an org admin without a
+  second factor is sent to set one up or sees the layer read-only (C24, C27);
+- the audit log has exactly the command's rows, and a refusal writes none;
+- every portal answer is below 500, carries the security headers (CSP with
+  `frame-ancestors 'none'`, `nosniff`, `no-referrer`, `no-store`) and shows no key
+  after the answer that created it.
+
+`CheckFirewall`, and the end of each run, ask fw1 or fw2 for a sample of keys what the
+model's effective policy says: blocked, held, allowed, or 401 for a key that no longer
+works, within one sync interval. axe checks a sample of the pages the run reached.
+
+Mail: a link is read from the server's outbox row as soon as it is queued, and at the
+end every one of them must have reached the SMTP sink. The outbox job sends every 30 s,
+too slow to wait for in each command. `E2E_PBT_MAIL=sink` waits in the sink instead.
+
+**PBT-forms** puts random strings into one field of one form at a time, for every form
+but the fleet's push, retire and rollout buttons: unicode with confusables, zero-width
+and bidi characters, HTML and script fragments, very long, empty and whitespace values,
+SQL-ish text, malformed emails, CIDR ranges and versions. The value is refused with a
+message and nothing changes, or it is stored and shown escaped (checked in the page and
+in Chromium's DOM). Without its CSRF token, or with another session's, every form
+answers 403 and writes nothing.
+
+A failure is shrunk to a minimal case. Its message, also the JUnit failure message,
+starts with the seed and the path, and lists the command sequence. Replay it:
+
+```sh
+E2E_PBT_SEED=… E2E_PBT_PATH=… E2E_PBT_REPLAY='…' node tests/e2e/harness/run.mjs --only PBT-model --suite pbt
+```
+
+| Variable | `pr` (PBT-smoke) | `pbt` | `pbt-weekly` | |
+|---|---|---|---|---|
+| `E2E_PBT_RUNS` | 1 | 20 | 100 | command sequences |
+| `E2E_PBT_COMMANDS` | 8 | 25 | 40 | the longest sequence |
+| `E2E_PBT_TIME_LIMIT` | 90 | 660 | 6000 | seconds for runs and shrinking |
+| `E2E_PBT_MAX_SHRINKS` | 0 | 40 | 200 | |
+| `E2E_PBT_FIREWALL_SAMPLE` | 1 | 3 | 4 | key and version pairs per firewall check |
+| `E2E_PBT_AXE_SAMPLE` | 1 | 1 | 2 | pages per run |
+| `E2E_PBT_FORM_RUNS` | | 400 | 4000 | values PBT-forms tries |
+| `E2E_PBT_DOM_SAMPLE` | | 10 | 40 | stored HTML values checked in Chromium |
+| `E2E_PBT_SEED` | 20261054 | random | random | |
+
+Also `E2E_PBT_PATH`, `E2E_PBT_REPLAY`, `E2E_PBT_PEOPLE` (8), `E2E_PBT_MAIL` and
+`E2E_PBT_VERBOSE=1` (every command and its answer). A check that waits on a known
+product fix is logged as "needs F…" and fails the scenario at its end, as `Needs` does.
+A product defect a run finds becomes a fixed sequence in `scenarios/pbt-regressions.mjs`.
+
 ## Suites
 
 | Suite | When | Clients | Blocks |
@@ -193,6 +261,8 @@ with `PORTAL_URL`.
 | `nightly` | nightly on main (90 min) | all | opens an issue |
 | `canary` | nightly, live registries (`canary.yml`) | PR clients | nothing; opens an issue |
 | `release` | on a tag (`release.yml`, 2 h), before anything is published | all | the release and the image push (D7) |
+| `pbt` | nightly, a job and stacks of its own (30 min) | PR clients | opens an issue |
+| `pbt-weekly` | Sundays (150 min) | PR clients | opens an issue |
 
 ### Image builds in CI
 

@@ -279,10 +279,12 @@ export function ops(h) {
         }
       });
       if (ids.length) engine(["rm", "-f", "-t", "5", ...ids], { check: false });
-      // Also the volumes of firewalls removed earlier (named `<project>-…`; compose's are `<project>_…`).
-      const named = engine(["volume", "ls", "-q"], { check: false }).stdout.split("\n").filter((v) => v.startsWith(`${stack.project}-`));
+      // Also the volumes of firewalls removed earlier (named `<project>-…-data`; compose's
+      // are `<project>_…`). Never forced: another stack whose project name starts with
+      // this one's (`probation-e2e-pbt`) keeps the volumes its containers use.
+      const named = engine(["volume", "ls", "-q"], { check: false }).stdout.split("\n").filter((v) => v.startsWith(`${stack.project}-`) && !v.includes("_"));
       const gone = [...new Set([...volumes, ...named])];
-      if (gone.length) engine(["volume", "rm", "-f", ...gone], { check: false });
+      if (gone.length) engine(["volume", "rm", ...gone], { check: false });
     },
 
     /// The managed firewall config the stack gives firewall-1 (config.sample.toml as an
