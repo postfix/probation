@@ -65,7 +65,8 @@ Open `/signup` (**Create an account** on the sign-in page). There are two ways:
     most 100 characters; names are unique, ignoring case and extra spaces). You become its
     org admin.
 
-  Press **Create account**. The page says **Check your email**.
+  Press **Create account**. The page says **Check your email**. You choose the password
+  again when you confirm the address (§1.2).
 
 Do not sign up a second time to add another way of signing in: that makes a separate
 login. Sign in and link the new method instead (§1.6).
@@ -75,8 +76,15 @@ invitation (§1.8), or use company SSO if the organisation has connected it.
 
 ### 1.2 Confirm your email
 
-The email has a link to `/verify-email`. It works once and expires in 24 hours. Opening
-it confirms the address; then press **Continue**.
+The email has a link to `/verify-email`. It expires in 24 hours. Opening it shows a
+page where you choose your password again, with the same rules as at sign-up; opening
+it alone changes nothing. Press **Confirm and save password**. That confirms the
+address, makes the password you chose here the login's only password (the one typed at
+sign-up stops working), signs out every session of that login in every browser, and
+uses up the link. Then press **Continue** and sign in with the new password.
+
+This way only someone who can read the mailbox knows the password, even if someone
+else signed up with your address.
 
 Until the address is confirmed, a signed-in login reaches only the **Confirm your
 email** page; nothing else works. On that page, **Send the link again** sends a new
@@ -186,8 +194,9 @@ In **Account settings** → **Your places**:
 
 ### 1.8 Join an organisation with an invitation
 
-An org admin sends you an email with a link to `/invite`. Sign in (or create a login)
-first, then open the link. The page says what it grants, for example "Join Acme as a
+An org admin sends you an email with a link to `/invite`. Open it; if you are not
+signed in, the portal sends you to sign in (or to create a login and confirm it) and
+then back to the invitation, in the same browser, for a day. The page says what it grants, for example "Join Acme as a
 member in the &lt;group&gt; group". Press **Accept**.
 
 - The link works once, for 7 days, for whichever login accepts it. Make sure you are

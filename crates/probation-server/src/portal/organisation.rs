@@ -7,7 +7,7 @@
 
 use askama::Template;
 use axum::extract::{Form, Path, Query, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use probation_policy::{LayerKind, PlaceRef};
@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use super::{
     Shared, SignedIn, Top, not_found, redirect, refused, render, second_factor_first, unavailable,
+    with_cookie,
 };
 use crate::accounts;
 use crate::keys::{self, TokenRow};
@@ -635,6 +636,7 @@ pub(crate) async fn invite(
         &form.role,
         group.as_ref(),
         &portal.config.base_url,
+        &portal.secrets,
     )
     .await;
     after(&portal, &signed_in, &place, done).await
@@ -672,7 +674,8 @@ pub(crate) struct TokenQuery {
     token: String,
 }
 
-/// `/invite?token=…`: what the link grants, for the signed-in login to accept.
+/// `/invite?token=…`: what the link grants, for the signed-in login to accept. A
+/// signed-out visitor goes to sign in, and the invitation is kept for after it (F17).
 pub(crate) async fn invitation(
     State(portal): State<Shared>,
     Query(query): Query<TokenQuery>,
@@ -680,7 +683,16 @@ pub(crate) async fn invitation(
 ) -> Response {
     let signed_in = match portal.signed_in(&headers).await {
         Ok(signed_in) => signed_in,
-        Err(answer) => return answer,
+        Err(answer) => {
+            let to_signin = answer
+                .headers()
+                .get(LOCATION)
+                .is_some_and(|to| to == "/signin");
+            let keep = to_signin
+                .then(|| super::invite_cookie(&query.token))
+                .flatten();
+            return with_cookie(answer, keep);
+        }
     };
     match tenancy::invitation(&portal.pool, &query.token).await {
         Ok(grant) => {

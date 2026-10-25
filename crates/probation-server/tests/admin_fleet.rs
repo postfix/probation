@@ -59,9 +59,14 @@ impl Fixture {
 
     async fn deliver(&self) {
         let mailer: Arc<dyn Mailer> = self.mail.clone();
-        accounts::deliver_outbox(&self.db.app, &mailer)
-            .await
-            .expect("the outbox runs");
+        accounts::deliver_outbox(
+            &self.db.app,
+            &mailer,
+            &accounts::SecretBox::new(common::SECRET_KEY),
+            &tokio::sync::watch::channel(false).1,
+        )
+        .await
+        .expect("the outbox runs");
     }
 
     /// A confirmed login with an email-and-password method and nothing else.
@@ -168,7 +173,7 @@ async fn serve(db: &Db, mail: Arc<FakeMail>) -> SocketAddr {
         config: config(),
         outbound: Arc::new(NoNet),
         mailer: Some(mail),
-        secret_key: [7; 32],
+        secret_key: common::SECRET_KEY,
         password_params: argon2::Params::new(8, 1, 1, None).unwrap(),
         trusted_proxies: vec!["127.0.0.0/8".parse().unwrap()],
     });
@@ -3078,7 +3083,11 @@ async fn t_automation_scope() {
         .await
         .unwrap();
     let tenancy = fx.db.tenancy();
-    let (actor, place) = tenancy.automation(&token).await.expect("a live token");
+    let (actor, place) = tenancy
+        .automation(&token)
+        .await
+        .unwrap()
+        .expect("a live token");
     assert_eq!(place.place(), world.acme);
     for change in [
         (|layer: &mut Layer| layer.freeze_seconds = Some(0)) as fn(&mut Layer),
@@ -3219,4 +3228,27 @@ async fn t_automation_body_limit() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
     assert_eq!(state(&fx.db).await, before, "nothing written");
+}
+
+/// F11: a database outage while the automation token is checked answers 503, not 401,
+/// so a CI job retries instead of reporting a bad token.
+#[tokio::test]
+async fn automation_api_answers_503_when_the_database_is_down() {
+    let db = Db::fresh().await;
+    let api = common::serve(db.app.clone(), Vec::new()).await;
+    db.app.close().await;
+    let url = api.join("api/v1/blocklist/org-1").unwrap();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::client()
+            .get(url)
+            .bearer_auth("aut_0123456789abcdef")
+            .send(),
+    )
+    .await
+    .expect("the server answers in time")
+    .expect("the server answers");
+    assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let checked = db.tenancy().automation("aut_0123456789abcdef").await;
+    assert!(checked.is_err(), "{checked:?}");
 }

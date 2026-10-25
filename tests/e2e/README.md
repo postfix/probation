@@ -219,7 +219,8 @@ works, within one sync interval. The sample includes npm and PyPI versions flagg
 `MAL-*` by the fake OSV service, under randomly edited On, Log only and Off settings.
 axe checks a sample of the pages the run reached.
 
-Mail: a link is read from the server's outbox row as soon as it is queued, and at the
+Mail: a link is opened from the server's sealed outbox row with the stack's generated
+secret key as soon as it is queued, and at the
 end every one of them must have reached the SMTP sink. The outbox job sends every 30 s,
 too slow to wait for in each command. `E2E_PBT_MAIL=sink` waits in the sink instead.
 

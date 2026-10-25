@@ -40,6 +40,11 @@ pub(crate) enum SignupView<'a> {
     ConfirmEmail {
         email: &'a str,
     },
+    /// The confirmation link's page: choose the password (F7).
+    ChoosePassword {
+        token: &'a str,
+        error: Option<&'a str>,
+    },
     Confirmed {
         next: &'static str,
     },
@@ -50,6 +55,7 @@ fn signup_page<'a>(portal: &super::Portal, csrf: &'a str, view: SignupView<'a>) 
     let title = match view {
         SignupView::Form { .. } => "Create an account",
         SignupView::CheckEmail { .. } | SignupView::ConfirmEmail { .. } => "Check your email",
+        SignupView::ChoosePassword { .. } => "Confirm your email",
         SignupView::Confirmed { .. } => "Email confirmed",
         SignupView::BadLink => "Link expired",
     };
@@ -168,7 +174,16 @@ pub(crate) async fn signup(
         Err(err) => return unavailable(err),
     }
     let hash = portal.passwords.hash_blocking(form.password.clone()).await;
-    match accounts::sign_up(&portal.pool, &portal.config.base_url, &email, &hash, kind).await {
+    match accounts::sign_up(
+        &portal.pool,
+        &portal.config.base_url,
+        &portal.secrets,
+        &email,
+        &hash,
+        kind,
+    )
+    .await
+    {
         Ok(()) => render(
             StatusCode::OK,
             &signup_page(
@@ -205,8 +220,13 @@ pub(crate) async fn resend(
     };
     if allowed
         && !email.is_empty()
-        && let Err(err) =
-            accounts::resend_verification(&portal.pool, &portal.config.base_url, &email).await
+        && let Err(err) = accounts::resend_verification(
+            &portal.pool,
+            &portal.config.base_url,
+            &portal.secrets,
+            &email,
+        )
+        .await
     {
         return unavailable(err);
     }
@@ -253,24 +273,69 @@ pub(crate) async fn verify_email(
             Err(err) => unavailable(err),
         };
     }
-    let (status, view) = match accounts::verify_email(&portal.pool, &query.token).await {
-        Ok(Verified::Done { .. }) => (
+    // Opening the link changes nothing, so a mail scanner that opens it confirms
+    // nothing (F7); the page's form does.
+    let (status, view) = match accounts::verify_token_live(&portal.pool, &query.token).await {
+        Ok(true) => (
             StatusCode::OK,
-            SignupView::Confirmed {
-                next: if session.login_id.is_some() {
-                    "/account"
-                } else {
-                    "/signin"
-                },
+            SignupView::ChoosePassword {
+                token: &query.token,
+                error: None,
             },
         ),
-        Ok(Verified::BadLink) => (StatusCode::GONE, SignupView::BadLink),
+        Ok(false) => (StatusCode::GONE, SignupView::BadLink),
         Err(err) => return unavailable(err),
     };
     with_cookie(
         render(status, &signup_page(&portal, session.csrf(), view)),
         cookie,
     )
+}
+
+/// The confirmation link's form: confirms the address with a new password (F7).
+pub(crate) async fn confirm_email(
+    State(portal): State<Shared>,
+    headers: HeaderMap,
+    Form(form): Form<ChooseForm>,
+) -> Response {
+    let session = match portal.posted(&headers, &form.csrf).await {
+        Ok(session) => session,
+        Err(refused) => return refused,
+    };
+    let page = |status, view| render(status, &signup_page(&portal, session.csrf(), view));
+    let again = |error| {
+        let view = SignupView::ChoosePassword {
+            token: &form.token,
+            error: Some(error),
+        };
+        page(StatusCode::UNPROCESSABLE_ENTITY, view)
+    };
+    match accounts::verify_token_live(&portal.pool, &form.token).await {
+        Ok(true) => {}
+        Ok(false) => return page(StatusCode::GONE, SignupView::BadLink),
+        Err(err) => return unavailable(err),
+    }
+    if form.new != form.again {
+        return again("The two passwords do not match.");
+    }
+    if let Err(problem) = accounts::check_new_password(
+        portal.outbound.as_ref(),
+        &portal.config.leaked_password_url,
+        &form.new,
+    )
+    .await
+    {
+        return again(problem.message());
+    }
+    let hash = portal.passwords.hash_blocking(form.new.clone()).await;
+    match accounts::verify_email(&portal.pool, &form.token, &hash).await {
+        // The login's sessions ended with the confirmation: sign in with the new password.
+        Ok(Verified::Done { .. }) => {
+            page(StatusCode::OK, SignupView::Confirmed { next: "/signin" })
+        }
+        Ok(Verified::BadLink) => page(StatusCode::GONE, SignupView::BadLink),
+        Err(err) => unavailable(err),
+    }
 }
 
 #[derive(Template)]
@@ -817,8 +882,13 @@ pub(crate) async fn reset(
     };
     if allowed
         && let Some(email) = accounts::normal_email(&form.email)
-        && let Err(err) =
-            accounts::request_reset(&portal.pool, &portal.config.base_url, &email).await
+        && let Err(err) = accounts::request_reset(
+            &portal.pool,
+            &portal.config.base_url,
+            &portal.secrets,
+            &email,
+        )
+        .await
     {
         return unavailable(err);
     }

@@ -115,12 +115,6 @@ pub(crate) struct Provider {
 }
 
 impl Portal {
-    /// Starts the portal's jobs (outbox, purge) and answers its routes.
-    pub fn launch(deps: PortalDeps) -> Router {
-        accounts::spawn_jobs(deps.pool.clone(), deps.mailer.clone());
-        router(Arc::new(Portal::new(deps)))
-    }
-
     pub fn new(deps: PortalDeps) -> Portal {
         Portal {
             pool: deps.pool,
@@ -184,6 +178,7 @@ fn routes() -> Routes {
     .get("/signup", get(signin::signup_form))
     .post("/signup", post(signin::signup))
     .get("/verify-email", get(signin::verify_email))
+    .post("/verify-email", post(signin::confirm_email))
     .post("/verify-email/resend", post(signin::resend))
     .get("/account", get(account::show))
     .post("/account/link/{provider}", post(account::link))
@@ -477,14 +472,54 @@ const COOKIE_NAME: &str = "probation_session";
 
 /// The session token the browser sent, if any.
 fn cookie_token(headers: &HeaderMap) -> Option<String> {
+    cookie(headers, COOKIE_NAME)
+}
+
+fn cookie(headers: &HeaderMap, wanted: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == COOKIE_NAME)
+        .find(|(name, _)| *name == wanted)
         .map(|(_, value)| value.to_owned())
+}
+
+/// The invitation a signed-out visitor opened, kept for a day across sign-up, the
+/// address confirmation and sign-in, which all end on `/account` (F17). Only a token
+/// is kept, never a URL, so the way back is always `/invite?token=…`.
+const INVITE_COOKIE: &str = "probation_invite";
+
+/// An invitation token as its link carries it: URL-safe base64 and nothing else.
+fn invite_token(token: &str) -> bool {
+    (1..=64).contains(&token.len())
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+pub(crate) fn invite_cookie(token: &str) -> Option<HeaderValue> {
+    invite_token(token).then(|| {
+        HeaderValue::from_str(&format!(
+            "{INVITE_COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=86400"
+        ))
+        .expect("a cookie")
+    })
+}
+
+/// The kept invitation's way back, and the cookie that forgets it; `None` when the
+/// browser keeps none. A value that is not a token is forgotten and goes nowhere.
+pub(crate) fn kept_invitation(headers: &HeaderMap) -> Option<(Option<String>, HeaderValue)> {
+    let token = cookie(headers, INVITE_COOKIE)?;
+    let forget = HeaderValue::from_str(&format!(
+        "{INVITE_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
+    ))
+    .expect("a cookie");
+    Some((
+        invite_token(&token).then(|| format!("/invite?token={token}")),
+        forget,
+    ))
 }
 
 /// The cookie for a new session: `Secure` and `HttpOnly` (C101), `Lax` so an IdP's
@@ -796,10 +831,35 @@ pub(crate) fn client_ip(
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
     {
-        let ip = entry.parse::<IpAddr>().ok()?.to_canonical();
+        let ip = crate::sync::forwarded_ip(entry)?.to_canonical();
         if !is_trusted(&ip) {
             return Some(ip);
         }
     }
     Some(peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1: the portal reads `X-Forwarded-For` as `sync` does, ports and brackets
+    /// included; anything else that is not an address still refuses (C113).
+    #[test]
+    fn forwarded_entries_with_ports_and_brackets() {
+        let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let trusted: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
+        let from = |entry: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", entry.parse().unwrap());
+            client_ip(peer, &headers, &trusted)
+        };
+        assert_eq!(from("192.0.2.7:4711"), Some("192.0.2.7".parse().unwrap()));
+        assert_eq!(from("[2001:db8::7]"), Some("2001:db8::7".parse().unwrap()));
+        assert_eq!(
+            from("[2001:db8::7]:4711"),
+            Some("2001:db8::7".parse().unwrap())
+        );
+        assert_eq!(from("unknown"), None);
+    }
 }

@@ -50,9 +50,14 @@ impl Fixture {
     /// Sends every due mail through the fake SMTP.
     async fn deliver(&self) {
         let mailer: Arc<dyn Mailer> = self.mail.clone();
-        accounts::deliver_outbox(&self.db.app, &mailer)
-            .await
-            .expect("the outbox runs");
+        accounts::deliver_outbox(
+            &self.db.app,
+            &mailer,
+            &accounts::SecretBox::new(common::SECRET_KEY),
+            &tokio::sync::watch::channel(false).1,
+        )
+        .await
+        .expect("the outbox runs");
     }
 
     /// A confirmed login with an email-and-password method and nothing else.
@@ -131,7 +136,7 @@ async fn serve(db: &Db, mail: Arc<FakeMail>, net: Arc<dyn Outbound>) -> SocketAd
         config: config(),
         outbound: net,
         mailer: Some(mail),
-        secret_key: [7; 32],
+        secret_key: common::SECRET_KEY,
         password_params: argon2::Params::new(8, 1, 1, None).unwrap(),
         trusted_proxies: vec!["127.0.0.0/8".parse().unwrap()],
     });
@@ -147,12 +152,12 @@ async fn serve(db: &Db, mail: Arc<FakeMail>, net: Arc<dyn Outbound>) -> SocketAd
     addr
 }
 
-/// What a browser keeps: one session cookie, sent back on every request.
+/// What a browser keeps: its cookies by name, sent back on every request.
 struct Browser {
     http: reqwest::Client,
     addr: SocketAddr,
     ip: String,
-    cookie: Option<String>,
+    cookies: std::collections::BTreeMap<String, String>,
 }
 
 struct Page {
@@ -190,7 +195,7 @@ impl Browser {
                 .unwrap(),
             addr,
             ip: ip.to_owned(),
-            cookie: None,
+            cookies: Default::default(),
         }
     }
 
@@ -219,8 +224,9 @@ impl Browser {
 
     async fn fetch(&mut self, mut builder: reqwest::RequestBuilder) -> Page {
         builder = builder.header("x-forwarded-for", &self.ip);
-        if let Some(cookie) = &self.cookie {
-            builder = builder.header("cookie", cookie);
+        if !self.cookies.is_empty() {
+            let cookies: Vec<&str> = self.cookies.values().map(String::as_str).collect();
+            builder = builder.header("cookie", cookies.join("; "));
         }
         let answer = tokio::time::timeout(Duration::from_secs(10), builder.send())
             .await
@@ -232,10 +238,12 @@ impl Browser {
             .map(|value| value.to_str().unwrap().to_owned());
         for cookie in answer.headers().get_all("set-cookie") {
             let cookie = cookie.to_str().unwrap();
+            let pair = cookie.split(';').next().unwrap().to_owned();
+            let name = pair.split('=').next().unwrap().to_owned();
             if cookie.contains("Max-Age=0") {
-                self.cookie = None;
+                self.cookies.remove(&name);
             } else {
-                self.cookie = Some(cookie.split(';').next().unwrap().to_owned());
+                self.cookies.insert(name, pair);
             }
         }
         let status = answer.status();
@@ -246,6 +254,24 @@ impl Browser {
             body,
         }
     }
+}
+
+/// Opens the confirmation link and chooses `password` on its page (F7); returns the
+/// answer to that choice.
+async fn confirm(browser: &mut Browser, link: &str, password: &str) -> Page {
+    let page = browser.get(link).await;
+    let token = hidden(&page.body, "token").unwrap_or_default();
+    browser
+        .post_raw(
+            "/verify-email",
+            &[
+                ("token", &token),
+                ("new", password),
+                ("again", password),
+                ("csrf", &page.csrf()),
+            ],
+        )
+        .await
 }
 
 /// The SMTP relay: records each mail.
@@ -895,7 +921,7 @@ async fn t_portal_place_switch() {
         .await;
     fx.deliver().await;
     let link = fx.mail.link("tony@stark.test", "/verify-email?token=");
-    stark.get(&link).await;
+    confirm(&mut stark, &link, PASSWORD).await;
     assert_eq!(
         fx.db
             .count("SELECT count(*) FROM orgs WHERE name = 'Stark Industries'")
@@ -4256,4 +4282,96 @@ async fn t_cross_tenant_routes_places() {
     }
     assert!(sent >= 30, "{sent}");
     assert_eq!(state(&fx.db).await, before, "nothing written");
+}
+
+/// F17: an invitee with no login who opens the link, creates a login, confirms it and
+/// signs in comes back to the invitation; the remembered invitation is only ever an
+/// `/invite` token, so a planted value cannot send anyone elsewhere.
+#[tokio::test]
+async fn invitation_survives_sign_up_and_sign_in() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut ana = admin_browser(&fx, "ana@acme.test").await;
+    let invited = invite(
+        &mut ana,
+        &world,
+        &[
+            ("email", "nia@acme.test"),
+            ("role", "member"),
+            ("group", "none"),
+        ],
+    )
+    .await;
+    assert_eq!(invited.status, StatusCode::SEE_OTHER, "{}", invited.body);
+    let link = invitation_link(&fx, "nia@acme.test").await;
+
+    let mut nia = fx.browser();
+    let opened = nia.get(&link).await;
+    assert_eq!(
+        (opened.status, opened.location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/signin"))
+    );
+    let fields = [
+        ("email", "nia@acme.test"),
+        ("password", PASSWORD),
+        ("kind", "personal"),
+    ];
+    let signed_up = nia.submit("/signup", "/signup", &fields).await;
+    assert_eq!(signed_up.status, StatusCode::OK, "{}", signed_up.body);
+    fx.deliver().await;
+    let link_to_confirm = fx.mail.link("nia@acme.test", "/verify-email?token=");
+    let confirmed = confirm(&mut nia, &link_to_confirm, PASSWORD).await;
+    assert!(
+        confirmed.has("Your email address is confirmed"),
+        "{}",
+        confirmed.body
+    );
+    let signed_in = sign_in(&mut nia, "nia@acme.test", PASSWORD).await;
+    assert_eq!(signed_in.location.as_deref(), Some("/account"));
+    let account = nia.get("/account").await;
+    assert_eq!(
+        (account.status, account.location.as_deref()),
+        (StatusCode::SEE_OTHER, Some(link.as_str()))
+    );
+    let accepted = accept(&mut nia, &link).await;
+    assert_eq!(
+        accepted.location,
+        Some(format!("/org/{}", world.acme.id)),
+        "{}",
+        accepted.body
+    );
+    assert_eq!(
+        nia.get("/account").await.status,
+        StatusCode::OK,
+        "used once"
+    );
+
+    // A planted value that is not an invitation token goes nowhere.
+    let mut erin = {
+        fx.person("erin@acme.test").await;
+        fx.signed_in("erin@acme.test").await
+    };
+    for planted in [
+        "https://evil.example/",
+        "//evil.example",
+        "/admin",
+        "x&next=/admin",
+    ] {
+        erin.cookies.insert(
+            "probation_invite".to_owned(),
+            format!("probation_invite={planted}"),
+        );
+        let page = erin.get("/account").await;
+        assert_eq!(
+            page.status,
+            StatusCode::OK,
+            "{planted}: {:?}",
+            page.location
+        );
+    }
+    // A link without a usable token is not remembered.
+    let mut stranger = fx.browser();
+    let opened = stranger.get("/invite?token=..%2Fadmin").await;
+    assert_eq!(opened.location.as_deref(), Some("/signin"));
+    assert!(!stranger.cookies.contains_key("probation_invite"));
 }

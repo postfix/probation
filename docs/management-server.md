@@ -105,7 +105,10 @@ Unknown keys are refused at start, and every change needs a restart. Every setti
 | `[portal.smtp] from` | required in `[portal.smtp]` | The sender address. |
 
 Without `[portal.smtp]` mail stays in the `email_outbox` table, and nobody can confirm
-an email address.
+an email address. A mail's body, with its links, is sealed under
+`PROBATION_SERVER_SECRET_KEY` when it is queued, so the table does not show them; a
+sent mail keeps no body. Mail queued by a server built before bodies were sealed stays
+in plain text until it is sent.
 
 An organisation's own SSO (OIDC) is set on its organisation page, not in this file.
 Its redirect URI is `<base_url>sso/<org id>/callback`; the page shows it.
@@ -122,7 +125,7 @@ Secrets come only from the environment, never from the file:
 | --- | --- | --- |
 | `PROBATION_SERVER_DATABASE_URL` | `serve`, `admin …` | A login role that is a member of `probation_app` (§4). Owns nothing. |
 | `PROBATION_SERVER_MIGRATE_DATABASE_URL` | `migrate` | The schema owner. Needs `CREATEROLE` on the first run. |
-| `PROBATION_SERVER_SECRET_KEY` | `serve` with `[portal]` | 64 hex characters (32 bytes), for example from `openssl rand -hex 32`. Seals secrets stored in the database (authenticator keys, SSO client secrets). Losing it loses them; keep it with the database backups, but apart from them. |
+| `PROBATION_SERVER_SECRET_KEY` | `serve` with `[portal]` | 64 hex characters (32 bytes), for example from `openssl rand -hex 32`. Seals secrets stored in the database (authenticator keys, SSO client secrets). Losing it loses them; back it up together with every database backup, but store it apart from them. `serve` refuses to start when the key does not open the secrets already stored. |
 | `PROBATION_SERVER_GOOGLE_CLIENT_SECRET`, `PROBATION_SERVER_GITHUB_CLIENT_SECRET`, `PROBATION_SERVER_MICROSOFT_CLIENT_SECRET` | `serve` | Required for each provider section you set. |
 | `PROBATION_SERVER_SMTP_PASSWORD` | `serve` | With `[portal.smtp] username`; empty when unset. |
 | `RUST_LOG` | all | Log filter; default `info`. Logs go to stderr. |
@@ -232,9 +235,10 @@ in compose, `Restart=on-failure` under systemd. Both examples in `deploy/` have 
 | --- | --- |
 | `probation-server serve --config FILE` | The server. Every hour it prunes change rows, the activity log and the audit log by their retention. |
 | `probation-server migrate` | Applies the schema (owner role, §4). |
+| `probation-server health [--url URL]` | Exits `0` when `GET /health/ready` (default `http://127.0.0.1:8080/health/ready`) answers `200`: the container's health check. |
 | `probation-server admin bootstrap --config FILE --email ADDR --org NAME --firewall NAME --firewall-source CIDR…` | First run only (§5). |
 | `probation-server admin reset-link --config FILE --email ADDR` | A fresh set-password link for a global admin (§5). Needs `[portal]` in the file. |
-| `probation-server admin revoke-key --key-id N` | Revokes any key; every firewall stops accepting it within one sync interval. Works without a running server. |
+| `probation-server admin revoke-key --key-id N` | Revokes a user or service key; every firewall stops accepting it within one sync interval. Works without a running server. It does not revoke automation (`aut_`) tokens or firewall (`fwt_`) tokens: revoke those on the portal, or retire the firewall. |
 | `probation-server admin after-restore` | After restoring the database from a backup, before starting the server (operations.md §5). |
 
 Every flag and what each command prints: [api.md](api.md#3-commands) §3.

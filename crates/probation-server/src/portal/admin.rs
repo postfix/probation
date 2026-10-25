@@ -728,9 +728,14 @@ pub(crate) async fn invite_admin(
         Ok(actor) => actor,
         Err(answer) => return answer,
     };
-    let done =
-        tenancy::invite_global_admin(&portal.pool, &actor, &form.email, &portal.config.base_url)
-            .await;
+    let done = tenancy::invite_global_admin(
+        &portal.pool,
+        &actor,
+        &form.email,
+        &portal.config.base_url,
+        &portal.secrets,
+    )
+    .await;
     after(&portal, &signed_in, done).await
 }
 

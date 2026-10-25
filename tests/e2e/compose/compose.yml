@@ -67,6 +67,12 @@ services:
       - ${E2E_WORK}/ca:/e2e/ca:ro
     networks: [e2e]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "probation-server", "health"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
 
   gateway:
     image: docker.io/library/nginx:1.27-alpine

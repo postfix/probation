@@ -126,12 +126,12 @@ On import (`PUT`, `POST`, and the import forms in the portal):
 | Code | Meaning |
 | --- | --- |
 | `200` | Done. |
-| `401` | No token, not an `aut_` token, unknown, revoked, or no longer valid (see above). Also when the database fails while the token is checked. Empty body. |
+| `401` | No token, not an `aut_` token, unknown, revoked, or no longer valid (see above). Empty body. |
 | `403` | The route names another layer than the token's, or the token may not save this change. |
 | `409` | The layer changed while the push was checked. Body: `The layer changed meanwhile; send the push again.` Send the same request again. |
 | `413` | The body is over 1 MiB. |
 | `422` | The body is not UTF-8, not a blocklist file, or a block in it is refused. The body is one line of plain text naming the problem, for example `schema_version 2 is not 1` or `blocked_hashes[0]: not a sha256 digest in hex`. |
-| `503` | The database failed. Try again later. |
+| `503` | The database failed, the token check included. Try again later. |
 
 ### Examples
 
@@ -522,6 +522,7 @@ Usage: probation-server <COMMAND>
 Commands:
   serve    Serve the firewall sync API, and the portal when `[portal]` is set
   migrate  Apply the database migrations as the owner role
+  health   Exit 0 when the server at `--url` answers 2xx: the container's health check, as the image has no curl
   admin
   help     Print this message or the help of the given subcommand(s)
 
@@ -546,13 +547,21 @@ Environment variables:
 
 **`probation-server serve --config <CONFIG>`**
 
-Serves the sync API and the automation API, and the portal when the settings file has
-a `[portal]` section. Once an hour it prunes the change log, activity and the audit log
-by their retention.
+Serves the sync API, the automation API and `GET /health/live` and `GET /health/ready`,
+and the portal when the settings file has a `[portal]` section. Once an hour it prunes
+the change log, activity and the audit log by their retention. `SIGTERM` or `SIGINT`
+stops it: requests in flight and job runs in progress get up to 20 seconds to finish
+(a second signal ends the wait), and it exits `0`.
 
 | Flag | Meaning |
 | --- | --- |
 | `--config <CONFIG>` | The server's settings file (management-server.md §3). Required. |
+
+**`probation-server health [--url <URL>]`**
+
+Exits `0` when `GET <URL>` answers `2xx`, `1` otherwise. `--url` defaults to
+`http://127.0.0.1:8080/health/ready`, which answers `200` while Postgres answers and
+`503` when it does not.
 
 **`probation-server migrate`**
 
@@ -619,7 +628,7 @@ Fails with `no live global admin signs in as <EMAIL>` for any other address.
 
 | Flag | Meaning |
 | --- | --- |
-| `--key-id <KEY_ID>` | The id of the user or service key to revoke, such as the `key_id` that bootstrap printed. |
+| `--key-id <KEY_ID>` | The id of the user or service key to revoke, such as the `key_id` that bootstrap printed. Automation (`aut_`) tokens and firewall (`fwt_`) tokens are not revoked here: revoke an automation token on the portal, and retire a firewall on the fleet page. |
 
 Prints `revoked key <KEY_ID>`. Every firewall stops accepting the key at its next
 sync. Fails with `no live API key <KEY_ID>` when there is no such live key.

@@ -15,7 +15,7 @@
 // F31 is fixed; until then that check is "needs F31".
 
 import fc from "fast-check";
-import { Broken, CheckedPortal, newWorld, settle, signUp, totpOn } from "./pbt.mjs";
+import { Broken, CheckedPortal, mailLink, newWorld, settle, signUp, totpOn } from "./pbt.mjs";
 import { expect, hidden } from "./net.mjs";
 
 const MARK = "pbt";
@@ -120,7 +120,7 @@ async function fixture(world) {
   expect((await admin.portal.post(`/org/${org}/groups`, { name: "Frontend" })).status === 303, "the fixture's group");
   const group = Number(world.sql(`SELECT id FROM groups WHERE org_id = ${org}`));
   expect((await admin.portal.post(`/org/${org}/invitations`, { email: member.person.email, role: "member", group: "none" })).status === 303, "the fixture's invitation");
-  const token = world.sql(`SELECT substring(payload->>'body' from 'token=([A-Za-z0-9_-]+)') FROM email_outbox WHERE to_address = '${member.person.email}' ORDER BY id DESC LIMIT 1`);
+  const token = (await mailLink(world, member.person.email, /^\/invite$/)).searchParams.get("token");
   expect((await member.portal.post("/invite", { token })).status === 303, "the fixture's member joins");
   const mid = Number(world.sql(`SELECT m.id FROM memberships AS m JOIN sign_in_methods AS s ON s.login_id = m.login_id WHERE m.org_id = ${org} AND s.email = '${member.person.email}'`));
   expect((await admin.portal.post(`/org/${org}/ranges`, { cidr: "81.2.69.0/24" })).status === 303, "the fixture's range");

@@ -9,7 +9,7 @@
 // The pure model (roles, visibility, the policy merge) is harness/pbt-model.mjs.
 
 import fc from "fast-check";
-import { randomBytes } from "node:crypto";
+import { createDecipheriv, randomBytes } from "node:crypto";
 import { Authenticator, Portal, between, expect, hidden, request, unescape } from "./net.mjs";
 import { Needs } from "./people.mjs";
 import {
@@ -131,11 +131,21 @@ export class CheckedPortal extends Portal {
 /// its delivery through SMTP to the sink is checked at the end of the scenario
 /// (`mailDelivered`): the outbox job sends every 30 s, too slow to wait for in each
 /// command. With "sink" every link is waited for in the sink.
-async function mailLink(world, to, path) {
+function queuedMail(world, to) {
+  const [id, sealed] = world.sql(`SELECT id || ' ' || (payload->>'sealed_body') FROM email_outbox WHERE to_address = ${q(to)} ORDER BY id DESC LIMIT 1`).split(" ");
+  if (!sealed) return null;
+  const bytes = Buffer.from(sealed, "base64url");
+  const cipher = createDecipheriv("aes-256-gcm", Buffer.from(world.h.stack.secretKey, "hex"), bytes.subarray(0, 12));
+  cipher.setAAD(Buffer.from(`outbox:${id}`));
+  cipher.setAuthTag(bytes.subarray(bytes.length - 16));
+  return Buffer.concat([cipher.update(bytes.subarray(12, bytes.length - 16)), cipher.final()]).toString("utf8");
+}
+
+export async function mailLink(world, to, path) {
   const fromText = (text) => text?.match(/https?:\/\/\S+/g)?.map((u) => new URL(u.replace(/[.,)>]+$/, ""))).find((u) => path.test(u.pathname));
   const url = await world.h.waitFor(`mail to ${to}`, async () => {
     if (world.settings.mail === "outbox") {
-      const body = world.sql(`SELECT coalesce(payload->>'body', '') FROM email_outbox WHERE to_address = ${q(to)} ORDER BY id DESC LIMIT 1`);
+      const body = queuedMail(world, to);
       if (body) return fromText(body);
     }
     const { messages } = (await request(`${MAIL}/search?query=${encodeURIComponent(`to:"${to}"`)}`)).json();
