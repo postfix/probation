@@ -14,7 +14,7 @@ const KINDS = ["platform", "org", "group", "user", "personal"];
 const SWITCHES = ["exceptions", "osv_off", "shorter_freeze"];
 
 /// An empty layer: inherits everything, allows nothing.
-export const emptyLayer = (kind) => ({ kind, freeze: null, allow: { exceptions: false, osv_off: false, shorter_freeze: false }, blocks: [], exceptions: [] });
+export const emptyLayer = (kind) => ({ kind, freeze: null, osv: null, allow: { exceptions: false, osv_off: false, shorter_freeze: false }, blocks: [], exceptions: [] });
 
 export const cloneLayer = (layer) => structuredClone(layer);
 
@@ -50,9 +50,23 @@ function mergeFreeze(chain, lifted = () => false) {
   return merged;
 }
 
+const OSV_RANK = { off: 0, log_only: 1, on: 2 };
+
+function mergeOsv(chain, lifted = () => false) {
+  let merged = null;
+  let allowed = true;
+  for (const layer of chain) {
+    if (layer.osv !== null && !lifted(layer.kind)) {
+      if (merged === null || OSV_RANK[layer.osv] > OSV_RANK[merged] || (OSV_RANK[layer.osv] < OSV_RANK[merged] && allowed)) merged = layer.osv;
+    }
+    allowed &&= layer.allow.osv_off;
+  }
+  return merged ?? "off";
+}
+
 /// The firewall's decision for one npm or PyPI version under `chain`: "blocked", "held"
 /// or "allowed". `age` is the version's age in seconds.
-export function decide(chain, { ecosystem, name, version, age }) {
+export function decide(chain, { ecosystem, name, version, age, mal = false }) {
   const policy = resolve(chain);
   const matching = policy.exceptions.filter((e) => e.ecosystem === ecosystem && e.name === name && (e.version === null || e.version === version));
   const liftedAt = (owner, lift) => matching.some((e) => rank(e.owner) >= rank(owner) && e.lifts[lift]);
@@ -61,7 +75,8 @@ export function decide(chain, { ecosystem, name, version, age }) {
   );
   if (blocked) return "blocked";
   const freeze = mergeFreeze(chain, (kind) => liftedAt(kind, "freeze"));
-  return freeze && freeze[0] > age ? "held" : "allowed";
+  if (freeze && freeze[0] > age) return "held";
+  return mal && mergeOsv(chain, (kind) => liftedAt(kind, "osv")) === "on" ? "blocked" : "allowed";
 }
 
 const sameTarget = (a, b) => a.ecosystem === b.ecosystem && a.name === b.name && a.version === b.version;
@@ -79,6 +94,14 @@ export function checkEdit(above, current, proposed) {
     !parent.allow.shorter_freeze
   )
     return "shorter_freeze";
+  const osvAbove = mergeOsv(above);
+  if (
+    proposed.osv !== null &&
+    (current.osv === null || OSV_RANK[proposed.osv] < OSV_RANK[current.osv]) &&
+    OSV_RANK[proposed.osv] < OSV_RANK[osvAbove] &&
+    !parent.allow.osv_off
+  )
+    return "osv_off";
   for (const e of proposed.exceptions) {
     const had = { block: false, freeze: false, osv: false };
     for (const stored of current.exceptions) {
@@ -232,9 +255,20 @@ function selfCheck() {
   assert(decide([L("platform", { blocks: [block], allow: { exceptions: true } }), L("org", { exceptions: [exception] })], left) === "allowed", "exception lifts");
   assert(decide([L("platform", { allow: { exceptions: true } }), L("org", { exceptions: [exception] }), L("user", { blocks: [block] })], left) === "blocked", "a lower block stays");
   assert(decide([L("platform", { blocks: [{ ...block, what: "package" }] })], { ...left, version: "1.0.0" }) === "blocked", "a package block");
+  const malware = { ...left, mal: true };
+  assert(decide([L("platform", { osv: "on" })], malware) === "blocked", "OSV On blocks malware");
+  assert(decide([L("platform", { osv: "log_only" })], malware) === "allowed", "OSV Log only allows malware");
+  assert(decide([L("platform", { osv: "on" }), L("org", { osv: "off" })], malware) === "blocked", "OSV Off needs the switch");
+  assert(decide([L("platform", { osv: "on", allow: { osv_off: true } }), L("org", { osv: "off" })], malware) === "allowed", "OSV Off with the switch");
+  assert(decide([L("platform", { freeze: 7 * DAY, osv: "on" })], { ...malware, age: HOUR }) === "held", "a hold skips OSV");
+  const osvException = { ...exception, lifts: { block: false, freeze: false, osv: true } };
+  assert(decide([L("platform", { osv: "on" }), L("org", { exceptions: [osvException] })], malware) === "blocked", "OSV exception needs the switch");
+  assert(decide([L("platform", { osv: "on", allow: { osv_off: true } }), L("org", { exceptions: [osvException] })], malware) === "allowed", "OSV exception lifts");
   // check_edit: a shorter freeze, an exception and a grant each need the switch above.
   assert(checkEdit([L("platform", { freeze: DAY })], L("org"), L("org", { freeze: 0 })) === "shorter_freeze", "shorter freeze refused");
   assert(checkEdit([L("platform", { freeze: DAY })], L("org"), L("org", { freeze: 2 * DAY })) === null, "longer freeze accepted");
+  assert(checkEdit([L("platform", { osv: "on" })], L("org"), L("org", { osv: "log_only" })) === "osv_off", "OSV loosening refused");
+  assert(checkEdit([L("platform", { osv: "on", allow: { osv_off: true } })], L("org"), L("org", { osv: "log_only" })) === null, "OSV loosening allowed");
   assert(checkEdit([L("platform")], L("org"), L("org", { exceptions: [exception] })) === "exceptions", "exception refused");
   assert(checkEdit([L("platform")], L("org"), L("org", { allow: { exceptions: true } })) === "exceptions", "grant not held");
   assert(checkEdit([], L("platform"), L("platform", { freeze: 0, allow: { exceptions: true } })) === null, "the platform may do anything");

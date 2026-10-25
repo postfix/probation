@@ -98,7 +98,8 @@ function fingerprint(world) {
        (SELECT count(*) FROM org_ip_ranges), (SELECT count(*) || ':' || coalesce(max(refused_reason), '') FROM org_ip_ranges WHERE refused_reason IS NOT NULL),
        (SELECT coalesce(sum(revision), 0) FROM policy_layers), (SELECT count(*) FROM email_outbox), (SELECT count(*) FROM memberships),
        (SELECT string_agg(role || coalesce(group_id::text, '-'), ',' ORDER BY id) FROM memberships), (SELECT count(*) FROM logins),
-       (SELECT count(*) FROM sign_in_methods), (SELECT count(*) FROM personal_accounts), (SELECT count(*) FROM firewalls),
+       (SELECT count(*) FROM sign_in_methods), (SELECT count(*) FROM personal_accounts),
+       (SELECT string_agg(id || ':' || (retired_at IS NOT NULL)::text, ',' ORDER BY id) FROM firewalls),
        (SELECT count(*) FROM totp WHERE enabled_at IS NOT NULL))`,
   );
 }
@@ -125,13 +126,14 @@ async function fixture(world) {
   expect((await admin.portal.post(`/org/${org}/ranges`, { cidr: "81.2.69.0/24" })).status === 303, "the fixture's range");
   const range = Number(world.sql(`SELECT id FROM org_ip_ranges WHERE org_id = ${org}`));
   const personal = Number(world.sql(`SELECT p.id FROM personal_accounts AS p JOIN sign_in_methods AS s ON s.login_id = p.login_id WHERE s.email = '${solo.person.email}'`));
+  const firewall = Number(world.sql("SELECT id FROM firewalls WHERE name = 'firewall-1'"));
   const visitor = new CheckedPortal(world, "visitor");
-  return { operator, admin: admin.portal, adminPerson: admin.person, member: member.portal, solo: solo.portal, soloPerson: solo.person, visitor, org, orgName: admin.org, group, mid, range, personal };
+  return { operator, admin: admin.portal, adminPerson: admin.person, member: member.portal, solo: solo.portal, soloPerson: solo.person, visitor, org, orgName: admin.org, group, mid, range, personal, firewall };
 }
 
-/// Every form of the portal but the fleet's settings push, retire and the rollout
-/// buttons (they restart or stop the stack's firewalls): who posts it, where, its other
-/// fields, and the page that shows a stored value.
+/// Portal forms: who posts them, their other fields and where a stored value appears.
+/// The fleet's push and rollout buttons get CSRF checks only: valid posts can restart
+/// or stop the stack's firewalls.
 function forms(f) {
   const layer = (key) => `/policy/${key}`;
   const policy = (key, action, fields) => ({ actor: key.startsWith("personal") ? f.solo : f.admin, path: layer(key), page: layer(key), fields: { action, ...fields }, revision: true, show: layer(key) });
@@ -188,6 +190,10 @@ function forms(f) {
     "platform blocklist import": { actor: f.operator, path: "/admin/blocklist", page: "/admin", fields: {}, field: "file" },
     "fleet register name": { actor: f.operator, path: "/fleet/register", page: "/fleet", fields: { sources: "11.225.0.0/24" }, field: "name", show: "/fleet", secret: true },
     "fleet register sources": { actor: f.operator, path: "/fleet/register", page: "/fleet", fields: { name: "pbt-sources" }, field: "sources", secret: true },
+    "fleet retire confirmation": { actor: f.operator, path: `/fleet/${f.firewall}/retire`, page: "/fleet", fields: {}, field: "confirm", unless: (v) => v.trim() === "firewall-1" },
+    "fleet settings CSRF": { actor: f.operator, path: "/fleet/settings", fields: { firewall: String(f.firewall), toml: "max_active_requests = 64\n" }, csrfOnly: true },
+    "fleet skip CSRF": { actor: f.operator, path: "/fleet/rollouts/0/skip", fields: {}, csrfOnly: true },
+    "fleet resume CSRF": { actor: f.operator, path: "/fleet/rollouts/0/resume", fields: {}, csrfOnly: true },
   };
 }
 
@@ -248,7 +254,7 @@ async function domClean(world, portal, path, what) {
 async function csrfRequired(world, f, all) {
   const other = hidden((await f.member.get("/account")).body, "csrf");
   for (const [name, form] of Object.entries(all)) {
-    const fields = { ...form.fields, [form.field]: "pbt-csrf@example.com" };
+    const fields = form.csrfOnly ? form.fields : { ...form.fields, [form.field]: "pbt-csrf@example.com" };
     for (const csrf of [undefined, "", other]) {
       const before = fingerprint(world);
       const answer = await form.actor.fetch(form.path, csrf === undefined ? fields : { ...fields, csrf });
@@ -267,7 +273,7 @@ export async function formProperties(h, config) {
   const all = forms(f);
   await csrfRequired(world, f, all);
   h.log(`pbt forms: CSRF required by all ${Object.keys(all).length} forms`);
-  const names = Object.keys(all);
+  const names = Object.keys(all).filter((name) => !all[name].csrfOnly);
   const started = Date.now();
   const details = await fc.check(
     fc.asyncProperty(fc.constantFrom(...names), valueArbitrary(), async (name, value) => {
@@ -299,6 +305,7 @@ export async function formCases(h, config, cases) {
   const failures = [];
   for (const [only, value] of cases) {
     for (const name of only ? [only] : Object.keys(all)) {
+      if (all[name].csrfOnly) continue;
       if (all[name].unless?.(value)) continue;
       try {
         await onePost(world, f, name, all[name], value);

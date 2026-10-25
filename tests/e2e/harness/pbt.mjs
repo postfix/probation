@@ -179,7 +179,7 @@ export function newWorld(h, config) {
     secrets: new Set(),
     pages: new Map(),
     mails: [],
-    stats: { runs: 0, commands: 0, refused: 0, firewallChecks: 0, axePages: 0, byCommand: {} },
+    stats: { runs: 0, commands: 0, refused: 0, firewallChecks: 0, osvChecks: 0, axePages: 0, byCommand: {} },
   });
   world.operator = h.operator;
   world.bootstrapOrg = Number(h.bootstrap.org);
@@ -192,18 +192,19 @@ const OLD = 300 * DAY;
 /// Versions the firewall checks ask for: the fakes' seed catalogue, plus `e2e-fresh`
 /// 1.0.0 published an hour before the scenario starts (`fresh`: its age grows).
 const TARGETS = [
-  { ecosystem: "npm", name: "e2e-left", version: "1.0.0" },
+  { ecosystem: "npm", name: "e2e-left", version: "1.0.0", mal: true },
   { ecosystem: "npm", name: "e2e-left", version: "1.1.0" },
   { ecosystem: "npm", name: "e2e-left", version: "2.0.0" },
   { ecosystem: "npm", name: "e2e-right", version: "1.0.0" },
   { ecosystem: "npm", name: "e2e-fresh", version: "1.0.0", fresh: true },
-  { ecosystem: "pypi", name: "e2e-left", version: "1.0.0" },
+  { ecosystem: "pypi", name: "e2e-left", version: "1.0.0", mal: true },
   { ecosystem: "pypi", name: "e2e-left", version: "1.1.0" },
 ];
 
 /// Publishes `e2e-fresh` 1.0.0, an hour old, for the freeze checks.
 async function publishFresh(world) {
   await world.h.fakes.publishNpm({ name: "e2e-fresh", version: "1.0.0", ageSeconds: HOUR });
+  for (const ecosystem of ["npm", "PyPI"]) await world.h.fakes.osvFlag({ ecosystem, name: "e2e-left", version: "1.0.0", ids: ["MAL-2026-1"] });
   world.freshAt = Date.now() - HOUR * 1000;
 }
 
@@ -311,7 +312,12 @@ export async function totpOn(world, person) {
   const portal = portalOf(world, person);
   const page = await portal.post("/account/totp/setup", {});
   expect(page.status === 200, `authenticator setup: ${page.status}`);
-  const auth = new Authenticator(between(page.body, '<code id="totp-key">', "</code>").replace(/\s/g, ""));
+  const key = between(page.body, '<code id="totp-key">', "</code>").replace(/\s/g, "");
+  const codes = between(page.body, '<pre id="backup-codes">', "</pre>").trim().split(/\s+/);
+  expect(key.length > 0 && codes.length === 10, "authenticator setup shows a key and ten backup codes");
+  const auth = new Authenticator(key);
+  world.secrets.add(key);
+  for (const code of codes) world.secrets.add(code);
   const on = await portal.post("/account/totp/enable", { code: await auth.code() });
   expect(on.status === 303, `authenticator: ${on.status}\n${on.body.slice(0, 300)}`);
   world.run.auth.set(person.slot, auth);
@@ -805,6 +811,7 @@ async function layerShown(world, portal, key, layer, what) {
   const unit = page.match(/<option value="(hours|days)" selected>/)?.[1];
   const seconds = freeze === "" ? null : Number(freeze) * (unit === "hours" ? HOUR : DAY);
   if (seconds !== layer.freeze) throw new Broken(`${what}: /policy/${key} shows the freeze ${freeze} ${unit}, the model ${layer.freeze} s`);
+  if (!page.includes(`name="osv" value="${layer.osv ?? "inherit"}" checked`)) throw new Broken(`${what}: /policy/${key} does not show OSV ${layer.osv ?? "inherit"}`);
 }
 
 const blockText = (b) => `${b.ecosystem} ${b.what === "file" ? `file ${b.digest.slice(0, 8)}` : `${b.name}${b.what === "version" ? `@${b.version}` : ""}`}`;
@@ -915,10 +922,10 @@ export class RemoveException extends PolicyCommand {
 const FREEZES = [null, [0, "hours"], [6, "hours"], [48, "hours"], [1, "days"], [7, "days"]];
 const freezeSeconds = (f) => (f === null ? null : f[0] * (f[1] === "hours" ? HOUR : DAY));
 
-/// "Save changes" in the Freeze and OSV form: the freeze and the three switches (the
-/// switches only on platform, organisation and group layers). OSV stays "inherit".
-function saveFields(freeze, allow, kind) {
-  const fields = { action: "save", freeze: freeze === null ? "" : String(freeze[0]), unit: freeze?.[1] ?? "days", osv: "inherit" };
+/// "Save changes" in the Freeze and OSV form: the freeze, OSV and the three switches
+/// (the switches only on platform, organisation and group layers).
+function saveFields(freeze, allow, kind, osv = null) {
+  const fields = { action: "save", freeze: freeze === null ? "" : String(freeze[0]), unit: freeze?.[1] ?? "days", osv: osv ?? "inherit" };
   if (["platform", "org", "group"].includes(kind)) for (const [name, on] of Object.entries(allow)) if (on) fields[`allow_${name}`] = "on";
   return fields;
 }
@@ -930,10 +937,11 @@ export class SaveFreeze extends PolicyCommand {
     const freeze = pick(FREEZES, this.freeze);
     const proposed = cloneLayer(m.layers[key]);
     proposed.freeze = freezeSeconds(freeze);
+    proposed.osv = this.osv ?? null;
     // No `allow`: the switches stay as they are.
     if (["org", "group"].includes(proposed.kind) && this.allow) proposed.allow = { ...this.allow };
-    this.label = `SaveFreeze(${label(m, person)} on ${key}: ${freeze ? freeze.join(" ") : "inherit"}${["org", "group"].includes(proposed.kind) ? `; allow ${Object.keys(proposed.allow).filter((k) => proposed.allow[k]).join("+") || "nothing"}` : ""})`;
-    return this.edit(m, world, person, key, saveFields(freeze, proposed.allow, proposed.kind), proposed);
+    this.label = `SavePolicy(${label(m, person)} on ${key}: ${freeze ? freeze.join(" ") : "inherit"}; OSV ${proposed.osv ?? "inherit"}${["org", "group"].includes(proposed.kind) ? `; allow ${Object.keys(proposed.allow).filter((k) => proposed.allow[k]).join("+") || "nothing"}` : ""})`;
+    return this.edit(m, world, person, key, saveFields(freeze, proposed.allow, proposed.kind, proposed.osv), proposed);
   }
 }
 
@@ -942,14 +950,14 @@ export class SaveFreeze extends PolicyCommand {
 export class PlatformSettings extends Command {
   async act(m, world) {
     const freeze = pick(FREEZES, this.freeze);
-    const allow = { exceptions: this.exceptions, osv_off: false, shorter_freeze: this.shorter };
-    this.label = `PlatformSettings(freeze ${freeze ? freeze.join(" ") : "none"}; allow shorter ${this.shorter}; exceptions ${this.exceptions})`;
+    const allow = { exceptions: this.exceptions, osv_off: Boolean(this.osvOff), shorter_freeze: this.shorter };
+    this.label = `PlatformSettings(freeze ${freeze ? freeze.join(" ") : "none"}; OSV ${this.osv ?? "inherit"}; allow shorter ${this.shorter}; exceptions ${this.exceptions}; OSV off ${this.osvOff})`;
     const portal = world.operator.portal;
     const page = await portal.get("/policy/platform-1");
-    const answer = await portal.post("/policy/platform-1", { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(freeze, allow, "platform") });
+    const answer = await portal.post("/policy/platform-1", { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(freeze, allow, "platform", this.osv) });
     pageProperties(world, "POST", "/policy/platform-1", answer);
     expectAnswer(answer, "ok", this.label);
-    Object.assign(m.layers["platform-1"], { freeze: freezeSeconds(freeze), allow });
+    Object.assign(m.layers["platform-1"], { freeze: freezeSeconds(freeze), osv: this.osv ?? null, allow });
     m.changedAt["platform-1"] = Date.now();
     return ["layer.edit"];
   }
@@ -1074,7 +1082,7 @@ async function firewallTruth(m, world, sample) {
     !changed.some((pair) => id(pair) === id({ key, target })) &&
     chainOf(m, key.place).some((k) => {
       const layer = m.layers[k];
-      return layer && ([...layer.blocks, ...layer.exceptions].some((x) => x.name === target.name && x.ecosystem === target.ecosystem) || (target.fresh && layer.freeze !== null));
+      return layer && ([...layer.blocks, ...layer.exceptions].some((x) => x.name === target.name && x.ecosystem === target.ecosystem) || (target.fresh && layer.freeze !== null) || (target.mal && layer.osv !== null));
     }),
   );
   const rest = pairs.filter((pair) => !changed.includes(pair) && !relevant.includes(pair));
@@ -1086,6 +1094,7 @@ async function firewallTruth(m, world, sample) {
     }
   }
   world.stats.firewallChecks += checks.length;
+  world.stats.osvChecks += checks.filter(({ target }) => target.mal).length;
   await Promise.all(
     checks.map(async ({ key, target, host }) => {
       const want = keyDecision(m, key, target);
@@ -1249,8 +1258,16 @@ const who = nat(11);
 
 /// The commands, as fast-check arbitraries; some appear twice to be drawn more often.
 export function commandArbitraries() {
-  const lifts = fc.constantFrom({ block: true, freeze: false }, { block: true, freeze: false }, { block: false, freeze: true }, { block: true, freeze: true }, { block: false, freeze: false }).map((l) => ({ ...l, osv: false }));
-  const allow = fc.record({ exceptions: fc.boolean(), osv_off: fc.constant(false), shorter_freeze: fc.boolean() });
+  const lifts = fc.constantFrom(
+    { block: true, freeze: false, osv: false },
+    { block: true, freeze: false, osv: false },
+    { block: false, freeze: true, osv: false },
+    { block: true, freeze: true, osv: false },
+    { block: false, freeze: false, osv: true },
+    { block: false, freeze: false, osv: false },
+  );
+  const allow = fc.record({ exceptions: fc.boolean(), osv_off: fc.boolean(), shorter_freeze: fc.boolean() });
+  const osv = fc.constantFrom(null, "off", "log_only", "on");
   const probe = nat(1000);
   const as = fc.constantFrom(true, true, false);
   const make = (Class, shape) => fc.record({ ...shape, ...("who" in shape ? { as } : {}), probe }).map((args) => new Class({ ...args, args }));
@@ -1282,8 +1299,8 @@ export function commandArbitraries() {
     make(RemoveBlock, { who, layer: nat(30), index: nat(10) }),
     make(AddException, { who, layer: nat(30), ecosystem: fc.constantFrom("npm", "pypi"), name: nat(5), version: nat(3), lifts }),
     make(RemoveException, { who, layer: nat(30), index: nat(10) }),
-    make(SaveFreeze, { who, layer: nat(30), freeze: nat(FREEZES.length - 1), allow: fc.option(allow, { nil: null }) }),
-    make(PlatformSettings, { freeze: nat(FREEZES.length - 1), shorter: fc.boolean(), exceptions: fc.constantFrom(true, true, false) }),
+    make(SaveFreeze, { who, layer: nat(30), freeze: nat(FREEZES.length - 1), osv, allow: fc.option(allow, { nil: null }) }),
+    make(PlatformSettings, { freeze: nat(FREEZES.length - 1), osv, osvOff: fc.boolean(), shorter: fc.boolean(), exceptions: fc.constantFrom(true, true, false) }),
     make(SwitchPlace, { who, place: nat(5) }),
     make(SetOrgStatus, { org: nat(11), suspend: fc.boolean() }),
     make(DeleteLogin, { who, personal: fc.boolean() }),
@@ -1342,13 +1359,14 @@ async function cast(world) {
   await key(p0, "/keys/service", { attach: String(g0.id) }, `group-${g0.id}`);
   // A platform with a 6-hour freeze that lets the layers below loosen it and add
   // exceptions, and O0 passing both down (O1 does not).
-  const allow = { exceptions: true, osv_off: false, shorter_freeze: true };
+  const allow = { exceptions: true, osv_off: true, shorter_freeze: true };
   for (const [portal, layer] of [[world.operator.portal, "platform-1"], [portalOf(world, p0), `org-${o0.id}`]]) {
     const page = await portal.get(`/policy/${layer}`);
     const freeze = layer === "platform-1" ? [6, "hours"] : null;
-    const saved = await portal.post(`/policy/${layer}`, { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(freeze, allow, layer.split("-")[0]) });
+    const osv = layer === `org-${o0.id}` ? "on" : null;
+    const saved = await portal.post(`/policy/${layer}`, { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(freeze, allow, layer.split("-")[0], osv) });
     expect(saved.status === 303, `the cast's ${layer}: ${saved.status}`);
-    Object.assign(m.layers[layer], { freeze: freezeSeconds(freeze), allow: { ...allow } });
+    Object.assign(m.layers[layer], { freeze: freezeSeconds(freeze), osv, allow: { ...allow } });
   }
   world.run.auditMark = Number(world.sql("SELECT coalesce(max(id), 0) FROM audit_log"));
   return m;
@@ -1362,6 +1380,9 @@ async function platformLayer(world) {
   const freeze = page.match(/id="freeze" name="freeze"[^>]*value="([^"]*)"/)?.[1] ?? "";
   const unit = page.match(/<option value="(hours|days)" selected>/)?.[1];
   layer.freeze = freeze === "" ? null : Number(freeze) * (unit === "hours" ? HOUR : DAY);
+  layer.osv = page.match(/name="osv" value="(inherit|on|log_only|off)" checked/)?.[1];
+  expect(layer.osv, "the platform page shows a selected OSV setting");
+  if (layer.osv === "inherit") layer.osv = null;
   for (const name of ["exceptions", "osv_off", "shorter_freeze"]) layer.allow[name] = new RegExp(`name="allow_${name}" checked`).test(page);
   expect(!page.includes('value="remove_block"') && !page.includes('value="remove_exception"'), "the platform layer has no blocks or exceptions of its own");
   return layer;
@@ -1370,11 +1391,11 @@ async function platformLayer(world) {
 /// After a run: the platform as it was, so the next run starts the same.
 async function restorePlatform(world) {
   if (!world.run?.platform) return;
-  const { freeze, allow } = world.run.platform;
+  const { freeze, osv, allow } = world.run.platform;
   const portal = world.operator.portal;
   const page = await portal.get("/policy/platform-1");
   const choice = freeze === null ? null : freeze % DAY === 0 ? [freeze / DAY, "days"] : [freeze / HOUR, "hours"];
-  const answer = await portal.post("/policy/platform-1", { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(choice, allow, "platform") });
+  const answer = await portal.post("/policy/platform-1", { csrf: hidden(page.body, "csrf"), revision: hidden(page.body, "revision"), ...saveFields(choice, allow, "platform", osv) });
   expect(answer.status === 303, `platform restored: ${answer.status}`);
 }
 
@@ -1435,7 +1456,7 @@ export async function modelProperty(h, config) {
   );
   const seconds = ((Date.now() - started) / 1000).toFixed(0);
   h.log(`pbt: commands (changed the state / did not): ${Object.entries(world.stats.byCommand).map(([name, t]) => `${name} ${t.changed}/${t.unchanged}`).join(", ")}`);
-  h.log(`pbt: ${details.numRuns} runs (${world.stats.commands} commands, ${world.stats.refused} refused or no-ops, ${world.stats.firewallChecks} firewall checks, ${world.stats.axePages} axe pages) in ${seconds} s${details.interrupted ? ", stopped at the time limit" : ""}`);
+  h.log(`pbt: ${details.numRuns} runs (${world.stats.commands} commands, ${world.stats.refused} refused or no-ops, ${world.stats.firewallChecks} firewall checks including ${world.stats.osvChecks} flagged OSV versions, ${world.stats.axePages} axe pages) in ${seconds} s${details.interrupted ? ", stopped at the time limit" : ""}`);
   await mailDelivered(world);
   if (details.failed) {
     const sequence = String(details.counterexample[0]);

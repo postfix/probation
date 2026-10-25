@@ -1,8 +1,9 @@
 // PBT-forms: the input properties of every portal form (harness/pbt-forms.mjs). Random
 // strings (unicode with confusables, zero-width and bidi characters, HTML and script
 // fragments, very long, empty and whitespace values, SQL-ish text, malformed emails,
-// CIDR ranges and versions) go into one field at a time: no 5xx and the security
-// headers on every answer; the value is refused with a message and nothing changes, or
+// CIDR ranges and versions) go into one field at a time, including retirement
+// confirmation: no 5xx and security headers on every answer; the value is refused
+// with a message and nothing changes, or
 // stored and shown escaped (no raw markup in the page, none in Chromium's DOM); and
 // without its CSRF token every form answers 403 and writes nothing.
 

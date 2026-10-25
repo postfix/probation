@@ -199,7 +199,7 @@ keys. Then random commands follow: sign-up with the confirmation mail, sign-in a
 sign-out, the authenticator on and off, groups, invitations accepted or ignored, roles,
 moving and removing members, leave requests approved or refused, keys and service keys
 and their revocation, blocks (package, version, file), exceptions, freezes and switches,
-the platform's freeze and "Allow a shorter freeze" (as the operator), the place
+the platform's freeze, OSV setting and switches (as the operator), the place
 switcher, suspending and re-activating an organisation (as the operator), and deleting
 and restoring a login. Each command is tried by a person whose role allows it or, a
 third of the time, by anyone, so refusals are tested too. After every command:
@@ -215,19 +215,22 @@ third of the time, by anyone, so refusals are tested too. After every command:
 
 `CheckFirewall`, and the end of each run, ask fw1 or fw2 for a sample of keys what the
 model's effective policy says: blocked, held, allowed, or 401 for a key that no longer
-works, within one sync interval. axe checks a sample of the pages the run reached.
+works, within one sync interval. The sample includes npm and PyPI versions flagged
+`MAL-*` by the fake OSV service, under randomly edited On, Log only and Off settings.
+axe checks a sample of the pages the run reached.
 
 Mail: a link is read from the server's outbox row as soon as it is queued, and at the
 end every one of them must have reached the SMTP sink. The outbox job sends every 30 s,
 too slow to wait for in each command. `E2E_PBT_MAIL=sink` waits in the sink instead.
 
-**PBT-forms** puts random strings into one field of one form at a time, for every form
-but the fleet's push, retire and rollout buttons: unicode with confusables, zero-width
+**PBT-forms** puts random strings into one field of one form at a time, including the
+fleet's retirement confirmation: unicode with confusables, zero-width
 and bidi characters, HTML and script fragments, very long, empty and whitespace values,
 SQL-ish text, malformed emails, CIDR ranges and versions. The value is refused with a
 message and nothing changes, or it is stored and shown escaped (checked in the page and
 in Chromium's DOM). Without its CSRF token, or with another session's, every form
-answers 403 and writes nothing.
+answers 403 and writes nothing. Fleet settings push and rollout controls get the CSRF
+check; E2E-007 exercises their valid state transitions.
 
 A failure is shrunk to a minimal case. Its message, also the JUnit failure message,
 starts with the seed and the path, and lists the command sequence. Replay it:

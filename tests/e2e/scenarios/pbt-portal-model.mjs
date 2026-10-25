@@ -1,6 +1,6 @@
 // PBT-model: the model-based property test of the portal (harness/pbt.mjs). Random
 // sequences of what people do in the portal (sign-up, sign-in, authenticator, groups,
-// invitations, roles, removal and leaving, keys, blocks, exceptions, freezes, places,
+// invitations, roles, removal and leaving, keys, blocks, exceptions, freezes, OSV, places,
 // suspension, deleting and restoring a login) run against the deployed stack. After
 // every command each person's portal must show what the model says and nothing of
 // another tenant, refusals must match their role and second factor, and the audit log
