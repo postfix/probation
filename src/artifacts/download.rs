@@ -58,7 +58,7 @@ use crate::policy::{Candidate, Decision, Digest, Ecosystem, HashAlgorithm};
 use crate::store::cache::{CachedProject, ProjectKey};
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::store::{PinOutcome, StoreError};
-use crate::upstream::{ArtifactRequest, UpstreamError};
+use crate::upstream::{ArtifactRequest, OriginKind, UpstreamError, UrlRejection};
 
 /// What a complete, verified download produced.
 #[derive(Clone, Copy, Debug)]
@@ -222,13 +222,17 @@ async fn transfer(
         .ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
-    let opened = app
-        .transport
-        .open_artifact(ArtifactRequest {
-            url: row.reference.upstream_url.clone(),
-            max_bytes: cap,
-        })
-        .await;
+    let opened = match own_origin(app, row) {
+        Ok(()) => {
+            app.transport
+                .open_artifact(ArtifactRequest {
+                    url: row.reference.upstream_url.clone(),
+                    max_bytes: cap,
+                })
+                .await
+        }
+        Err(refused) => Err(refused),
+    };
     // Recorded under the ecosystem of the request, never by the URL (C69).
     let call = match row.reference.ecosystem {
         Ecosystem::Npm => Call::Npm,
@@ -424,6 +428,27 @@ fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, Dow
         app.store().note_content_write(false);
     }
     result.map_err(DownloadError::Capacity)
+}
+
+/// F10: an artifact is fetched only from its own ecosystem's origins — an npm tarball
+/// from the npm origin, a PyPI file from the files or the index origin. The transport
+/// admits any configured origin, so without this a document could send a fetch to
+/// the other ecosystem's host.
+fn own_origin(app: &App, row: &ReferenceRow) -> Result<(), UpstreamError> {
+    let own: &[OriginKind] = match row.reference.ecosystem {
+        Ecosystem::Npm => &[OriginKind::NpmMetadata],
+        Ecosystem::PyPi => &[OriginKind::PypiArtifacts, OriginKind::PypiMetadata],
+    };
+    let url = &row.reference.upstream_url;
+    // Admitted against each own origin rather than by `kind_of`, which names only the
+    // first of several origins configured to the same URL.
+    if own.iter().any(|kind| app.origins.admit(url, *kind).is_ok()) {
+        return Ok(());
+    }
+    let rejection = app.origins.admit_any(url).err();
+    Err(UpstreamError::RejectedUrl(
+        rejection.unwrap_or(UrlRejection::ForeignOrigin),
+    ))
 }
 
 /// A failed bump is logged and not fatal. Standalone refuses the artifact either way,

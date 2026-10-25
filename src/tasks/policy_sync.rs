@@ -15,7 +15,7 @@ use crate::App;
 use crate::config;
 use crate::managed::Managed;
 use crate::managed::activity::Batch;
-use crate::managed::sync::Synced;
+use crate::managed::sync::{SyncFailure, Synced};
 
 /// What the loop remembers between rounds.
 #[derive(Default)]
@@ -25,9 +25,11 @@ struct Round {
     rejected: bool,
 }
 
-/// Runs the sync loop until `shutdown` is cancelled. After a settings push it then
-/// waits for `drain`, so the activity of the requests answered meanwhile goes out in
-/// one last call before the process exits.
+/// Runs the sync loop until `shutdown` is cancelled, then waits for `drain`, so the
+/// activity of the requests answered meanwhile goes out in one last call before the
+/// process exits, on every graceful stop (F2). The call is skipped when there is
+/// nothing to send and no restart is pending; it is bounded by
+/// `request_timeout_seconds`.
 pub async fn run(app: Arc<App>, shutdown: CancellationToken, drain: CancellationToken) {
     let Some(managed) = app.managed() else {
         return;
@@ -47,16 +49,21 @@ pub async fn run(app: Arc<App>, shutdown: CancellationToken, drain: Cancellation
             tracing::error!("a policy sync round panicked; the cache stays as it was");
         }
     }
-    if managed.restart_pending() {
-        drain.cancelled().await;
-        let batch = managed.activity().take_batch();
-        let request = request(&app, managed, &batch);
-        if managed.sync().fetch_changes(&request).await.is_err() {
-            tracing::warn!(
-                events = batch.events.len(),
-                "the activity queued before the restart could not be delivered"
-            );
-        }
+    drain.cancelled().await;
+    let batch = managed.activity().take_batch();
+    if batch.events.is_empty() && batch.dropped.is_empty() && !managed.restart_pending() {
+        return;
+    }
+    let request = request(&app, managed, &batch);
+    let result = managed.sync().fetch_changes(&request).await;
+    if !matches!(result, Ok(Synced::Applied)) {
+        tracing::warn!(
+            events = batch.events.len(),
+            "the activity queued before the stop could not be delivered"
+        );
+    }
+    if matches!(result, Ok(Synced::BatchRejected)) {
+        managed.activity().count_rejected(batch);
     }
 }
 
@@ -92,7 +99,12 @@ async fn sync_once(app: &App, managed: &Managed, round: &mut Round) {
             managed.activity().count_rejected(batch);
             round.rejected = true;
         }
-        Err(_) => {
+        Err(SyncFailure::Unreadable) => {
+            managed.note_unreadable();
+            managed.activity().requeue(batch);
+            managed.note_unreachable(None);
+        }
+        Err(SyncFailure::Unreachable) => {
             tracing::warn!("the management server could not be reached; serving from the cache");
             managed.activity().requeue(batch);
             managed.note_unreachable(None);

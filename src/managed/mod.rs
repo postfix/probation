@@ -111,6 +111,10 @@ pub struct Managed {
     /// Why the last sync could not be delivered, when the server refused even an empty
     /// one; shown on `/health/ready` and in the next report.
     sync_error: Mutex<Option<String>>,
+    /// Why the last answer could not be read (F3): reported, never a readiness failure.
+    /// Cleared by the next readable `changes` answer, and set again by an unreadable
+    /// call after it.
+    version_skew: Mutex<Option<String>>,
     settings: Mutex<SettingsState>,
     /// Cancelled once a settings push is written: the process drains and exits 75.
     restart: CancellationToken,
@@ -202,6 +206,7 @@ impl Managed {
             retired,
             ready: AtomicBool::new(ready),
             sync_error: Mutex::new(None),
+            version_skew: Mutex::new(None),
             settings: Mutex::new(SettingsState::load(data_dir)),
             restart: CancellationToken::new(),
             data_dir: data_dir.to_path_buf(),
@@ -623,6 +628,11 @@ impl Managed {
     fn failed(&self, error: CallError) -> Failed {
         match error {
             CallError::Busy => Failed::Busy,
+            CallError::Unreadable => {
+                self.note_unreadable();
+                self.cache.note_server_down();
+                Failed::Unreachable
+            }
             CallError::Unreachable => {
                 tracing::warn!("the management server could not be asked about a key");
                 self.cache.note_server_down();
@@ -726,6 +736,8 @@ impl Managed {
     pub async fn after_answer(&self) {
         self.ready.store(true, Ordering::Release);
         *lock(&self.sync_error) = None;
+        // Before the layers call below, which sets it again if its answer is unreadable.
+        *lock(&self.version_skew) = None;
         let stale = self.policies.stale();
         if !stale.is_empty() && self.fetch_layers(stale.clone(), None).await.is_ok() {
             let policies = &self.policies;
@@ -746,9 +758,22 @@ impl Managed {
         }
     }
 
+    /// A `2xx` answer that does not decode (F3): logged at error level and reported on
+    /// the fleet page, while the firewall stays ready and serves its cache as for an
+    /// unreachable server (decision 2026-10-23).
+    pub fn note_unreadable(&self) {
+        let error = format!(
+            "the management server's answer could not be read; this firewall (v{}) may be older than the server",
+            env!("CARGO_PKG_VERSION")
+        );
+        tracing::error!("{error}; serving from the cache");
+        *lock(&self.version_skew) = Some(error);
+    }
+
     /// Writes `<data_dir>/managed-cache.json` off the async runtime (C115).
     pub async fn save_snapshot(&self) {
         let snapshot = Snapshot {
+            version: cache::SNAPSHOT_VERSION,
             cursor: self.sync.cursor(),
             keys: self.cache.saved(),
             layers: self.policies.saved(),
@@ -765,24 +790,33 @@ impl Managed {
     /// The report sent with the next `changes` call.
     pub fn report(&self, upstreams: Upstreams) -> FirewallReport {
         let settings = lock(&self.settings);
-        let error = lock(&self.sync_error)
+        let (error, failed_revision) = match lock(&self.sync_error)
             .clone()
             .or_else(|| settings.last_apply_error.clone())
-            .map(|mut error| {
-                let mut end = error.len().min(MAX_APPLY_ERROR_BYTES);
-                while !error.is_char_boundary(end) {
-                    end -= 1;
-                }
-                error.truncate(end);
-                error
-            });
+        {
+            Some(error) => (Some(error), settings.failed_revision),
+            // Not an apply failure: revision 0, which no settings rollout has, so the
+            // server never fails a rollout step on it (S7-14).
+            None => match lock(&self.version_skew).clone() {
+                Some(skew) => (Some(skew), Some(0)),
+                None => (None, settings.failed_revision),
+            },
+        };
+        let error = error.map(|mut error| {
+            let mut end = error.len().min(MAX_APPLY_ERROR_BYTES);
+            while !error.is_char_boundary(end) {
+                end -= 1;
+            }
+            error.truncate(end);
+            error
+        });
         FirewallReport {
             settings_revision: settings.settings_revision,
             last_apply_error: error,
             status: ReportStatus { upstreams },
             effective_period_seconds: self.period.as_secs(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            failed_revision: settings.failed_revision,
+            failed_revision,
         }
     }
 

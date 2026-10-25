@@ -17,8 +17,12 @@ use crate::config::{FirewallToken, ManagementConfig};
 /// Why a call has no answer to use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallError {
-    /// Connect error, timeout, 5xx, an unexpected status or an unreadable body.
+    /// Connect error, timeout, 5xx, an unexpected status, or a body cut short or too
+    /// big.
     Unreachable,
+    /// A `200` whose body does not decode (F3): most likely a server newer than this
+    /// firewall.
+    Unreadable,
     /// The server answered `429`.
     Busy,
     /// The server refused this firewall's token (`401`).
@@ -91,7 +95,7 @@ impl SyncClient {
         let answer = tokio::time::timeout_at(deadline, read_bounded(response))
             .await
             .map_err(|_| CallError::Unreachable)??;
-        serde_json::from_slice(&answer).map_err(|_| CallError::Unreachable)
+        serde_json::from_slice(&answer).map_err(|_| CallError::Unreadable)
     }
 }
 

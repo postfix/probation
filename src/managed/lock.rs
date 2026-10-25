@@ -1,7 +1,7 @@
 //! The network lock (C30, C77) and the client address it is checked against (C113).
 //! CIDR matching uses `std::net` only.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -109,8 +109,9 @@ impl TrustedProxies {
 
     /// The client address the network lock and the lookup allowance use: the peer, or,
     /// when the peer is a listed proxy, the rightmost `X-Forwarded-For` entry that is not
-    /// one. Every header line is read, in order. `None` when that entry does not parse:
-    /// the request is refused rather than judged by the proxy's address.
+    /// one. Every header line is read, in order. `None` when that entry is not an
+    /// address ([`forwarded_ip`]): the request is refused rather than judged by the
+    /// proxy's address. RFC 7239 `Forwarded` is not read.
     pub fn client(&self, peer: IpAddr, headers: &HeaderMap) -> Option<IpAddr> {
         let peer = peer.to_canonical();
         if !self.trusts(peer) {
@@ -122,7 +123,7 @@ impl TrustedProxies {
             entries.extend(line.split(',').map(str::trim));
         }
         for entry in entries.into_iter().rev() {
-            let address = entry.parse::<IpAddr>().ok()?.to_canonical();
+            let address = forwarded_ip(entry)?;
             if !self.trusts(address) {
                 return Some(address);
             }
@@ -133,6 +134,21 @@ impl TrustedProxies {
     fn trusts(&self, address: IpAddr) -> bool {
         self.proxies.iter().any(|proxy| within(proxy, address))
     }
+}
+
+/// One `X-Forwarded-For` entry as a canonical address: a bare address, `ip:port`,
+/// `[v6]` or `[v6]:port`, as load balancers send them. Anything else, `unknown` and
+/// RFC 7239 obfuscated names included, is `None`.
+fn forwarded_ip(entry: &str) -> Option<IpAddr> {
+    let ip = entry
+        .parse::<IpAddr>()
+        .or_else(|_| entry.parse::<SocketAddr>().map(|socket| socket.ip()))
+        .ok()
+        .or_else(|| {
+            let bracketed = entry.strip_prefix('[')?.strip_suffix(']')?;
+            bracketed.parse::<Ipv6Addr>().ok().map(IpAddr::V6)
+        })?;
+    Some(ip.to_canonical())
 }
 
 /// Whether `ip` (already canonical) is inside `range`. An IPv4 range never holds an
@@ -230,6 +246,33 @@ mod tests {
         let mut forged = HeaderMap::new();
         forged.append(FORWARDED_FOR, "192.0.2.7, junk".parse().unwrap());
         assert_eq!(proxies.client(ip("10.0.0.5"), &forged), None);
+
+        // F1: a load balancer that sends ports, or brackets an IPv6 address.
+        for (entry, client) in [
+            ("203.0.113.9:1234", "203.0.113.9"),
+            ("[2001:db8::1]", "2001:db8::1"),
+            ("[2001:db8::1]:443", "2001:db8::1"),
+            ("[::ffff:192.0.2.7]:80", "192.0.2.7"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.append(FORWARDED_FOR, format!("{entry}, 10.0.0.9").parse().unwrap());
+            assert_eq!(
+                proxies.client(ip("10.0.0.5"), &headers),
+                Some(ip(client)),
+                "{entry}"
+            );
+        }
+        for entry in [
+            "unknown",
+            "_hidden",
+            "[192.0.2.7]",
+            "192.0.2.7:",
+            "[2001:db8::1",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.append(FORWARDED_FOR, entry.parse().unwrap());
+            assert_eq!(proxies.client(ip("10.0.0.5"), &headers), None, "{entry}");
+        }
     }
 
     /// M1: a range written in IPv4-mapped form holds its whole IPv4 range; one wider

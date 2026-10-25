@@ -2835,3 +2835,171 @@ async fn t_sync_reset_to_a_lower_revision() {
     drop(app);
     h.server.shutdown().await;
 }
+
+/// F2: the activity queued since the last round goes out on every graceful stop, not
+/// only before a restart for a settings push.
+#[tokio::test]
+async fn t_activity_flushed_on_stop() {
+    let h = harness(|_, config| {
+        // One round at start and no other before the stop.
+        config.sync_interval_seconds = NonZeroU64::new(3600).unwrap();
+    })
+    .await;
+    wait_for("the first round", Duration::from_secs(5), || {
+        !h.sync.changes_requests().is_empty()
+    })
+    .await;
+    let app = h.managed();
+    app.managed()
+        .unwrap()
+        .activity()
+        .record_activity(org(ACME), event(KeyId(77), ActivityResult::Blocked));
+    drop(app);
+    let restart = tokio::time::timeout(
+        Duration::from_millis(100),
+        h.server.running().restart_requested(),
+    )
+    .await;
+    assert!(restart.is_err(), "no settings push, so no restart");
+    h.server.shutdown().await;
+    let delivered = activity(&h.sync);
+    assert!(
+        delivered.iter().any(|event| event.key_id == KeyId(77)),
+        "the queued event went out before the stop: {delivered:#?}"
+    );
+}
+
+/// The report the last `changes` call carried.
+fn last_report(sync: &FakeSyncServer) -> probation_policy::api::FirewallReport {
+    sync.changes_requests().last().unwrap().report.clone()
+}
+
+/// The version-skew error a report carries after an unreadable answer: the firewall's
+/// version, and a revision no settings rollout has, so it never fails a rollout step.
+fn assert_skew_reported(report: &probation_policy::api::FirewallReport, what: &str) {
+    let error = report.last_apply_error.as_deref().unwrap_or_default();
+    assert!(
+        error.contains("could not be read")
+            && error.contains(&format!("(v{})", env!("CARGO_PKG_VERSION"))),
+        "{what}: {report:?}"
+    );
+    assert_eq!(report.failed_revision, Some(0), "{what}: {report:?}");
+}
+
+/// F3 (decision 2026-10-23): a `200` this firewall cannot read is not an outage and
+/// does not fail readiness. It keeps serving its cache, and the next report says why,
+/// until the server answers in a form it reads again.
+#[tokio::test]
+async fn t_sync_unreadable_answer() {
+    let h = harness(|_, _| {}).await;
+    h.server
+        .wait_for_status("/health/ready", 200, Duration::from_secs(5))
+        .await;
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    // A layer kind this firewall does not know, as a newer server might send.
+    h.sync.answer_raw(
+        "/api/v1/sync/changes",
+        Some(
+            r#"{"revision":1,"changed_keys":[],"changed_layers":[{"kind":"Galaxy","id":1}],"changed_places":[],"changed_limits":[],"network_lock":null,"settings":null,"reset":false,"retired":false}"#,
+        ),
+    );
+    h.sync.sync_rounds(2).await;
+    assert_eq!(h.server.status("/health/ready").await, 200, "still ready");
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    assert_skew_reported(&last_report(&h.sync), "changes");
+    h.sync.answer_raw("/api/v1/sync/changes", None);
+    h.sync.sync_rounds(2).await;
+    assert_eq!(last_report(&h.sync).last_apply_error, None, "cleared");
+    h.server.shutdown().await;
+}
+
+/// F3: an unreadable `layers` answer after a block edit is reported, and the stale
+/// layer stays in use until one can be read (C19).
+#[tokio::test]
+async fn t_sync_unreadable_layers() {
+    let h = harness(|_, _| {}).await;
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    // A block kind this firewall does not know.
+    h.sync.answer_raw(
+        "/api/v1/sync/layers",
+        Some(
+            r#"{"layers":[{"place":{"kind":"Org","id":10},"layer":{"kind":"Org","freeze_seconds":null,"osv":null,"blocks":[{"Quarantine":{"name":"left-pad"}}],"exceptions":[],"allow":{"exceptions":true,"osv_off":true,"shorter_freeze":true}},"revision":99}],"revision":99}"#,
+        ),
+    );
+    let edited = h
+        .sync
+        .edit_layer(org(ACME), org_layer(vec![left_pad_block()]));
+    h.sync.applied(edited).await;
+    h.sync.sync_rounds(1).await;
+    assert_skew_reported(&last_report(&h.sync), "layers");
+    assert_eq!(h.server.status("/health/ready").await, 200, "still ready");
+    assert_eq!(
+        h.get("/npm/left-pad", &acme_key()).await.status(),
+        200,
+        "the stale layer is still the one in use"
+    );
+    h.sync.answer_raw("/api/v1/sync/layers", None);
+    h.sync.sync_rounds(2).await;
+    let response = h.get("/npm/left-pad", &acme_key()).await;
+    assert_status(response, 403, "BLOCKED", "the edited layer, once readable").await;
+    assert_eq!(last_report(&h.sync).last_apply_error, None, "cleared");
+    h.server.shutdown().await;
+}
+
+/// F3: an unreadable `lookup` answer is reported like an unreachable server's: a key
+/// never seen gets `401`, and readiness holds.
+#[tokio::test]
+async fn t_sync_unreadable_lookup() {
+    let h = harness(|_, _| {}).await;
+    h.sync.answer_raw(
+        "/api/v1/sync/lookup",
+        Some(r#"{"status":"quarantined","revision":1}"#),
+    );
+    assert_eq!(h.get("/npm/left-pad", &globex_key()).await.status(), 401);
+    h.sync.sync_rounds(1).await;
+    assert_skew_reported(&last_report(&h.sync), "lookup");
+    assert_eq!(h.server.status("/health/ready").await, 200, "still ready");
+    h.sync.answer_raw("/api/v1/sync/lookup", None);
+    h.sync.sync_rounds(1).await;
+    assert_eq!(h.get("/npm/left-pad", &globex_key()).await.status(), 200);
+    h.server.shutdown().await;
+}
+
+/// F2: a last batch the server refuses on a stop is warned about and counted as
+/// dropped, as a failed one is. Seven events, so the line is this test's alone.
+#[tokio::test]
+async fn t_activity_flush_refused_on_stop() {
+    let logs = common::logs::capture_warn();
+    let h = harness(|_, config| {
+        config.sync_interval_seconds = NonZeroU64::new(3600).unwrap();
+    })
+    .await;
+    wait_for("the first round", Duration::from_secs(5), || {
+        !h.sync.changes_requests().is_empty()
+    })
+    .await;
+    let app = h.managed();
+    for n in 0..7 {
+        app.managed()
+            .unwrap()
+            .activity()
+            .record_activity(org(ACME), event(KeyId(70 + n), ActivityResult::Blocked));
+    }
+    drop(app);
+    h.sync
+        .answer_changes_with(Some((StatusCode::PAYLOAD_TOO_LARGE, None)));
+    h.server.shutdown().await;
+    assert!(
+        h.sync
+            .changes_requests()
+            .iter()
+            .any(|request| request.activity.len() == 7),
+        "the last batch was sent"
+    );
+    assert_eq!(
+        logs.lines_containing_all(&["could not be delivered", "events=7"]),
+        1,
+        "{}",
+        logs.text()
+    );
+}
