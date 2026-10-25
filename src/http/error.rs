@@ -276,6 +276,13 @@ impl IntoResponse for ApiError {
                     .headers_mut()
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
             }
+            // Past the front door's or the download wait's bound: a client that honours
+            // it comes back once a permit has had time to free (decision 2026-10-23).
+            ApiError::Overloaded => {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            }
             // RFC 9110 §15.5.2: a 401 names the scheme it accepts. Basic, so pip and uv
             // know to send the key as a password.
             ApiError::Unauthenticated => {

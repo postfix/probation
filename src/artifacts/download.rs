@@ -214,12 +214,14 @@ async fn transfer(
     slot: &Slot<SlotOutcome>,
 ) -> Result<VerifiedContent, DownloadError> {
     // SPEC §9: "Bound active downloads globally." One permit per transfer, not per
-    // waiter — the waiters above are sharing this one. SPEC §10 refuses overload
-    // rather than queueing behind it.
-    let _permit = app
-        .limits
-        .download_permit()
-        .ok_or(DownloadError::Overloaded)?;
+    // waiter — the waiters above are sharing this one. The wait for it is short and
+    // bounded (`Limits::download_permit`), and it ends when the last waiter leaves.
+    let permit = tokio::select! {
+        biased;
+        () = slot.cancelled() => return Err(DownloadError::Cancelled),
+        permit = app.limits.download_permit() => permit,
+    };
+    let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
     let opened = match own_origin(app, row) {

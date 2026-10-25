@@ -116,6 +116,9 @@ pub struct Managed {
     /// call after it.
     version_skew: Mutex<Option<String>>,
     settings: Mutex<SettingsState>,
+    /// The push this process runs with: the one in force when it started. Reported
+    /// instead of a push written since, which is only run after the restart (ND-1).
+    running_revision: u64,
     /// Cancelled once a settings push is written: the process drains and exits 75.
     restart: CancellationToken,
     data_dir: PathBuf,
@@ -180,6 +183,9 @@ impl Managed {
             }
         }
         let margin = Duration::from_secs(config.sync_margin_seconds.get());
+        let settings = SettingsState::load(data_dir);
+        let activity = ActivityQueue::new(clock.now_utc_micros());
+        activity.restore(data_dir);
         Managed {
             budget: Budget::new(
                 config.lookup_budget_per_second.get(),
@@ -188,7 +194,7 @@ impl Managed {
             ),
             proxies: TrustedProxies::new(config.trusted_proxies.clone()),
             rates: RateLimits::new(Arc::clone(&clock)),
-            activity: ActivityQueue::new(clock.now_utc_micros()),
+            activity,
             lookups: SingleFlight::new(),
             layer_fetches: SingleFlight::new(),
             client: SyncClient::new(config),
@@ -207,7 +213,8 @@ impl Managed {
             ready: AtomicBool::new(ready),
             sync_error: Mutex::new(None),
             version_skew: Mutex::new(None),
-            settings: Mutex::new(SettingsState::load(data_dir)),
+            running_revision: settings.settings_revision,
+            settings: Mutex::new(settings),
             restart: CancellationToken::new(),
             data_dir: data_dir.to_path_buf(),
             period: sync_interval
@@ -618,10 +625,24 @@ impl Managed {
 
     /// Keeps a `layers` answer unless a reset happened since its call started (C126) or
     /// it was read before an invalidation (H6).
+    ///
+    /// A layer newer than the one cached keys were built on rebuilds them at once, so a
+    /// shared layer's edit that arrives with another key's lookup reaches every key now,
+    /// not at its cache TTL; the next sync's `layer` row finds it current (E2E-013).
     fn store_layers(&self, answer: LayersResponse, epoch: u64) -> bool {
         let floor = self.cache.floor();
-        self.cache
-            .in_epoch(epoch, || self.policies.store(answer, floor))
+        let mut replaced = Vec::new();
+        let current = self.cache.in_epoch(epoch, || {
+            let (current, newer) = self.policies.store(answer, floor);
+            replaced = newer;
+            current
+        });
+        if !replaced.is_empty() {
+            let policies = &self.policies;
+            self.cache
+                .rebuild(&replaced, |chain| policies.compile_places(chain));
+        }
+        current
     }
 
     /// What a failed call to the server means for this firewall.
@@ -770,6 +791,14 @@ impl Managed {
         *lock(&self.version_skew) = Some(error);
     }
 
+    /// Writes what is still queued to `<data_dir>/managed-activity.json` for the next
+    /// start to send (ND-3). Called once, as the process stops.
+    pub fn save_activity(&self) {
+        if let Err(err) = self.activity.save(&self.data_dir) {
+            tracing::error!(error = %err, "the undelivered activity could not be saved; it is lost");
+        }
+    }
+
     /// Writes `<data_dir>/managed-cache.json` off the async runtime (C115).
     pub async fn save_snapshot(&self) {
         let snapshot = Snapshot {
@@ -811,7 +840,7 @@ impl Managed {
             error
         });
         FirewallReport {
-            settings_revision: settings.settings_revision,
+            settings_revision: self.running_revision,
             last_apply_error: error,
             status: ReportStatus { upstreams },
             effective_period_seconds: self.period.as_secs(),

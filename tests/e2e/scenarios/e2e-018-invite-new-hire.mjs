@@ -51,6 +51,11 @@ export default async function newHire(h) {
   await page.click("form[action='/signup'] button[type=submit]");
   const confirm = await h.mail.link(bob.email, /^\/verify-email$/, { subject: "Confirm your email" });
   await page.goto(confirm.toString());
+  expect((await text()).includes("Choose your password to confirm your email address"), "opening the link asks bob to choose a password");
+  bob.password = `confirmed ${h.unique("pw")} staple`;
+  await page.fill("#new", bob.password);
+  await page.fill("#again", bob.password);
+  await page.click("form[action='/verify-email'] button[type=submit]");
   expect((await text()).includes("Your email address is confirmed"), "the address is confirmed");
   await page.click("main a.button");
   if (new URL(page.url()).pathname === "/signin") await h.browserSignIn(page, bob);

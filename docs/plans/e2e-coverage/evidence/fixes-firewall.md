@@ -157,3 +157,75 @@ Source: `00-inventory.md` §1.3. Branch `fix-firewall-defects`, based on `manage
   - outbound @ `src/osv/batcher.rs`: 10, at 234, 329, 370, 413, 439, 483, 484, 509, 510, 549.
   - All four hold.
 - C123: one site, `src/managed/mod.rs:281` `headers.get(AUTHORIZATION)`. It is the same call; it moved 5 lines because of the new `version_skew` field.
+
+# P0 e2e defects
+
+## P1: a cached key keeps the old policy after a shared layer changes (E2E-013 step 7)
+
+- Root cause, as the inventory says:
+  - `Policies::store` (`src/managed/cache.rs`) replaced the held layer with the newer one fetched for a newly looked-up key. Nothing rebuilt the keys already cached on the older layer.
+  - The next sync's `mark_stale` then records a revision no later than that layer's `read_at`, so `is_stale` is false. `after_answer` sees no stale layer and never calls `KeyCache::rebuild`.
+  - Cached keys therefore decided under the old layer until their entry expired (`key_cache_ttl_seconds`).
+- Fix:
+  - `Policies::store` also returns the places whose held layer a newer one replaced.
+  - `Managed::store_layers` rebuilds every cached key whose chain holds one of them, at once. That is the same `KeyCache::rebuild` `after_answer` uses, and it covers every `layers` answer: a new key's lookup, a missing layer, and the sync's refetch.
+- Test: `tests/managed_sync.rs` `t_sync_newer_layer_rebuilds_cached_keys`.
+  - Sequence: sync interval 3600 s, one round at start; Acme's key is cached at 200; the platform layer is edited to block `left-pad`; Globex's key, never seen, is looked up and gets 403; then Acme's cached key is asked again.
+  - Red: `the cached key, at once: left: 200, right: 403`.
+  - Green: ok.
+- Unit: `a_late_layer_answer_is_dropped` now also asserts that a newer store returns `(true, [PLATFORM])`.
+
+## P2 (ND-1): a settings push counted as applied before the restart
+
+- Root cause: `apply_settings` saves the new `settings_revision` before the exit 75, and `report()` sent `settings.settings_revision`. Every `changes` call after the write, the F2 final flush included, reported the new revision, and the server's `settle` (`fleet.rs:342`) marked the step applied.
+- Fix: `Managed::running_revision` holds the revision in force when the process started, which is after any start-up rollback, because `roll_back_settings` runs before `Managed::new`. `report()` sends that. The persisted state still decides whether a re-sent push was already written, so the drain never applies it twice.
+- Test: `t_settings_revision_reported_once_running`. It pushes revision 3, waits for the restart request and one more round, restarts (which includes the final flush), then waits a round.
+  - Red: `before the restart: [0, 0, 3, 3, 3]`.
+  - Green: every report before the restart says 0, and the first one after says 3.
+
+## P3 (ND-3): activity queued during an outage is lost at a restart
+
+- Root cause: the queue lived only in memory, and the final flush (F2) fails while the server is down.
+- Fix: after the final call, or with nothing to call, the stop writes whatever is still queued with `ActivityQueue::save` to `<data_dir>/managed-activity.json`:
+  - an undelivered batch, re-queued;
+  - a refused one, counted as dropped;
+  - rows past one call's cap.
+
+  The file has `version: 1` (serde default) and at most `ACTIVITY_QUEUE_CAP` events with their event ids and drop counts. Nothing is written for an empty queue. `Managed::new` calls `ActivityQueue::restore`. It deletes the file, then re-queues the contents through `requeue`, which applies the queue cap. A file from a newer format is dropped with a warning. The exit 75 path is the same code. A failed write is logged at error level.
+- Tests:
+  - `t_activity_survives_restart_during_outage`: the server goes down, an event is queued, a failed round runs, the firewall restarts, and the server comes back.
+    - Red: `no such activity: []`.
+    - Green: the event arrives, and exactly once.
+  - Unit `a_saved_queue_is_restored_once`: round trip with ids and drop counts, the file is gone after loading, a newer version is dropped, and an empty queue writes no file. It was written with the fix, so its red is a compile error: `save` and `restore` did not exist.
+- Docs:
+  - `SPEC.md`: the settings-push paragraph (ND-1), and the §10 managed paragraph (ND-3 and the layer rebuild).
+  - `docs/operations.md`: stopping, settings pushes, the data-dir file list, and the alert table rows.
+
+## E1 resolved: bounded download wait + Retry-After
+
+- **User decision: "2026-10-23, user: short bounded wait + Retry-After; replaces the MVP 'refused, never queued' rule".** This is option B with C. The approved plan documents were not edited; this record is where the change is written down.
+- Behaviour:
+  - `Limits::download_permit` (`src/http/limits.rs`) takes a free permit at once.
+  - Otherwise it takes one of `max_download_waiters` waiter places (a semaphore) and waits for a permit, first come first served, for at most `download_wait_seconds`.
+  - A full waiter cap, or a wait that runs out, returns `None`, which `transfer` maps to the existing `DownloadError::Overloaded`, which becomes `503 OVERLOADED`.
+  - `transfer` selects the wait against `slot.cancelled()`, so when the last client of a waiting transfer leaves, the future is dropped and its waiter place goes back.
+  - Every `ApiError::Overloaded` now carries `Retry-After: 5`, the front door's included. The front door (`max_active_requests`) still refuses at once: the decision covers download permits only.
+- Settings (`src/config.rs`, optional, next to `max_artifact_downloads`):
+  - `download_wait_seconds`: default 5, at most 60, and 0 refuses at once.
+  - `max_download_waiters`: default 64 (8 × the default 8 permits), and 0 means none waits.
+
+  Both are in `config.sample.toml`, whose comments avoid origin_guard's forbidden words.
+- Tests (`tests/artifacts_concurrency.rs`). Each was run red first against the settings and counter added with the old refuse-at-once behaviour:
+  - `a_cold_request_beyond_max_artifact_downloads_waits_then_is_refused` (the slice-8 download-permit witness, renamed from `…_is_refused_not_queued`). With 1 permit held and a 1 s wait, the second reference waits at least 1 s, then gets 503 OVERLOADED with `Retry-After: 5` and no upstream call. Once the permit frees it gets 200.
+    - Red: `it waited for the permit first: 878.105µs`.
+  - `overload_is_refused_not_queued` (the front-door witness): its intent is unchanged, it still refuses at once, and it now also asserts `Retry-After: 5`.
+    - Red: `told when to come back, left: None, right: Some(5)`.
+  - `sixteen_cold_downloads_share_eight_permits`: 16 gated cold downloads against the default 8 permits. The test waits until 8 permits are in use and 8 requests are waiting, then releases the gate. All 16 get 200 with the full body.
+    - Red: `8 transfers and 8 waiters did not happen within 20s`.
+  - `the_waiter_cap_refuses_at_once_and_a_leaving_waiter_frees_its_place`: 1 permit, 1 waiter place, a 60 s wait. The third request is refused at once (well under 30 s) with `Retry-After: 5`. Aborting the waiting fetch gives its place back (`download_waiting() == 0`) with no upstream call.
+    - Red: `the one waiter did not happen within 20s`.
+  - Green: `artifacts_concurrency` 15/15.
+  - `tests/config_validation.rs`: the sample now has 22 keys, the two new ones are listed as defaulted, and the new fixture `download_wait_too_long.toml` is refused as invalid `download_wait_seconds`.
+- Docs:
+  - `SPEC.md`: the §4 sample block, the §9 download wait, and §10 "bounded queues". §10 keeps "never unbounded": the only wait is this one, bounded in time and places.
+  - `docs/operations.md`: the per-client limits note with the alert, the section 9 error table row, the section 14 key table, and the section 18 limits.

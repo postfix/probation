@@ -8,12 +8,12 @@
 // authenticator code, and the key still installs. The used link is refused (410).
 //
 // Takeover: an attacker signs up with the victim's address and their own password and
-// keeps that session open; the victim opens the confirmation mail; the attacker's
-// session must not then be signed in (F7). A victim whose address was squatted that way
+// keeps that session open; opening the mail changes nothing, then the victim chooses a
+// password and the attacker's session ends (F7). A victim whose address was squatted that way
 // (unconfirmed) takes it back with a reset: the attacker's session ends, the attacker's
 // password stops working, and the victim gets in.
 
-import { Needs, forgetMail, freshMailWindow } from "../harness/people.mjs";
+import { forgetMail, freshMailWindow } from "../harness/people.mjs";
 
 export const meta = {
   id: "E2E-019",
@@ -25,7 +25,6 @@ const RESET_SUBJECT = "Choose a new password";
 
 export default async function passwordReset(h) {
   const { expect } = h;
-  const needs = new Needs(h.log);
   freshMailWindow(h);
   const user = await h.signUp({ kind: "org" });
   await h.enableTotp(user);
@@ -108,12 +107,22 @@ export default async function passwordReset(h) {
     expect(answer.status === 303 && answer.location === "/verify-email", `unconfirmed, the attacker reaches nothing: ${answer.status} ${answer.location}`);
   };
   await squat(victim);
-  // The victim opens the confirmation mail.
+  // Opening the link alone does not confirm the address or end the attacker's session.
   const c = await (await h.browser()).newPage();
   await c.goto((await h.mail.link(victim, /^\/verify-email$/, { subject: "Confirm your email" })).toString());
-  expect((await text(c)).includes("Your email address is confirmed"), "the victim confirmed the address");
+  expect((await text(c)).includes("Choose your password to confirm your email address"), "the link asks the victim to choose a password");
   answer = await attacker.portal.get("/account");
-  needs.check("F7", answer.status === 303 && answer.location === "/signin", `the attacker's session from before the confirmation is not signed in after it (GET /account: ${answer.status} ${answer.location ?? "page"})`);
+  expect(answer.status === 303 && answer.location === "/verify-email", "opening the link did not confirm the attacker's login");
+  const victimPassword = `victim ${h.unique("pw")} staple`;
+  await c.fill("#new", victimPassword);
+  await c.fill("#again", victimPassword);
+  await c.click("form[action='/verify-email'] button[type=submit]");
+  expect((await text(c)).includes("Your email address is confirmed"), "the victim confirmed the address with their own password");
+  answer = await attacker.portal.get("/account");
+  expect(answer.status === 303 && answer.location === "/signin", `the attacker's session ended: ${answer.status} ${answer.location ?? "page"}`);
+  answer = await new h.Portal().submit("/signin", "/signin", { email: victim, password: attacker.password });
+  expect(answer.status === 422, "the attacker's original password no longer signs in");
+  expect((await signIn(c, victim, victimPassword)) === "/account", "the victim signs in with the password chosen from the mail");
 
   // A squatted, unconfirmed address taken back with a reset.
   const victim2 = `${h.unique("victim")}@example.com`;
@@ -134,10 +143,12 @@ export default async function passwordReset(h) {
   let where = await signIn(d, victim2, mine);
   if (where === "/verify-email") {
     await d.goto((await h.mail.link(victim2, /^\/verify-email$/, { subject: "Confirm your email" })).toString());
+    expect((await text(d)).includes("Choose your password to confirm your email address"), "the victim chooses a password from the confirmation mail");
+    await d.fill("#new", mine);
+    await d.fill("#again", mine);
+    await d.click("form[action='/verify-email'] button[type=submit]");
     expect((await text(d)).includes("Your email address is confirmed"), "the victim confirms the address");
-    await d.click("main a.button");
-    where = path(d);
+    where = await signIn(d, victim2, mine);
   }
   expect(where === "/account", `the victim is in: ${d.url()}`);
-  needs.done();
 }

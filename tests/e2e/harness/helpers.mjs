@@ -85,10 +85,11 @@ export function helpers(stack, { log = console.log } = {}) {
     async signUp({ kind = "org", email = `${h.unique("user")}@example.com`, password = randomBytes(18).toString("base64url"), org } = {}) {
       const portal = new Portal();
       org ??= kind === "org" ? h.unique("Org") : undefined;
-      let page = await portal.submit("/signup", "/signup", { email, password, kind, org_name: org ?? "" });
+      let page = await portal.submit("/signup", "/signup", { email, password: randomBytes(18).toString("base64url"), kind, org_name: org ?? "" });
       expect(page.status === 200, `sign-up: ${page.status}\n${page.body}`);
       const link = await h.mail.link(email, /^\/verify-email$/);
       page = await portal.get(link.pathname + link.search);
+      page = await portal.post("/verify-email", { csrf: hidden(page.body, "csrf"), token: link.searchParams.get("token"), new: password, again: password });
       expect(page.body.includes("Your email address is confirmed"), `confirm: ${page.status}\n${page.body}`);
       page = await portal.submit("/signin", "/signin", { email, password });
       expect(page.status === 303 && page.location === "/account", `sign-in: ${page.status} ${page.location}`);
@@ -213,12 +214,15 @@ export function helpers(stack, { log = console.log } = {}) {
       org ??= kind === "org" ? h.unique("Org") : undefined;
       await page.goto("/signup");
       await page.fill("#email", email);
-      await page.fill("#password", password);
+      await page.fill("#password", randomBytes(18).toString("base64url"));
       await page.check(`input[name=kind][value=${kind}]`);
       if (org) await page.fill("#org_name", org);
       await page.click("form[action='/signup'] button[type=submit]");
       const link = await h.mail.link(email, /^\/verify-email$/);
       await page.goto(link.toString());
+      await page.fill("#new", password);
+      await page.fill("#again", password);
+      await page.click("form[action='/verify-email'] button[type=submit]");
       expect((await page.content()).includes("Your email address is confirmed"), "the confirmation page");
       await h.browserSignIn(page, { email, password });
       return { email, password, org };

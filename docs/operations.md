@@ -171,7 +171,9 @@ a push.
 `SIGINT` (Ctrl-C) and `SIGTERM` (`docker stop`, `systemctl stop`, plain `kill`)
 both shut it down cleanly: queued log records are delivered and a summary is
 printed. A managed firewall also sends the activity queued since its last sync in
-one last call to the server, waiting at most `request_timeout_seconds`. A signal that arrives while the service is still starting is acted on as
+one last call to the server, waiting at most `request_timeout_seconds`. What it
+cannot send, for example while the server is down, is kept in
+`<data_dir>/managed-activity.json` and sent after the next start. A signal that arrives while the service is still starting is acted on as
 soon as startup finishes. An abrupt stop is still safe. Nothing gets corrupted.
 
 Requests already in progress get 30 seconds to finish; after that their
@@ -663,6 +665,14 @@ else can download.
 everyone. **Set per-client connection and rate limits on your reverse proxy** so
 no one client can hold more than a fair share.
 
+A cold download that finds every slot taken waits up to `download_wait_seconds`
+(default 5) for one, with at most `max_download_waiters` (default 64) waiting.
+That is enough for npm's default of 15 connections against the default 8 slots.
+Past either bound it gets `503 OVERLOADED` with `Retry-After: 5`, and npm and pip
+retry. **Alert on a steady rate of `503 OVERLOADED`** in the decision log. It
+means downloads keep waiting longer than the wait allows, so raise
+`max_artifact_downloads` if upstream and disk can take it.
+
 ### Outbound filtering
 
 For npm and PyPI traffic, the firewall refuses on its own: cross-site redirects,
@@ -994,7 +1004,8 @@ there is always an audit trail of every decision.
 | error | `the management server refused this firewall's token` | A key lookup got `401`: the firewall was retired or its token is not valid (section 13). A sync that finds this logs nothing; `/health/ready` turns `503`. |
 | error | `the management server refused an empty sync; treating it as unreachable` | The server rejects every sync. `/health/ready` is `503`. |
 | error | `the management server's answer could not be read; this firewall (v…) may be older than the server; serving from the cache` | The server answered a sync, key lookup or layers call in a form this firewall cannot decode, most likely because the server was upgraded past it. The firewall stays ready and serves its cache, including the old version of any layer it could not read, so policy edits stop reaching it. The fleet page shows the error. **Alert on this line**, because `/health/ready` stays `200`. Upgrade the firewall. |
-| warn | `the activity queued before the stop could not be delivered` | The last call on a stop failed; those activity rows are lost. |
+| warn | `the activity queued before the stop could not be delivered; it is saved for the next start` | The last call on a stop failed. The rows are in `managed-activity.json` and go out after the next start. |
+| error | `the undelivered activity could not be saved; it is lost` | The stop could not write `managed-activity.json`. Check the data directory's disk space and permissions. |
 | error | `a settings push was refused` | The push failed its checks; it is reported on the fleet page. |
 | error | `the pushed settings fail at start; restoring the previous ones` | A push broke the start and was rolled back. |
 
@@ -1018,6 +1029,7 @@ the Activity page. Both are pruned by their retention (section 17).
 | Bad request | `400` |
 | Unsupported route or method | `404`, `405`, `406` |
 | Blocklist missing or expired, out of capacity, storage broken | `503` |
+| Busy: `max_active_requests` in use, or no download slot freed within `download_wait_seconds` (`Retry-After: 5`) | `503 OVERLOADED` |
 | Managed: lookup budget used up, or the server is busy (`Retry-After: 1`) | `503 LOOKUP_BUSY` |
 | Managed: no cache and no sync yet | `503 NOT_READY` |
 | Upstream failure or bad data | `502` |
@@ -1193,11 +1205,15 @@ the previous ones in `managed-settings.prev.toml`, and exits with code 75 (secti
 2). If the new settings fail at start, the firewall swaps the previous ones back
 (or moves a first push aside to `managed-settings.failed.toml`), starts on them,
 and reports the error on the fleet page. A bad push never loops, and a refused
-push is never applied again.
+push is never applied again. The fleet page counts a push as applied only once the
+firewall reports it after its restart, so a firewall with no restart policy that
+never comes back stays "sent" and holds up the rollout.
 
 Files a managed firewall keeps in `data_dir`, beside `state/`, `content/` and
 `lock`: `managed-cache.json`, `managed-settings.toml`, `managed-settings.prev.toml`,
-`managed-settings.state`, and sometimes `managed-settings.failed.toml`.
+`managed-settings.state`, and sometimes `managed-settings.failed.toml` and
+`managed-activity.json`. The last one holds the activity a stop could not send to
+the server. The next start sends it and deletes the file.
 
 ## 14. Firewall configuration reference
 
@@ -1225,6 +1241,8 @@ These have no default. The values shown are the ones in `config.sample.toml`.
 | `max_blocklist_bytes` | `134217728` (128 MiB) | A larger file is refused. |
 | `max_upstream_requests` | `32` | Global, shared by all clients. |
 | `max_artifact_downloads` | `8` | Global, shared by all clients. |
+| `download_wait_seconds` | `5` | How long a cold download waits for a free `max_artifact_downloads` slot before `503 OVERLOADED`. At most 60; `0` refuses at once. |
+| `max_download_waiters` | `64` | How many requests may wait for a slot at once; the next one is refused at once. `0` means none waits. Keep it near 8 × `max_artifact_downloads`. |
 | `max_active_requests` | `1024` | Global, shared by all clients. |
 
 Every size and count above must not be zero.
@@ -1373,6 +1391,7 @@ Changing the retention is written to the audit log.
 | `log_queue_max_bytes`, `siem_queue_max_bytes` | From 32 KiB (one record) to 4 GiB. |
 | One answer from the management server | At most 8 MiB. |
 | Requests, downloads, upstream calls, sizes | The `max_*` keys (section 14). All global, never per client. |
+| Waiting for a download slot | `download_wait_seconds` (at most 60) and `max_download_waiters`. Nothing else waits. |
 
 ### Management server
 

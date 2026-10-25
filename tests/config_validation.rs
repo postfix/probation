@@ -68,6 +68,10 @@ const INVALID_CONFIGS: &[(&str, &str)] = &[
         "invalid `max_active_requests`",
     ),
     (
+        "download_wait_too_long.toml",
+        "invalid `download_wait_seconds`",
+    ),
+    (
         "zero_max_references_per_project.toml",
         "invalid `max_references_per_project`",
     ),
@@ -178,11 +182,13 @@ fn deleting_any_sample_key_is_reported_as_that_key_missing() {
     };
 
     let keys: Vec<String> = text.lines().filter_map(key_of).collect();
-    assert_eq!(keys.len(), 20, "the sample carries every documented key");
+    assert_eq!(keys.len(), 22, "the sample carries every documented key");
 
     /// The keys `src/config.rs` gives a default, which a file may leave out.
     const WITH_DEFAULTS: &[&str] = &[
         "max_references_per_project",
+        "download_wait_seconds",
+        "max_download_waiters",
         "metadata_max_age_seconds",
         "osv_cache_ttl_seconds",
         "osv_request_timeout_ms",

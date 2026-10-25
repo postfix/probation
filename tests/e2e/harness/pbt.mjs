@@ -289,7 +289,11 @@ export async function signUp(world, slot, kind) {
   expect(page.status === 200 && page.body.includes("Check your email"), `sign-up: ${page.status}\n${page.body.slice(0, 500)}`);
   const link = await mailLink(world, person.email, /^\/verify-email$/);
   page = await portal.get(link.pathname + link.search);
-  expect(page.body.includes("Your email address is confirmed"), `confirm: ${page.status}\n${page.body.slice(0, 500)}`);
+  expect(page.status === 200 && page.body.includes("Choose your password"), `confirmation form: ${page.status}\n${page.body.slice(0, 500)}`);
+  const password = randomBytes(18).toString("base64url");
+  page = await portal.post("/verify-email", { csrf: hidden(page.body, "csrf"), token: hidden(page.body, "token"), new: password, again: password });
+  expect(page.status === 200 && page.body.includes("Your email address is confirmed"), `confirm: ${page.status}\n${page.body.slice(0, 500)}`);
+  person.password = password;
   page = await portal.submit("/signin", "/signin", { email: person.email, password: person.password });
   expect(page.status === 303 && page.location === "/account", `sign-in: ${page.status} ${page.location}`);
   person.signedIn = true;

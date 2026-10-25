@@ -751,10 +751,13 @@ impl Policies {
     }
 
     /// Keeps each place's newest layer. A whole answer read below `floor`, and a layer
-    /// read before its place's last `layer` row, is dropped; returns false when one was.
-    pub(super) fn store(&self, answer: LayersResponse, floor: u64) -> bool {
+    /// read before its place's last `layer` row, is dropped; the flag is false when one
+    /// was. Also returns the places whose held layer a newer one replaced, so the keys
+    /// built on the older one can be rebuilt.
+    pub(super) fn store(&self, answer: LayersResponse, floor: u64) -> (bool, Vec<PlaceRef>) {
+        let mut replaced = Vec::new();
         if answer.revision < floor {
-            return false;
+            return (false, replaced);
         }
         let mut layers = lock(&self.layers);
         let mut current = true;
@@ -767,7 +770,10 @@ impl Policies {
                 Some(held) if held.revision >= place.revision => {
                     held.read_at = held.read_at.max(answer.revision);
                 }
-                _ => {
+                held => {
+                    if held.is_some() {
+                        replaced.push(place.place);
+                    }
                     layers.held.insert(
                         place.place,
                         HeldLayer {
@@ -779,7 +785,7 @@ impl Policies {
                 }
             }
         }
-        current
+        (current, replaced)
     }
 
     /// `layer` rows: these layers are stale from `revision` on. Each stays in use as the
@@ -1266,20 +1272,24 @@ mod tests {
             revision,
         };
         let at = |layers, revision| LayersResponse { layers, revision };
-        assert!(policies.store(at(vec![platform(1, 60)], 1), 0));
+        assert!(policies.store(at(vec![platform(1, 60)], 1), 0).0);
         policies.mark_stale(&[PLATFORM], 3);
         assert_eq!(policies.stale(), vec![PLATFORM]);
         assert_eq!(policies.missing(&[link(PLATFORM)]), vec![PLATFORM]);
         assert!(
-            !policies.store(at(vec![platform(2, 120)], 2), 0),
+            !policies.store(at(vec![platform(2, 120)], 2), 0).0,
             "read before the row"
         );
         assert_eq!(policies.stale(), vec![PLATFORM], "still stale");
         assert!(
-            !policies.store(at(vec![platform(3, 180)], 5), 6),
+            !policies.store(at(vec![platform(3, 180)], 5), 6).0,
             "below the floor"
         );
-        assert!(policies.store(at(vec![platform(3, 180)], 3), 0));
+        assert_eq!(
+            policies.store(at(vec![platform(3, 180)], 3), 0),
+            (true, vec![PLATFORM]),
+            "a newer layer replaces the held one, for its keys to be rebuilt"
+        );
         assert!(policies.stale().is_empty());
         let compiled = policies.compile_places(&[PLATFORM]).expect("a policy");
         assert_eq!(compiled.policy.chain[0].freeze_seconds, Some(180));

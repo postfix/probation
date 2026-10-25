@@ -8,8 +8,8 @@
 // 2. PBT-model, seed 105 path 9:3:4:4:3:6:5:3, shrunk to `CheckFirewall; PlatformSettings
 //    (freeze 0 hours); CheckFirewall`: a firewall that looked a key up just before a
 //    policy change keeps the old decision for about 5 minutes (held for 287 s and more,
-//    while the other firewall allowed it at once). Known and being fixed: "needs
-//    stale-key-policy". Replayed as shrunk.
+//    while the other firewall allowed it at once). Fixed by rebuilding cached keys
+//    when a newer shared layer arrives. Replayed as shrunk.
 
 import { formCases } from "../harness/pbt-forms.mjs";
 import { CheckFirewall, PlatformSettings, replay, settings } from "../harness/pbt.mjs";

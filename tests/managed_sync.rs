@@ -3003,3 +3003,96 @@ async fn t_activity_flush_refused_on_stop() {
         logs.text()
     );
 }
+
+/// A shared layer edited, then another key looked up for the first time before the next
+/// sync: the lookup brings the newer layer, and every cached key using it decides under
+/// it at once, not after its cache TTL (E2E-013 step 7).
+#[tokio::test]
+async fn t_sync_newer_layer_rebuilds_cached_keys() {
+    let h = harness(|_, config| {
+        // One round at start and no other: the edit reaches this firewall only
+        // through the second key's lookup.
+        config.sync_interval_seconds = NonZeroU64::new(3600).unwrap();
+    })
+    .await;
+    wait_for("the first round", Duration::from_secs(5), || {
+        !h.sync.changes_requests().is_empty()
+    })
+    .await;
+    assert_eq!(h.get("/npm/left-pad", &acme_key()).await.status(), 200);
+    h.sync.edit_layer(
+        PLATFORM,
+        Layer {
+            blocks: vec![left_pad_block()],
+            ..platform_layer()
+        },
+    );
+    let response = h.get("/npm/left-pad", &globex_key()).await;
+    assert_status(response, 403, "BLOCKED", "the new key, under the new layer").await;
+    let response = h.get("/npm/left-pad", &acme_key()).await;
+    assert_status(response, 403, "BLOCKED", "the cached key, at once").await;
+    h.server.shutdown().await;
+}
+
+/// ND-1: a written push is reported as the revision this firewall runs with only once
+/// it runs with it, after the restart; never by the calls before the exit, so the server
+/// does not mark the step applied for a firewall that may never come back.
+#[tokio::test]
+async fn t_settings_revision_reported_once_running() {
+    let h = harness(|_, _| {}).await;
+    h.sync.push_settings(3, "max_active_requests = 64\n");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        h.server.running().restart_requested(),
+    )
+    .await
+    .expect("a restart is asked for");
+    // A round after the push was written, then the stop and its final call.
+    h.sync.sync_rounds(1).await;
+    let h = h.restart().await;
+    let before = h.sync.changes_requests();
+    h.sync.sync_rounds(1).await;
+    let reported: Vec<u64> = h
+        .sync
+        .changes_requests()
+        .iter()
+        .map(|request| request.report.settings_revision)
+        .collect();
+    assert!(
+        reported[..before.len() - 1]
+            .iter()
+            .all(|revision| *revision == 0),
+        "before the restart: {reported:?}"
+    );
+    assert_eq!(last_report(&h.sync).settings_revision, 3, "{reported:?}");
+    h.server.shutdown().await;
+}
+
+/// ND-3: activity queued while the server is unreachable survives a restart: the stop
+/// writes what it could not deliver, the start loads it, and it arrives exactly once.
+#[tokio::test]
+async fn t_activity_survives_restart_during_outage() {
+    let h = harness(|_, _| {}).await;
+    wait_for("the first round", Duration::from_secs(5), || {
+        !h.sync.delivered().is_empty()
+    })
+    .await;
+    h.sync.go_down(true);
+    let app = h.managed();
+    app.managed()
+        .unwrap()
+        .activity()
+        .record_activity(org(ACME), event(KeyId(88), ActivityResult::Blocked));
+    drop(app);
+    h.sync.sync_rounds(1).await;
+    let h = h.restart().await;
+    h.sync.go_down(false);
+    wait_for_activity(&h.sync, |event| event.key_id == KeyId(88)).await;
+    h.sync.sync_rounds(2).await;
+    let delivered = activity(&h.sync)
+        .into_iter()
+        .filter(|event| event.key_id == KeyId(88))
+        .count();
+    assert_eq!(delivered, 1, "exactly once");
+    h.server.shutdown().await;
+}

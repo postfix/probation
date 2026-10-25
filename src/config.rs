@@ -46,6 +46,12 @@ pub struct Config {
     pub max_blocklist_bytes: NonZeroU64,
     pub max_upstream_requests: NonZeroU32,
     pub max_artifact_downloads: NonZeroU32,
+    /// How long a cold artifact request waits for a download permit before `503`;
+    /// 0 refuses at once (decision 2026-10-23).
+    pub download_wait_seconds: u64,
+    /// How many requests may wait for a download permit at once; a request past it is
+    /// refused at once. 0 means none waits.
+    pub max_download_waiters: u32,
     pub max_active_requests: NonZeroU32,
     pub max_references_per_project: NonZeroU32,
     /// Where decision records are appended as NDJSON, if anywhere. Absent means off:
@@ -195,6 +201,15 @@ impl Cidr {
 /// project-refresh transaction independently of the byte cap.
 const DEFAULT_MAX_REFERENCES_PER_PROJECT: u32 = 20_000;
 
+/// A cold artifact request waits this long for a download permit (decision
+/// 2026-10-23): npm opens 15 connections by default, more than the 8 permits.
+const DEFAULT_DOWNLOAD_WAIT_SECONDS: u64 = 5;
+/// The longest wait a file may set: well inside a client's own timeout, so a wait is
+/// always a short one.
+const MAX_DOWNLOAD_WAIT_SECONDS: u64 = 60;
+/// Eight waiters for each of the default 8 permits.
+const DEFAULT_MAX_DOWNLOAD_WAITERS: u32 = 64;
+
 /// The ceiling a file that predates SPEC revision 3 gets: one day, which is what
 /// `config.sample.toml` ships. A file with no opinion inherits a bound rather than
 /// the unbounded staleness the ceiling exists to close.
@@ -259,6 +274,10 @@ struct RawConfig {
     max_blocklist_bytes: u64,
     max_upstream_requests: u32,
     max_artifact_downloads: u32,
+    #[serde(default = "default_download_wait_seconds")]
+    download_wait_seconds: u64,
+    #[serde(default = "default_max_download_waiters")]
+    max_download_waiters: u32,
     max_active_requests: u32,
     #[serde(default = "default_max_references_per_project")]
     max_references_per_project: u32,
@@ -299,6 +318,14 @@ struct RawManagement {
     trusted_proxies: Vec<String>,
 }
 
+fn default_download_wait_seconds() -> u64 {
+    DEFAULT_DOWNLOAD_WAIT_SECONDS
+}
+
+fn default_max_download_waiters() -> u32 {
+    DEFAULT_MAX_DOWNLOAD_WAITERS
+}
+
 fn default_max_references_per_project() -> u32 {
     DEFAULT_MAX_REFERENCES_PER_PROJECT
 }
@@ -334,6 +361,8 @@ const REQUIRED_KEYS: &[&str] = &[
 /// Keys with a default, which a file may leave out.
 const OPTIONAL_KEYS: &[&str] = &[
     "max_references_per_project",
+    "download_wait_seconds",
+    "max_download_waiters",
     "metadata_max_age_seconds",
     "log_file_path",
     "log_file_max_bytes",
@@ -458,6 +487,13 @@ impl RawConfig {
                     "must not be below metadata_ttl_seconds ({}); use 0 to disable the ceiling",
                     self.metadata_ttl_seconds
                 ),
+            ));
+        }
+
+        if self.download_wait_seconds > MAX_DOWNLOAD_WAIT_SECONDS {
+            return Err(invalid(
+                "download_wait_seconds",
+                format!("must not exceed {MAX_DOWNLOAD_WAIT_SECONDS}"),
             ));
         }
 
@@ -599,6 +635,8 @@ impl RawConfig {
                 "max_artifact_downloads",
                 self.max_artifact_downloads,
             )?,
+            download_wait_seconds: self.download_wait_seconds,
+            max_download_waiters: self.max_download_waiters,
             max_active_requests: nonzero_u32("max_active_requests", self.max_active_requests)?,
             max_references_per_project: nonzero_u32(
                 "max_references_per_project",

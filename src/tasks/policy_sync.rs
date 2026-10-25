@@ -59,12 +59,17 @@ pub async fn run(app: Arc<App>, shutdown: CancellationToken, drain: Cancellation
     if !matches!(result, Ok(Synced::Applied)) {
         tracing::warn!(
             events = batch.events.len(),
-            "the activity queued before the stop could not be delivered"
+            "the activity queued before the stop could not be delivered; it is saved for the next start"
         );
     }
-    if matches!(result, Ok(Synced::BatchRejected)) {
-        managed.activity().count_rejected(batch);
+    match result {
+        Ok(Synced::Applied) => {}
+        Ok(Synced::BatchRejected) => managed.activity().count_rejected(batch),
+        Err(_) => managed.activity().requeue(batch),
     }
+    // Whatever is still queued, an undelivered batch or rows past one call's cap, is
+    // sent by the next start (ND-3).
+    managed.save_activity();
 }
 
 async fn sync_once(app: &App, managed: &Managed, round: &mut Round) {

@@ -2,11 +2,14 @@
 //! would-have-blocked decisions, and refused known keys (C23, C55, C81, C92).
 
 use std::collections::{HashMap, VecDeque};
+use std::io;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use probation_policy::PlaceRef;
 use probation_policy::api::{ActivityEvent, DroppedCount};
+use serde::{Deserialize, Serialize};
 
 /// The most events queued at once; the oldest goes first when it is full.
 pub const ACTIVITY_QUEUE_CAP: usize = 10_000;
@@ -15,6 +18,21 @@ pub const ACTIVITY_QUEUE_CAP: usize = 10_000;
 pub const ACTIVITY_ACCOUNT_CAP: usize = 1_000;
 /// The most events, and the most `activity_dropped` entries, one `changes` call carries.
 pub const ACTIVITY_BATCH_MAX: usize = 1_000;
+
+/// `<data_dir>/managed-activity.json`: what a stop could not deliver (ND-3).
+const SAVED_ACTIVITY: &str = "managed-activity.json";
+/// The format of that file this firewall writes. A file from a newer one is dropped.
+const SAVED_ACTIVITY_VERSION: u32 = 1;
+
+/// The queue as a stop leaves it: at most [`ACTIVITY_QUEUE_CAP`] events, each with its
+/// `event_id`, so the server stores a re-sent one once.
+#[derive(Serialize, Deserialize)]
+struct SavedActivity {
+    #[serde(default)]
+    version: u32,
+    events: Vec<(PlaceRef, ActivityEvent)>,
+    dropped: Vec<DroppedCount>,
+}
 
 /// One queued event and the account whose cap it counts against.
 pub struct Queued {
@@ -125,6 +143,60 @@ impl ActivityQueue {
         }
     }
 
+    /// Writes everything still queued for the next start to send; nothing when the queue
+    /// is empty.
+    pub fn save(&self, data_dir: &Path) -> io::Result<()> {
+        let saved = {
+            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            SavedActivity {
+                version: SAVED_ACTIVITY_VERSION,
+                events: held
+                    .events
+                    .iter()
+                    .map(|queued| (queued.account, queued.event.clone()))
+                    .collect(),
+                dropped: held
+                    .dropped
+                    .iter()
+                    .map(|(account, count)| DroppedCount {
+                        account: *account,
+                        count: *count,
+                    })
+                    .collect(),
+            }
+        };
+        if saved.events.is_empty() && saved.dropped.is_empty() {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&saved).map_err(io::Error::other)?;
+        crate::config::write_atomically(&data_dir.join(SAVED_ACTIVITY), &bytes, None)
+    }
+
+    /// Queues what the last stop saved, within the queue cap, and removes the file so
+    /// it is loaded once.
+    pub fn restore(&self, data_dir: &Path) {
+        let path = data_dir.join(SAVED_ACTIVITY);
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        if let Err(err) = std::fs::remove_file(&path) {
+            tracing::warn!(path = %path.display(), error = %err, "the saved activity could not be removed; the server stores it once");
+        }
+        match serde_json::from_slice::<SavedActivity>(&bytes) {
+            Ok(saved) if saved.version <= SAVED_ACTIVITY_VERSION => self.requeue(Batch {
+                events: saved
+                    .events
+                    .into_iter()
+                    .map(|(account, event)| Queued { account, event })
+                    .collect(),
+                dropped: saved.dropped,
+            }),
+            _ => {
+                tracing::warn!(path = %path.display(), "the saved activity cannot be read; it is dropped")
+            }
+        }
+    }
+
     /// A batch the server refused: its events are counted as dropped for their
     /// accounts, with the drop counts it carried, in the next upload.
     pub fn count_rejected(&self, batch: Batch) {
@@ -212,5 +284,51 @@ mod tests {
         let (events, dropped) = drain_all(&queue);
         assert!(events.is_empty());
         assert_eq!(dropped.get(&account(1)), Some(&4));
+    }
+
+    /// ND-3: a stop's saved queue comes back once, with its event ids and drop counts;
+    /// a file from a newer format is dropped, and an empty queue writes nothing.
+    #[test]
+    fn a_saved_queue_is_restored_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = ActivityQueue::new(1);
+        queue.save(dir.path()).unwrap();
+        assert!(!dir.path().join(SAVED_ACTIVITY).exists(), "nothing to save");
+        queue.record_activity(account(1), event(1));
+        queue.record_activity(account(2), event(2));
+        queue.count_rejected(Batch {
+            events: Vec::new(),
+            dropped: vec![DroppedCount {
+                account: account(3),
+                count: 4,
+            }],
+        });
+        queue.save(dir.path()).unwrap();
+
+        let again = ActivityQueue::new(2);
+        again.restore(dir.path());
+        assert!(!dir.path().join(SAVED_ACTIVITY).exists(), "loaded once");
+        let batch = again.take_batch();
+        let ids: Vec<&str> = batch
+            .events
+            .iter()
+            .map(|q| q.event.event_id.as_str())
+            .collect();
+        assert_eq!(ids, ["1-1", "1-2"]);
+        assert_eq!(batch.dropped.len(), 1);
+        assert_eq!(batch.dropped[0].count, 4);
+
+        std::fs::write(
+            dir.path().join(SAVED_ACTIVITY),
+            format!(
+                "{{\"version\":{},\"events\":[],\"dropped\":[]}}",
+                SAVED_ACTIVITY_VERSION + 1
+            ),
+        )
+        .unwrap();
+        let newer = ActivityQueue::new(3);
+        newer.restore(dir.path());
+        assert!(newer.take_batch().events.is_empty());
+        assert!(!dir.path().join(SAVED_ACTIVITY).exists());
     }
 }
