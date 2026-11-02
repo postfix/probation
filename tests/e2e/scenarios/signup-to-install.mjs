@@ -14,6 +14,7 @@ export const meta = {
   id: "E2E-signup-to-install",
   title: "Sign-up to npm install, and propagation to two firewalls",
   suites: ["pr", "nightly", "release"],
+  stack: "own",
 };
 
 const CHANGES = 50;

@@ -58,6 +58,8 @@ pub enum ApiError {
     /// Storage is unusable, so no state change a response would depend on can be
     /// committed (SPEC §10).
     StorageUnusable,
+    /// Upstream accepted a revision PUT but its removal marker could not be made durable.
+    PartialWriteUncertain,
     /// Work this instance started did not finish, for a reason that is neither
     /// upstream's, nor policy's, nor a bound being reached — a transfer task that
     /// died, say.
@@ -127,6 +129,7 @@ impl ApiError {
             | ApiError::Overloaded
             | ApiError::CapacityExhausted
             | ApiError::StorageUnusable
+            | ApiError::PartialWriteUncertain
             | ApiError::InternalFailure
             | ApiError::LookupBusy
             | ApiError::NotReady => StatusCode::SERVICE_UNAVAILABLE,
@@ -151,6 +154,7 @@ impl ApiError {
             ApiError::Overloaded => "OVERLOADED",
             ApiError::CapacityExhausted => "CAPACITY_EXHAUSTED",
             ApiError::StorageUnusable => "STORAGE_UNUSABLE",
+            ApiError::PartialWriteUncertain => "PARTIAL_WRITE_UNCERTAIN",
             ApiError::InternalFailure => "INTERNAL_FAILURE",
             ApiError::UpstreamFailure => "UPSTREAM_FAILURE",
             ApiError::UpstreamInvalid => "UPSTREAM_INVALID",
@@ -187,6 +191,7 @@ impl ApiError {
             ApiError::StorageUnusable => {
                 "local storage is unusable, so no decision can be committed".to_owned()
             }
+            ApiError::PartialWriteUncertain => "upstream accepted a revision change but deletion cannot be confirmed; ask an administrator to recover it".to_owned(),
             ApiError::InternalFailure => {
                 "the request could not be completed; a later attempt may succeed".to_owned()
             }

@@ -33,7 +33,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { unescape } from "../harness/net.mjs";
 import { ROOT } from "../harness/stack.mjs";
-import { ops } from "../harness/ops.mjs";
+import { browserAs, ops } from "../harness/ops.mjs";
 
 export const meta = {
   id: "E2E-007",
@@ -129,13 +129,14 @@ done`, { files: { "package.json": JSON.stringify({ name: "loop", version: "1.0.0
   expect((await rollout("max_active_requests = 0")).state === "Halted", "the refused push is not retried");
 
   const badId = bad.id;
-  let skipped = await operator.post(`/fleet/rollouts/${badId}/skip`, { csrf: (await o.fleet(operator)).csrf });
-  expect(skipped.status === 303, `skip: ${skipped.status}\n${skipped.body}`);
+  const operatorPage = await (await browserAs(h, h.operator)).newPage();
+  await operatorPage.goto("/fleet");
+  await operatorPage.getByRole("button", { name: "Skip it and go on" }).click();
   await h.waitFor("firewall-2 refuses it too", async () => /firewall-2 could not apply/.test((await rollout("max_active_requests = 0"))?.steps[1] ?? ""), { timeout, every: 1000 });
   bad = await rollout("max_active_requests = 0");
   expect(/^Skipped firewall-1/.test(bad.steps[0]) && bad.state === "Halted", `after one skip: ${bad.state} ${bad.steps}`);
-  skipped = await operator.post(`/fleet/rollouts/${badId}/skip`, { csrf: (await o.fleet(operator)).csrf });
-  expect(skipped.status === 303, `skip again: ${skipped.status}`);
+  await operatorPage.goto("/fleet");
+  await operatorPage.getByRole("button", { name: "Skip it and go on" }).click();
   bad = await rollout("max_active_requests = 0");
   expect(bad.state === "Done" && !bad.skip && !bad.resume, `the rollout ends after both skips: ${bad.state} ${bad.steps}`);
   expect(o.state(fw2).restarts === before.fw2, "firewall-2 did not restart for the refused push either");
@@ -201,6 +202,10 @@ done`, { files: { "package.json": JSON.stringify({ name: "loop", version: "1.0.0
     o.needs(defect, !last.steps[0].startsWith("Applied"), `a firewall that exited for the push and never came back counts as applied: ${last.state}: ${last.steps.join(" | ")}`);
     o.needs(defect, !/max_active_requests = 48/.test(overlay("firewall-2")), "firewall-2 got the push while the firewall before it was down");
     o.needs(defect, last.state === "Halted" && /did not report success within 3 check-ins/.test(last.steps[0]) && last.resume, `the rollout halts with Resume: ${last.state}: ${last.steps.join(" | ")}`);
+    await operatorPage.goto("/fleet");
+    await operatorPage.getByRole("button", { name: "Resume: send them to it again" }).click();
+    lone.start();
+    await h.waitFor("the resumed rollout finishes", async () => (await rollout("max_active_requests = 48"))?.state === "Done", { timeout: 6 * h.syncInterval * 1000, every: 2000 });
   } finally {
     o.removeExtras();
   }
@@ -220,7 +225,8 @@ async function systemdFirewall(h, o, operator) {
   const dir = join(h.stack.work, "e2e-007-systemd");
   mkdirSync(join(dir, "etc"), { recursive: true });
   mkdirSync(join(dir, "dropin"), { recursive: true });
-  writeFileSync(join(dir, "etc", "config.toml"), o.managedConfig("fw-systemd.e2e.test").replace('token_file = "/e2e/firewall.token"', 'token_file = "/etc/probation/firewall.token"'));
+  writeFileSync(join(dir, "etc", "config.toml"), o.managedConfig("fw-systemd.e2e.test")
+    .replace('token_file = "/e2e/firewall.token"', 'token_file = "/etc/probation/firewall.token"'));
   writeFileSync(join(dir, "etc", "firewall.token"), `${token}\n`, { mode: 0o644 });
   // The operator's own CA for the sync proxy and the registries, as a drop-in.
   writeFileSync(join(dir, "dropin", "e2e-ca.conf"), "[Service]\nEnvironment=SSL_CERT_FILE=/e2e/ca/ca.pem\n");

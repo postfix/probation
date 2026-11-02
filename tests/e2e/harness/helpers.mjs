@@ -12,7 +12,9 @@ const FAKES = "http://fakes.e2e.test:8080";
 const MAIL = "http://mail.e2e.test:8025/api/v1";
 
 async function call(method, url, body) {
-  const answer = await request(url, { method, body });
+  // Fixture control calls may follow a long client-only phase. Do not reuse an
+  // idle CONNECT tunnel that the target has already closed.
+  const answer = await request(url, { method, body, headers: { connection: "close" } });
   expect(answer.status < 300, `${method} ${url}: ${answer.status} ${answer.body}`);
   return /json/.test(answer.headers["content-type"] ?? "") ? answer.json() : answer.body;
 }
@@ -45,6 +47,10 @@ export function helpers(stack, { log = console.log } = {}) {
       reset: () => call("POST", `${FAKES}/reset`),
       /// Npm.publish: {name, version, ageSeconds | publishedAt, dependencies, tag}.
       publishNpm: (spec) => call("POST", `${FAKES}/npm/publish`, spec),
+      publishNpmB: (spec) => call("POST", `${FAKES}/npm-b/publish`, spec),
+      issueEnterprise: (issuer, memberUuid, aiaUrl) => call("POST", `${FAKES}/issuer/issue`, { issuer, memberUuid, aiaUrl }),
+      revokeEnterprise: (issuer, id) => call("POST", `${FAKES}/issuer/revoke`, { issuer, id }),
+      enterpriseStatusMode: (issuer, mode) => call("POST", `${FAKES}/issuer/mode`, { issuer, mode }),
       /// Pypi.publish: {name, version, ageSeconds | uploadedAt, kinds, requiresPython}.
       publishPypi: (spec) => call("POST", `${FAKES}/pypi/publish`, spec),
       /// {ecosystem: "npm" | "PyPI", name, version, ids: ["MAL-..."]}; [] clears.

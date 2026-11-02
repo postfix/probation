@@ -9,6 +9,7 @@ import http from "node:http";
 import net from "node:net";
 
 const prefix = process.env.E2E_SUBNET_PREFIX;
+const gatewayHosts = new Set(["portal.e2e.test", "sync.e2e.test", "fw1.e2e.test", "fw2.e2e.test", "fw-standalone.e2e.test"]);
 
 const server = http.createServer((_, res) => res.writeHead(405).end("CONNECT only\n"));
 server.on("connect", async (req, client, head) => {
@@ -16,7 +17,7 @@ server.on("connect", async (req, client, head) => {
   const host = req.url.slice(0, at);
   const port = Number(req.url.slice(at + 1));
   try {
-    const { address } = await lookup(host, { family: 4 });
+    const address = gatewayHosts.has(host) ? `${prefix}10` : (await lookup(host, { family: 4 })).address;
     if (!address.startsWith(prefix)) throw new Error(`${host} is ${address}, outside the e2e network`);
     const upstream = net.connect(port, address, () => {
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n");

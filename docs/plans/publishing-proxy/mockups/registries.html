@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Organisation registries</title><link rel="stylesheet" href="style.css">
+<header>Probation · Organisation settings</header><main><h1>Package registries</h1><p class="muted">Choose one registry per project. Probation never substitutes another registry when a package name overlaps.</p>
+<section class="card"><h2>Configured registries</h2><table><thead><tr><th>Name</th><th>Packages</th><th>New release rule</th><th></th></tr></thead><tbody>
+<tr><td>Public npm</td><td>npm</td><td>Wait under policy</td><td>View</td></tr>
+<tr><td>Company npm</td><td>npm</td><td>Trusted: available immediately</td><td>Edit · Remove</td></tr>
+<tr><td>Company Python</td><td>Python</td><td>Trusted: available immediately</td><td>Edit · Remove</td></tr>
+</tbody></table></section>
+<section class="card"><h2>Add a registry</h2><label for="name">Name</label><input id="name" value="Team packages"><label for="kind">Package ecosystem</label><select id="kind"><option>npm</option><option>Python</option></select><label for="address">Registry address</label><input id="address" value="https://packages.company.example/"><label for="read">Read-only download credential, if required</label><input id="read" type="password" placeholder="Enter once"><p><label><input type="checkbox"> Trust new releases from this registry for immediate installation</label></p><button>Add registry</button></section>
+</main></html>

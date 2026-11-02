@@ -1960,6 +1960,9 @@ async fn a_304_with_a_body_and_extra_headers_yields_no_bytes() {
         .transport
         .fetch_metadata(MetadataRequest {
             url,
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: None,
             accept: "application/json",
             validators: Some(UpstreamValidators {
                 etag: Some(ETAG.to_owned()),

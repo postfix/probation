@@ -1,0 +1,9 @@
+# Order only; Slice 2 source review and X01/X03 test exact registry keys, references and restart behavior.
+name: registry-identity-before-state-use
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [check_selected_registry_identity]}}
+operation: {calls: {name: [use_registry_persisted_state]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'apply_registry_state'"

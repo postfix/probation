@@ -156,7 +156,11 @@ pub fn artifact_url(
     let mut url = public_url.clone();
     if let Ok(mut path) = url.path_segments_mut() {
         path.pop_if_empty();
-        path.push(ecosystem.as_tag());
+        // A selected certificate registry already carries `/registry/npm/{id}/` in the
+        // configured base. Legacy clients still receive the ecosystem prefix.
+        if public_url.path() == "/" || public_url.path().is_empty() {
+            path.push(ecosystem.as_tag());
+        }
         path.push("artifacts");
         path.push(&id.to_hex());
         path.push(filename);

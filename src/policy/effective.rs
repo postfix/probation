@@ -19,6 +19,8 @@ use crate::osv::OsvMode;
 pub struct CompiledPolicy {
     pub policy: EffectivePolicy,
     pub snapshot: Option<Arc<BlocklistSnapshot>>,
+    /// A trusted selected registry skips only the age rule.
+    pub skip_freeze: bool,
 }
 
 impl CompiledPolicy {
@@ -42,6 +44,7 @@ impl CompiledPolicy {
         CompiledPolicy {
             policy: resolve(&[platform]),
             snapshot: Some(snapshot),
+            skip_freeze: false,
         }
     }
 
@@ -51,7 +54,14 @@ impl CompiledPolicy {
         CompiledPolicy {
             policy,
             snapshot: Some(Arc::new(snapshot)),
+            skip_freeze: false,
         }
+    }
+
+    pub fn managed_trusted(policy: EffectivePolicy) -> CompiledPolicy {
+        let mut compiled = Self::managed(policy);
+        compiled.skip_freeze = true;
+        compiled
     }
 }
 
@@ -99,7 +109,7 @@ fn apply_exceptions(
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.without(&own.lifted_blocks)),
-        cooldown_seconds: own.freeze_seconds,
+        cooldown_seconds: if compiled.skip_freeze { 0 } else { own.freeze_seconds },
         osv_matched: osv_matched && own.osv == OsvSetting::On,
         would_block: osv_matched && own.osv == OsvSetting::LogOnly,
         own,

@@ -5,8 +5,8 @@
 //! engine/crate version used by this build". The two are treated differently on
 //! purpose:
 //!
-//! * a **schema version** mismatch is refused, except v0.1.0's version 4, which is
-//!   upgraded in place. This release cannot read another schema's rows, and SPEC
+//! * a **schema version** mismatch is refused, except versions 4 and 5, whose
+//!   unscoped package state is invalidated during an in-place upgrade. This release cannot read another schema's rows, and SPEC
 //!   §10 forbids recreating the database to get past that, so the only safe answer
 //!   is to keep the bytes and report why the store is unusable.
 //! * an **engine version** change is recorded and logged rather than refused. The
@@ -20,10 +20,9 @@ use turso::transaction::Transaction;
 
 use std::fmt;
 
-/// The version of the tables below. Slices that add tables bump it. Version 4,
-/// which v0.1.0 shipped, is upgraded in place by `ensure_in`; any other version is
-/// refused rather than guessed at.
-pub const SCHEMA_VERSION: i64 = 5;
+/// The version of the tables below. Slices that add tables bump it. Versions 4 and
+/// 5 are upgraded by invalidating ambiguous package state; all others are refused.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The `turso` release this build was compiled against, recorded so a diagnosis can
 /// tell which engine wrote the file. Kept in step with `Cargo.toml` by
@@ -64,6 +63,7 @@ CREATE TABLE IF NOT EXISTS blocklist (
     snapshot BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS projects (
+    registry_id INTEGER NOT NULL DEFAULT 0,
     ecosystem TEXT NOT NULL,
     name TEXT NOT NULL,
     payload BLOB NOT NULL,
@@ -73,10 +73,11 @@ CREATE TABLE IF NOT EXISTS projects (
     fetched_at_micros INTEGER NOT NULL,
     generation INTEGER NOT NULL,
     digest_generation INTEGER NOT NULL,
-    PRIMARY KEY (ecosystem, name)
+    PRIMARY KEY (registry_id, ecosystem, name)
 );
 CREATE TABLE IF NOT EXISTS artifact_references (
     id BLOB PRIMARY KEY,
+    registry_id INTEGER NOT NULL DEFAULT 0,
     ecosystem TEXT NOT NULL,
     name TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -91,7 +92,7 @@ CREATE TABLE IF NOT EXISTS artifact_references (
     content_key BLOB
 );
 CREATE INDEX IF NOT EXISTS artifact_references_by_project
-    ON artifact_references (ecosystem, name);
+    ON artifact_references (registry_id, ecosystem, name);
 CREATE INDEX IF NOT EXISTS artifact_references_by_content
     ON artifact_references (content_key);
 CREATE TABLE IF NOT EXISTS content (
@@ -101,6 +102,20 @@ CREATE TABLE IF NOT EXISTS content (
     created_micros INTEGER NOT NULL,
     accessed_micros INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS npm_unpublish_leases (
+    registry_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    reference_id BLOB NOT NULL,
+    package TEXT NOT NULL,
+    version TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    sealed_url BLOB NOT NULL,
+    expires_at_micros INTEGER NOT NULL,
+    accepted_revision TEXT,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (registry_id, member_id, reference_id)
+);
+CREATE INDEX IF NOT EXISTS npm_unpublish_leases_by_expiry ON npm_unpublish_leases (expires_at_micros);
 ";
 
 /// Creates the tables if they are absent and checks the recorded schema version.
@@ -146,20 +161,28 @@ async fn ensure_in(transaction: &Transaction<'_>) -> Result<(), SchemaError> {
     drop(rows);
 
     match recorded {
-        // v0.1.0's version 4 lacks only the content-key index, which the DDL above has
-        // just created inside this transaction.
-        Some((4, _)) => {
+        // Earlier rows have no registry identity. Invalidate their ambiguous package
+        // snapshots and references, keeping blocklist and content metadata intact.
+        Some((from @ (4 | 5), _)) => {
             tracing::info!(
-                from = 4,
+                from,
                 to = SCHEMA_VERSION,
                 "upgrading the database schema"
             );
+            transaction.execute("DROP TABLE artifact_references", ()).await?;
+            transaction.execute("DROP TABLE projects", ()).await?;
+            for statement in DDL.split_inclusive(';').filter(|s| !s.trim().is_empty()) {
+                transaction.execute(statement, ()).await?;
+            }
             transaction
                 .execute(
                     "UPDATE schema_meta SET schema_version = ?1, engine_version = ?2 WHERE id = 1",
                     (SCHEMA_VERSION, TURSO_CRATE_VERSION),
                 )
                 .await?;
+        }
+        Some((6, _)) => {
+            transaction.execute("UPDATE schema_meta SET schema_version = 7, engine_version = ?1 WHERE id = 1", (TURSO_CRATE_VERSION,)).await?;
         }
         // A database this build did not write. Refuse, and change nothing: the
         // transaction, tables and all, is rolled back on the way out.
@@ -336,17 +359,20 @@ mod tests {
         );
     }
 
-    /// v0.1.0 wrote version 4, which is version 5 without the content-key index. Its
-    /// database is upgraded in place, and the pins and first-seen times SPEC §10
-    /// calls irreplaceable come through unchanged.
+    /// A Slice-1 database has no registry identity on its package rows. The safe
+    /// upgrade invalidates those ambiguous rows while retaining the blocklist and
+    /// content records; a later selected-registry fetch repopulates them.
     #[tokio::test]
-    async fn a_version_4_database_is_upgraded_with_its_records_intact() {
+    async fn a_version_4_database_invalidates_unscoped_package_rows() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("firewall.db");
 
         let content_index = "CREATE INDEX IF NOT EXISTS artifact_references_by_content\n    \
                              ON artifact_references (content_key);\n";
-        let version_4 = DDL.replace(content_index, "");
+        let version_4 = DDL.replace(content_index, "")
+            .replace("    registry_id INTEGER NOT NULL DEFAULT 0,\n", "")
+            .replace("PRIMARY KEY (registry_id, ecosystem, name)", "PRIMARY KEY (ecosystem, name)")
+            .replace("ON artifact_references (registry_id, ecosystem, name)", "ON artifact_references (ecosystem, name)");
         assert_ne!(
             version_4, DDL,
             "the fixture lacks exactly the version 5 index"
@@ -363,6 +389,8 @@ mod tests {
              upstream_url, expected, first_seen_micros, pinned_sha256, pinned_size) \
              VALUES (x'01', 'npm', 'widget', '1.0.0', 'widget-1.0.0.tgz', \
              'https://registry.npmjs.org/widget/-/widget-1.0.0.tgz', '[]', 1234, x'abcd', 7)",
+            "INSERT INTO projects (ecosystem, name, payload, validated_at_micros, fetched_at_micros, generation, digest_generation) VALUES ('npm', 'widget', x'01', 1234, 1234, 1, 1)",
+            "INSERT INTO blocklist (id, revision, generated_at_micros, expires_at_micros, snapshot) VALUES (1, 7, 1, 2, x'42')",
         ] {
             connection
                 .execute(statement, ())
@@ -385,26 +413,17 @@ mod tests {
         );
         drop(rows);
 
-        let mut rows = connection
-            .query(
-                "SELECT first_seen_micros, pinned_sha256, pinned_size FROM artifact_references",
-                (),
-            )
-            .await
-            .expect("the reference");
-        let row = rows.next().await.expect("a row").expect("exactly one row");
-        assert_eq!(
-            row.get_value(0).expect("a value").as_integer().copied(),
-            Some(1234)
-        );
-        assert_eq!(
-            row.get_value(1).expect("a value").as_blob().cloned(),
-            Some(vec![0xab, 0xcd])
-        );
-        assert_eq!(
-            row.get_value(2).expect("a value").as_integer().copied(),
-            Some(7)
-        );
+        for table in ["projects", "artifact_references"] {
+            let mut rows = connection.query(&format!("SELECT count(*) FROM {table}"), ())
+                .await.expect("the package table");
+            let row = rows.next().await.expect("count row").expect("one row");
+            assert_eq!(row.get_value(0).unwrap().as_integer().copied(), Some(0));
+        }
+        let mut rows = connection.query("SELECT revision, snapshot FROM blocklist WHERE id = 1", ())
+            .await.expect("preserved blocklist");
+        let row = rows.next().await.expect("blocklist row").expect("one row");
+        assert_eq!(row.get_value(0).unwrap().as_integer().copied(), Some(7));
+        assert_eq!(row.get_value(1).unwrap().as_blob().cloned(), Some(vec![0x42]));
         drop(rows);
 
         let mut rows = connection

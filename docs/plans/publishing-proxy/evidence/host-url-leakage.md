@@ -1,0 +1,9 @@
+# Secret registry-host leakage through client output
+
+The selected virtual host is a bearer capability. Anyone who learns it can use its user/group context until revocation. This makes ordinary package-client URL persistence a security property, not merely a cosmetic concern.
+
+npm 11's [lockfile format](https://github.com/npm/cli/blob/v11.21.1/docs/lib/content/configuring-npm/package-lock-json.md) records a `resolved` tarball URL for registry packages; npm says `package-lock.json` is intended for source control. Its [configuration reference](https://docs.npmjs.com/cli/v11/using-npm/config/) says `omit-lockfile-registry-resolved` defaults to false and omits that field when true, with slower later installs because tarball endpoints must be resolved again. The same reference permits registry configuration through environment variables. This establishes a documented leak path if a full capability-host artifact URL is emitted and then committed. It does not prove every npm version or other client writes the same shape.
+
+User decision C12: no capability host may appear in committed project files. Onboarding puts the secret host in user-local or injected configuration and enables npm's omission setting. Release tests must generate a real lockfile from Probation metadata and check that no capability host appears. The same check must cover supported Python tools and any other client included in the acceptance matrix, plus generated package metadata. If a supported client persists the address into a file intended for source control, its setup is not releasable until the leak is prevented. Server redaction cannot remove a URL after a client has persisted it.
+
+No live client probe for this specific leak has run yet. The source establishes a material risk and a required acceptance check, not a passing check.

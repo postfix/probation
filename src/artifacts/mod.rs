@@ -71,6 +71,20 @@ pub async fn serve_artifact(
     method: &Method,
     range_header: Option<&str>,
 ) -> Result<ArtifactResponse, ApiError> {
+    serve_artifact_in(app, principal, ecosystem, 0, id, filename, method, range_header).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_artifact_in(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    ecosystem: Ecosystem,
+    registry_id: u64,
+    id: ReferenceId,
+    filename: &str,
+    method: &Method,
+    range_header: Option<&str>,
+) -> Result<ArtifactResponse, ApiError> {
     // The ordering point, read before anything else about this request. PERF-01: a
     // locally conclusive answer is reached without a single upstream call.
     let policy = app
@@ -96,7 +110,7 @@ pub async fn serve_artifact(
     // root; serving it there would log the wrong ecosystem for a decision the other
     // ecosystem's policy made. Refusing here is one comparison, and it runs before
     // anything else this request could be measured by.
-    if row.reference.ecosystem != ecosystem {
+    if row.registry_id != registry_id || row.reference.ecosystem != ecosystem {
         return Err(ApiError::NotFound);
     }
     // The filename is part of what the reference *is*; a URL that names another one
@@ -114,9 +128,12 @@ pub async fn serve_artifact(
 
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
-    ensure_membership(app, &row).await?;
+    let origin = principal.and_then(|p| p.registry_origin.as_ref());
+    let private_cidrs = principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice());
+    let read_authorization = principal.and_then(|p| p.registry_read_authorization.as_deref());
+    ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
 
-    let (file, pinned, downloaded) = open_or_download(app, &row, pinned).await?;
+    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, origin, private_cidrs, read_authorization).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
     // exactly this: were the bytes already verified on disk, or did this request pay
     // for the transfer?
@@ -133,7 +150,7 @@ pub async fn serve_artifact(
     // working out whether the TTL lapsed mid-flight: it is one comparison stricter,
     // and a great deal simpler to be sure of.
     if downloaded {
-        ensure_membership(app, &row).await?;
+        ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
     }
 
     // The final check. SPEC §9: "A request is authorized by its final successful
@@ -178,10 +195,10 @@ pub async fn serve_artifact(
 /// Every artifact request reaches this, warm ones included, so the set it asks for is
 /// parsed once per project snapshot and kept with it rather than recomputed per call
 /// (SPEC §12's warm-artifact target).
-async fn ensure_membership(app: &App, row: &ReferenceRow) -> Result<(), ApiError> {
+async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Principal>, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet], read_authorization: Option<&str>) -> Result<(), ApiError> {
     let advertised = match row.reference.ecosystem {
-        Ecosystem::Npm => npm::ensure_fresh_project(app, &row.reference.name).await?,
-        Ecosystem::PyPi => pypi::ensure_fresh_project(app, &row.reference.name).await?,
+        Ecosystem::Npm => npm::ensure_fresh_project_at(app, &row.reference.name, row.registry_id, origin, private_cidrs, read_authorization).await?,
+        Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {
@@ -322,6 +339,9 @@ async fn open_or_download(
     app: &Arc<App>,
     row: &ReferenceRow,
     pinned: Vec<Digest>,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<(PinnedFile, Vec<Digest>, bool), ApiError> {
     if let (Some(key), Some(size)) = (row.content_key, row.pinned_size) {
         match app.content.open_verified(&key, size).await {
@@ -349,7 +369,7 @@ async fn open_or_download(
         }
     }
 
-    let verified = download::fetch(app, row)
+    let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned))
         .await
         .map_err(|err| download_error(&err, app.clock.now_utc_micros()))?;
     // The row in hand predates the pins this download just established.

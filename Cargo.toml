@@ -11,7 +11,7 @@ keywords = ["npm", "pypi", "supply-chain", "proxy", "security"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Planning history and analyzer state are repository-only; the crate ships source,
 # tests and the operator documents.
-exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude", "/docker-compose.test.yml", "/tests/e2e", "/deploy"]
+exclude = ["/docs/plans", "/docs/adr", "/docs/backlog.md", "/.smtc", "/.claude", "/.scratch", "/tmp", "/docker-compose.test.yml", "/tests/e2e", "/deploy"]
 
 # The firewall stays the root package, so every existing path and test is unchanged;
 # `crates/` holds what it shares with the management server.
@@ -59,6 +59,7 @@ bench = false
 test-support = []
 
 [dependencies]
+aes-gcm = "0.10.3"
 arc-swap = "1.9.2"
 async-trait = "0.1.92"
 # Every default except `tower-log`: that one routes tracing events to the `log` crate
@@ -71,7 +72,9 @@ bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
 fs4 = "1.1.0"
 futures-util = "0.3.34"
+getrandom = "0.3.4"
 hex = "0.4.3"
+ipnet = "2.12.2"
 jiff = "0.2.37"
 lru = "0.18.4"
 nodejs-semver = "5.0.0"
@@ -83,6 +86,7 @@ probation-policy = { path = "crates/probation-policy", version = "0.2.2" }
 # `rustls` (Gate 3 dependency note 3). The three decompression codecs are opt-in in
 # 0.13 and are enabled deliberately (note 2); `deflate` is deliberately left off.
 reqwest = { version = "0.13.5", features = ["stream", "gzip", "brotli", "zstd"] }
+rustls = "0.23.45"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha1 = "0.11.0"

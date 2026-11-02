@@ -7,6 +7,8 @@
 
 pub mod activity;
 mod cache;
+pub mod certificates;
+pub mod enterprise_certificate;
 pub mod client;
 mod lock;
 pub mod report;
@@ -24,10 +26,12 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderValue};
 use probation_policy::PlaceRef;
 use probation_policy::api::{
-    ActivityEvent, ActivityLayer, ActivityResult, ChainLink, FirewallReport, KeyHash, KeyId,
-    KeyLookup, LayersResponse, LimitSource, OrgId, ReportStatus, Upstreams,
+    ActivityEvent, ActivityLayer, ActivityResult, CertificateAdmission,
+    CertificateAdmissionRequest, ChainLink, FirewallReport, KeyHash, KeyId, KeyLookup,
+    LayersResponse, LimitSource, OrgId, RegistryId, ReportStatus, Upstreams,
 };
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use self::activity::ActivityQueue;
 use self::cache::{
@@ -39,6 +43,7 @@ use self::sync::KeySync;
 use crate::clock::Clock;
 use crate::concurrency::{Resolution, SingleFlight};
 use crate::config::{ManagementConfig, SettingsState};
+use crate::managed::certificates::VerifiedPeer;
 use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, Ecosystem, PolicyVerdict};
 
 /// Who a request runs as. Never holds the key or its hash.
@@ -59,6 +64,13 @@ pub struct Principal {
     pub org: Option<OrgId>,
     /// Platform -> … -> place.
     pub chain: Arc<[PlaceRef]>,
+    /// Immutable origin selected by the live registry join. Key principals have none.
+    pub registry_origin: Option<Url>,
+    /// Request-scoped shared credential, for ordinary selected-registry reads only.
+    pub registry_read_authorization: Option<String>,
+    pub registry_trusted: bool,
+    pub registry_private_cidrs: Vec<ipnet::IpNet>,
+    pub deletion_scopes: Vec<probation_policy::api::RegistryDeletionScope>,
 }
 
 /// Why `authenticate` refused.
@@ -137,6 +149,123 @@ const ASK_CALLS: u32 = 6;
 const MAX_APPLY_ERROR_BYTES: usize = 2048;
 
 impl Managed {
+    /// Certificate admission never consults the key cache: every request gets one
+    /// current management answer and its policy layers from the same snapshot.
+    pub async fn admit_certificate(
+        &self,
+        peer: &VerifiedPeer,
+        registry: RegistryId,
+        ecosystem: Ecosystem,
+        socket: IpAddr,
+        headers: &HeaderMap,
+        charge_rate: bool,
+    ) -> Result<Principal, Refusal> {
+        let client = self
+            .proxies
+            .client(socket, headers)
+            .ok_or(Refusal::Network(socket.to_canonical()))?;
+        let answer = self
+            .client
+            .certificate(CertificateAdmissionRequest {
+                registry,
+                ecosystem,
+                chain: peer.chain.iter().cloned().collect(),
+            })
+            .await
+            .map_err(|_| Refusal::Busy)?;
+        let CertificateAdmission::Granted {
+            registry: granted_registry,
+            target_url,
+            read_authorization,
+            trusted,
+            registry_private_cidrs,
+            deletion_scopes,
+            enterprise_status,
+            org,
+            member: _,
+            place,
+            layers,
+            rate_limit,
+            rate_limit_source,
+        } = answer
+        else {
+            return Err(Refusal::Unauthenticated);
+        };
+        if let Some(status) = enterprise_status.as_ref() {
+            enterprise_certificate::resolve_enterprise_certificate(
+                &enterprise_certificate::EnterprisePeer { chain: peer, status },
+            ).await.map_err(|_| Refusal::Unauthenticated)?;
+        }
+        let registry_private_cidrs = registry_private_cidrs.iter()
+            .map(|cidr| cidr.parse::<ipnet::IpNet>().map_err(|_| Refusal::Unauthenticated))
+            .collect::<Result<Vec<_>, _>>()?;
+        let registry_origin = target_url
+            .as_deref()
+            .map(|target| {
+                let url = Url::parse(target).map_err(|_| Refusal::Unauthenticated)?;
+                crate::upstream::OriginSet::selected_npm_with_private(url.clone(), registry_private_cidrs.clone())
+                    .map_err(|_| Refusal::Unauthenticated)?;
+                Ok(url)
+            })
+            .transpose()?;
+        if granted_registry != registry
+            || layers
+                .first()
+                .is_none_or(|layer| layer.place.kind != probation_policy::LayerKind::Platform)
+            || layers.last().is_none_or(|layer| layer.place != place)
+            || !layers.iter().any(|layer| {
+                layer.place
+                    == PlaceRef {
+                        kind: probation_policy::LayerKind::Org,
+                        id: org.0,
+                    }
+            })
+        {
+            return Err(Refusal::Unauthenticated);
+        }
+        let chain: Arc<[PlaceRef]> = layers
+            .iter()
+            .map(|layer| layer.place)
+            .collect::<Vec<_>>()
+            .into();
+        let layer_values = layers
+            .into_iter()
+            .map(|layer| layer.layer)
+            .collect::<Vec<_>>();
+        let account = PlaceRef {
+            kind: probation_policy::LayerKind::Org,
+            id: org.0,
+        };
+        let policy = probation_policy::resolve(&layer_values);
+        let policy = if trusted {
+            CompiledPolicy::managed_trusted(policy)
+        } else {
+            CompiledPolicy::managed(policy)
+        };
+        // shortcut: certificate activity has no key row; add a separate certificate
+        // activity identity when the activity schema supports it.
+        let principal = Principal {
+            place,
+            key_id: KeyId(0),
+            policy: Arc::new(policy),
+            account,
+            rate_limit,
+            rate_limit_source,
+            org: Some(org),
+            chain,
+            registry_origin,
+            registry_read_authorization: read_authorization,
+            registry_trusted: trusted,
+            registry_private_cidrs,
+            deletion_scopes,
+        };
+        if charge_rate {
+            self.admit(&principal, client)?;
+        } else {
+            self.admit_network(&principal, client)?;
+        }
+        Ok(principal)
+    }
     /// Loads `<data_dir>/managed-cache.json` when there is one, so a restart while the
     /// server is down keeps serving (C19, C115).
     pub fn new(
@@ -178,6 +307,11 @@ impl Managed {
                         rate_limit_source: key.rate_limit_source,
                         org: key.org,
                         chain: key.chain.into(),
+                        registry_origin: None,
+                        registry_read_authorization: None,
+                        registry_trusted: false,
+                        registry_private_cidrs: Vec::new(),
+                        deletion_scopes: Vec::new(),
                     },
                 );
             }
@@ -302,24 +436,31 @@ impl Managed {
 
     /// The network lock, then the account's rate (C30, C66).
     fn admit(&self, principal: &Principal, client: IpAddr) -> Result<(), Refusal> {
-        if self.network_lock.refuses(client, principal.org) {
-            self.record(
-                principal.account,
-                ActivityEvent {
-                    client_ip: Some(client),
-                    ..row(
-                        principal.key_id,
-                        principal.place,
-                        ActivityResult::RefusedNetwork,
-                        "network_lock",
-                        ActivityLayer::Network,
-                    )
-                },
-            );
-            return Err(Refusal::Network(client));
-        }
+        self.admit_network(principal, client)?;
         if !self.rates.admit(principal.account, principal.rate_limit) {
             return Err(Refusal::RateLimited);
+        }
+        Ok(())
+    }
+
+    fn admit_network(&self, principal: &Principal, client: IpAddr) -> Result<(), Refusal> {
+        if self.network_lock.refuses(client, principal.org) {
+            if principal.key_id.0 != 0 {
+                self.record(
+                    principal.account,
+                    ActivityEvent {
+                        client_ip: Some(client),
+                        ..row(
+                            principal.key_id,
+                            principal.place,
+                            ActivityResult::RefusedNetwork,
+                            "network_lock",
+                            ActivityLayer::Network,
+                        )
+                    },
+                );
+            }
+            return Err(Refusal::Network(client));
         }
         Ok(())
     }
@@ -488,6 +629,11 @@ impl Managed {
             rate_limit_source,
             org,
             chain: chain.iter().map(|link| link.place).collect(),
+            registry_origin: None,
+            registry_read_authorization: None,
+            registry_trusted: false,
+            registry_private_cidrs: Vec::new(),
+            deletion_scopes: Vec::new(),
         };
         match self
             .cache
@@ -701,6 +847,9 @@ impl Managed {
         version: Option<&str>,
         verdict: &PolicyVerdict,
     ) {
+        if principal.key_id.0 == 0 {
+            return;
+        }
         let (result, rule, eligible_at) = match verdict.decision {
             Decision::Allow if verdict.would_block => (ActivityResult::WouldBlock, "osv", None),
             Decision::Allow | Decision::Unavailable => return,

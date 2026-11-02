@@ -25,7 +25,9 @@
 //! [`OriginSet::configured`]); every rule here still applies to what they name.
 
 use std::fmt;
+use std::net::IpAddr;
 
+use ipnet::IpNet;
 use url::Url;
 
 /// SPEC §11's origins, used unless configuration names another. Registry and artifact
@@ -81,9 +83,40 @@ pub struct OriginSet {
     pypi_metadata: Url,
     pypi_artifacts: Url,
     allow_private_addresses: bool,
+    private_cidrs: Vec<IpNet>,
 }
 
 impl OriginSet {
+    /// A catalog npm target supplies the request's origin, never a process-wide
+    /// fallback. The same URL builder and redirect admission protect its path prefix.
+    pub fn selected_npm(target: Url) -> Result<OriginSet, UrlRejection> {
+        Self::selected_npm_with_private(target, Vec::new())
+    }
+
+    pub fn selected_npm_with_private(target: Url, private_cidrs: Vec<IpNet>) -> Result<OriginSet, UrlRejection> {
+        if target.scheme() != "https" {
+            return Err(UrlRejection::Scheme);
+        }
+        if target.host_str().is_none() {
+            return Err(UrlRejection::Host);
+        }
+        if !target.username().is_empty() || target.password().is_some() {
+            return Err(UrlRejection::Credentials);
+        }
+        if target.query().is_some() || target.fragment().is_some() {
+            return Err(UrlRejection::PathEscape);
+        }
+        let mut origins = Self::production();
+        origins.npm_metadata = target;
+        origins.private_cidrs = private_cidrs;
+        origins.admit(origins.origin(OriginKind::NpmMetadata), OriginKind::NpmMetadata)?;
+        if let Some(url::Host::Ipv4(ip)) = origins.npm_metadata.host()
+            && !origins.allows_address(IpAddr::V4(ip)) { return Err(UrlRejection::Host); }
+        if let Some(url::Host::Ipv6(ip)) = origins.npm_metadata.host()
+            && !origins.allows_address(IpAddr::V6(ip)) { return Err(UrlRejection::Host); }
+        Ok(origins)
+    }
+
     /// The only constructor `main.rs` calls: HTTPS, default ports, private
     /// addresses rejected.
     pub fn production() -> OriginSet {
@@ -92,6 +125,7 @@ impl OriginSet {
             pypi_metadata: parse_origin(PYPI_METADATA),
             pypi_artifacts: parse_origin(PYPI_ARTIFACTS),
             allow_private_addresses: false,
+            private_cidrs: Vec::new(),
         }
     }
 
@@ -107,6 +141,7 @@ impl OriginSet {
             pypi_metadata: pick(&config.pypi_upstream_url, production.pypi_metadata),
             pypi_artifacts: pick(&config.pypi_artifacts_url, production.pypi_artifacts),
             allow_private_addresses: false,
+            private_cidrs: Vec::new(),
         }
     }
 
@@ -121,6 +156,7 @@ impl OriginSet {
             pypi_metadata: pypi,
             pypi_artifacts: artifacts,
             allow_private_addresses: true,
+            private_cidrs: Vec::new(),
         }
     }
 
@@ -144,6 +180,13 @@ impl OriginSet {
     /// Read by the resolver and by the admission check. There is no setter.
     pub fn allows_private_addresses(&self) -> bool {
         self.allow_private_addresses
+    }
+
+    pub fn private_cidrs(&self) -> &[IpNet] { &self.private_cidrs }
+
+    pub fn allows_address(&self, ip: IpAddr) -> bool {
+        self.allow_private_addresses || super::resolver::is_public(ip)
+            || self.private_cidrs.iter().any(|cidr| cidr.contains(&ip))
     }
 
     /// Which configured origin `url` belongs to, if any. A URL matching none of the

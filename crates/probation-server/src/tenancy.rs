@@ -526,6 +526,7 @@ pub struct MemberRow {
     /// The login belongs to this organisation alone: no personal account, no other
     /// membership (C76).
     pub org_only: bool,
+    pub package_access_disabled: bool,
 }
 
 /// The members of `org`'s organisation whose logins are live, by email.
@@ -533,7 +534,7 @@ pub async fn members(
     pool: &PgPool,
     org: &Authorized<Place>,
 ) -> Result<Vec<MemberRow>, sqlx::Error> {
-    type Row = (i32, i32, String, String, Option<i32>, bool, bool);
+    type Row = (i32, i32, String, String, Option<i32>, bool, bool, bool);
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT m.id, m.login_id,
                 coalesce((SELECT s.email FROM sign_in_methods AS s
@@ -542,7 +543,8 @@ pub async fn members(
                 m.role, m.group_id,
                 EXISTS (SELECT 1 FROM sign_in_methods AS s WHERE s.login_id = m.login_id AND s.org_id = m.org_id),
                 NOT EXISTS (SELECT 1 FROM personal_accounts AS p WHERE p.login_id = m.login_id)
-                    AND NOT EXISTS (SELECT 1 FROM memberships AS o WHERE o.login_id = m.login_id AND o.id <> m.id)
+                    AND NOT EXISTS (SELECT 1 FROM memberships AS o WHERE o.login_id = m.login_id AND o.id <> m.id),
+                m.package_access_disabled_at IS NOT NULL
          FROM memberships AS m JOIN logins AS l ON l.id = m.login_id
          WHERE m.org_id = $1 AND l.deleted_at IS NULL
          ORDER BY email, m.id",
@@ -553,7 +555,7 @@ pub async fn members(
     Ok(rows
         .into_iter()
         .map(
-            |(id, login_id, email, role, group, via_sso, org_only)| MemberRow {
+            |(id, login_id, email, role, group, via_sso, org_only, package_access_disabled)| MemberRow {
                 id,
                 login_id,
                 email,
@@ -561,6 +563,7 @@ pub async fn members(
                 group,
                 via_sso,
                 org_only,
+                package_access_disabled,
             },
         )
         .collect())

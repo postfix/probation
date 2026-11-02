@@ -30,6 +30,7 @@
 
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { addressOf, editConfig, errorOf, runOnNetwork } from "../harness/ops.mjs";
 
 export const meta = {
@@ -45,17 +46,21 @@ const V6_OUTSIDE = "2001:db8:99::1";
 
 const LB_CONF = `resolver \${NGINX_LOCAL_RESOLVERS} valid=2s ipv6=off;
 proxy_http_version 1.1;
+proxy_ssl_server_name on;
+proxy_ssl_name fw1.e2e.test;
+proxy_ssl_trusted_certificate /e2e/ca/ca.pem;
+proxy_ssl_verify on;
 server {
   listen 8080;
-  location / { set $u firewall-1:8080; proxy_pass http://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+  location / { set $u firewall-1:8080; proxy_pass https://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
 }
 server {
   listen 8081;
-  location / { set $u firewall-1:8080; proxy_pass http://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For "$remote_addr:$remote_port"; }
+  location / { set $u firewall-1:8080; proxy_pass https://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For "$remote_addr:$remote_port"; }
 }
 server {
   listen 8082;
-  location / { set $u firewall-1:8080; proxy_pass http://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For $http_x_forwarded_for; }
+  location / { set $u firewall-1:8080; proxy_pass https://$u; proxy_set_header Host fw1.e2e.test; proxy_set_header X-Forwarded-For $http_x_forwarded_for; }
 }
 `;
 
@@ -64,7 +69,7 @@ const FETCH = `const [url, headers] = JSON.parse(process.argv[2]);
 const answer = await fetch(url, { headers });
 console.log(JSON.stringify({ status: answer.status, body: await answer.text() }));
 `;
-const SPRAY = `const base = "https://portal.e2e.test";
+const SPRAY = `const base = "https://portal.e2e.test:8444";
 async function once(email) {
   const page = await fetch(base + "/signin");
   const cookie = page.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
@@ -102,6 +107,9 @@ export default async function networkLock(h) {
   writeFileSync(template, LB_CONF);
   const removals = [];
   try {
+    const connected = spawnSync(h.stack.engine, ["network", "connect", `${h.stack.project}_e2e`, h.stack.container("client-npm")], { encoding: "utf8" });
+    expect(connected.status === 0, `connect office client to operations network: ${show(connected)}`);
+    removals.push(() => spawnSync(h.stack.engine, ["network", "disconnect", `${h.stack.project}_e2e`, h.stack.container("client-npm")], { encoding: "utf8" }));
     for (const [name, ip] of [["lb-trusted", lbTrusted], ["lb-untrusted", lbUntrusted]]) {
       removals.push(
         runOnNetwork(h.stack, {
@@ -109,7 +117,7 @@ export default async function networkLock(h) {
           ip,
           image: "docker.io/library/nginx:1.27-alpine",
           env: { NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1" },
-          volumes: [`${template}:/etc/nginx/templates/default.conf.template:ro`],
+          volumes: [`${template}:/etc/nginx/templates/default.conf.template:ro`, `${join(h.stack.work, "ca")}:/e2e/ca:ro`],
         }),
       );
     }
@@ -151,9 +159,11 @@ export default async function networkLock(h) {
       const body = errorOf(answer);
       return answer.status === 403 && body.error === "NETWORK_NOT_ALLOWED" && body.reason === `this API key may not be used from ${address}`;
     };
-    const npm = (keys) => h.npm("install e2e-left@1.0.0 --no-audit --no-fund --fetch-retries=0 --cache \"$PWD/.npm-cache\"", { npmrc: keys.npmrc });
+    const npm = (keys) => h.npm(`view e2e-left@1.0.0 version --fetch-retries=0 --cache "$PWD/.npm-cache-${h.unique("lock")}"`, {
+      npmrc: `registry=http://${lbTrusted}:8080/npm/\n//${lbTrusted}:8080/:_authToken=${keys.key}\n`,
+    });
     const pkg = "/npm/e2e-left";
-    const gateway = h.firewalls.fw1;
+    const gateway = `http://${lbTrusted}:8080`;
 
     let run = npm(globexKey);
     expect(run.status === 0, `Globex installs from the office before any lock: ${show(run)}`);

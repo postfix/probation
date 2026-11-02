@@ -2,6 +2,7 @@
 {% block content %}
 <h1>Global admin</h1>
 <p class="mut">Only global admins (the service operators) see this page. The platform policy, which every organisation and personal account inherits, is edited in the <a href="/policy/platform-1">policy editor (layer: Platform)</a>.</p>
+<p><a href="/admin/private-egress">Private egress approvals</a></p>
 {% if let Some(error) = view.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
 
 <section aria-labelledby="orgs-heading">

@@ -1,12 +1,18 @@
 //! The explicit router (no catch-all), the layer stack, and graceful shutdown.
 
 pub mod artifact_routes;
+pub mod audit_filter;
 pub mod error;
 pub mod health;
 pub mod limits;
 pub mod logging;
 pub mod npm_routes;
 pub mod pypi_routes;
+pub mod registry_read;
+pub mod registry_action;
+pub mod registry_routes;
+pub mod token_packument;
+pub mod unpublish_reference;
 
 use std::sync::Arc;
 
@@ -49,10 +55,22 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/npm/-", get(unknown_route))
         .route("/npm/-/{*rest}", get(artifact_routes::serve_npm_namespace))
         .route("/npm/{package}", get(npm_routes::package))
+        .route("/registry/npm/{registry}/-/ping", get(registry_routes::ping))
+        .route("/registry/npm/{registry}/-/whoami", get(registry_routes::whoami))
+        .route("/registry/npm/{registry}/-/v1/search", get(registry_routes::search))
         .route(
             "/npm/{package}/{version_or_tag}",
             get(npm_routes::package_version),
         )
+        .route(
+            "/registry/npm/{registry}/{package}/{version}",
+            get(registry_routes::version),
+        )
+        .route("/registry/npm/{registry}/{package}", get(registry_routes::package).put(registry_routes::package_action))
+        .route("/registry/npm/{registry}/{package}/-rev/{revision}", axum::routing::put(registry_routes::revision_action).delete(registry_routes::revision_action))
+        .route("/registry/pypi/{registry}/simple/", get(pypi_routes::selected_index))
+        .route("/registry/pypi/{registry}/simple/{project}/", get(pypi_routes::selected_project))
+        .route("/registry/pypi/{registry}/simple/{project}", get(pypi_routes::selected_project_without_slash))
         .route("/pypi/simple/", get(pypi_routes::index))
         .route("/pypi/simple/{project}/", get(pypi_routes::project))
         .route(
@@ -62,9 +80,24 @@ pub fn router(app: Arc<App>) -> Router {
         // Only the routes above: the artifact routes below serve `HEAD` as SPEC §11
         // lists it.
         .route_layer(middleware::from_fn(get_only))
+        .route("/registry/pypi/{registry}/", axum::routing::post(pypi_routes::selected_upload))
+        .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
+        .route("/registry/npm/{registry}/-/npm/v1/security/audits/quick", axum::routing::post(registry_routes::audit_quick))
+        .route("/registry/npm/{registry}/-/{*rest}", axum::routing::any(registry_routes::action))
+        .route("/registry/npm/{registry}/{package}/-/{filename}", get(registry_routes::package_tarball).head(registry_routes::package_tarball))
+        .route("/registry/npm/{registry}/{package}/-/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::package_tarball_delete))
+        .route("/registry/npm/{registry}/artifacts/{reference_id}/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::unsupported_artifact_delete))
         .route(
             "/npm/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_npm).head(artifact_routes::serve_npm),
+        )
+        .route(
+            "/registry/npm/{registry}/artifacts/{reference_id}/{filename}",
+            get(registry_routes::artifact).head(registry_routes::artifact),
+        )
+        .route(
+            "/registry/pypi/{registry}/artifacts/{reference_id}/{filename}",
+            get(pypi_routes::selected_artifact).head(pypi_routes::selected_artifact),
         )
         .route(
             "/pypi/artifacts/{reference_id}/{filename}",
@@ -89,7 +122,17 @@ pub fn router(app: Arc<App>) -> Router {
             Arc::clone(&app),
             logging::decide,
         ))
+        .layer(middleware::from_fn(bound_headers))
         .with_state(app)
+}
+
+async fn bound_headers(request: Request, next: Next) -> Response {
+    let size = request.headers().iter().fold(0usize, |total, (name, value)|
+        total.saturating_add(name.as_str().len()).saturating_add(value.as_bytes().len()));
+    if size > 64 * 1024 {
+        return StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.into_response();
+    }
+    next.run(request).await
 }
 
 /// What every package route asks before it does any work: a request permit

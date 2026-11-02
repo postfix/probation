@@ -5,7 +5,10 @@
 use std::time::Duration;
 
 use probation_policy::PlaceRef;
-use probation_policy::api::{KeyHash, KeyLookup, KeyLookupRequest, LayersRequest, LayersResponse};
+use probation_policy::api::{
+    CertificateAdmission, CertificateAdmissionRequest, KeyHash, KeyLookup, KeyLookupRequest,
+    LayersRequest, LayersResponse,
+};
 use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde::Serialize;
@@ -63,6 +66,13 @@ impl SyncClient {
     pub async fn layers(&self, places: Vec<PlaceRef>) -> Result<LayersResponse, CallError> {
         self.call("api/v1/sync/layers", &LayersRequest { places })
             .await
+    }
+
+    pub async fn certificate(
+        &self,
+        asked: CertificateAdmissionRequest,
+    ) -> Result<CertificateAdmission, CallError> {
+        self.call("api/v1/sync/certificate", &asked).await
     }
 
     /// One `POST`, sent and read within `request_timeout_seconds`.

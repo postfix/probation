@@ -159,6 +159,7 @@ pub struct App {
     /// The bounded work SPEC §10 requires: active requests, artifact downloads, and
     /// the two response deadlines.
     pub limits: Limits,
+    pub(crate) login_rates: http::registry_action::LoginRates,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -343,6 +344,7 @@ impl App {
             content,
             downloads: DownloadCoordinator::new(),
             limits,
+            login_rates: http::registry_action::LoginRates::default(),
             delivery,
             osv,
             managed,
@@ -366,11 +368,9 @@ impl App {
         // `tls_cert_path`/`tls_key_path` set means `serve` terminates TLS itself,
         // instead of requiring a reverse proxy in front of it for that one job.
         let tls = match (&app.config.tls_cert_path, &app.config.tls_key_path) {
-            (Some(cert), Some(key)) => Some(
-                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
-                    .await
-                    .map_err(StartupError::Tls)?,
-            ),
+            (Some(cert), Some(key)) => {
+                Some(managed::certificates::tls_config(cert, key).map_err(StartupError::Tls)?)
+            }
             _ => None,
         };
 
@@ -412,8 +412,11 @@ impl App {
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {
-                        let server =
-                            axum_server::from_tcp_rustls(std_listener, tls_config)?.handle(handle);
+                        let server = axum_server::from_tcp(std_listener)?
+                            .acceptor(managed::certificates::PeerAcceptor(
+                                axum_server::tls_rustls::RustlsAcceptor::new(tls_config),
+                            ))
+                            .handle(handle);
                         if connect_info {
                             server
                                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())

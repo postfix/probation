@@ -13,8 +13,7 @@
 //   no upload time (its first-seen time), blocklist revision 300;
 // - the new image starts on that volume with revision 299 already in the producer's
 //   file: the persisted 300 still rules, the install is served, the hold stays, and
-//   the volume's rows (revision, pins, first-seen times, read with sqlite3 while it is
-//   stopped) are the ones the previous release wrote;
+//   the old registry-ambiguous package references are invalidated and rebuilt;
 // - the same volume goes managed (registered on /fleet): it serves the operator's key;
 // - rolled back to the previous image with the managed config, it refuses cleanly (exit
 //   non-zero, says why, no restart loop), and the new image starts again on the volume.
@@ -139,6 +138,7 @@ async function standaloneUpgrade(h, o, prev) {
   // The previous image's own shipped config, edited for this host.
   const shipped = o.engine(["run", "--rm", "--entrypoint", "cat", prev.firewall, "/etc/probation/config.toml"]).stdout;
   const config = shipped
+    .replace(/^listen = .*$/m, 'listen = "0.0.0.0:8080"\ntls_cert_path = "/e2e/tls/cert.pem"\ntls_key_path = "/e2e/tls/key.pem"')
     .replace(/^public_url = .*$/m, 'public_url = "https://fw-standalone.e2e.test"')
     .replace(/^blocklist_file = .*$/m, 'blocklist_file = "/srv/producer/blocklist.json"')
     .replace(/^blocklist_poll_seconds = .*$/m, "blocklist_poll_seconds = 2");
@@ -159,8 +159,7 @@ async function standaloneUpgrade(h, o, prev) {
     expect(answer.status === 403 && before > 0, `1.1.0 is held by the freeze: ${answer.status} ${answer.headers["retry-after"]}`);
 
     // 2. The new image on the same volume. What the previous release persisted is read
-    //    from the stopped volume first: the blocklist revision, and each reference of
-    //    the package with its first-seen time and pinned digest.
+    //    from the stopped volume first: the blocklist revision and old references.
     h.log("standalone 2: the new image on the same volume");
     fw.stop();
     fw.rm();
@@ -180,17 +179,17 @@ async function standaloneUpgrade(h, o, prev) {
     expect(run.status === 0, `the install after the upgrade: ${run.stderr}`);
     answer = await held();
     const after = Number(answer.headers["retry-after"]);
-    expect(answer.status === 403 && after <= before, `the hold keeps its first-seen time: Retry-After ${before} before, ${answer.status} ${after} after`);
-    // The new release kept the rows as they were (stopped again to read them).
+    expect(answer.status === 403 && after <= before, `the published release remains held: Retry-After ${before} before, ${answer.status} ${after} after`);
+    // The schema upgrade invalidates references without registry identity.
     fw.stop();
     const kept = volumeState(o, volume, pkg);
     fw.start();
     await h.firewallReady("fw-standalone", 60_000);
     expect(kept.revision === 300, `revision 300 is still the persisted one: ${JSON.stringify(kept)}`);
-    for (const row of persisted.references) {
-      const now = kept.references.find((r) => r.filename === row.filename);
-      expect(now && now.first_seen === row.first_seen && now.pinned === row.pinned, `${row.filename} keeps its first-seen time and pin: ${JSON.stringify(row)} then ${JSON.stringify(now)}`);
-    }
+    expect(!kept.references.some((r) => r.filename.endsWith(".whl")), `the ambiguous PyPI reference was invalidated: ${JSON.stringify(kept.references)}`);
+    expect(kept.references.some((r) => r.filename.endsWith(".tgz") && r.pinned), `the npm install repinned its reference: ${JSON.stringify(kept.references)}`);
+    answer = await h.request(`${base}/pypi/simple/${pkg}/`);
+    expect(answer.status === 200, `the PyPI listing can be rebuilt: ${answer.status}`);
 
     // 3. The same volume goes managed.
     h.log("standalone 3: the same volume goes managed");
@@ -198,7 +197,8 @@ async function standaloneUpgrade(h, o, prev) {
     answer = await h.operator.portal.post("/fleet/register", { csrf: fleet.csrf, name: "firewall-upgraded", sources: "0.0.0.0/0" });
     const token = answer.body.match(/<code id="new-token">([^<]+)<\/code>/)?.[1];
     expect(token, `register firewall-upgraded: ${answer.status}`);
-    const managed = o.managedConfig("fw-standalone.e2e.test");
+    const managed = o.managedConfig("fw-standalone.e2e.test")
+      .replace(/^listen = .*$/m, 'listen = "0.0.0.0:8080"\ntls_cert_path = "/e2e/tls/cert.pem"\ntls_key_path = "/e2e/tls/key.pem"');
     fw.stop();
     fw.rm();
     fw = o.firewall({ name: "firewall-standalone", config: managed, token, volume });
@@ -213,10 +213,10 @@ async function standaloneUpgrade(h, o, prev) {
     fw.rm();
     const old = o.firewall({ name: "firewall-standalone", image: prev.firewall, config: managed, token, volume, restart: "no" });
     if (!prev.server) {
-      // A release without managed mode refuses [management] as an unknown key.
+      // A release without managed mode refuses a later config key cleanly.
       await h.waitFor("the previous release stops", () => !old.state().running, { timeout: 30_000 });
       const refusal = old.logs();
-      expect(old.state().exitCode !== 0 && /management/.test(refusal), `the previous release refuses the managed config, saying why: exit ${old.state().exitCode}\n${refusal.slice(-1500)}`);
+      expect(old.state().exitCode !== 0 && /invalid configuration.*unknown key/.test(refusal), `the previous release refuses the managed config, saying why: exit ${old.state().exitCode}\n${refusal.slice(-1500)}`);
     } else {
       await rolledBack(h, old, base, h.bootstrap.key, `/npm/${pkg}/1.0.0`);
     }

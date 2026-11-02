@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use axum::http::Method;
 use futures_util::{Stream, StreamExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
@@ -33,6 +34,16 @@ pub use reqwest_transport::ReqwestTransport;
 pub trait Transport: Send + Sync + 'static {
     async fn fetch_metadata(&self, req: MetadataRequest)
     -> Result<MetadataResponse, UpstreamError>;
+    async fn fetch_token_packument(&self, _req: MetadataRequest, _authorization: &str)
+    -> Result<MetadataResponse, UpstreamError> {
+        Err(UpstreamError::Status(501))
+    }
+    async fn fetch_named_read(&self, _req: NamedReadRequest) -> Result<Bytes, UpstreamError> {
+        Err(UpstreamError::Status(501))
+    }
+    async fn send_action(&self, _req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
+        Err(UpstreamError::Status(501))
+    }
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError>;
 }
 
@@ -52,9 +63,43 @@ impl UpstreamValidators {
 
 pub struct MetadataRequest {
     pub url: Url,
+    /// Live selected catalog origin; None uses the configured standalone origins.
+    pub origin: Option<Url>,
+    pub private_cidrs: Vec<ipnet::IpNet>,
+    /// Configured registry read credential; never used by token packuments.
+    pub read_authorization: Option<String>,
     pub accept: &'static str,
     pub validators: Option<UpstreamValidators>,
     pub max_bytes: u64,
+}
+
+pub struct NamedReadRequest {
+    pub url: Url,
+    pub origin: Url,
+    pub private_cidrs: Vec<ipnet::IpNet>,
+    pub method: Method,
+    pub authorization: Option<String>,
+    pub content_encoding: Option<&'static str>,
+    pub body: Bytes,
+    pub max_bytes: u64,
+}
+
+pub struct ActionRequest {
+    pub url: Url,
+    pub origin: Url,
+    pub private_cidrs: Vec<ipnet::IpNet>,
+    pub method: Method,
+    pub authorization: Option<String>,
+    pub content_type: Option<String>,
+    pub body: tokio::fs::File,
+    pub body_len: u64,
+    pub max_bytes: u64,
+}
+
+pub struct ActionResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Bytes,
 }
 
 pub enum MetadataResponse {
@@ -72,6 +117,9 @@ pub enum MetadataResponse {
 
 pub struct ArtifactRequest {
     pub url: Url,
+    pub origin: Option<Url>,
+    pub private_cidrs: Vec<ipnet::IpNet>,
+    pub read_authorization: Option<String>,
     pub max_bytes: u64,
 }
 
@@ -166,12 +214,28 @@ impl Limited {
 
 #[async_trait]
 impl Transport for Limited {
+    async fn send_action(&self, req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.send_action(req).await
+    }
+
     async fn fetch_metadata(
         &self,
         req: MetadataRequest,
     ) -> Result<MetadataResponse, UpstreamError> {
         let _slot = self.slot().await;
         self.inner.fetch_metadata(req).await
+    }
+
+    async fn fetch_token_packument(&self, req: MetadataRequest, authorization: &str)
+    -> Result<MetadataResponse, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.fetch_token_packument(req, authorization).await
+    }
+
+    async fn fetch_named_read(&self, req: NamedReadRequest) -> Result<Bytes, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.fetch_named_read(req).await
     }
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {

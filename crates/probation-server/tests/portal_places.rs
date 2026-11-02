@@ -1679,7 +1679,8 @@ async fn org_admin_routes(db: &Db, world: &World) -> Vec<(&'static str, String)>
         .map(|(method, path)| {
             let concrete = path
                 .replace("{id}", &id_for(path))
-                .replace("{org}", &id_for(path));
+                .replace("{org}", &id_for(path))
+                .replace("{registry}", "999999");
             (method, concrete)
         })
         .collect()
@@ -1839,6 +1840,64 @@ async fn admin_browser(fx: &Fixture, email: &str) -> Browser {
     let mut browser = fx.signed_in(email).await;
     turn_totp_on(&mut browser).await;
     browser
+}
+
+#[tokio::test]
+async fn t_registry_read_credential_is_sealed_and_not_listed() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let path = format!("/org/{}/registries", world.acme.id);
+    let credential = "Bearer shared-read-secret-123";
+    let added = admin.submit(&path, &path, &[
+        ("name", "Private npm"), ("ecosystem", "npm"),
+        ("target_url", "https://packages.example.test/"),
+        ("read_authorization", credential),
+    ]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let catalog = admin.get(&path).await;
+    assert_eq!(catalog.status, StatusCode::OK);
+    assert!(!catalog.has(credential));
+    let sealed: Vec<u8> = sqlx::query_scalar(
+        "SELECT read_authorization_enc FROM registries WHERE org_id = $1 AND name = 'Private npm'",
+    ).bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    assert!(!sealed.windows(credential.len()).any(|bytes| bytes == credential.as_bytes()));
+    let secrets = accounts::SecretBox::new(common::SECRET_KEY);
+    assert_eq!(secrets.open(&format!("registry read org {}", world.acme.id), &sealed).as_deref(), Some(credential.as_bytes()));
+    assert!(secrets.open(&format!("registry read org {}", world.globex.id), &sealed).is_none());
+}
+
+#[tokio::test]
+async fn t_registry_read_credential_can_be_replaced_and_cleared() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let added = admin.submit(&catalog, &catalog, &[
+        ("name", "Rotating npm"), ("ecosystem", "npm"),
+        ("target_url", "https://packages.example.test/"),
+        ("read_authorization", "Bearer old-secret"),
+    ]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER);
+    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Rotating npm'")
+        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let action = format!("{catalog}/{registry}/read-credential");
+    let changed = admin.submit(&catalog, &action, &[("read_authorization", "Bearer new-secret")]).await;
+    assert_eq!(changed.status, StatusCode::SEE_OTHER, "{}", changed.body);
+    let sealed: Vec<u8> = sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
+        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
+    let secrets = accounts::SecretBox::new(common::SECRET_KEY);
+    assert_eq!(secrets.open(&format!("registry read org {}", world.acme.id), &sealed).as_deref(), Some(b"Bearer new-secret".as_slice()));
+    assert!(!admin.get(&catalog).await.has("new-secret"));
+
+    let cleared = admin.submit(&catalog, &action, &[("clear", "on")]).await;
+    assert_eq!(cleared.status, StatusCode::SEE_OTHER, "{}", cleared.body);
+    let stored: Option<Vec<u8>> = sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
+        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
+    assert!(stored.is_none());
+    let identity: (String, String) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE id = $1")
+        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(identity, ("npm".into(), "https://packages.example.test/".into()));
 }
 
 async fn group_of(db: &Db, member: PlaceRef) -> Option<i32> {
@@ -4200,7 +4259,7 @@ async fn t_cross_tenant_routes_places() {
             let csrf = ana.get("/keys").await.csrf();
             let mut answers = Vec::new();
             for id in [&globex_id, &unknown] {
-                let concrete = path.replace("{id}", id).replace("{org}", id);
+                let concrete = path.replace("{id}", id).replace("{org}", id).replace("{registry}", "999999");
                 let page = match method {
                     "GET" => ana.get(&concrete).await,
                     _ => {

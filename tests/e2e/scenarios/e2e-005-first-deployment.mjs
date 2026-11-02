@@ -75,8 +75,12 @@ export default async function firstDeployment(h) {
     h.start("server");
     await h.waitFor("the portal", async () => (await h.request(`${h.portalUrl}/signin`)).status === 200, { timeout: 120_000 });
     const firewall1 = o.firewall({ name: "firewall-1", ip: address.fw1, token: printed.firewall_token,
-      config: readFileSync(join(h.stack.work, "firewall-1.toml"), "utf8") });
-    await h.firewallReady("fw1");
+      config: readFileSync(join(h.stack.work, "firewall-1.toml"), "utf8").replace('url = "https://sync.e2e.test"', 'url = "https://sync.e2e.test:8444"') });
+    try {
+      await h.firewallReady("fw1");
+    } catch (error) {
+      throw new Error(`${error}\n${firewall1.logs()}`);
+    }
     h.log(`firewall-1 at ${firewall1.ip()} is ready`);
 
     // 5. The set-password link in Chromium, then the authenticator, then /admin.
@@ -137,7 +141,7 @@ export default async function firstDeployment(h) {
     await page.click("form[action='/fleet/register'] button[type=submit]");
     const token2 = (await page.locator("#new-token").textContent()).trim();
     expect(token2.startsWith("fwt_"), `firewall-2's token: ${token2}`);
-    o.firewall({ name: "firewall-2", ip: address.fw2, token: token2, config: readFileSync(join(h.stack.work, "firewall-2.toml"), "utf8") });
+    o.firewall({ name: "firewall-2", ip: address.fw2, token: token2, config: readFileSync(join(h.stack.work, "firewall-2.toml"), "utf8").replace('url = "https://sync.e2e.test"', 'url = "https://sync.e2e.test:8444"') });
     await h.firewallReady("fw2");
     await h.waitFor("both firewalls healthy on /fleet", async () => {
       await page.goto("/fleet");

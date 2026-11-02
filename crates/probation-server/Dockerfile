@@ -11,7 +11,7 @@
 FROM docker.io/library/rust:1.96.0-bookworm AS chef
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends cmake perl \
+ && apt-get install --yes --no-install-recommends cmake perl libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 # As in the root `Dockerfile`: dependencies first, in a layer only a manifest or lock
 # change invalidates, then the workspace's own crates.
@@ -47,7 +47,7 @@ LABEL org.opencontainers.image.title="probation-server" \
       org.opencontainers.image.licenses="Elastic-2.0"
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends ca-certificates \
+ && apt-get install --yes --no-install-recommends ca-certificates libssl3 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/target/release/probation-server /usr/local/bin/probation-server

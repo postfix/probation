@@ -1278,7 +1278,8 @@ async fn t_portal_suspended_banner() {
         for path in &routes {
             let concrete = path
                 .replace("{id}", &id_for(path))
-                .replace("{org}", &id_for(path));
+                .replace("{org}", &id_for(path))
+                .replace("{registry}", "999999");
             let answer = browser
                 .submit(
                     "/keys",
@@ -1292,6 +1293,14 @@ async fn t_portal_suspended_banner() {
                         ("email", "x@acme.test"),
                         ("layer", &layer_id(world.acme)),
                         ("file", SAMPLE),
+                        ("identity_field", "uri_san_membership_uuid"),
+                        ("expected_ocsp_url", "https://ocsp.example.test/status"),
+                        ("root_pem", "forged"),
+                        ("chain_pem", "forged"),
+                        ("phase", "good"),
+                        ("ecosystem", "npm"),
+                        ("target_url", "https://registry.npmjs.org/"),
+                        ("purpose", "registry"),
                     ],
                 )
                 .await;
@@ -1658,6 +1667,7 @@ async fn t_sync_limits_change() {
     let state = Arc::new(probation_server::sync::SyncState::new(
         fx.db.app.clone(),
         Vec::new(),
+        Some(probation_server::accounts::SecretBox::new(common::SECRET_KEY)),
     ));
     let router = probation_server::build_router(state).layer(axum::middleware::from_fn(
         move |incoming: axum::extract::Request, next: axum::middleware::Next| {

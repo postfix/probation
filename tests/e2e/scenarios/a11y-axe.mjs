@@ -11,7 +11,7 @@ import { ROOT } from "../harness/stack.mjs";
 export const meta = {
   id: "E2E-A11Y-axe",
   title: "Accessibility walk (axe-core and keyboard) on every portal page, slices 5 to 7",
-  suites: ["nightly"],
+  suites: ["nightly", "release"],
   stack: "own",
 };
 

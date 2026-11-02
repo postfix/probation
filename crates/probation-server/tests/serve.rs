@@ -85,18 +85,22 @@ impl Server {
     /// A connection whose request never finishes: a body of 1000 bytes announced, 10
     /// sent.
     async fn stalled_request(&self) -> tokio::net::TcpStream {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", self.port))
             .await
             .unwrap();
         stream
             .write_all(
-                b"PUT /api/v1/blocklist/org-1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer aut_x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"schema\":",
+                b"PUT /api/v1/blocklist/org-1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer aut_x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\nExpect: 100-continue\r\n\r\n{\"schema\":",
             )
             .await
             .unwrap();
-        // Let the server take the request in before the signal.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut acknowledged = [0; 128];
+        let size = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut acknowledged))
+            .await
+            .expect("server acknowledges the in-flight body")
+            .unwrap();
+        assert!(acknowledged[..size].starts_with(b"HTTP/1.1 100 Continue"));
         stream
     }
 }

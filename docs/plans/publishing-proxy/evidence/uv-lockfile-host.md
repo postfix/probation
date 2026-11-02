@@ -1,0 +1,7 @@
+# uv project lockfile and bearer-host exposure
+
+The approved C12 rule forbids a capability hostname in committed project files. uv's project workflow automatically creates and updates `uv.lock`, and [uv documents that the file should be committed](https://docs.astral.sh/uv/guides/projects/). The [project layout documentation](https://docs.astral.sh/uv/concepts/projects/layout/) says uv manages the lockfile and users should not edit it manually. [uv's index configuration](https://docs.astral.sh/uv/configuration/files/) can keep the configured index in a user-level file or environment variable, but that alone does not keep absolute registry and artifact URLs out of generated lockfiles. Representative [upstream uv lockfile output](https://github.com/astral-sh/ecosystem-analyzer/blob/main/uv.lock) contains absolute registry and artifact URLs.
+
+Consequently, a project `uv lock`/`uv sync` against a bearer host can persist that host to `uv.lock`. No supported uv option was established that substitutes a non-secret hostname for those URLs while retaining a committed, replayable project lockfile. Treat project mode as unresolved until a safe design is proven or the user excludes it from the first release. `uv pip` operations can be assessed separately because they do not require uv's project lockfile.
+
+The release witness must generate a real lockfile from a test capability host and scan it. An unchanged local index configuration is insufficient evidence.

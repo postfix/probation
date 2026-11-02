@@ -91,7 +91,7 @@ export class Pypi {
   /// builds with no build requirement (default: flit_core, which the fakes do not serve).
   /// `untimed: true` lists no upload time (`upload-time: null`), so a firewall falls
   /// back to when it first saw the file.
-  publish({ name, version, uploadedAt, ageSeconds, untimed = false, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend }) {
+  publish({ name, version, uploadedAt, ageSeconds, untimed = false, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend, origin = FILES }) {
     const at = untimed ? null : (uploadedAt ?? new Date(Date.now() - (ageSeconds ?? 0) * 1000).toISOString());
     const key = normalize(name);
     let project = this.projects.get(key);
@@ -108,7 +108,7 @@ export class Pypi {
         uploaded: at,
         requiresPython,
         yanked,
-        url: `${FILES}/packages/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4)}/${filename}`,
+        url: `${origin}/packages/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4)}/${filename}`,
       };
       project.files = project.files.filter((f) => f.filename !== filename);
       project.files.push(file);
@@ -149,8 +149,9 @@ export class Pypi {
     return { status: 200, headers: { "content-type": "text/html" }, body: html };
   }
 
-  handle(req, path, host) {
-    if (host === "files.pythonhosted.org") {
+  handle(req, path, host, body) {
+    if (req.method === "POST" && path === "/") return this.upload(req, body);
+    if (path.startsWith("/packages/") && (host === "files.pythonhosted.org" || host === "pypi.org")) {
       for (const project of this.projects.values()) {
         const file = project.files.find((f) => new URL(f.url).pathname === path);
         if (file) return { status: 200, headers: { "content-type": "application/octet-stream" }, body: file.bytes };
@@ -162,6 +163,38 @@ export class Pypi {
     const json = path.match(/^\/pypi\/([^/]+)\/(?:([^/]+)\/)?json$/);
     if (json) return this.json(decodeURIComponent(json[1]), json[2] && decodeURIComponent(json[2]));
     return { status: 404, body: "Not Found" };
+  }
+
+  upload(req, body) {
+    const credentials = req.headers.authorization?.startsWith("Basic ")
+      ? Buffer.from(req.headers.authorization.slice(6), "base64").toString("utf8").split(":") : [];
+    if (credentials[1] !== "e2e-owner") return { status: 403, body: "Forbidden" };
+    const boundary = req.headers["content-type"]?.match(/^multipart\/form-data; boundary=(.+)$/)?.[1];
+    if (!boundary) return { status: 400, body: "missing multipart boundary" };
+    const raw = body.toString("latin1");
+    const fields = {};
+    let uploaded;
+    for (const part of raw.split(`--${boundary}`).slice(1, -1)) {
+      const split = part.indexOf("\r\n\r\n");
+      if (split < 0) continue;
+      const header = part.slice(0, split);
+      const name = header.match(/name="([^"]+)"/)?.[1];
+      const value = part.slice(split + 4, -2);
+      if (name === "content") uploaded = { filename: header.match(/filename="([^"]+)"/)?.[1], bytes: Buffer.from(value, "latin1") };
+      else if (name) fields[name] = value;
+    }
+    const name = fields.name;
+    const version = fields.version;
+    if (!name || !version || !uploaded?.filename) return { status: 400, body: "missing distribution fields" };
+    const hash = sha256(uploaded.bytes);
+    const key = normalize(name);
+    let project = this.projects.get(key);
+    if (!project) this.projects.set(key, (project = { name, files: [] }));
+    project.files = project.files.filter((f) => f.filename !== uploaded.filename);
+    project.files.push({ filename: uploaded.filename, version, bytes: uploaded.bytes, sha256: hash,
+      uploaded: new Date(Date.now() - 400 * DAY).toISOString(), requiresPython: null, yanked: false,
+      url: `https://pypi.org/packages/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4)}/${uploaded.filename}` });
+    return { status: 200, body: "uploaded" };
   }
 
   /// The JSON API (`/pypi/<name>/json`, `/pypi/<name>/<version>/json`), which Poetry

@@ -1049,6 +1049,11 @@ mod tests {
             rate_limit_source: LimitSource::Default,
             org: None,
             chain: Arc::from([PLATFORM]),
+            registry_origin: None,
+            registry_read_authorization: None,
+            registry_trusted: false,
+            registry_private_cidrs: Vec::new(),
+            deletion_scopes: Vec::new(),
         }
     }
 

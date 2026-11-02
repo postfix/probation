@@ -116,6 +116,7 @@ export function ops(h) {
   const inspect = (container) => JSON.parse(engine(["inspect", container]).stdout)[0];
 
   const pending = [];
+  let gatewayOriginal;
   const o = {
     /// A check that holds only once a known product fix is merged ("needs F<n>"): a
     /// failure is recorded and the scenario goes on, so the rest is still proven;
@@ -203,7 +204,8 @@ export function ops(h) {
       const writes = Object.entries(files).map(
         ([path, content]) => `mkdir -p "$(dirname '${path}')" && echo '${Buffer.from(content).toString("base64")}' | base64 -d > '${path}'`,
       );
-      const argv = ["exec", stack.container(service), "sh", "-c", ["set -e", `mkdir -p ${dir}`, `cd ${dir}`, ...writes, "set +e", script].join("\n")];
+      const clientHome = service.startsWith("client-") ? ["--env", "HOME=/root"] : [];
+      const argv = ["exec", ...clientHome, stack.container(service), "sh", "-c", ["set -e", `mkdir -p ${dir}`, `cd ${dir}`, ...writes, "set +e", script].join("\n")];
       return new Promise((resolve) => {
         const child = spawn(stack.engine, argv);
         let stdout = "";
@@ -216,7 +218,7 @@ export function ops(h) {
 
     /// GET `url` from inside the e2e network (a client container), for services the
     /// gateway does not front: the status code, or 0 when nothing answers.
-    async inside(url, { client = "client-npm", headers = {} } = {}) {
+    async inside(url, { client = "bridge", headers = {} } = {}) {
       const script = `fetch(${JSON.stringify(url)}, {headers: ${JSON.stringify(headers)}, signal: AbortSignal.timeout(5000)}).then(r => console.log(r.status), () => console.log(0))`;
       const run = stack.exec(client, ["node", "-e", script]);
       return Number(run.stdout.trim() || 0);
@@ -241,6 +243,7 @@ export function ops(h) {
         "--network", network, "--network-alias", name, ...(ip ? ["--ip", ip] : []),
         "--restart", restart, "--stop-timeout", "45", ...envs,
         "-v", `${join(stack.work, "ca")}:/e2e/ca:ro`,
+        "-v", `${join(stack.work, "tls")}:/e2e/tls:ro`,
         "-v", `${join(dir, "config.toml")}:/etc/probation/config.toml:ro`,
         "-v", `${join(dir, "firewall.token")}:/e2e/firewall.token:ro`,
         "-v", `${volume}:/var/lib/probation`,
@@ -297,7 +300,7 @@ export function ops(h) {
 sync_interval_seconds = ${h.syncInterval}
 ${extra}
 [management]
-url = "https://sync.e2e.test"
+url = "https://sync.e2e.test:8444"
 token_file = "/e2e/firewall.token"
 lookup_budget_per_second = 200
 client_lookup_allowance_per_second = 100
@@ -352,11 +355,16 @@ trusted_proxies = ["${gateway}/32"]
     /// The gateway drops every connection for sync.e2e.test (the sync proxy failing),
     /// while the portal and the firewalls stay reachable; `syncProxy(true)` restores it.
     syncProxy(up) {
-      const conf = "/etc/nginx/conf.d/default.conf";
-      const script = up
-        ? `test -f /tmp/default.conf.orig && cp /tmp/default.conf.orig ${conf} && nginx -s reload`
-        : `cp ${conf} /tmp/default.conf.orig && sed -i 's/server_name portal.e2e.test sync.e2e.test;/server_name portal.e2e.test;/' ${conf} && printf 'server {\\n listen 443 ssl;\\n server_name sync.e2e.test;\\n return 444;\\n}\\n' >> ${conf} && nginx -s reload`;
-      return stack.exec("gateway", ["sh", "-c", script], { check: up === false });
+      const conf = join(stack.work, "gateway-nginx.conf");
+      if (!up) {
+        gatewayOriginal = readFileSync(conf, "utf8");
+        writeFileSync(conf, gatewayOriginal
+          .replace("server_name portal.e2e.test sync.e2e.test;", "server_name portal.e2e.test;")
+          .replace(/\n}\s*$/, "\n    server { listen 8443 ssl; listen 8444 ssl; server_name sync.e2e.test; return 444; }\n}\n"));
+      } else {
+        writeFileSync(conf, gatewayOriginal);
+      }
+      return stack.exec("gateway", ["nginx", "-s", "reload"]);
     },
 
     /// Waits until `url` (through the bridge) answers `status`.

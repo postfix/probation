@@ -63,6 +63,14 @@ impl PackageDocument {
     /// served, because a reference this instance cannot name is a reference it cannot
     /// check.
     pub fn entries(&self, max_references: u32) -> Result<Vec<VersionEntry>, DocumentError> {
+        self.entries_in_registry(0, max_references)
+    }
+
+    pub fn entries_in_registry(
+        &self,
+        registry_id: u64,
+        max_references: u32,
+    ) -> Result<Vec<VersionEntry>, DocumentError> {
         if self.versions.len() > max_references as usize {
             return Err(DocumentError::TooManyReferences {
                 count: self.versions.len(),
@@ -72,7 +80,7 @@ impl PackageDocument {
 
         let mut entries = Vec::with_capacity(self.versions.len());
         for (version, record) in &self.versions {
-            match self.entry(version, record) {
+            match self.entry(registry_id, version, record) {
                 Ok(entry) => entries.push(entry),
                 Err(reason) => tracing::warn!(
                     package = %self.name,
@@ -85,7 +93,7 @@ impl PackageDocument {
         Ok(entries)
     }
 
-    fn entry(&self, version: &str, record: &Value) -> Result<VersionEntry, UnusableVersion> {
+    fn entry(&self, registry_id: u64, version: &str, record: &Value) -> Result<VersionEntry, UnusableVersion> {
         let dist = record
             .get("dist")
             .and_then(Value::as_object)
@@ -112,7 +120,7 @@ impl PackageDocument {
         };
 
         Ok(VersionEntry {
-            id: ReferenceId::compute(&reference),
+            id: ReferenceId::compute_in_registry(registry_id, &reference),
             reference,
             publication: self.publication_time(version),
             record: record.clone(),

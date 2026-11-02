@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Change trusted CA</title><link rel="stylesheet" href="style.css"><style>[hidden]{display:none!important}</style>
+<header>Probation · Organisation settings</header><main>
+<section class="card" id="confirm"><h1>Replace trusted CA certificates?</h1><p>Client certificates issued only under a removed CA will be refused on the next registry request. Test a client certificate from the new CA before removing the old trust anchor.</p><p><a href="certificate-mode.html">Cancel</a> <a href="?done=1">Replace trusted CA certificates</a></p></section>
+<section class="card" id="done" hidden role="status"><h1>Trusted CA certificates updated</h1><p>Clients from removed CAs are refused. Clients from the new trusted CA can be tested in certificate settings.</p><a href="certificate-mode.html">Back to certificate settings</a></section>
+</main><script>const done=new URLSearchParams(location.search).get('done')==='1';document.querySelector('#confirm').hidden=done;document.querySelector('#done').hidden=!done;</script></html>

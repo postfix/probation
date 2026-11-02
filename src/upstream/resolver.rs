@@ -13,6 +13,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+use ipnet::IpNet;
 
 use crate::upstream::UpstreamError;
 
@@ -20,19 +21,26 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct GuardedResolver {
     allow_private_addresses: bool,
+    private_cidrs: Vec<IpNet>,
 }
 
 impl GuardedResolver {
     pub fn new(allow_private_addresses: bool) -> Arc<GuardedResolver> {
         Arc::new(GuardedResolver {
             allow_private_addresses,
+            private_cidrs: Vec::new(),
         })
+    }
+
+    pub fn with_cidrs(allow_private_addresses: bool, private_cidrs: Vec<IpNet>) -> Arc<GuardedResolver> {
+        Arc::new(GuardedResolver { allow_private_addresses, private_cidrs })
     }
 }
 
 impl Resolve for GuardedResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let allow_private_addresses = self.allow_private_addresses;
+        let private_cidrs = self.private_cidrs.clone();
         let host = name.as_str().to_owned();
         Box::pin(async move {
             // Port 0: reqwest substitutes the URL's port, or the scheme's default.
@@ -48,7 +56,8 @@ impl Resolve for GuardedResolver {
                 // One bad answer refuses the whole name. Returning the rest instead
                 // would let a host that resolves to both a public and an internal
                 // address decide which one we connect to.
-                if let Some(addr) = resolved.iter().find(|addr| !is_public(addr.ip())) {
+                if let Some(addr) = resolved.iter().find(|addr| !is_public(addr.ip())
+                    && !private_cidrs.iter().any(|cidr| cidr.contains(&addr.ip()))) {
                     let rejected = UpstreamError::RejectedAddress { addr: addr.ip() };
                     return Err(Box::new(rejected) as BoxError);
                 }

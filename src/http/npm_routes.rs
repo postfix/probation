@@ -81,7 +81,7 @@ pub(super) fn parse_name(raw: &str) -> Result<PackageName, ApiError> {
 /// SPEC §6: the abbreviated install response is derived from the same snapshot as
 /// the full one. Anything that does not ask for it by name gets the full document,
 /// which is what every other client expects.
-fn negotiate(headers: &HeaderMap) -> Representation {
+pub(super) fn negotiate(headers: &HeaderMap) -> Representation {
     let accepts_abbreviated = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -113,7 +113,7 @@ fn names_abbreviated(entry: &str) -> bool {
     media.eq_ignore_ascii_case(ABBREVIATED_ACCEPT) && quality > 0.0
 }
 
-fn respond(rendered: npm::Rendered) -> Response {
+pub(super) fn respond(rendered: npm::Rendered) -> Response {
     let mut response = rendered.body.to_vec().into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,

@@ -1,0 +1,9 @@
+# Order only; issuer committed-revocation freshness requires an integration witness.
+name: live-status-before-grant
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [check_live_issuer_status]}}
+operation: {calls: {name: [grant_enterprise_certificate]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'resolve_enterprise_certificate'"

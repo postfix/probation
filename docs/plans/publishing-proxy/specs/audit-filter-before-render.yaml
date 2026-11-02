@@ -1,0 +1,10 @@
+# Call order only: audit visibility filtering precedes response rendering.
+# Field-level secrecy and use of the filtered value require runtime controls.
+name: audit-filter-before-render
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [visible_advisories]}}
+operation: {calls: {name: [render_audit_response]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'filter_audit_response'"

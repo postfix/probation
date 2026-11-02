@@ -23,6 +23,7 @@ export function configure({ bridgePort, caFile }) {
 
 function tunnel(host, port, callback) {
   const connect = http.request({ ...bridge, method: "CONNECT", path: `${host}:${port}`, agent: false });
+  connect.setTimeout(10_000, () => connect.destroy(new Error(`bridge CONNECT ${host}:${port} timed out`)));
   connect.on("connect", (answer, socket) => {
     if (answer.statusCode !== 200) {
       socket.destroy();
@@ -42,8 +43,16 @@ function tunnelAgent(secure) {
       if (err) return callback(err);
       if (!secure) return callback(null, socket);
       const secured = tls.connect({ socket, servername: options.servername ?? options.host, ca });
-      secured.once("secureConnect", () => callback(null, secured));
-      secured.once("error", callback);
+      let answered = false;
+      const answer = (error) => {
+        if (answered) return;
+        answered = true;
+        secured.setTimeout(0);
+        callback(error, error ? undefined : secured);
+      };
+      secured.setTimeout(10_000, () => secured.destroy(new Error(`TLS handshake ${options.host}:${options.port} timed out`)));
+      secured.once("secureConnect", () => answer(null));
+      secured.once("error", answer);
     });
   };
   return agent;

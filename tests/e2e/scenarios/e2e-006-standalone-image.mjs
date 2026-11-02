@@ -86,6 +86,8 @@ export default async function standalone(h) {
     const config = `${sample
       .replace(/^blocklist_file = .*$/m, 'blocklist_file = "/srv/producer/blocklist.json"')
       .replace(/^blocklist_poll_seconds = .*$/m, `blocklist_poll_seconds = ${POLL}`)}
+tls_cert_path = "/e2e/tls/cert.pem"
+tls_key_path = "/e2e/tls/key.pem"
 log_file_path = "${LOG}"
 log_file_max_bytes = 16384
 siem_url = "https://fakes.e2e.test/siem"

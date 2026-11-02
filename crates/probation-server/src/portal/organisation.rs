@@ -157,7 +157,7 @@ pub(crate) async fn show(
 }
 
 /// The organisation `org` through `authorized_place`.
-async fn org_place(
+pub(super) async fn org_place(
     portal: &super::Portal,
     signed_in: &SignedIn,
     org: i32,
@@ -183,7 +183,7 @@ fn is_admin(actor: &Actor, place: &Authorized<Place>) -> bool {
 /// The actor on `place` when it is an org admin there (or a global admin): every admin
 /// action's check after `authorized_*`. Without a second factor the role is held back
 /// (`Tenancy::actor`), and the session is sent to set one up (C24, C60).
-async fn admin_on(
+pub(super) async fn admin_on(
     portal: &super::Portal,
     signed_in: &SignedIn,
     place: &Authorized<Place>,

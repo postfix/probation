@@ -1,5 +1,9 @@
 # API and command reference
 
+Start with [Overview](../README.md), [Install](install.md), [Usage](usage.md),
+and [Troubleshooting](troubleshooting.md). This file is the detailed API and
+command reference.
+
 Three references in one file:
 
 1. [The automation API](#1-the-automation-api-blocklists-from-ci): CI jobs and blocklist

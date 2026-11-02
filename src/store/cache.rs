@@ -31,6 +31,7 @@ const SHARDS: usize = 16;
 /// tag it already prints in log lines is what gets hashed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProjectKey {
+    pub registry_id: u64,
     pub ecosystem: Ecosystem,
     pub name: String,
 }
@@ -38,6 +39,19 @@ pub struct ProjectKey {
 impl ProjectKey {
     pub fn new(ecosystem: Ecosystem, name: impl Into<String>) -> ProjectKey {
         ProjectKey {
+            registry_id: 0,
+            ecosystem,
+            name: name.into(),
+        }
+    }
+
+    pub fn in_registry(
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: impl Into<String>,
+    ) -> ProjectKey {
+        ProjectKey {
+            registry_id,
             ecosystem,
             name: name.into(),
         }
@@ -46,6 +60,7 @@ impl ProjectKey {
 
 impl Hash for ProjectKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.registry_id.hash(state);
         self.ecosystem.as_tag().hash(state);
         self.name.hash(state);
     }
@@ -618,6 +633,16 @@ mod tests {
                 .get(&ProjectKey::new(Ecosystem::Npm, "huge"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn same_name_in_two_registries_has_distinct_cache_identity() {
+        let first = ProjectKey::in_registry(41, Ecosystem::Npm, "same-name");
+        let second = ProjectKey::in_registry(42, Ecosystem::Npm, "same-name");
+        assert_ne!(first, second);
+        let cache = cache();
+        cache.insert(first.clone(), Arc::new(1), 8);
+        assert!(cache.get(&second).is_none());
     }
 
     #[test]

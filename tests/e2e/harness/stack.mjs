@@ -2,7 +2,7 @@
 // steps (docs/management-server.md), and the controls scenarios use on it.
 
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ export const OPERATOR_EMAIL = "ops@example.com";
 /// The managed firewalls' sync interval: short, so waits for propagation stay short.
 export const SYNC_INTERVAL = 10;
 const CORE = ["postgres", "gateway", "mail", "bridge"];
-const CLIENTS = ["client-npm", "client-pip"];
+const CLIENTS = ["client-npm", "client-pip", "client-uv", "client-twine"];
 const NIGHTLY_CLIENTS = [
   "client-npm10",
   "client-npm11",
@@ -23,7 +23,6 @@ const NIGHTLY_CLIENTS = [
   "client-yarn-berry",
   "client-bun",
   "client-pip-previous",
-  "client-uv",
   "client-poetry",
 ];
 
@@ -96,7 +95,25 @@ export class Stack {
   /// A command in a running service's container: {status, stdout, stderr}. Straight to
   /// the engine (no compose wrapper, no TTY), so the output is only the command's.
   exec(service, argv, { input, check = false } = {}) {
-    const run = spawnSync(this.engine, ["exec", ...(input === undefined ? [] : ["-i"]), this.container(service), ...argv], {
+    const container = this.container(service);
+    let user = [];
+    if (service.startsWith("firewall-")) {
+      // Podman can lose a container's named-user lookup for `exec`. Resolve the
+      // image's non-root account through numeric root once per container instead.
+      this.firewallUidByContainer ??= new Map();
+      if (!this.firewallUidByContainer.has(container)) {
+        const account = spawnSync(this.engine, ["exec", "--user", "0", container, "getent", "passwd", "firewall"], { encoding: "utf8" });
+        const uid = account.stdout?.trim().split(":")[2];
+        expect(account.status === 0 && /^\d+$/.test(uid) && uid !== "0",
+          `${service} image has no non-root firewall account: ${account.stderr ?? ""}`);
+        this.firewallUidByContainer.set(container, uid);
+      }
+      user = ["--user", this.firewallUidByContainer.get(container)];
+    }
+    // All pinned package-client images run as root, but rootless exec can omit
+    // HOME. Bundle scripts also enter here directly, outside h.client.
+    const clientHome = service.startsWith("client-") ? ["--env", "HOME=/root"] : [];
+    const run = spawnSync(this.engine, ["exec", ...user, ...clientHome, ...(input === undefined ? [] : ["-i"]), container, ...argv], {
       input,
       encoding: "utf8",
       maxBuffer: 256 * 1024 * 1024,
@@ -122,7 +139,9 @@ export class Stack {
   }
 
   restart(...services) {
-    this.compose(["restart", ...services]);
+    // Rootless Podman can drop a restarted container's DNS registration. A new
+    // container keeps each service's named data volume and registers its name.
+    this.compose(["up", "-d", "--force-recreate", "--no-deps", ...services]);
   }
 
   logs(service) {
@@ -145,17 +164,31 @@ export class Stack {
 
   writeFiles() {
     mkdirSync(join(this.work, "producer"), { recursive: true });
-    if (!existsSync(join(this.work, "ca", "ca.pem"))) {
-      const made = spawnSync("bash", [join(ROOT, "tests/e2e/fixtures/make-ca.sh"), this.work], { stdio: "inherit" });
+    mkdirSync(join(this.work, "issuer"), { recursive: true });
+    const caScript = join(ROOT, "tests/e2e/fixtures/make-ca.sh");
+    const stamp = join(this.work, "ca", "fixture-source.sha256");
+    const sourceHash = createHash("sha256").update(readFileSync(caScript)).digest("hex");
+    if (!existsSync(join(this.work, "ca", "ca.pem"))
+        || !existsSync(stamp) || readFileSync(stamp, "utf8").trim() !== sourceHash) {
+      const made = spawnSync("bash", [caScript, this.work], { stdio: "inherit" });
       expect(made.status === 0, "make-ca.sh failed");
+      writeFileSync(stamp, `${sourceHash}\n`);
     }
     const gateway = `${this.net}.10`;
+    writeFileSync(
+      join(this.work, "gateway-nginx.conf"),
+      readFileSync(join(COMPOSE_DIR, "gateway-nginx.conf"), "utf8")
+        .replaceAll("E2E_RESOLVER", `${this.net}.1`).replaceAll("E2E_SERVER", `${this.net}.12`),
+    );
     writeFileSync(
       join(this.work, "server.toml"),
       readFileSync(join(COMPOSE_DIR, "server.toml"), "utf8").replaceAll("11.220.0.", `${this.net}.`),
     );
-    // The shipped sample, edited as an operator would: plain HTTP behind the gateway.
-    const sample = readFileSync(join(ROOT, "config.sample.toml"), "utf8").replace(/^listen = .*$/m, 'listen = "0.0.0.0:8080"');
+    // The gateway passes package TLS through so the firewall owns client-key proof.
+    const sample = readFileSync(join(ROOT, "config.sample.toml"), "utf8").replace(
+      /^listen = .*$/m,
+      'listen = "0.0.0.0:8080"\ntls_cert_path = "/e2e/tls/cert.pem"\ntls_key_path = "/e2e/tls/key.pem"',
+    );
     for (const [name, host] of [
       ["firewall-1", "fw1"],
       ["firewall-2", "fw2"],

@@ -117,6 +117,7 @@ impl ProjectRow {
 #[derive(Clone, Debug)]
 pub struct ReferenceRow {
     pub id: ReferenceId,
+    pub registry_id: u64,
     pub reference: ArtifactReference,
     pub publication_micros: Option<i64>,
     pub first_seen_micros: Option<i64>,
@@ -176,6 +177,7 @@ impl ReferenceRow {
 
         Ok(ReferenceRow {
             id: ReferenceId::from_bytes(id),
+            registry_id: unsigned(row, 13, "artifact_references.registry_id")?,
             reference: ArtifactReference {
                 ecosystem,
                 name: text(row, 2, "artifact_references.name")?,
@@ -358,6 +360,7 @@ mod tests {
     fn an_upstream_timestamp_supersedes_a_committed_first_seen() {
         let mut row = ReferenceRow {
             id: ReferenceId::compute(&reference()),
+            registry_id: 0,
             reference: reference(),
             publication_micros: None,
             first_seen_micros: Some(500),

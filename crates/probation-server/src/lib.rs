@@ -137,7 +137,8 @@ pub async fn serve(
         }
     })];
     let listener = tokio::net::TcpListener::bind(config.server.listen).await?;
-    let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies));
+    let sync_secrets = portal.as_ref().map(|deps| accounts::SecretBox::new(deps.secret_key));
+    let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies, sync_secrets));
     let mut router = build_router(state);
     if let Some(deps) = portal {
         let secrets = accounts::SecretBox::new(deps.secret_key);

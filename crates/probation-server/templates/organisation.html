@@ -29,15 +29,18 @@
 {% endfor %}
 {% when OrgView::Member(leaving) %}
 <h1>Organisation: {{ leaving.name }}</h1>
+<p><a href="/certificates/setup">Package client setup</a></p>
 <p>You are a member of {{ leaving.name }}. Only its org admins manage its members, groups and settings.</p>
 {% call leaving_section(leaving) %}{% endcall %}
 {% when OrgView::Admin(org) %}
 <h1>Organisation: {{ org.name }}</h1>
+<p><a href="/org/{{ org.id }}/users">Users and groups</a> · <a href="/org/{{ org.id }}/registries">Package registries</a> · <a href="/org/{{ org.id }}/certificates">Enterprise certificates</a> · <a href="/certificates/setup">Package client setup</a></p>
 <p class="mut">Only {{ org.name }}'s org admins see this page. {{ org.name }} can have several org admins and always keeps at least one. "Reset authenticator" helps a member who lost theirs and has no backup codes; you can reset it only for a member whose login belongs to {{ org.name }} alone. Everyone else's, and any org admin's, is reset by the service operator.</p>
 {% if let Some(error) = org.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
 
 <section aria-labelledby="members-heading">
 <h2 id="members-heading">Members</h2>
+<form method="get" action="/org/{{ org.id }}/certificates/lookup"><label>Find one member's package certificate by email<input type="email" name="email" required></label><button type="submit">Find certificate</button></form>
 <div class="wrap"><table>
 <caption class="mut">Members of {{ org.name }}</caption>
 <thead><tr><th scope="col">Email</th><th scope="col">Role</th><th scope="col">Group</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>

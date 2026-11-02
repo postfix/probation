@@ -14,13 +14,20 @@ networks:
     ipam:
       config:
         - subnet: ${E2E_NET:-11.220.0}.0/24
+  clients:
+    internal: true
   # Only for the bridge's published port.
   edge: {}
+  private:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
 
 x-clients: &client
   command: ["sleep", "infinity"]
   init: true
-  networks: [e2e]
+  networks: [clients]
   environment: &client-env
     NODE_EXTRA_CA_CERTS: /e2e/ca/ca.pem
     SSL_CERT_FILE: /e2e/ca/ca.pem
@@ -65,7 +72,10 @@ services:
     volumes:
       - ${E2E_WORK}/server.toml:/etc/probation-server/config.toml:ro
       - ${E2E_WORK}/ca:/e2e/ca:ro
-    networks: [e2e]
+    networks:
+      e2e:
+        ipv4_address: ${E2E_NET:-11.220.0}.12
+      private: {}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "probation-server", "health"]
@@ -79,24 +89,33 @@ services:
     environment:
       NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
     volumes:
-      - ./gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${E2E_WORK}/gateway-nginx.conf:/etc/nginx/nginx.conf:ro
       - ${E2E_WORK}/tls:/e2e/tls:ro
     networks:
       e2e:
         ipv4_address: ${E2E_NET:-11.220.0}.10
         aliases: [portal.e2e.test, sync.e2e.test, fw1.e2e.test, fw2.e2e.test, fw-standalone.e2e.test]
+      clients:
+        aliases: [portal.e2e.test, sync.e2e.test, fw1.e2e.test, fw2.e2e.test, fw-standalone.e2e.test]
 
   fakes:
-    image: docker.io/library/node:24.22.1-bookworm-slim
+    build:
+      context: .
+      dockerfile: fakes.Dockerfile
+    image: localhost/probation-e2e-fakes:openssl
     command: ["node", "/fixtures/fakes/main.mjs"]
     init: true
     volumes:
       - ../fixtures:/fixtures:ro
       - ${E2E_WORK}/tls:/e2e/tls:ro
+      - ${E2E_WORK}/issuer:/e2e/issuer
     networks:
       e2e:
         aliases:
           - registry.npmjs.org
+          - registry-b.e2e.test
+          - ocsp-a.e2e.test
+          - ocsp-b.e2e.test
           - pypi.org
           - files.pythonhosted.org
           - api.osv.dev
@@ -104,6 +123,11 @@ services:
           - accounts.google.com
           - idp.e2e.test
           - fakes.e2e.test
+      private:
+        ipv4_address: 10.77.0.2
+        aliases:
+          - private-registry.e2e.test
+          - private-ocsp.e2e.test
 
   mail:
     image: docker.io/axllent/mailpit:v1.32.0
@@ -137,12 +161,14 @@ services:
 
   firewall-1:
     <<: *firewall
+    networks: [e2e, private]
     build:
       context: ../../..
     volumes:
       - ${E2E_WORK}/firewall-1.toml:/etc/probation/config.toml:ro
       - ${E2E_WORK}/firewall-1.token:/e2e/firewall.token:ro
       - ${E2E_WORK}/ca:/e2e/ca:ro
+      - ${E2E_WORK}/tls:/e2e/tls:ro
       - firewall-1-data:/var/lib/probation
 
   firewall-2:
@@ -151,6 +177,7 @@ services:
       - ${E2E_WORK}/firewall-2.toml:/etc/probation/config.toml:ro
       - ${E2E_WORK}/firewall-2.token:/e2e/firewall.token:ro
       - ${E2E_WORK}/ca:/e2e/ca:ro
+      - ${E2E_WORK}/tls:/e2e/tls:ro
       - firewall-2-data:/var/lib/probation
 
   # No [management]: the producer's blocklist.json in a bind-mounted directory, so an
@@ -161,6 +188,7 @@ services:
       - ${E2E_WORK}/firewall-standalone.toml:/etc/probation/config.toml:ro
       - ${E2E_WORK}/producer:/e2e/producer:ro
       - ${E2E_WORK}/ca:/e2e/ca:ro
+      - ${E2E_WORK}/tls:/e2e/tls:ro
       - firewall-standalone-data:/var/lib/probation
 
   # Clients, pinned (D2). PR suite: current npm and current pip.
@@ -170,8 +198,8 @@ services:
       context: ./clients
       dockerfile: node.Dockerfile
       args:
-        NPM_VERSION: "12.2.1"
-    image: localhost/probation-e2e-client:npm12
+        NPM_VERSION: "11.21.1"
+    image: localhost/probation-e2e-client:npm11.21.1
 
   client-pip:
     <<: *client
@@ -181,6 +209,16 @@ services:
       args:
         PIP_VERSION: "26.2.2"
     image: localhost/probation-e2e-client:pip26.2
+
+  client-twine:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: python.Dockerfile
+      args:
+        PIP_VERSION: "26.2.2"
+        TOOLS: "twine==7.0.0"
+    image: localhost/probation-e2e-client:twine7.0.0
 
   # Nightly clients.
   client-npm10:
@@ -239,7 +277,6 @@ services:
 
   client-uv:
     <<: *client
-    profiles: [nightly]
     build:
       context: ./clients
       dockerfile: python.Dockerfile

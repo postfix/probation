@@ -1,0 +1,8 @@
+name: unpublish-marker-before-send
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [check_removal_marker]}}
+operation: {calls: {name: [send_action]}}
+relation: {must_dominate: true}
+where: "caller_function == 'send_unpublish_delete'"

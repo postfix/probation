@@ -22,6 +22,7 @@
 // Modes:
 //   status   answer `status` (with `retryAfter` as Retry-After) and a short body
 //   delay    answer normally after `ms`
+//   hold     wait for POST /holds/release (at most 60 seconds), then answer normally
 //   hang     never answer; the connection stays open until the client gives up
 //   reset    close the connection without answering
 //   slow     answer normally, `bytesPerSecond` at a time
@@ -35,6 +36,7 @@ import http from "node:http";
 import https from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Hibp } from "./hibp.mjs";
+import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
 import { Oidc } from "./oidc.mjs";
 import { Osv } from "./osv.mjs";
@@ -42,9 +44,12 @@ import { Pypi } from "./pypi.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), pypi: new Pypi(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
+  "registry-b.e2e.test": fakes.npmB,
+  "private-registry.e2e.test": fakes.npmB,
   "pypi.org": fakes.pypi,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
@@ -56,6 +61,23 @@ const hosts = {
 let faults = [];
 let log = [];
 const hanging = new Set();
+const held = new Set();
+
+function releaseHeld() {
+  for (const release of held) release();
+}
+
+function hold() {
+  return new Promise((resolve) => {
+    const release = () => {
+      clearTimeout(timer);
+      held.delete(release);
+      resolve();
+    };
+    const timer = setTimeout(release, 60_000);
+    held.add(release);
+  });
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -85,18 +107,39 @@ function hang(req) {
 
 async function serve(req, res) {
   const host = (req.headers.host ?? "").replace(/:\d+$/, "");
-  const entry = { at: new Date().toISOString(), host, method: req.method, path: req.url, status: 0 };
+  const signedDelete = host === "registry-b.e2e.test" && req.url.startsWith("/extra/case/");
+  const entry = { at: new Date().toISOString(), host, method: req.method,
+    peer: req.socket.remoteAddress,
+    path: signedDelete ? `${req.url.split("?")[0]}?<redacted>` : req.url,
+    signedQueryValid: signedDelete && new URL(req.url, `https://${host}`).searchParams.get("sig") === "d41-signed-secret",
+    status: 0,
+    contentEncoding: req.headers["content-encoding"] ?? "none",
+    credential: req.headers.authorization === "Bearer e2e-owner" ? "developer-owner"
+      : req.headers.authorization === "Bearer e2e-denied" ? "developer-denied"
+      : req.headers.authorization ? "other" : "none" };
   log.push(entry);
-  if (log.length > 20_000) log = log.slice(-10_000);
   const body = await readBody(req);
   const f = fault(host, req);
   entry.fault = f?.mode;
   if (f?.mode === "hang") return hang(req);
   if (f?.mode === "reset") return req.socket.destroy();
   if (f?.mode === "delay") await sleep(f.ms ?? 1000);
+  if (f?.mode === "hold") await hold();
   let answer;
   if (f?.mode === "status") {
     answer = { status: f.status ?? 503, headers: f.retryAfter ? { "retry-after": String(f.retryAfter) } : {}, body: `fault ${f.status ?? 503}\n` };
+  } else if (f?.mode === "json") {
+    answer = { status: f.status ?? 200, headers: { "content-type": "application/json" }, body: JSON.stringify(f.body ?? {}) };
+  } else if (f?.mode === "redirect") {
+    answer = { status: 302, headers: { location: f.location }, body: "redirect\n" };
+  } else if (f?.mode === "oversize") {
+    answer = { status: 200, headers: { "content-type": "application/octet-stream" }, body: Buffer.alloc(f.bytes, 120) };
+  } else if (host in { "ocsp-a.e2e.test": 1, "ocsp-b.e2e.test": 1, "private-ocsp.e2e.test": 1 } && req.method === "POST" && req.url === "/status") {
+    const issuer = issuers[host === "ocsp-b.e2e.test" ? "b" : "a"];
+    const signer = issuer.statusMode === "wrong-issuer" ? issuers[issuer.name === "a" ? "b" : "a"] : issuer;
+    answer = { status: 200, headers: { "content-type": "application/ocsp-response" }, body: signer.respond(body) };
+  } else if (host === "private-registry.e2e.test" && req.method === "POST" && req.url === "/") {
+    answer = fakes.pypi.handle(req, req.url, host, body);
   } else {
     const fake = hosts[host];
     answer = fake ? fake.handle(req, req.url, host, body) : { status: 404, body: `no fake for ${host}\n` };
@@ -132,18 +175,26 @@ async function serve(req, res) {
 const control = {
   "POST /reset": () => {
     for (const fake of Object.values(fakes)) fake.reset();
+    for (const issuer of Object.values(issuers)) issuer.reset();
     faults = [];
     log = [];
+    releaseHeld();
     for (const socket of hanging) socket.destroy();
     return { ok: true };
   },
   "GET /log": (_, url) => log.filter((e) => !url.searchParams.get("host") || e.host === url.searchParams.get("host")),
   "POST /faults": (body) => {
     faults = body.faults ?? [];
+    releaseHeld();
     for (const socket of hanging) socket.destroy();
     return { ok: true };
   },
+  "POST /holds/release": () => (releaseHeld(), { ok: true }),
   "POST /npm/publish": (body) => fakes.npm.publish(body),
+  "POST /npm-b/publish": (body) => fakes.npmB.publish(body),
+  "POST /issuer/issue": (body) => issuers[body.issuer]?.issue(body.memberUuid, body.aiaUrl) ?? (() => { throw new Error("unknown issuer"); })(),
+  "POST /issuer/revoke": (body) => issuers[body.issuer]?.revoke(body.id) ?? (() => { throw new Error("unknown issuer"); })(),
+  "POST /issuer/mode": (body) => issuers[body.issuer]?.mode(body.mode) ?? (() => { throw new Error("unknown issuer"); })(),
   "POST /pypi/publish": (body) => fakes.pypi.publish(body),
   "POST /osv/flag": (body) => (fakes.osv.flag(body), { ok: true }),
   "GET /osv/queries": () => fakes.osv.queries,

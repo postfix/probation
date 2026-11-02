@@ -167,6 +167,16 @@ pub async fn fetch(
     app: &Arc<App>,
     row: &ReferenceRow,
 ) -> Result<VerifiedContent, Arc<DownloadError>> {
+    fetch_at(app, row, None, Vec::new(), None).await
+}
+
+pub async fn fetch_at(
+    app: &Arc<App>,
+    row: &ReferenceRow,
+    origin: Option<url::Url>,
+    private_cidrs: Vec<ipnet::IpNet>,
+    read_authorization: Option<String>,
+) -> Result<VerifiedContent, Arc<DownloadError>> {
     let (slot, leader, _waiter) = app.downloads.transfers().join(row.id);
 
     if leader {
@@ -175,7 +185,7 @@ pub async fn fetch(
         let app = Arc::clone(app);
         let row = row.clone();
         let started = Arc::clone(&slot);
-        tokio::spawn(async move { run(app, row, started).await });
+        tokio::spawn(async move { run(app, row, origin, private_cidrs, read_authorization, started).await });
     }
 
     match slot.wait().await {
@@ -192,7 +202,7 @@ pub async fn fetch(
 /// The [`Resolution`] is what makes that "every way out" rather than "every way out
 /// this code thought of" — see `concurrency::single_flight` for why it is a `Drop`
 /// guard and not a `catch_unwind` around `transfer`.
-async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
+async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private_cidrs: Vec<ipnet::IpNet>, read_authorization: Option<String>, slot: Arc<Slot<SlotOutcome>>) {
     let mut resolution = Resolution::new(
         app.downloads.transfers().clone(),
         row.id,
@@ -201,7 +211,7 @@ async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
         row.id.to_hex(),
     );
 
-    let outcome = match transfer(&app, &row, &slot).await {
+    let outcome = match transfer(&app, &row, origin.as_ref(), &private_cidrs, read_authorization, &slot).await {
         Ok(content) => SlotOutcome::Verified(content),
         Err(err) => SlotOutcome::Failed(Arc::new(err)),
     };
@@ -211,6 +221,9 @@ async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
 async fn transfer(
     app: &App,
     row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<String>,
     slot: &Slot<SlotOutcome>,
 ) -> Result<VerifiedContent, DownloadError> {
     // SPEC §9: "Bound active downloads globally." One permit per transfer, not per
@@ -224,11 +237,14 @@ async fn transfer(
     let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
-    let opened = match own_origin(app, row) {
+    let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
             app.transport
                 .open_artifact(ArtifactRequest {
                     url: row.reference.upstream_url.clone(),
+                    origin: origin.cloned(),
+                    private_cidrs: private_cidrs.to_vec(),
+                    read_authorization,
                     max_bytes: cap,
                 })
                 .await
@@ -332,9 +348,10 @@ async fn transfer(
             // the generation is bumped before the cached snapshot is dropped, and the
             // next resolution reloads the project with both (C104, SPEC §9).
             if app.managed().is_some() {
-                bump_digest_generation(app, row.reference.ecosystem, &row.reference.name).await;
+                bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
             }
-            app.store().caches().projects.remove(&ProjectKey::new(
+            app.store().caches().projects.remove(&ProjectKey::in_registry(
+                row.registry_id,
                 row.reference.ecosystem,
                 row.reference.name.as_str(),
             ));
@@ -383,7 +400,7 @@ async fn transfer(
         // SPEC §9: "If a computed digest reveals a block not visible in upstream
         // metadata, invalidate that project's filtered metadata."
         if matches!(decision, Decision::Deny(_)) {
-            bump_digest_generation(app, row.reference.ecosystem, &row.reference.name).await;
+            bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
         }
         // The temporary file goes with `temp`; the pins stay.
         return Err(DownloadError::Refused(decision));
@@ -436,7 +453,10 @@ fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, Dow
 /// from the npm origin, a PyPI file from the files or the index origin. The transport
 /// admits any configured origin, so without this a document could send a fetch to
 /// the other ecosystem's host.
-fn own_origin(app: &App, row: &ReferenceRow) -> Result<(), UpstreamError> {
+fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet]) -> Result<(), UpstreamError> {
+    let selected = origin.map(|origin| crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec()))
+        .transpose().map_err(UpstreamError::RejectedUrl)?;
+    let origins = selected.as_ref().unwrap_or(&app.origins);
     let own: &[OriginKind] = match row.reference.ecosystem {
         Ecosystem::Npm => &[OriginKind::NpmMetadata],
         Ecosystem::PyPi => &[OriginKind::PypiArtifacts, OriginKind::PypiMetadata],
@@ -444,10 +464,10 @@ fn own_origin(app: &App, row: &ReferenceRow) -> Result<(), UpstreamError> {
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the
     // first of several origins configured to the same URL.
-    if own.iter().any(|kind| app.origins.admit(url, *kind).is_ok()) {
+    if own.iter().any(|kind| origins.admit(url, *kind).is_ok()) {
         return Ok(());
     }
-    let rejection = app.origins.admit_any(url).err();
+    let rejection = origins.admit_any(url).err();
     Err(UpstreamError::RejectedUrl(
         rejection.unwrap_or(UrlRejection::ForeignOrigin),
     ))
@@ -459,8 +479,8 @@ fn own_origin(app: &App, row: &ReferenceRow) -> Result<(), UpstreamError> {
 /// a failed one leaves other keys' listings rendered before the pin reusable, showing
 /// a version their policy blocks by this digest, until their metadata TTL ends. The
 /// artifact itself is still refused to them by their own final check.
-async fn bump_digest_generation(app: &App, ecosystem: Ecosystem, name: &str) {
-    if let Err(err) = app.store().bump_digest_generation(ecosystem, name).await {
+async fn bump_digest_generation(app: &App, registry_id: u64, ecosystem: Ecosystem, name: &str) {
+    if let Err(err) = app.store().bump_digest_generation_in(registry_id, ecosystem, name).await {
         tracing::warn!(
             package = %name,
             error = %err,

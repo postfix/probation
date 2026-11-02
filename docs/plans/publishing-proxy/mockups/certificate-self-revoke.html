@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Revoke my certificate</title><link rel="stylesheet" href="style.css"><style>[hidden]{display:none!important}</style>
+<header>Probation · My package access</header><main>
+<section class="card" id="confirm"><h1>Revoke Ada's laptop certificate?</h1><p>This device will lose package access on its next registry request. Ada's other client certificates will keep working.</p><p><a href="certificate-enroll.html">Cancel</a> <a href="?done=1">Revoke certificate</a></p></section>
+<section class="card" id="done" hidden role="status"><h1>Certificate revoked</h1><p>Ada's laptop certificate is now refused. Other clients are unchanged.</p><a href="certificate-enroll.html">Back to my package access</a></section>
+</main><script>const done=new URLSearchParams(location.search).get('done')==='1';document.querySelector('#confirm').hidden=done;document.querySelector('#done').hidden=!done;</script></html>

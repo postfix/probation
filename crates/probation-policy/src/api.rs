@@ -66,6 +66,71 @@ pub struct KeyId(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct OrgId(pub u32);
 
+/// Stable identity of one selected organisation registry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct RegistryId(pub u64);
+
+/// Immutable identity of one active membership, distinct from its login name.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct MemberCertificateId(pub String);
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RegistryDeletionScope {
+    pub origin: String,
+    pub path_prefix: String,
+    pub forward_bearer: bool,
+}
+
+/// One package request's transport-owned TLS chain and selected URL registry.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct CertificateAdmissionRequest {
+    pub registry: RegistryId,
+    pub ecosystem: Ecosystem,
+    pub chain: Vec<Vec<u8>>,
+}
+
+/// Current root, certificate, membership, registry and policy checked together.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CertificateAdmission {
+    Granted {
+        registry: RegistryId,
+        target_url: Option<String>,
+        /// Request-scoped upstream read Authorization; never send on action routes.
+        read_authorization: Option<String>,
+        trusted: bool,
+        registry_private_cidrs: Vec<String>,
+        deletion_scopes: Vec<RegistryDeletionScope>,
+        enterprise_status: Option<Box<EnterpriseStatus>>,
+        org: OrgId,
+        member: MemberCertificateId,
+        place: PlaceRef,
+        layers: Vec<PlaceLayer>,
+        rate_limit: Option<NonZeroU32>,
+        rate_limit_source: LimitSource,
+    },
+    Refused,
+}
+
+impl std::fmt::Debug for CertificateAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Granted { registry, .. } => f.debug_struct("Granted").field("registry", registry).finish_non_exhaustive(),
+            Self::Refused => f.write_str("Refused"),
+        }
+    }
+}
+
+/// The selected root and immediate issuer from the same live admission snapshot.
+/// Public certificate bytes only; the firewall verifies fresh status itself.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct EnterpriseStatus {
+    pub status_url: String,
+    pub issuer_der: Vec<u8>,
+    pub root_der: Vec<u8>,
+    pub private_cidrs: Vec<String>,
+}
+
 /// Which `limits` row an account's rate limit came from (C28, C67).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

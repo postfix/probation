@@ -1,0 +1,10 @@
+# The transport-owned peer option must be required before certificate admission.
+# TLS provenance and same-peer use require runtime controls.
+name: tls-peer-before-admit
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [ok_or_else]}}
+operation: {calls: {name: [admit_certificate]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'admit'"

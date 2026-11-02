@@ -1,0 +1,100 @@
+<div id="probation-slice3-decision" class="slice3">
+  <style>
+    #probation-slice3-decision { color: var(--foreground); max-width: 980px; margin: 0 auto; font: inherit; overflow-wrap: anywhere; }
+    #probation-slice3-decision * { box-sizing: border-box; }
+    #probation-slice3-decision h2 { margin: 1.2rem 0 .45rem; font-size: 1.15rem; font-weight: 500; }
+    #probation-slice3-decision p { margin: .35rem 0 .7rem; }
+    #probation-slice3-decision .status { color: var(--muted-foreground); margin-bottom: .75rem; }
+    #probation-slice3-decision .lede { font-weight: 500; }
+    #probation-slice3-decision code { font: inherit; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    #probation-slice3-decision pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .65rem 0; margin: .45rem 0; color: var(--foreground); background: transparent; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    #probation-slice3-decision .flow { width: 100%; height: auto; display: block; margin: .8rem 0; }
+    #probation-slice3-decision .flow.mobile { display: none; }
+    #probation-slice3-decision .flow rect { fill: var(--muted); stroke: var(--border); stroke-width: 1; }
+    #probation-slice3-decision .flow path { fill: none; stroke: var(--muted-foreground); stroke-width: 1.5; }
+    #probation-slice3-decision .flow text { fill: var(--foreground); font: 13px system-ui, sans-serif; }
+    #probation-slice3-decision .flow .small { fill: var(--muted-foreground); font-size: 11px; }
+    #probation-slice3-decision table { width: 100%; border-collapse: collapse; margin: .4rem 0 .8rem; }
+    #probation-slice3-decision th, #probation-slice3-decision td { text-align: left; vertical-align: top; padding: .45rem .45rem .45rem 0; border-bottom: 1px solid var(--border); }
+    #probation-slice3-decision th { font-weight: 500; }
+    #probation-slice3-decision ul { margin: .4rem 0 .8rem; padding-left: 1.25rem; }
+    #probation-slice3-decision li { margin: .3rem 0; }
+    #probation-slice3-decision a { color: var(--primary); text-decoration: underline; }
+    #probation-slice3-decision a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    #probation-slice3-decision .question { font-weight: 500; border-top: 1px solid var(--border); padding-top: .8rem; }
+    @media (max-width: 540px) {
+      #probation-slice3-decision .flow.desktop { display: none; }
+      #probation-slice3-decision .flow.mobile { display: block; max-width: 340px; margin-inline: auto; }
+      #probation-slice3-decision table, #probation-slice3-decision tbody, #probation-slice3-decision tr, #probation-slice3-decision th, #probation-slice3-decision td { display: block; width: 100%; }
+      #probation-slice3-decision thead { display: none; }
+      #probation-slice3-decision td { border: 0; padding: .18rem 0; }
+      #probation-slice3-decision td:first-child { font-weight: 500; }
+      #probation-slice3-decision tr { border-bottom: 1px solid var(--border); padding: .35rem 0; }
+    }
+  </style>
+  <p class="status">Transparent package publishing · Slice 3 complete · decision: continue or re-steer</p>
+  <h2>Delivered</h2>
+  <p class="lede">A developer can use the selected npm registry URL for guarded reads, search and audit. The firewall checks the current certificate and group, while preserving the approved developer-token exception for a canonical package document.</p>
+  <svg class="flow desktop" viewBox="0 0 900 224" role="img" aria-label="Selected npm read flow: certificate admission reaches route classification. Ordinary metadata, search, audit and artifacts use group policy; a canonical package document with a developer token uses request-local upstream metadata. Unknown routes and upstream denials refuse. Both accepted branches return through the selected URL.">
+    <title>Selected npm read flow</title>
+    <rect x="8" y="73" width="148" height="66" rx="7"/><text x="21" y="98">TLS certificate</text><text x="21" y="119">+ current member</text>
+    <path d="M156 106 H200"/><path d="M194 102 L200 106 L194 110"/>
+    <rect x="201" y="73" width="143" height="66" rx="7"/><text x="214" y="98">Selected URL</text><text x="214" y="119">route classifier</text>
+    <path d="M344 106 H382 V45 H402"/><path d="M396 41 L402 45 L396 49"/>
+    <path d="M344 106 H382 V167 H402"/><path d="M396 163 L402 167 L396 171"/>
+    <rect x="403" y="10" width="209" height="70" rx="7"/><text x="415" y="34">Ordinary read / audit</text><text x="415" y="55">current group filtering</text>
+    <rect x="403" y="132" width="209" height="70" rx="7"/><text x="415" y="155">Canonical GET + token</text><text x="415" y="177">request-local upstream body</text>
+    <path d="M612 45 H648 V106 H671"/><path d="M665 102 L671 106 L665 110"/>
+    <path d="M612 167 H648 V106"/>
+    <rect x="672" y="73" width="215" height="66" rx="7"/><text x="685" y="98">Selected URL result</text><text x="685" y="119">or explicit refusal</text>
+    <text class="small" x="219" y="158">unknown → refuse before upstream</text>
+  </svg>
+  <svg class="flow mobile" viewBox="0 0 340 486" role="img" aria-label="Selected npm read flow: certificate admission, route classification, ordinary group-filtered read or canonical token-bearing request-local read, then selected URL result or refusal. Unknown routes refuse before upstream.">
+    <title>Selected npm read flow</title>
+    <rect x="48" y="5" width="244" height="65" rx="7"/><text x="65" y="30">TLS certificate + current member</text><text x="65" y="52">admission</text>
+    <path d="M170 70 V93"/><path d="M166 87 L170 93 L174 87"/>
+    <rect x="48" y="94" width="244" height="65" rx="7"/><text x="65" y="120">Selected URL route classifier</text><text class="small" x="65" y="143">unknown → refuse before upstream</text>
+    <path d="M170 159 V181 H30 V197"/><path d="M26 191 L30 197 L34 191"/>
+    <path d="M170 181 H310 V197"/><path d="M306 191 L310 197 L314 191"/>
+    <rect x="5" y="198" width="150" height="90" rx="7"/><text x="15" y="222">Ordinary read</text><text x="15" y="244">or audit</text><text x="15" y="267">group filtered</text>
+    <rect x="185" y="198" width="150" height="90" rx="7"/><text x="195" y="222">Canonical GET</text><text x="195" y="244">+ developer token</text><text x="195" y="267">request local</text>
+    <path d="M80 288 V333 H170 V352"/><path d="M260 288 V333 H170"/><path d="M166 346 L170 352 L174 346"/>
+    <rect x="48" y="353" width="244" height="70" rx="7"/><text x="65" y="379">Selected URL result</text><text x="65" y="401">or explicit refusal</text>
+    <text class="small" x="51" y="458">Artifacts always use current group policy</text>
+  </svg>
+  <p><code>/registry/npm/&lt;id&gt;/</code> is separate from legacy <code>/npm/123/1.0.0</code> and numeric tarball routes. Unknown selected routes refuse before upstream I/O. A token accepted by the selected upstream can reveal a hidden canonical packument even for <code>npm view</code> without a write; upstream denial remains denial. That body stays out of shared cache, persistence and in-flight coalescing. Tokenless metadata, search, audit and every artifact download still use current group policy.</p>
+  <pre><code>// Existing signatures; Slice 3 extends named-read behavior, not these contracts.
+pub fn classify_registry_request(ecosystem: Ecosystem, method: &amp;Method,
+    path: &amp;str, query: Option&lt;&amp;str&gt;) -&gt; RegistryRoute;
+// Classifies selected versus legacy routes; unknown or ambiguous routes refuse.
+pub async fn serve_package_read(principal: &amp;RegistryPrincipal, request: Request&lt;Body&gt;)
+    -&gt; Result&lt;Response&lt;Body&gt;, ApiError&gt;;
+// Returns group-filtered reads or request-local upstream-authorized canonical metadata.
+src/http/audit_filter.rs::filter_audit_response
+// Rebuilds Bulk/Quick advisories; malformed, incomplete or over-budget results refuse.</code></pre>
+  <p>Bulk and Quick audit output now carries only canonical package names, exact group-visible versions, validated severity, a generic title and generated ID. It omits arbitrary upstream title, URL and metadata. Search likewise rebuilds hits from allowed versions; its total deadline and final response stay bounded.</p>
+  <h2>Proof</h2>
+  <table aria-label="Slice 3 executed evidence">
+    <thead><tr><th>Promise</th><th>Executed witness and observed result</th><th>Scope</th></tr></thead>
+    <tbody>
+      <tr><td>Selected reads and isolation</td><td>Pinned npm 11.21.1 <code>E2E-publishing-npm-read</code>: 1 passed, 0 failed, 0 skipped in 207.2 s. Two clients, certificate modes, restart, hidden artifacts, numeric legacy paths and client-only egress passed.</td><td>Fresh selected scenario; no release-wide matrix claim.</td></tr>
+      <tr><td>Safe audit</td><td>Pre-fix Bulk/Quick leaked hidden names and advisory text; final test retained only visible signals. Mixed Quick report first returned false clean, then refused after the fix. Real npm 11 detected a visible advisory.</td><td>Nonempty and malformed responses exercised; <code>audit-filter-before-render</code> structural spec/control passed.</td></tr>
+      <tr><td>Finite work and output</td><td>Red: “8,220 advisory-version comparisons refuse within the audit deadline”; red: “search rebuilt from bounded packuments refuses a response larger than M” (6,511 bytes with M=4,096). Both now refuse before expensive accumulation; final pinned scenario passed.</td><td>Audit work cap 8,192 comparisons; 1,024 distinct lookups, 16 concurrent, 30 s total. Metadata M, artifact A, headers, redirects and timeout controls passed.</td></tr>
+      <tr><td>Guard and quality checks</td><td><code>cargo check --workspace --offline</code> and model check PASS. Thirteen current source obligations PASS. Code SHIP, security CLEAR, adversarial PASS and independent verification VERIFIED.</td><td>Source checks prove specified order; exact values and returned bytes rely on runtime and review.</td></tr>
+    </tbody>
+  </table>
+  <h2>Limits</h2>
+  <ul>
+    <li>If the selected upstream returns Bulk audit 404, npm 11 reports that upstream error. The proxy does not create a Quick fallback; clients that send Quick directly use the guarded route.</li>
+    <li>The generic SMTC missing-guards analysis remained Stub/Lossy. The scoped security verdict uses route-level refusal tests and source review; the structural spec proves audit filter call order, not universal field secrecy.</li>
+    <li>Eight declared Slice 4 source obligations remain PENDING because the action source is not present yet. They are separate from the thirteen current Slice 3 PASS obligations.</li>
+    <li>Render: not inspected. The local browser blocked the file preview, so visual layout is checked from the fragment and SVG geometry only.</li>
+  </ul>
+  <h2>Next</h2>
+  <p>Slice 4 adds npm login, publishing and administration through the same selected URL. It owns <code>?write=true</code> action leases, version unpublish, administrator-approved extra deletion destinations and the separate upstream write authorization checks.</p>
+  <h2>Recommendation</h2>
+  <p>Continue to Slice 4: the approved Slice 3 read and audit behavior has a passing pinned-client witness, completed scoped reviews and all current source checks passing.</p>
+  <p class="status">Recorded complete · Slice 3 of 5 · next approved boundary: Slice 4</p>
+  <p class="status">Sources: <a href="04-slices.md">04-slices.md, Slice 3</a> · <a href="evidence/slice-3.md">evidence/slice-3.md</a> · <a href="evidence/tdd-slice-3.md">evidence/tdd-slice-3.md</a> · <a href="03-program-design.md">03-program-design.md</a></p>
+  <p class="question">Continue to slice 4, or re-steer?</p>
+</div>

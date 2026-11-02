@@ -15,6 +15,7 @@
 // install works.
 
 import { policyPost, removeOwn, untilStatus } from "../harness/portal-steps.mjs";
+import { ops } from "../harness/ops.mjs";
 
 export const meta = {
   id: "E2E-012",
@@ -134,16 +135,25 @@ export default async function lockfileReplay(h) {
   const lockOf = (answer) => answer.stdout.match(/^lock=([0-9a-f]{64})$/m)?.[1];
   const said = (answer) => `${answer.stdout}\n${answer.stderr}`;
 
-  // 1. The lockfiles, made against the public registries.
-  for (const client of clients) {
-    client.dir = `/work/${h.unique("lock")}`;
-    if (client.lock === "requirements.txt") client.make.files["requirements.txt"] = `e2e-left==1.1.0 ${hashes.join(" ")}\n`;
-    const made = run(client, client.make);
-    expect(exitOf(made) === 0 && lockOf(made), `${client.name}: the lockfile against the public registry: ${said(made)}`);
-    if (client.relock) {
-      const relocked = run(client, client.relock);
-      expect(exitOf(relocked) === 0, `${client.name}: lock against the firewall: ${said(relocked)}`);
+  // Only lockfile creation may reach the fake public registries directly.
+  const operator = ops(h);
+  const clientNetwork = `${h.stack.project}_clients`;
+  const fakes = operator.id("fakes");
+  operator.engine(["network", "connect", "--alias", "registry.npmjs.org", "--alias", "pypi.org",
+    "--alias", "files.pythonhosted.org", clientNetwork, fakes]);
+  try {
+    for (const client of clients) {
+      client.dir = `/work/${h.unique("lock")}`;
+      if (client.lock === "requirements.txt") client.make.files["requirements.txt"] = `e2e-left==1.1.0 ${hashes.join(" ")}\n`;
+      const made = run(client, client.make);
+      expect(exitOf(made) === 0 && lockOf(made), `${client.name}: the lockfile against the public registry: ${said(made)}`);
+      if (client.relock) {
+        const relocked = run(client, client.relock);
+        expect(exitOf(relocked) === 0, `${client.name}: lock against the firewall: ${said(relocked)}`);
+      }
     }
+  } finally {
+    operator.engine(["network", "disconnect", clientNetwork, fakes]);
   }
 
   // 2. Replayed through firewall-1 with fresh caches.
@@ -181,22 +191,28 @@ export default async function lockfileReplay(h) {
   // 4. yarn 1. Its lockfile from the public registry names registry.yarnpkg.com, yarn's
   //    default (made here through registry.npmjs.org, then given yarn's own host).
   const yarn = { service: "client-js", lock: "yarn.lock", dir: `/work/${h.unique("yarn1")}` };
-  const made = run(yarn, {
-    files: { "package.json": packageJson },
-    script: "yarn install --registry https://registry.npmjs.org/ --cache-folder $PWD/.y0 --non-interactive && rm -rf node_modules && sed -i 's#https://registry.npmjs.org/#https://registry.yarnpkg.com/#g' yarn.lock",
-  });
+  operator.engine(["network", "connect", "--alias", "registry.npmjs.org", clientNetwork, fakes]);
+  let made;
+  try {
+    made = run(yarn, {
+      files: { "package.json": packageJson },
+      script: "yarn install --registry https://registry.npmjs.org/ --cache-folder $PWD/.y0 --non-interactive && rm -rf node_modules && sed -i 's#https://registry.npmjs.org/#https://registry.yarnpkg.com/#g' yarn.lock",
+    });
+  } finally {
+    operator.engine(["network", "disconnect", clientNetwork, fakes]);
+  }
   expect(exitOf(made) === 0, `yarn 1 lockfile: ${said(made)}`);
   const yarnInstall = `rm -rf node_modules; timeout 300 yarn install --frozen-lockfile --non-interactive --cache-folder $PWD/.y@FRESH@ && ${nodeCheck("node")}`;
+  const yarnNpmrc = `${npmrc}//fw1.e2e.test/npm/:always-auth=true\n`;
   // Without the rewrite yarn 1 asks registry.yarnpkg.com itself: it must not install
   // around the firewall. Here, as on an enforced network, that fails loudly.
-  let answer = run(yarn, { files: { ".npmrc": npmrc }, script: yarnInstall });
+  let answer = run(yarn, { files: { ".npmrc": yarnNpmrc }, script: yarnInstall });
   expect(exitOf(answer) !== 0 && !answer.stdout.includes(npmInstalled) && /registry\.yarnpkg\.com/.test(said(answer)), `yarn 1 without the rewrite must not install around the firewall: ${said(answer)}`);
   // The documented rewrite, while e2e-left 1.1.0 is blocked: refused with 403.
   const rewrite = "sed -i 's#https://registry.yarnpkg.com/#https://fw1.e2e.test/npm/#g' yarn.lock";
   answer = run(yarn, { files: {}, script: rewrite });
   const rewritten = lockOf(answer);
-  answer = run(yarn, { files: { ".npmrc": npmrc }, script: yarnInstall });
-  // needs the yarn 1 auth fix (keys-page .npmrc): today yarn 1 sends no key, so this is 401, not 403.
+  answer = run(yarn, { files: { ".npmrc": yarnNpmrc }, script: yarnInstall });
   expect(exitOf(answer) !== 0 && /Request failed "403 Forbidden"|\b403\b.*Forbidden/.test(said(answer)) && lockOf(answer) === rewritten, `yarn 1 (rewritten) is refused the blocked pin with 403: ${said(answer)}`);
 
   // Unblock: the rewritten yarn.lock installs through the firewall.
@@ -206,7 +222,7 @@ export default async function lockfileReplay(h) {
     expect(removed.status === 303, `unblock (${ecosystem}): ${removed.status}`);
   }
   await untilStatus(h, firewalls, "/npm/e2e-left/1.1.0", key, 200, "the unblock reaches the fleet");
-  answer = run(yarn, { files: { ".npmrc": npmrc }, script: yarnInstall });
+  answer = run(yarn, { files: { ".npmrc": yarnNpmrc }, script: yarnInstall });
   // needs the yarn 1 auth fix (keys-page .npmrc).
   expect(exitOf(answer) === 0 && answer.stdout.includes(npmInstalled) && lockOf(answer) === rewritten, `yarn 1 (rewritten) installs through the firewall: ${said(answer)}`);
 }

@@ -9,8 +9,8 @@ set -euo pipefail
 
 dir=$1
 names=(
-  registry.npmjs.org pypi.org files.pythonhosted.org api.osv.dev api.pwnedpasswords.com
-  accounts.google.com idp.e2e.test fakes.e2e.test mail.e2e.test
+  registry.npmjs.org registry-b.e2e.test private-registry.e2e.test ocsp-a.e2e.test ocsp-b.e2e.test private-ocsp.e2e.test pypi.org files.pythonhosted.org api.osv.dev api.pwnedpasswords.com
+  accounts.google.com idp.e2e.test fakes.e2e.test mail.e2e.test unlisted-cdn.e2e.test
   portal.e2e.test sync.e2e.test fw1.e2e.test fw2.e2e.test fw-standalone.e2e.test
   localhost
 )

@@ -1,6 +1,8 @@
-//! T-authorization-read-once (T19, C123): the `Authorization` header is read in exactly
-//! one place, `Managed::authenticate`, and nothing else in `src` or
-//! `crates/probation-policy/src` names it.
+//! T-authorization-read-once (T19, C123): every use of the `Authorization` header
+//! is reviewed. Managed API authentication reads it in `Managed::authenticate`;
+//! certificate-protected registry reads use it for canonical token packuments,
+//! named whoami, authenticated actions and selected PyPI uploads. A saved read
+//! credential is sent to the selected upstream only for ordinary reads.
 //!
 //! This SMTC build cannot select a Rust call by its argument, so no analyzer spec can
 //! hold the rule (C123). This is a token scan instead. Comments are stripped first;
@@ -18,8 +20,9 @@ use std::path::{Path, PathBuf};
 const ROOTS: [&str; 2] = ["src", "crates/probation-policy/src"];
 
 /// (file, enclosing item, key, count). Anything else, or any count that differs,
-/// fails. The one read and its import; the SIEM header name's fields, parsing and
-/// default; and the SIEM sink setup that sends it. The enclosing item is the nearest
+/// fails. The managed API read and its import; the canonical npm token classifier,
+/// guard, whoami/action reads and selected upstream sends; the SIEM header name's fields,
+/// parsing and default; and the SIEM sink setup that sends it. The enclosing item is the nearest
 /// preceding `fn`, `struct`, `enum`, `impl` or `mod` header; a `use` item has none.
 const ALLOWED: &[(&str, &str, &str, usize)] = &[
     (
@@ -34,6 +37,17 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
         "get(AUTHORIZATION)",
         1,
     ),
+    ("src/http/registry_routes.rs", "fn package", "contains_key(header::AUTHORIZATION)", 1),
+    ("src/http/registry_routes.rs", "fn named_read", "get(header::AUTHORIZATION)", 1),
+    ("src/http/registry_routes.rs", "fn unsupported_artifact_delete", "get(header::AUTHORIZATION)", 1),
+    ("src/http/token_packument.rs", "fn check_canonical_token_packument", "get(header::AUTHORIZATION)", 1),
+    ("src/http/registry_action.rs", "fn admit_publish_request", "get(header::AUTHORIZATION)", 2),
+    ("src/http/pypi_routes.rs", "fn selected_upload", "get(header::AUTHORIZATION)", 1),
+    ("src/upstream/reqwest_transport.rs", "fn fetch_named_read", "header(header::AUTHORIZATION,value)", 1),
+    ("src/upstream/reqwest_transport.rs", "fn fetch_token_packument", "header(header::AUTHORIZATION,authorization)", 1),
+    ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
+    ("src/upstream/reqwest_transport.rs", "fn fetch_metadata", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
+    ("src/upstream/reqwest_transport.rs", "fn open_artifact", "header(header::AUTHORIZATION,HeaderValue::from_str(&value).map_err(|_|UpstreamError::Status(400))?)", 1),
     ("src/config.rs", "struct Config", "siem_auth_header", 1),
     ("src/config.rs", "struct RawConfig", "siem_auth_header", 1),
     ("src/config.rs", "fn validate", "siem_auth_header", 4),
@@ -586,7 +600,7 @@ fn replace_once(text: &str, anchor: &str, with: &str) -> String {
 }
 
 #[test]
-fn the_tree_as_built_reads_authorization_once() {
+fn the_tree_as_built_uses_authorization_only_at_reviewed_sites() {
     let hits = scan(&repo());
     let problems = mismatches(&hits);
     assert!(

@@ -19,15 +19,17 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::TryStreamExt;
 use reqwest::header::{self, HeaderValue};
 use reqwest::{Client, ClientBuilder, Response, redirect};
+use tokio::io::AsyncReadExt;
 use url::Url;
 
 use crate::upstream::origins::{OriginKind, OriginSet};
 use crate::upstream::resolver::GuardedResolver;
 use crate::upstream::{
-    ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest, MetadataResponse, Transport,
+    ActionRequest, ActionResponse, ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest, MetadataResponse, NamedReadRequest, Transport,
     UpstreamError, UpstreamValidators, capped, collect_capped,
 };
 
@@ -85,10 +87,34 @@ impl ReqwestTransport {
 
     /// Admission before any request: the URL must belong to a configured origin,
     /// and must pass the same check a redirect hop passes.
-    fn admitted(&self, url: &Url) -> Result<OriginKind, UpstreamError> {
-        self.origins
+    fn admitted(origins: &OriginSet, url: &Url) -> Result<OriginKind, UpstreamError> {
+        origins
             .admit_any(url)
             .map_err(UpstreamError::RejectedUrl)
+    }
+
+    fn selected(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool) -> Result<(OriginSet, Client), UpstreamError> {
+        let origins = match origin {
+            Some(origin) => OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
+                .map_err(UpstreamError::RejectedUrl)?,
+            None if follow_redirects => {
+                return Ok((self.origins.clone(), if artifact { self.artifact_client.clone() } else { self.metadata_client.clone() }));
+            }
+            None => self.origins.clone(),
+        };
+        let mut builder = base_builder(&origins);
+        if !follow_redirects {
+            // A developer credential may only reach the canonical packument URL.
+            builder = builder.redirect(redirect::Policy::none());
+        }
+        if artifact {
+            builder = builder.read_timeout(ARTIFACT_READ_TIMEOUT).timeout(ARTIFACT_TOTAL_TIMEOUT)
+                .no_gzip().no_brotli().no_zstd();
+        } else {
+            builder = builder.timeout(METADATA_TOTAL_TIMEOUT);
+        }
+        let client = builder.build().map_err(|err| UpstreamError::Transport(err.to_string()))?;
+        Ok((origins, client))
     }
 }
 
@@ -100,7 +126,7 @@ fn base_builder(origins: &OriginSet) -> ClientBuilder {
         .referer(false)
         .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
-        .dns_resolver(GuardedResolver::new(origins.allows_private_addresses()))
+        .dns_resolver(GuardedResolver::with_cidrs(origins.allows_private_addresses(), origins.private_cidrs().to_vec()))
         .redirect(same_origin_policy(origins.clone()))
 }
 
@@ -133,16 +159,100 @@ fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
 
 #[async_trait]
 impl Transport for ReqwestTransport {
+    async fn send_action(&self, req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
+        let (origins, client) = self.selected(Some(&req.origin), &req.private_cidrs, false, false)?;
+        Self::admitted(&origins, &req.url)?;
+        let mut request = client.request(req.method, req.url).header(header::ACCEPT, "application/json");
+        if let Some(authorization) = req.authorization {
+            request = request.header(header::AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+        }
+        if let Some(content_type) = req.content_type {
+            request = request.header(header::CONTENT_TYPE,
+                HeaderValue::from_str(&content_type).map_err(|_| UpstreamError::Status(400))?);
+        }
+        let body = futures_util::stream::try_unfold(req.body, |mut file| async move {
+            let mut chunk = [0u8; 64 * 1024];
+            let count = file.read(&mut chunk).await?;
+            Ok::<_, std::io::Error>((count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)))
+        });
+        let response = request.header(header::CONTENT_LENGTH, req.body_len.to_string())
+            .body(reqwest::Body::wrap_stream(body)).send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
+        if let Some(rejected) = refused_redirect(&response) { return Err(rejected); }
+        let status = response.status().as_u16();
+        let content_type = header_string(&response, header::CONTENT_TYPE);
+        let body = collect_capped(byte_stream(response), req.max_bytes).await?;
+        Ok(ActionResponse { status, content_type, body })
+    }
+
+    async fn fetch_named_read(&self, req: NamedReadRequest) -> Result<bytes::Bytes, UpstreamError> {
+        let (origins, client) = self.selected(Some(&req.origin), &req.private_cidrs, false, true)?;
+        Self::admitted(&origins, &req.url)?;
+        let mut request = client.request(req.method, req.url)
+            .header(header::ACCEPT, "application/json");
+        if let Some(authorization) = req.authorization {
+            let value = HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?;
+            request = request.header(header::AUTHORIZATION, value);
+        }
+        if let Some(content_encoding) = req.content_encoding {
+            request = request.header(header::CONTENT_ENCODING, content_encoding);
+        }
+        if !req.body.is_empty() {
+            request = request.header(header::CONTENT_TYPE, "application/json").body(req.body);
+        }
+        let response = request.send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
+        if response.status().as_u16() != 200 {
+            return match refused_redirect(&response) {
+                Some(rejected) => Err(rejected),
+                None => Err(UpstreamError::Status(response.status().as_u16())),
+            };
+        }
+        collect_capped(byte_stream(response), req.max_bytes).await
+    }
+
+    async fn fetch_token_packument(
+        &self,
+        req: MetadataRequest,
+        authorization: &str,
+    ) -> Result<MetadataResponse, UpstreamError> {
+        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, false)?;
+        Self::admitted(&origins, &req.url)?;
+        let authorization = HeaderValue::from_str(authorization)
+            .map_err(|_| UpstreamError::Status(400))?;
+        let response = client.get(req.url)
+            .header(header::ACCEPT, req.accept)
+            .header(header::AUTHORIZATION, authorization)
+            .send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
+        match response.status().as_u16() {
+            200 => Ok(MetadataResponse::Fresh {
+                validators: UpstreamValidators::default(),
+                body: collect_capped(byte_stream(response), req.max_bytes).await?,
+            }),
+            404 | 410 => Ok(MetadataResponse::Missing),
+            code => match refused_redirect(&response) {
+                Some(rejected) => Err(rejected),
+                None => Err(UpstreamError::Status(code)),
+            },
+        }
+    }
+
     async fn fetch_metadata(
         &self,
         req: MetadataRequest,
     ) -> Result<MetadataResponse, UpstreamError> {
-        self.admitted(&req.url)?;
+        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
+        Self::admitted(&origins, &req.url)?;
 
-        let mut request = self
-            .metadata_client
+        let mut request = client
             .get(req.url.clone())
             .header(header::ACCEPT, req.accept);
+        if let Some(authorization) = req.read_authorization {
+            request = request.header(header::AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+        }
         if let Some(validators) = &req.validators {
             if let Some(etag) = validator_header(validators.etag.as_deref()) {
                 request = request.header(header::IF_NONE_MATCH, etag);
@@ -153,6 +263,7 @@ impl Transport for ReqwestTransport {
         }
 
         let response = request.send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
 
         // The status match runs first. `StatusCode::is_redirection` spans the whole
         // `300..400` range, 304 included, and reqwest hands a bare 304 back as an
@@ -177,14 +288,34 @@ impl Transport for ReqwestTransport {
     }
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
-        self.admitted(&req.url)?;
-
-        let response = self
-            .artifact_client
-            .get(req.url.clone())
-            .send()
-            .await
-            .map_err(upstream_error)?;
+        let credentialed = req.read_authorization.is_some();
+        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, true, !credentialed)?;
+        Self::admitted(&origins, &req.url)?;
+        let mut url = req.url;
+        let mut authorization = req.read_authorization;
+        let mut redirects = 0;
+        let response = loop {
+            let mut request = client.get(url.clone());
+            if let Some(value) = authorization.take() {
+                request = request.header(header::AUTHORIZATION,
+                    HeaderValue::from_str(&value).map_err(|_| UpstreamError::Status(400))?);
+            }
+            let response = request.send().await.map_err(upstream_error)?;
+            check_connected_peer(&response, &origins)?;
+            if credentialed && matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+                let location = response.headers().get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok()).ok_or(UpstreamError::Status(response.status().as_u16()))?;
+                let next = url.join(location).map_err(|_| UpstreamError::Status(response.status().as_u16()))?;
+                if redirects >= MAX_REDIRECT_HOPS {
+                    return Err(UpstreamError::RedirectLimit { to: next });
+                }
+                Self::admitted(&origins, &next)?;
+                url = next;
+                redirects += 1;
+                continue;
+            }
+            break response;
+        };
 
         let status = response.status().as_u16();
         if status != 200 {
@@ -201,6 +332,45 @@ impl Transport for ReqwestTransport {
             declared_length,
             stream: capped(byte_stream(response), req.max_bytes),
         })
+    }
+}
+
+/// DNS vetting precedes connect; this also checks the peer reqwest actually used.
+/// A missing peer address is not evidence of a permitted connection.
+fn check_connected_peer(response: &Response, origins: &OriginSet) -> Result<(), UpstreamError> {
+    let peer = response.remote_addr().ok_or_else(||
+        UpstreamError::Transport("upstream connected peer unavailable".to_owned()))?;
+    if !origins.allows_address(peer.ip()) {
+        return Err(UpstreamError::RejectedAddress { addr: peer.ip() });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod connected_peer_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn actual_private_peer_must_be_in_the_approved_cidr() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+        });
+        let response = Client::builder().no_proxy().build().unwrap()
+            .get(format!("http://{address}/")).send().await.unwrap();
+        server.await.unwrap();
+        let origins = OriginSet::selected_npm_with_private(
+            Url::parse("https://private-registry.e2e.test/").unwrap(),
+            vec!["10.77.0.2/32".parse().unwrap()],
+        ).unwrap();
+        assert!(matches!(check_connected_peer(&response, &origins),
+            Err(UpstreamError::RejectedAddress { addr }) if addr.is_loopback()));
     }
 }
 

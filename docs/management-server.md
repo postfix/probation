@@ -1,5 +1,9 @@
 # Running the management server
 
+Start with [Overview](../README.md), [Install](install.md), [Usage](usage.md),
+and [Troubleshooting](troubleshooting.md). This reference gives the exact server
+settings, database roles, and first-run commands.
+
 How to run `probation-server` and point firewalls at it. In managed mode each firewall
 serves every request under the policy of the API key it carries: the server holds the
 keys, the organisations and their policy layers, and the self-service portal where
@@ -24,7 +28,7 @@ command, flag and API route is in [api.md](api.md).
 | `probation-server` | Postgres | One process: the sync API for firewalls, the automation API, and the portal when `[portal]` is set. Keeps no state on disk. |
 | Postgres 16 | — | Everything the server knows. Back it up (operations.md §5). |
 | Your TLS reverse proxy | the server | The server listens on **plain HTTP only**. Firewalls refuse a management URL that is not `https` (loopback included), so a proxy in front is required. |
-| Each firewall (`probation`) | the server through the proxy; npm, PyPI, OSV | A `[management]` section in its `config.toml` makes it managed. |
+| Each firewall (`probation`) | the server through the proxy; configured npm and PyPI registries; OSV | A `[management]` section in its `config.toml` makes it managed. |
 
 The server answers three groups of routes on one port:
 
@@ -39,7 +43,8 @@ The server answers three groups of routes on one port:
   layer on the organisation page or on `/admin`.
 - **Portal** (only with `[portal]`): sign-up and sign-in, `/account`, `/keys`,
   `/policy`, `/activity`, `/audit`, `/org`, and for global admins `/admin` and
-  `/fleet`.
+  `/fleet`. Organisation admins also manage selected package registries and
+  certificate providers; members can download a package-client setup bundle.
 
 ## 2. Images and deploy examples
 

@@ -3230,6 +3230,11 @@ async fn state(db: &Db) -> String {
         "sign_in_failures",
         "keys",
         "policy_layers",
+        "registries",
+        "registry_certificate_providers",
+        "registry_certificate_roots",
+        "registry_enterprise_activation_samples",
+        "registry_private_egress",
     ];
     let mut digest = String::new();
     for table in tables {
@@ -3267,6 +3272,15 @@ async fn t_portal_csrf() {
         ("again", NEW_PASSWORD),
         ("code", "123456"),
         ("token", "forged"),
+        ("identity_field", "uri_san_membership_uuid"),
+        ("expected_ocsp_url", "https://ocsp.example.test/status"),
+        ("root_pem", "forged"),
+        ("chain_pem", "forged"),
+        ("phase", "good"),
+        ("ecosystem", "npm"),
+        ("target_url", "https://registry.npmjs.org/"),
+        ("purpose", "registry"),
+        ("cidr", "10.0.0.0/24"),
     ];
     let posts: Vec<_> = portal::route_table()
         .into_iter()
@@ -3277,7 +3291,9 @@ async fn t_portal_csrf() {
     for (_, path) in posts {
         let path = path
             .replace("{provider}", "google")
-            .replace("{id}", &method.to_string());
+            .replace("{id}", &method.to_string())
+            .replace("{org}", "999999")
+            .replace("{registry}", "999999");
         for token in [None, Some(foreign.as_str())] {
             let mut sent = fields.to_vec();
             if let Some(token) = token {
@@ -3343,13 +3359,25 @@ async fn t_cross_tenant_routes_accounts() {
     let before = state(&fx.db).await;
     for (method, path) in routes {
         let (param, globex_id) = ids.iter().find(|(param, _)| path.contains(*param)).unwrap();
-        let with_id = |id: i32| path.replace(param, &id.to_string());
+        let with_id = |id: i32| path.replace(param, &id.to_string()).replace("{registry}", "999999");
         let csrf = ana.get("/account").await.csrf();
         let mut answers = Vec::new();
         for id in [*globex_id, 999_999] {
             let page = match method {
                 "GET" => ana.get(&with_id(id)).await,
-                _ => ana.post_raw(&with_id(id), &[("csrf", &csrf)]).await,
+                _ => ana.post_raw(&with_id(id), &[
+                    ("csrf", &csrf),
+                    ("identity_field", "uri_san_membership_uuid"),
+                    ("expected_ocsp_url", "https://ocsp.example.test/status"),
+                    ("root_pem", "forged"),
+                    ("chain_pem", "forged"),
+                    ("phase", "good"),
+                    ("name", "forged"),
+                    ("ecosystem", "npm"),
+                    ("target_url", "https://registry.npmjs.org/"),
+                    ("purpose", "registry"),
+                    ("cidr", "10.0.0.0/24"),
+                ]).await,
             };
             answers.push((page.status, page.body));
         }

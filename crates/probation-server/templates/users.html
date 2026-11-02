@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Users and groups · {{ name }}</h1>
+<p><a href="/org/{{ org }}">Organisation settings and invitations</a> · <a href="/org/{{ org }}/certificates/lookup">Find member certificates</a></p>
+<section aria-labelledby="members-heading">
+<h2 id="members-heading">Members</h2>
+<div class="wrap"><table>
+<caption>Members of {{ name }}</caption>
+<thead><tr><th scope="col">Email</th><th scope="col">Role</th><th scope="col">Group</th><th scope="col">Package access</th><th scope="col">Actions</th></tr></thead>
+<tbody>{% for member in members %}
+<tr><td>{{ member.email }}</td>
+<td><form method="post" action="/org/members/{{ member.id }}/role"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="role-{{ member.id }}">Role of {{ member.email }}</label><select id="role-{{ member.id }}" name="role">{% for (value, label) in [("org_admin", "Org admin"), ("group_admin", "Group admin"), ("member", "Member")] %}<option value="{{ value }}"{% if member.role == *value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><button type="submit">Change role</button></form></td>
+<td><form method="post" action="/org/members/{{ member.id }}/group"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="group-{{ member.id }}">Group of {{ member.email }}</label><select id="group-{{ member.id }}" name="group"><option value="none"{% if member.group.is_none() %} selected{% endif %}>No group</option>{% for group in groups %}<option value="{{ group.id }}"{% if member.group == Some(*group.id) %} selected{% endif %}>{{ group.name }}</option>{% endfor %}</select><button type="submit">Move</button></form></td>
+<td>{% if member.package_access_disabled %}<span class="err">Disabled</span>{% else %}<span class="good">Active</span><form method="post" action="/org/members/{{ member.id }}/package-disable"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Disable package access for {{ member.email }}">Disable package access</button></form>{% endif %}</td>
+<td><form method="get" action="/org/{{ org }}/certificates/lookup"><input type="hidden" name="email" value="{{ member.email }}"><button type="submit" aria-label="Find certificates for {{ member.email }}">Find certificates</button></form><form method="post" action="/org/members/{{ member.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove {{ member.email }} from {{ name }}">Remove</button></form></td></tr>
+{% endfor %}</tbody></table></div>
+</section>
+<section aria-labelledby="groups-heading">
+<h2 id="groups-heading">Groups</h2>
+<div class="wrap"><table><caption>Groups of {{ name }}</caption><thead><tr><th scope="col">Group</th><th scope="col">Members</th><th scope="col">Service keys</th><th scope="col">Actions</th></tr></thead><tbody>
+{% for group in groups %}<tr><td>{{ group.name }}</td><td>{{ group.members }}</td><td>{{ group.service_keys }}</td><td class="row"><form method="post" action="/org/groups/{{ group.id }}/rename"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="rename-{{ group.id }}">New name for {{ group.name }}</label><input id="rename-{{ group.id }}" name="name" required maxlength="100"><button type="submit">Rename</button></form><a href="/policy/group-{{ group.id }}">Policy</a> <a href="/org/groups/{{ group.id }}/delete">Delete</a></td></tr>{% endfor %}
+</tbody></table></div>
+<form method="post" action="/org/{{ org }}/groups"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="group-name">Group name</label><input id="group-name" name="name" required maxlength="100"><button type="submit">Create group</button></form>
+</section>
+{% endblock %}

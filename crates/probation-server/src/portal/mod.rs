@@ -7,11 +7,14 @@ mod account;
 mod activity;
 mod admin;
 mod audit;
+mod certificates;
 mod fleet;
 mod keys;
 mod organisation;
 mod policy;
+mod registries;
 mod signin;
+mod users;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -195,6 +198,49 @@ fn routes() -> Routes {
     .get("/account/totp/qr.svg", get(account::totp_qr))
     .post("/place", post(choose_place))
     .get("/keys", get(keys::show))
+    .get("/certificates/setup", get(certificates::setup_page))
+    .get(
+        "/org/{org}/certificates",
+        get(certificates::enterprise_page),
+    )
+    .get(
+        "/org/{org}/certificates/lookup",
+        get(users::lookup_certificate),
+    )
+    .post(
+        "/org/{org}/certificates",
+        post(certificates::save_enterprise_settings),
+    )
+    .post(
+        "/org/{org}/certificates/test",
+        post(certificates::test_enterprise_certificate),
+    )
+    .get("/org/{org}/registries", get(registries::catalog))
+    .post("/org/{org}/registries", post(registries::add))
+    .post(
+        "/org/{org}/registries/{registry}/remove",
+        post(registries::remove),
+    )
+    .post(
+        "/org/{org}/registries/{registry}/trust",
+        post(registries::set_trust),
+    )
+    .post(
+        "/org/{org}/registries/{registry}/read-credential",
+        post(registries::set_read_credential),
+    )
+    .post(
+        "/org/{org}/registries/{registry}/delete-scope",
+        post(registries::set_delete_scope),
+    )
+    .post("/org/{org}/private-egress", post(registries::request_private_egress))
+    .get("/admin/private-egress", get(registries::private_egress_queue))
+    .post("/admin/private-egress/{id}/approve", post(registries::approve_private_egress))
+    .post(
+        "/certificates/setup",
+        post(certificates::issue_setup_bundle),
+    )
+    .post("/certificates/{id}/revoke", post(users::revoke_certificate))
     .post("/keys", post(keys::create))
     .post("/keys/service", post(keys::create_service))
     .post("/keys/{id}/revoke", post(keys::revoke))
@@ -205,8 +251,13 @@ fn routes() -> Routes {
     .get("/audit", get(audit::show))
     .get("/org", get(organisation::start))
     .get("/org/{org}", get(organisation::show))
+    .get("/org/{org}/users", get(users::manage))
     .post("/org/members/{id}/group", post(organisation::move_member))
     .post("/org/members/{id}/role", post(organisation::set_role))
+    .post(
+        "/org/members/{id}/package-disable",
+        post(users::disable_member),
+    )
     .post(
         "/org/members/{id}/remove",
         post(organisation::remove_member),

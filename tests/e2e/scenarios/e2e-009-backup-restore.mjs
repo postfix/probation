@@ -180,16 +180,10 @@ export default async function restoreDrill(h) {
     try {
       h.stack.secretKey = "ab".repeat(32);
       h.stack.compose(["up", "-d", "--no-deps", "--force-recreate", "server"]);
-      await h.waitFor("the portal", async () => (await h.request(`${h.portalUrl}/signin`)).status === 200, { timeout: 60_000 });
-      const wrong = { ...operator, portal: new h.Portal() };
-      let page = await wrong.portal.submit("/signin", "/signin", { email: operator.email, password: operator.password });
-      expect(page.location === "/totp", `password step with another key: ${page.status} ${page.location}`);
-      page = await wrong.portal.submit("/totp", "/totp", { code: await operator.auth.code() });
-      expect(page.status !== 303, `with another SECRET_KEY the authenticator cannot be checked: ${page.status}`);
-      // The recreated container's log is this start's only.
-      const logged = o.logs(o.id("server")).replace(/\x1b\[[0-9;]*m/g, "").split("\n");
-      o.needs("the new defect ND-2 (a wrong SECRET_KEY is silent)", logged.some((l) => /secret.?key|SECRET_KEY|cannot be (opened|read|decrypted)|unseal/i.test(l)),
-        `with another PROBATION_SERVER_SECRET_KEY the page says only "${page.body.match(/class="err"[^>]*>([^<]+)/)?.[1]}" and the server log does not say why:\n${logged.join("\n").slice(-2000)}`);
+      await h.waitFor("the server refuses a mismatched secret key", () =>
+        /PROBATION_SERVER_SECRET_KEY does not match/.test(o.logs(o.id("server"))), { timeout: 20_000 });
+      expect(o.state(o.id("server")).exitCode !== 0,
+        "the server fails closed when restored secrets cannot be opened");
     } finally {
       h.stack.secretKey = secretKey;
       h.stack.compose(["up", "-d", "--no-deps", "--force-recreate", "server"]);

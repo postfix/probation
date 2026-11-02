@@ -323,7 +323,7 @@ pub const fn place(kind: LayerKind, id: i32) -> PlaceRef {
 
 /// The sync API on a loopback port, served as `probation-server serve` does.
 pub async fn serve(app: PgPool, trusted_proxies: Vec<IpNet>) -> url::Url {
-    let state = Arc::new(probation_server::sync::SyncState::new(app, trusted_proxies));
+    let state = Arc::new(probation_server::sync::SyncState::new(app, trusted_proxies, Some(probation_server::accounts::SecretBox::new(SECRET_KEY))));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

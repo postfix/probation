@@ -19,18 +19,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use ipnet::IpNet;
 use probation_policy::api::{
-    ChainLink, ChangesRequest, ChangesResponse, KeyHash, KeyId, KeyLookup, KeyLookupRequest,
-    LayersRequest, LayersResponse, LimitChange, LimitSource, LockRange, OrgId, PlaceLayer,
-    SettingsPush,
+    CertificateAdmission, CertificateAdmissionRequest, ChainLink, ChangesRequest, ChangesResponse,
+    KeyHash, KeyId, KeyLookup, KeyLookupRequest, LayersRequest, LayersResponse, LimitChange,
+    LimitSource, LockRange, MemberCertificateId, OrgId, PlaceLayer, RegistryDeletionScope, SettingsPush,
 };
 use probation_policy::{LayerKind, PlaceRef};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 
 use crate::audit;
 use crate::policy::{StoreError, load_layer};
-use crate::tenancy::{Actor, PLATFORM, kind_of, kind_str};
+use crate::tenancy::{self, Actor, PLATFORM, kind_of, kind_str};
 
 /// Requests a second one firewall token may make to this server copy (T31): above the
 /// firewall's lookup budget of 50.
@@ -187,15 +188,17 @@ pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
 
 pub struct SyncState {
     pool: PgPool,
+    secrets: Option<crate::accounts::SecretBox>,
     trusted_proxies: Vec<IpNet>,
     /// Each firewall's requests in the last second.
     recent: Mutex<HashMap<i32, VecDeque<Instant>>>,
 }
 
 impl SyncState {
-    pub fn new(pool: PgPool, trusted_proxies: Vec<IpNet>) -> SyncState {
+    pub fn new(pool: PgPool, trusted_proxies: Vec<IpNet>, secrets: Option<crate::accounts::SecretBox>) -> SyncState {
         SyncState {
             pool,
+            secrets,
             trusted_proxies,
             recent: Mutex::new(HashMap::new()),
         }
@@ -361,11 +364,244 @@ impl IntoResponse for SyncError {
 
 pub fn router(state: Arc<SyncState>) -> Router {
     Router::new()
+        .route("/api/v1/sync/certificate", post(admit_certificate))
         .route("/api/v1/sync/lookup", post(lookup))
         .route("/api/v1/sync/layers", post(layers))
         .route("/api/v1/sync/changes", post(changes))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+}
+
+/// One live management snapshot decides current root, serial, revocation, membership,
+/// selected registry and the complete group policy before the firewall may send bytes.
+async fn admit_certificate(
+    State(state): State<Arc<SyncState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CertificateAdmission>, SyncError> {
+    use x509_parser::extensions::{GeneralName, ParsedExtension};
+
+    state.firewall(&headers, peer.ip()).await?;
+    let asked: CertificateAdmissionRequest = parse(&body)?;
+    let refused = || Json(CertificateAdmission::Refused);
+    if asked.chain.is_empty()
+        || asked.chain.len() > 8
+        || asked
+            .chain
+            .iter()
+            .any(|cert| cert.is_empty() || cert.len() > 64 * 1024)
+    {
+        return Ok(refused());
+    }
+    let leaf_fingerprint = Sha256::digest(&asked.chain[0]);
+    let (mut tx, _) = snapshot(&state.pool).await?;
+    #[allow(clippy::type_complexity)]
+    let row: Option<(i32, i32, String, Option<i32>, Vec<u8>, String, Vec<u8>, Option<String>, bool, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT c.org_id, m.id, m.certificate_uuid::text, m.group_id, c.serial,
+                root.certificate_pem, c.issuer_fingerprint, r.target_url, r.trusted, r.read_authorization_enc
+         FROM registries AS r
+         JOIN registry_member_certificates AS c ON c.org_id = r.org_id
+         JOIN registry_certificate_roots AS root ON root.org_id = c.org_id
+              AND root.fingerprint = c.issuer_fingerprint AND root.active
+         JOIN registry_certificate_providers AS provider ON provider.org_id = c.org_id
+              AND provider.kind = 'probation'
+         JOIN memberships AS m ON m.id = c.membership_id AND m.org_id = c.org_id
+         JOIN logins AS l ON l.id = m.login_id
+         JOIN orgs AS o ON o.id = c.org_id
+         WHERE r.id = $1 AND r.ecosystem = $3 AND r.removed_at IS NULL
+           AND c.leaf_fingerprint = $2 AND c.revoked_at IS NULL AND c.expires_at > now()
+           AND m.package_access_disabled_at IS NULL
+           AND l.deleted_at IS NULL AND o.status = 'active' AND o.deleted_at IS NULL",
+    )
+    .bind(asked.registry.0 as i64)
+    .bind(leaf_fingerprint.as_slice())
+    .bind(asked.ecosystem.as_tag())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Ok((_, leaf)) = x509_parser::parse_x509_certificate(&asked.chain[0]) else {
+        return Ok(refused());
+    };
+    let uri = leaf.subject_alternative_name().ok().flatten().map(|san| {
+        san.value
+            .general_names
+            .iter()
+            .filter_map(|name| match name {
+                GeneralName::URI(uri) => Some(*uri),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    let Some([member_uri]) = uri.as_deref() else {
+        return Ok(refused());
+    };
+    let (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, enterprise_status) =
+        if let Some((org, member, member_uuid, group, serial, root_pem, _, target_url, trusted, read_authorization_enc)) = row {
+            if leaf.raw_serial() != serial.as_slice()
+                || *member_uri != format!("urn:probation:member:{member_uuid}") {
+                return Ok(refused());
+            }
+            let Some(root_der) = verifies_client_chain(&root_pem, &asked.chain) else {
+                return Ok(refused());
+            };
+            (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, None)
+        } else {
+            let Some(member_uuid) = member_uri.strip_prefix("urn:probation:member:") else {
+                return Ok(refused());
+            };
+            #[allow(clippy::type_complexity)]
+            let enterprise: Option<(i32, i32, String, Option<i32>, String, Option<String>, bool, Option<Vec<u8>>)> = sqlx::query_as(
+                "SELECT r.org_id, m.id, m.certificate_uuid::text, m.group_id,
+                        provider.expected_ocsp_url, r.target_url, r.trusted, r.read_authorization_enc
+                 FROM registries AS r
+                 JOIN registry_certificate_providers AS provider ON provider.org_id = r.org_id
+                      AND provider.kind = 'organisation' AND provider.expected_ocsp_url IS NOT NULL
+                 JOIN memberships AS m ON m.org_id = r.org_id AND m.certificate_uuid::text = $2
+                 JOIN logins AS l ON l.id = m.login_id
+                 JOIN orgs AS o ON o.id = r.org_id
+                 WHERE r.id = $1 AND r.ecosystem = $3 AND r.removed_at IS NULL
+                   AND m.package_access_disabled_at IS NULL
+                   AND l.deleted_at IS NULL AND o.status = 'active' AND o.deleted_at IS NULL",
+            )
+            .bind(asked.registry.0 as i64).bind(member_uuid).bind(asked.ecosystem.as_tag())
+            .fetch_optional(&mut *tx).await?;
+            let Some((org, member, member_uuid, group, expected_status, target_url, trusted, read_authorization_enc)) = enterprise else {
+                return Ok(refused());
+            };
+            // Exactly one OCSP AIA URI, equal to the saved issuer expectation.
+            let aia: Vec<&str> = leaf.extensions().iter().flat_map(|extension| match extension.parsed_extension() {
+                ParsedExtension::AuthorityInfoAccess(access) => access.accessdescs.iter()
+                    .filter(|entry| entry.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1")
+                    .filter_map(|entry| match &entry.access_location { GeneralName::URI(uri) => Some(*uri), _ => None })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            }).collect();
+            if aia.as_slice() != [expected_status.as_str()] {
+                return Ok(refused());
+            }
+            let roots: Vec<String> = sqlx::query_scalar(
+                "SELECT certificate_pem FROM registry_certificate_roots WHERE org_id = $1 AND active ORDER BY fingerprint",
+            ).bind(org).fetch_all(&mut *tx).await?;
+            let Some(root_der) = roots.iter().find_map(|pem| verifies_client_chain(pem, &asked.chain)) else {
+                return Ok(refused());
+            };
+            let issuer_der = asked.chain.get(1).cloned().unwrap_or_else(|| root_der.clone());
+            let status = probation_policy::api::EnterpriseStatus {
+                status_url: expected_status,
+                issuer_der,
+                root_der: root_der.clone(),
+                private_cidrs: Vec::new(),
+            };
+            (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, Some(status))
+        };
+    let _ = root_der;
+    let read_authorization = if let Some(sealed) = read_authorization_enc {
+        let Some(value) = state.secrets.as_ref().and_then(|secrets| secrets.open(&format!("registry read org {org}"), &sealed))
+            .and_then(|bytes| String::from_utf8(bytes).ok()) else {
+            tracing::error!(registry = asked.registry.0, "registry read credential cannot be opened");
+            return Err(SyncError::Store(sqlx::Error::RowNotFound));
+        };
+        Some(value)
+    } else { None };
+    let registry_private_cidrs = if let Some(target) = &target_url {
+        approved_private_cidrs(&mut tx, org, "registry", target).await?
+    } else {
+        Vec::new()
+    };
+    let mut enterprise_status = enterprise_status;
+    if let Some(status) = &mut enterprise_status {
+        status.private_cidrs = approved_private_cidrs(&mut tx, org, "ocsp", &status.status_url).await?;
+    }
+
+    let mut chain = vec![tenancy::PLATFORM, tenancy::org_place(OrgId(org as u32))];
+    if let Some(group) = group {
+        chain.push(probation_policy::PlaceRef {
+            kind: LayerKind::Group,
+            id: group as u32,
+        });
+    }
+    let place = probation_policy::PlaceRef {
+        kind: LayerKind::User,
+        id: member as u32,
+    };
+    chain.push(place);
+    let mut layers = Vec::with_capacity(chain.len());
+    for place in chain {
+        let Some((layer, revision)) = load_layer(&mut tx, place).await? else {
+            return Ok(refused());
+        };
+        layers.push(PlaceLayer {
+            place,
+            layer,
+            revision,
+        });
+    }
+    let (rate, overridden): (i32, bool) = sqlx::query_as(
+        "SELECT rate_per_min, scope_id IS NOT NULL FROM limits
+         WHERE scope_kind = 'org' AND (scope_id = $1 OR scope_id IS NULL)
+         ORDER BY scope_id NULLS LAST LIMIT 1",
+    )
+    .bind(org)
+    .fetch_one(&mut *tx)
+    .await?;
+    let deletion_scopes = sqlx::query_as::<_, (String, String, bool)>(
+        "SELECT origin, path_prefix, forward_bearer FROM registry_delete_origins WHERE registry_id = $1 ORDER BY origin, path_prefix"
+    ).bind(asked.registry.0 as i64).fetch_all(&mut *tx).await?
+        .into_iter().map(|(origin, path_prefix, forward_bearer)| RegistryDeletionScope { origin, path_prefix, forward_bearer }).collect();
+    tx.commit().await?;
+    Ok(Json(CertificateAdmission::Granted {
+        registry: asked.registry,
+        target_url,
+        read_authorization,
+        trusted,
+        registry_private_cidrs,
+        deletion_scopes,
+        enterprise_status: enterprise_status.map(Box::new),
+        org: OrgId(org as u32),
+        member: MemberCertificateId(member_uuid),
+        place,
+        layers,
+        rate_limit: std::num::NonZeroU32::new(rate as u32),
+        rate_limit_source: if overridden {
+            LimitSource::Override
+        } else {
+            LimitSource::Default
+        },
+    }))
+}
+
+pub(crate) async fn approved_private_cidrs(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org: i32,
+    purpose: &str,
+    target: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let Ok(url) = url::Url::parse(target) else { return Ok(Vec::new()); };
+    let Some(host) = url.host_str() else { return Ok(Vec::new()); };
+    let Some(port) = url.port_or_known_default() else { return Ok(Vec::new()); };
+    sqlx::query_scalar(
+        "SELECT cidr::text FROM registry_private_egress
+         WHERE org_id = $1 AND purpose = $2 AND host = $3 AND port = $4
+           AND approved_at IS NOT NULL ORDER BY id",
+    ).bind(org).bind(purpose).bind(host.to_ascii_lowercase()).bind(port as i32)
+        .fetch_all(&mut **tx).await
+}
+
+pub(crate) fn verifies_client_chain(root_pem: &str, chain: &[Vec<u8>]) -> Option<Vec<u8>> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, UnixTime};
+    use rustls::{RootCertStore, server::WebPkiClientVerifier};
+
+    let root = CertificateDer::from_pem_slice(root_pem.as_bytes()).ok()?;
+    let mut roots = RootCertStore::empty();
+    roots.add(root.clone()).ok()?;
+    let verifier = WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+    ).build().ok()?;
+    let certs: Vec<CertificateDer<'static>> = chain.iter().cloned().map(CertificateDer::from).collect();
+    verifier.verify_client_cert(&certs[0], &certs[1..], UnixTime::now()).ok()?;
+    Some(root.as_ref().to_vec())
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, SyncError> {

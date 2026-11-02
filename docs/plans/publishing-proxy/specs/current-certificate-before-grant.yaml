@@ -1,0 +1,10 @@
+# The live management certificate answer precedes principal policy construction.
+# Exact peer, trust anchor, revocation and membership need runtime controls.
+name: current-certificate-before-grant
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [certificate]}}
+operation: {calls: {name: [resolve]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'Managed.admit_certificate'"

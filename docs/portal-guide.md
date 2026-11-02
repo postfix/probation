@@ -1,5 +1,9 @@
 # Portal guide
 
+Start with [Overview](../README.md), [Install](install.md), [Usage](usage.md),
+and [Troubleshooting](troubleshooting.md). This guide lists the controls available
+to each portal role.
+
 The portal is the web site of the Probation management server. People use it to sign
 up, create API keys for npm and pip, set policy, and run their organisation. The
 service operator uses it to run the platform and the firewalls.
@@ -14,6 +18,7 @@ This guide is ordered by role:
 2. [Members](#2-members): API keys, your own policy, activity.
 3. [Org admins and group admins](#3-org-admins-and-group-admins).
 4. [Global admins](#4-global-admins) (the service operator).
+5. [Selected registries and certificates](#5-selected-package-registries-and-certificates).
 
 ## Words used here
 
@@ -23,7 +28,7 @@ This guide is ordered by role:
 | Sign-in method | Email and password, Google, GitHub, Microsoft, or one organisation's company SSO. |
 | Place | Where you work: your personal account or one of your organisations. The **Place** switcher at the top of every page chooses it. |
 | Layer | One level of policy: Platform, organisation, group, and a user's own layer (or a personal account). Each layer inherits everything above it. |
-| Key | An API key. npm or pip sends it to a firewall. Every download made with it gets the policy of the place it belongs to. |
+| Key | An API key. npm or pip sends it to a managed firewall for ordinary downloads. Every request made with it gets the policy of the place it belongs to. Selected registry access also uses a client certificate. |
 
 | Role | What it can do |
 | --- | --- |
@@ -468,6 +473,7 @@ versions included. Tick what it lets through: **Blocklist**, **Freeze**, **OSV**
 exception to a rule set higher up needs every layer between the rule's owner and this
 one to allow it: **Allow package exceptions** for the blocklist, **Allow a shorter
 freeze** for the freeze, **Allow turning OSV off** for OSV.
+For a step-by-step example, see [Allow one package or version](policy.md#allow-one-package-or-version).
 
 **"Not in effect".** When a layer above turns a switch off after you saved a looser
 value, your value stays stored but the page marks it "not in effect while a stricter
@@ -706,3 +712,25 @@ with each firewall's step:
 **Retire.** Type the firewall's name and press **Retire &lt;name&gt;**. Its token stops
 working: at its next check-in it stops serving every request. This cannot be undone; to
 bring it back, register it again.
+
+## 5. Selected package registries and certificates
+
+An org admin opens **Organisation → Package registries** to add an npm or PyPI
+HTTPS target. For each registry, the page can save a read-only credential and
+choose whether to skip the release-age delay. For npm version removal, the admin
+can approve a separate HTTPS deletion destination and path, with an explicit
+choice about forwarding the developer's bearer token. A private registry or
+certificate-status destination needs an operator-approved address range.
+
+**Organisation → Enterprise certificates** is for an organisation that issues
+its own client certificates. The admin saves the public CA and expected status
+URL, checks one good sample, then checks that same sample after its issuer has
+revoked it. The second check activates that issuer.
+
+Members of an organisation with Probation-issued certificates open **Package
+client setup** and download a personal setup bundle. The bundle contains a
+private key; keep it private and run its setup script only on the intended
+machine. The selected npm and PyPI paths are separate from the legacy download
+paths. A member's current organisation and group determine access on each
+request. An org admin can find or revoke a member certificate from the
+organisation page.

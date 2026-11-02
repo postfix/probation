@@ -21,7 +21,7 @@
 FROM docker.io/library/rust:1.96.0-bookworm AS chef
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends cmake perl \
+ && apt-get install --yes --no-install-recommends cmake perl libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 # cargo-chef splits the build in two: the dependencies, cached as one layer that only
 # a Cargo.toml or Cargo.lock change invalidates, then this workspace's own crates. It
@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.title="probation" \
       org.opencontainers.image.licenses="Elastic-2.0"
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends ca-certificates \
+ && apt-get install --yes --no-install-recommends ca-certificates libssl3 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/target/release/probation /usr/local/bin/probation

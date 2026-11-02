@@ -182,6 +182,9 @@ async function slice6(browser) {
     await signIn(page, 'mia@acme.test');
     await go(page, '/keys');
     await audit(page, 'API keys (member)');
+    if (await go(page, '/certificates/setup') !== 200) throw new Error('member setup page did not open');
+    await audit(page, 'Package client setup (member)');
+    await go(page, '/keys');
     await page.locator('#key-name').fill('a11y laptop');
     await submit(page, 'form[action="/keys"] button[type=submit]');
     if (!(await page.locator('#new-key').count())) throw new Error('no key was shown once');
@@ -228,6 +231,9 @@ async function slice6(browser) {
     await go(page, '/org');
     if (!/\/org\/\d+$/.test(page.url())) throw new Error(`/org did not open Acme: ${page.url()}`);
     await audit(page, 'Organisation (org admin)');
+    await page.getByRole('link', { name: 'Users and groups' }).click();
+    await audit(page, 'Users and groups (org admin)');
+    await go(page, '/org');
     await page.locator('#invite-email').fill('erin@acme.test');
     await submit(page, 'form[action$="/invitations"] button[type=submit]');
     await audit(page, 'Organisation: invitation waiting');
@@ -281,6 +287,9 @@ async function slice7(browser) {
     await turnTotpOn(page);
     await go(page, '/admin');
     await audit(page, 'Global admin');
+    await go(page, '/admin/private-egress');
+    await audit(page, 'Private egress approvals');
+    await go(page, '/admin');
     await page.locator('#token-name').fill('a11y platform tool');
     await submit(page, 'form[action="/admin/tokens"] button[type=submit]');
     if (!(await page.locator('#new-token').count())) throw new Error('no platform token was shown once');
@@ -315,6 +324,14 @@ async function slice7(browser) {
     await page.locator('a[href^="/org/"]').first().click();
     await page.waitForLoadState('load');
     await audit(page, 'Organisation (global admin inside it)');
+    const orgPath = new URL(page.url()).pathname;
+    await go(page, `${orgPath}/registries`);
+    await audit(page, 'Package registries');
+    await go(page, `${orgPath}/certificates`);
+    await audit(page, 'Enterprise certificate settings');
+    await go(page, `${orgPath}/certificates/lookup`);
+    await audit(page, 'Find member certificates');
+    await go(page, orgPath);
     await page.locator('#token-name').fill('a11y org tool');
     await submit(page, 'form[action$="/automation"] button[type=submit]');
     if (!(await page.locator('#new-token').count())) throw new Error('no org token was shown once');

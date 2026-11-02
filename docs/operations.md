@@ -7,8 +7,10 @@ The operator handbook for both programs:
   their policy, and serves the self-service portal. You need it only for managed
   mode.
 
-How to install, configure, run, watch, back up, restore and upgrade them, and what
-to do when something breaks. How to set up the management server is in
+Start with the short [Overview](../README.md), [Install](install.md),
+[Usage](usage.md), and [Troubleshooting](troubleshooting.md) guides. This file
+keeps the detailed settings, limits, backup, restore, and release procedures.
+How to set up the management server is in
 [management-server.md](management-server.md); what the portal does for its users is in
 [portal-guide.md](portal-guide.md).
 
@@ -707,7 +709,9 @@ the server.
 
 ## 7. What this service does not protect against
 
-It only checks packages as they are *downloaded*. It cannot help with:
+Its package safety checks run when a client downloads through it. Selected
+registry publishing uses separate access checks and the upstream registry's
+permissions. The download checks cannot help with:
 
 - **Already-installed packages.** A later block does not remove them from
   `node_modules` or similar.
@@ -736,6 +740,9 @@ audit=false
 index-url = https://packages.example.org/pypi/simple/
 ```
 
+These lines use the legacy download paths. The legacy npm path has no audit route,
+so its client setting turns audit off. Selected npm registries have separate paths
+and guarded audit routes; see [Usage](usage.md#use-a-selected-npm-or-pypi-registry).
 In managed mode each client also sends its API key. The portal's keys page shows
 the exact lines to paste.
 

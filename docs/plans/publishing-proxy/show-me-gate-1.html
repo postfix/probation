@@ -1,0 +1,53 @@
+<section id="publishing-proxy-gate-1-resteer" aria-label="Gate 1 scope decision">
+  <style>
+    #publishing-proxy-gate-1-resteer { color-scheme: light dark; --ink: light-dark(#172332,#edf3f8); --subtle: light-dark(#526474,#bdcbd7); --rule: light-dark(#d6dfe7,#496071); --accent: light-dark(#165b8e,#77b6e0); color: var(--ink); font: 400 15px/1.5 system-ui,sans-serif; max-width: 920px; margin: 0 auto; overflow-wrap: anywhere; }
+    #publishing-proxy-gate-1-resteer * { box-sizing: border-box; }
+    #publishing-proxy-gate-1-resteer h2 { font-size: 1.25rem; line-height: 1.25; margin: 1.45rem 0 .45rem; }
+    #publishing-proxy-gate-1-resteer p { margin: .4rem 0 .75rem; }
+    #publishing-proxy-gate-1-resteer a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    #publishing-proxy-gate-1-resteer a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    #publishing-proxy-gate-1-resteer .flow { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .5rem 1.3rem; margin: .8rem 0; }
+    #publishing-proxy-gate-1-resteer .flow p { border-left: 3px solid var(--accent); padding: .1rem 0 .1rem .7rem; margin: 0; }
+    #publishing-proxy-gate-1-resteer ol { columns: 2; column-gap: 1.8rem; padding-left: 1.45rem; margin: .4rem 0 1rem; }
+    #publishing-proxy-gate-1-resteer li { break-inside: avoid; margin: 0 0 .4rem; }
+    #publishing-proxy-gate-1-resteer table { width: 100%; border-collapse: collapse; }
+    #publishing-proxy-gate-1-resteer th, #publishing-proxy-gate-1-resteer td { border-bottom: 1px solid var(--rule); padding: .55rem .45rem; text-align: left; vertical-align: top; }
+    #publishing-proxy-gate-1-resteer th { font-weight: 650; }
+    #publishing-proxy-gate-1-resteer .meta { color: var(--subtle); font-size: .85rem; }
+    #publishing-proxy-gate-1-resteer .question { font-size: 1.1rem; font-weight: 700; margin-top: 1.2rem; }
+    @media (max-width: 620px) { #publishing-proxy-gate-1-resteer .flow { grid-template-columns: 1fr; } #publishing-proxy-gate-1-resteer ol { columns: 1; } #publishing-proxy-gate-1-resteer th, #publishing-proxy-gate-1-resteer td { padding: .5rem .25rem; } }
+  </style>
+  <h2>What problem do we have?</h2>
+  <p>Developers need one deliberately selected Probation registry address for installs, publishing, and supported package actions. The current install route refuses npm login and publishing and has no Python upload. The selected-registry address must leave existing npm package reads unambiguous, including numeric package names and versions. Audit results must flag vulnerabilities without exposing packages or versions a group cannot read.</p>
+
+  <h2>How will we solve it?</h2>
+  <div class="flow" aria-label="User actions and outcomes">
+    <p><strong>Project selects a registry</strong> → its npm and Python package clients use that selected Probation address for installs, publishing, and supported actions. The selected-registry address occupies a distinct URL path; existing npm package paths remain reachable.</p>
+    <p><strong>Member runs audit</strong> → Probation forwards the request to that registry and returns a reduced vulnerability signal only for versions visible under the member’s current group policy. Hidden names and versions, and arbitrary upstream advisory text, links, and metadata, stay out.</p>
+    <p><strong>Selected registry cannot answer npm 11 bulk audit</strong> → npm reports that registry’s error. A client that sends a valid quick audit request directly still uses the guarded quick route. Probation supplies no advisory service or invented bulk-to-quick request.</p>
+    <p><strong>Member reads or writes a package</strong> → a unique client certificate identifies the member and their group policy; the selected upstream separately authorizes each write. A developer token may reveal canonical npm package metadata that group read policy hides, but does not grant artifact bytes or firewall access without a valid certificate.</p>
+  </div>
+  <p><strong>Scope decisions:</strong></p>
+  <ol>
+    <li>One project-selected registry address serves package-client installs and publishing; overlapping names never cause a silent switch to another registry.</li>
+    <li>Selected-registry URLs move to a distinct namespace so numeric legacy npm package names and versions continue to work. Gate 2 chooses the exact path.</li>
+    <li>Bulk and quick audit output contains reduced, policy-safe advisories for currently visible package versions only.</li>
+    <li>Probation remains a proxy: npm 11 receives an error only when the selected upstream cannot answer its bulk audit request; direct quick clients retain guarded quick access.</li>
+    <li>Previously approved certificate, member/group, token-bearing npm metadata, and upstream-only write-permission rules continue to apply.</li>
+    <li>npm web login may open an upstream browser page; Python package-client scope covers install, upload, and only actions its selected upstream exposes.</li>
+  </ol>
+  <p class="meta">Previously approved registry administration, certificate settings, setup, and Users screens remain the product views; audit is a package-client operation. The separate Users panel handles membership, groups, disabling users, and targeted Probation-issued certificate revocation.</p>
+
+  <h2>How will we confirm it is solved?</h2>
+  <table aria-label="Planned scenarios and evidence status"><thead><tr><th>Scenario → expected result</th><th>Check and status</th></tr></thead><tbody>
+    <tr><td>Selected-registry operations and legacy numeric npm reads → selected actions use that registry; numeric package names and versions still load on the old path.</td><td>Release matrix N01–N03, N05–N23, P01–P05, U01–U02 and X01; selected-URL and legacy-path real-client witnesses planned.</td></tr>
+    <tr><td>Visible and hidden package versions in bulk and direct quick audit → only reduced advisories for visible versions; no hidden names, hidden versions, or arbitrary upstream text or links.</td><td>Matrix N04; nonempty and hidden-advisory checks planned. A successful filtered audit is not yet release proof.</td></tr>
+    <tr><td>Selected upstream lacks npm 11 bulk audit → npm reports its upstream error; a direct valid quick client remains guarded.</td><td>Matrix N04; pinned npm 11.21.1 source and selected E2E trace observed one bulk request and no quick fallback. Unsupported-upstream release witness planned.</td></tr>
+    <tr><td>Missing or revoked certificate, hidden artifact download, or upstream-denied write → refused; an accepted developer token on canonical npm package metadata may reveal upstream metadata without granting bytes or a write.</td><td>Matrix N02–N03, N08–N11 and X07–X08; certificate, group-policy, metadata, and upstream-permission witnesses planned.</td></tr>
+  </tbody></table>
+  <p><strong>Recommendation:</strong> Approve the revised Gate 1 scope. The distinct URL protects legacy npm reads, reduced audit output protects group-hidden facts, and the unsupported-bulk outcome reflects the selected registry’s actual capability. Fresh Gate 1 QA is READY.</p>
+  <p><strong>Limits:</strong> The exact selected-registry path and audit response representation belong to Gate 2. An upstream-accepted developer token can expose canonical npm package metadata despite group read policy, even without a later write; artifact downloads remain filtered. Release checks are planned, not passing proof. The original conversation transcript was not supplied as a separate QA artifact. render: not inspected.</p>
+  <p class="meta">Status: Gate 1 reopened and in progress; earlier Gate 1 approval is historical. Approval of C36–C38 and N04 is pending; implementation remains gated on later design approval.</p>
+  <p class="meta">Sources: <a href="01-product.md">Product scope C34–C38, Problem and Success metric</a>; <a href="evidence/client-operation-matrix.md">release client matrix v5, especially N04</a>; <a href="evidence/research-5.md">npm audit compatibility research</a>; <a href="evidence/npm-audit-fallback.md">pinned-client trace and fallback investigation</a>; <a href="gate-1-qa.md">fresh Gate 1 QA READY</a>; <a href="00-status.md">plan status</a>.</p>
+  <p class="question">Approve Gate 1, or what should change?</p>
+</section>
