@@ -1,0 +1,25 @@
+# The portal as the A11Y run serves it (slice 5):
+#   cargo run -p probation-server -- serve --config crates/probation-server/tests/portal.toml
+# on a database migrated by `probation-server migrate` and seeded by tests/seed.sql.
+# Environment: PROBATION_SERVER_DATABASE_URL (as probation_portal_a11y),
+# PROBATION_SERVER_SECRET_KEY (64 hex characters), and the three client secrets below
+# set to any value. The run never follows a provider's link and submits no new
+# password, so nothing leaves the machine.
+[server]
+listen = "127.0.0.1:8088"
+
+[portal]
+base_url = "http://127.0.0.1:8088"
+# Unresolvable on purpose: a new password fails closed instead of calling out.
+leaked_password_url = "https://pwned.invalid/range/"
+# The keys page shows the .npmrc and pip.conf lines with this address (slice 8).
+firewall_url = "https://packages.example.org"
+
+[portal.google]
+client_id = "a11y-google"
+
+[portal.github]
+client_id = "a11y-github"
+
+[portal.microsoft]
+client_id = "a11y-microsoft"

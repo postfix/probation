@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Confirm user access change</title><link rel="stylesheet" href="style.css"><style>[hidden]{display:none!important}</style>
+<header>Probation · Users</header><main>
+<section class="card" data-action="disable"><h1>Disable Ada's package access?</h1><p>All certificates identifying Ada will be refused on the next registry request. Other users keep access. Ada stays in Engineering and can be re-enabled later.</p><p><a href="user-management.html">Cancel</a> <a href="?action=disable&amp;done=1">Disable package access</a></p></section>
+<section class="card" data-action="remove" hidden><h1>Remove Ada from this organisation?</h1><p>Ada's membership and group assignment will be removed. All certificates identifying Ada will be refused on the next registry request. Other users keep access.</p><p><a href="user-management.html">Cancel</a> <a href="?action=remove&amp;done=1">Remove user</a></p></section>
+<section class="card" data-result hidden role="status"><h1>Access updated</h1><p id="result-text"></p><a href="user-management.html">Back to Users</a></section>
+</main><script>
+const params=new URLSearchParams(location.search);const action=params.get('action')==='remove'?'remove':'disable';const done=params.get('done')==='1';document.querySelectorAll('[data-action]').forEach(section=>section.hidden=done||section.dataset.action!==action);document.querySelector('[data-result]').hidden=!done;document.querySelector('#result-text').textContent=action==='remove'?'Ada was removed. Her certificates are refused.':'Ada’s package access is disabled. Her certificates are refused.';
+</script></html>

@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::{OSV_BATCH_INTERVAL, OSV_BATCH_RECORDS, OsvCache, OsvRequest};
+use crate::managed::report::{Call, UpstreamHealth};
 use crate::policy::Ecosystem;
 
 /// OSV's ecosystem spelling, which is not `Ecosystem::as_tag`'s: OSV's schema is
@@ -78,6 +79,7 @@ pub(super) async fn run(
     request_timeout: Duration,
     cache: Arc<OsvCache>,
     shutdown: CancellationToken,
+    upstreams: Arc<UpstreamHealth>,
 ) {
     let mut batch: Vec<OsvRequest> = Vec::new();
     // Meaningful only while `batch` is non-empty, set when the first request of a
@@ -95,6 +97,7 @@ pub(super) async fn run(
             std::mem::take(batch),
             request_timeout,
             Arc::clone(&cache),
+            Arc::clone(&upstreams),
         ));
     };
 
@@ -151,6 +154,7 @@ async fn flush(
     requests: Vec<OsvRequest>,
     request_timeout: Duration,
     cache: Arc<OsvCache>,
+    upstreams: Arc<UpstreamHealth>,
 ) {
     let mut keys = Vec::with_capacity(requests.len());
     let mut waiters = Vec::with_capacity(requests.len());
@@ -173,6 +177,13 @@ async fn flush(
     };
 
     let outcome = tokio::time::timeout(request_timeout, send(&client, &url, &body)).await;
+    // C69: a connect error, a timeout or a 5xx means OSV was not reached.
+    let reached = match &outcome {
+        Ok(Ok(_) | Err(SendError::Decode(_))) => true,
+        Ok(Err(SendError::Transport(err))) => err.status().is_some_and(|s| !s.is_server_error()),
+        Err(_) => false,
+    };
+    upstreams.record(Call::Osv, reached);
 
     let matches: Option<Vec<bool>> = match outcome {
         Ok(Ok(response)) if response.results.len() == keys.len() => Some(
@@ -277,7 +288,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};
 
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&count);
         Mock::given(method("POST"))
@@ -309,6 +320,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
+            Arc::default(),
         ));
 
         let mut waiters = Vec::new();
@@ -351,6 +363,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
+            Arc::default(),
         ));
 
         let (req, reply) = request("left-pad");
@@ -392,6 +405,7 @@ mod tests {
             request_timeout,
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
+            Arc::default(),
         ));
 
         let (req, reply) = request("left-pad");
@@ -434,6 +448,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown,
+            Arc::default(),
         )
         .await;
 
@@ -460,6 +475,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
+            Arc::default(),
         ));
 
         let (req_a, reply_a) = request("pkg-a");
@@ -501,6 +517,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             CancellationToken::new(),
+            Arc::default(),
         )
         .await;
 
@@ -525,6 +542,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(OsvCache::new(Duration::from_secs(60))),
             shutdown.clone(),
+            Arc::default(),
         ));
 
         let (req, reply) = request("left-pad");

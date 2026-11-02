@@ -1,0 +1,10 @@
+# The active member lookup precedes bundle rendering.
+# Session ownership and the inline self-service switch require runtime controls.
+name: self-service-before-bundle
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [fetch_optional]}}
+operation: {calls: {name: [render_bundle]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'issue'"

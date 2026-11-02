@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fleet · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html">API keys</a><a href="activity.html">Activity</a><a href="organisation.html">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html">Global admin</a><a href="fleet.html" aria-current="page">Fleet</a><a href="account.html">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>Fleet</h1>
+<p>The Probation firewalls that every organisation and personal account downloads through. Only the service operator sees this screen.</p>
+
+<section class="state"><p class="tag">State: firewalls (default)</p>
+<div class="wrap"><table>
+<tr><th><input type="checkbox" aria-label="select all"></th><th>Firewall</th><th>Version</th><th>Last check-in</th><th>Health</th><th></th></tr>
+<tr><td><input type="checkbox" checked></td><td>fw-eu-1</td><td>0.2.2</td><td>12 seconds ago</td><td class="good">Healthy</td><td><button>Settings</button> <button>Retire</button></td></tr>
+<tr><td><input type="checkbox" checked></td><td>fw-eu-2</td><td>0.2.2</td><td>40 seconds ago</td><td class="good">Healthy</td><td><button>Settings</button> <button>Retire</button></td></tr>
+<tr><td><input type="checkbox"></td><td>fw-us-1</td><td>0.2.1</td><td>9 minutes ago</td><td class="bad">Unhealthy: missed 3 check-ins</td><td><button>Settings</button> <button>Retire</button></td></tr>
+<tr><td><input type="checkbox"></td><td>fw-ap-1</td><td>0.2.2</td><td>20 seconds ago</td><td class="bad">Unhealthy: cannot reach OSV</td><td><button>Settings</button> <button>Retire</button></td></tr>
+</table></div>
+<p class="row"><button>Edit settings of 2 selected</button></p>
+<p class="row"><input placeholder="name for the new firewall" value="fw-us-2"> <button class="pri">Register firewall</button></p>
+<p class="mut">A firewall is unhealthy after 3 missed check-ins in a row, or when it reports it cannot reach npm, PyPI or OSV.</p>
+</section>
+
+<section class="state"><p class="tag">State: empty</p>
+<p class="empty">No firewalls registered yet. Register one, then put its credential into that firewall's config file.</p>
+</section>
+
+<section class="state"><p class="tag">State: firewall registered, credential shown once</p>
+<p><b>fw-us-2 is registered. Copy its credential now. You will not see it again.</b></p>
+<pre>fwc_Qm4Lr8sZx1Vb6Nd0Kt3YhP9wEa2cGj7u</pre>
+<button class="pri">Copy</button>
+<p class="mut">Its last check-in reads "never" until it starts with this credential.</p>
+<p class="mut">Exact config settings decided in design (C34).</p>
+</section>
+
+<section class="state"><p class="tag">State: edit one firewall's settings (fw-eu-1)</p>
+<h2>Settings for fw-eu-1</h2>
+<p class="mut">With several firewalls selected, the heading reads "Settings for 2 firewalls: fw-eu-1, fw-eu-2" and saving applies to each of them.</p>
+<label>npm upstream <input size="40" value="https://registry.npmjs.org"></label>
+<label>PyPI upstream <input size="40" value="https://pypi.org"></label>
+<label>Cache size <input type="number" value="100" style="width:6em"> GiB</label>
+<label>TLS certificate <input size="40" value="/etc/probation/tls/cert.pem"></label>
+<label>TLS private key <input size="40" value="/etc/probation/tls/key.pem"></label>
+<label>Sync interval <input type="number" value="60" style="width:6em"> seconds <span class="mut">default 60: how often it fetches new policies and revoked keys</span></label>
+<button class="pri">Save and apply</button>
+<p class="mut">fw-eu-1 rewrites its config file from these settings and re-applies them. Edits made by hand to that file are replaced.</p>
+<p class="mut">Full list of settings, and whether TLS is a file path or an upload, decided in design (C35).</p>
+</section>
+
+<section class="state"><p class="tag">State: settings saved, waiting and applied</p>
+<p>Saved at 15:20. <b>Waiting</b> for fw-eu-1 to pick them up at its next check-in.</p>
+<p class="good">Applied by fw-eu-1 at 15:20:41.</p>
+</section>
+
+<section class="state"><p class="tag">State: error, settings not applied</p>
+<p class="err"><b>fw-eu-1 could not apply the new settings</b> and keeps running on its old settings. It reported: "cannot read /etc/probation/tls/cert.pem".</p>
+<p class="row"><button>Edit settings again</button></p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, retire a firewall</p>
+<h2>Retire fw-us-1?</h2>
+<p>fw-us-1's credential stops working, and it will no longer receive policies or keys. At its next check-in it stops serving every request, so anyone still pointed at its address must use another firewall. This cannot be undone; to bring it back, register it again.</p>
+<label>Type <b>fw-us-1</b> to confirm <input></label>
+<p class="row"><button class="danger">Retire firewall</button> <button>Cancel</button></p>
+</section>
+</main>
+</body>
+</html>

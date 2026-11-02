@@ -1,138 +1,44 @@
-# probation
+# Probation: overview
 
-[![crates.io](https://img.shields.io/crates/v/probation.svg)](https://crates.io/crates/probation)
+Probation checks npm and PyPI packages before your tools download them. It sits between package clients and a registry. It can delay new releases, block packages or exact files, check known vulnerabilities through [OSV](https://osv.dev), and verify downloaded files.
 
-A firewall for npm and PyPI packages. You run it yourself, in front of your own
-`npm` and `pip` clients.
+| Part | Use it for |
+| --- | --- |
+| `probation` | The package firewall. It serves npm and PyPI requests. |
+| `probation-server` | Optional management server and web portal for accounts, rules, registries, and firewall settings. It needs PostgreSQL. |
 
-## The problem
+## Choose a setup
 
-A package can be hijacked and a bad version published in seconds. Malware
-scanners and blocklists take hours or days to catch up. In that gap, anyone who
-installs the package gets the bad version.
+- **Standalone:** One firewall uses a local blocklist and the same rules for every client. Start with [Install](docs/install.md#standalone-firewall).
+- **Managed:** People sign in, select an account or organisation, and use its rules. Administrators can add npm and PyPI registries. Start with [Install](docs/install.md#managed-deployment).
 
-## What it does
+The firewall can serve an older allowed version when a newer one is held back. In managed mode, an administrator can select an upstream registry for package reads and supported publishing actions. Selected npm and PyPI URLs have separate paths under `/registry/`. Package clients use a certificate for these paths; the portal offers a setup bundle when self-service certificates are enabled. The upstream registry still decides whether a user may publish or remove a package.
 
-Probation sits between your developers and the real npm and PyPI registries. It
-holds back any version published too recently (you choose how long, a day by
-default). If a newer version is held back, `npm` and `pip` fall back to the
-newest version that is allowed, as if the newer one did not exist yet. Nobody
-changes what they typed.
+“Allowed” means the request passed the configured checks. It does not promise that the package is safe. Checks apply to requests that reach Probation; they cannot inspect packages already installed, files in a client cache, or downloads from other sources.
 
-It also checks every download against a blocklist you supply, by package name,
-by version, or by exact file.
+## Guides
 
-On top of your blocklist, it checks every package against [OSV](https://osv.dev),
-a free, open database of known vulnerabilities. This is on by default and needs
-no setup. If OSV is slow or unreachable, that never blocks a download. The extra
-check is skipped for that request. See [`docs/operations.md`](docs/operations.md)
-§4 to tune or disable it.
+1. [Install](docs/install.md): build, configure, and start either setup.
+2. [Usage](docs/usage.md): connect clients, manage rules, registries, and accounts.
+3. [Troubleshooting](docs/troubleshooting.md): diagnose common failures.
+4. [Web interface](docs/web-interface.md): find each portal control and learn who can use it.
+5. [Policy](docs/policy.md): set release delays, vulnerability checks, blocks, and exceptions.
+6. [Configuration](docs/configuration.md): find each settings file and know when to restart.
 
-"Allowed through" means it passed these checks. It is not a guarantee that a
-package is safe.
+For exact settings and limits, use the [operations reference](docs/operations.md). The [management server reference](docs/management-server.md), [portal guide](docs/portal-guide.md), and [API and command reference](docs/api.md) give full details. [End-to-end tests](tests/e2e/README.md) explain the release test setup.
 
-## Quick start
+## Build and test from source
 
-Install it:
+Use the Rust version in `rust-toolchain.toml`. The build also needs `cmake`, a C compiler, and `perl`.
 
 ```sh
-cargo install probation --locked
+cargo build --workspace --locked
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-No Rust toolchain on this machine? Build it in a container and install the
-binary on the host. This needs only Docker or Podman:
+The managed tests need PostgreSQL. The browser and package-client tests also need a container engine and Node; see [end-to-end tests](tests/e2e/README.md) for setup.
 
-```sh
-scripts/build-install.sh
-```
+## License
 
-Check a config file is valid:
-
-```sh
-probation check-config config.sample.toml
-```
-
-Run it:
-
-```sh
-probation serve --config /etc/probation/config.toml
-```
-
-Or run it in Docker:
-
-```sh
-docker build -t probation:mvp .
-docker run -d -p 127.0.0.1:8080:8080 \
-  -v /srv/probation:/var/lib/probation \
-  probation:mvp serve --config /etc/probation/config.toml
-```
-
-Then point your tools at it instead of the public registries:
-
-```ini
-# .npmrc
-registry=https://packages.example.org/npm/
-audit=false
-```
-
-```ini
-# pip.conf
-[global]
-index-url = https://packages.example.org/pypi/simple/
-```
-
-`config.sample.toml` and `blocklist.sample.json` show the file formats.
-
-It terminates TLS itself: set `tls_cert_path` and `tls_key_path` in the config,
-with no reverse proxy needed. `public_url` must always be `https`, even for
-local testing. See [`docs/operations.md`](docs/operations.md) §6 for the
-quickest way to get a trusted local certificate.
-
-**Before running this for real, read [`docs/operations.md`](docs/operations.md).**
-Two things catch people out: `cache_max_bytes` does not limit the size of its
-database (section 3), and it does not limit how many requests one client can
-send. Put that limit on the reverse proxy in front of it (section 6).
-
-## What it won't catch
-
-It only checks packages as they are downloaded. So it cannot help with:
-
-- packages already installed, or already in a client's local cache
-- anything fetched from somewhere other than npm or PyPI: other registries, Git
-  URLs, direct downloads, local files
-- a lockfile that pins a direct URL instead of a package name and version
-
-It has no web UI, cannot publish packages, and does not scan files for malware
-itself. It enforces the blocklist you give it and what OSV reports. Something
-else has to produce that blocklist.
-
-Full details: `docs/operations.md`, sections 7 and 12.
-
-## Building and testing
-
-```sh
-cargo clippy --all-targets -- -D warnings
-cargo test                                  # no network access needed
-cargo test --test e2e_npm -- --ignored      # runs the real npm client
-cargo test --test e2e_pip -- --ignored      # runs the real pip client
-cargo bench                                 # performance checks
-cargo bench --bench delivery_rated_load     # a slower one, ~10 minutes
-```
-
-You need `cmake`, a C compiler, and `perl` (one crypto library builds from C),
-plus the Rust version pinned in `rust-toolchain.toml`. The e2e tests also need
-`npm` and `python3` with `pip`, `setuptools`, and `build` installed.
-
-In testing, it handled about **59,000 requests/second** with no dropped
-records. See [`docs/operations.md`](docs/operations.md) §8 and §10 for how that
-was measured and what it means for sizing your own setup.
-
-## Documents
-
-- [`SPEC.md`](SPEC.md): the specification this was built from.
-- [`docs/operations.md`](docs/operations.md): how to run it, its limits, backup
-  and restore, and measured performance.
-- [`docs/plans/`](docs/plans/): the design and planning history, one folder per
-  feature.
-
-Licensed under Apache-2.0; see [`LICENSE`](LICENSE).
+Releases after 0.2.2 use the [Elastic License 2.0](LICENSE). Releases 0.1.0 through 0.2.2 remain under Apache 2.0.

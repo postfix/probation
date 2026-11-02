@@ -1,0 +1,10 @@
+# Selected registry ID validation precedes npm package dispatch.
+# Route-table completeness and unknown-route denial need client-backed tests.
+name: classify-before-dispatch
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [registry_id]}}
+operation: {calls: {name: [serve_registry]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function in ['package', 'version']"

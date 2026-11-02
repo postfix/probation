@@ -30,8 +30,11 @@ use crate::App;
 use crate::concurrency::Resolution;
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
+use crate::managed::Principal;
+use crate::managed::report::Call;
 use crate::policy::{
-    BlocklistSnapshot, Candidate, Decision, Digest, Ecosystem, HashAlgorithm, PublicationTime,
+    BlocklistSnapshot, Candidate, CompiledPolicy, Decision, Digest, Ecosystem, HashAlgorithm,
+    PublicationTime,
 };
 use crate::pypi::filename::{FileIdentity, UnsupportedFilename, file_identity};
 use crate::pypi::render::ListedFile;
@@ -69,27 +72,43 @@ pub struct Rendered {
 /// `GET /pypi/simple/{project}/`.
 pub async fn serve(
     app: &App,
+    principal: Option<&Principal>,
     name: &ProjectName,
     representation: Representation,
+) -> Result<Rendered, ApiError> {
+    serve_in(app, principal, name, representation, 0).await
+}
+
+pub async fn serve_in(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &ProjectName,
+    representation: Representation,
+    registry_id: u64,
 ) -> Result<Rendered, ApiError> {
     let now = app.clock.now_utc_micros();
     let monotonic = app.clock.now_monotonic();
 
     // SPEC §9's ordering point, read exactly once for this request.
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(now) {
-        return Err(ApiError::PolicyUnavailable);
-    }
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    let snapshot = policy
+        .snapshot
+        .as_deref()
+        .filter(|snapshot| snapshot.is_valid_at(now))
+        .ok_or(ApiError::PolicyUnavailable)?;
 
-    let project = ProjectKey::new(Ecosystem::PyPi, name.as_str());
+    let project = ProjectKey::in_registry(registry_id, Ecosystem::PyPi, name.as_str());
     let render_key = RenderKey {
         project: project.clone(),
         representation: representation.clone(),
+        policy: policy.policy.fingerprint,
     };
     let caches = app.store().caches();
 
     // The warm path: two memory lookups and nothing else (SPEC §10).
-    if let Some(rendered) = caches.rendered.get(&render_key)
+    if registry_id == 0 && let Some(rendered) = caches.rendered.get(&render_key)
         && let Some(cached) = caches.projects.get(&project)
         && rendered.is_reusable(
             cached.row.generation,
@@ -102,6 +121,11 @@ pub async fn serve(
         // SPEC §11 asks the decision line to carry a cache status, and this branch is
         // the one that defines "warm" for metadata (SPEC §10).
         logging::record_cache(logging::CacheStatus::Hit);
+        if let (Some(verdict), Some(principal), Some(managed)) =
+            (rendered.refused, principal, app.managed())
+        {
+            managed.record_decision(principal, Ecosystem::PyPi, name.as_str(), None, &verdict);
+        }
         return Ok(Rendered {
             body: Arc::clone(&rendered.body),
             content_type: rendered.content_type,
@@ -109,11 +133,15 @@ pub async fn serve(
     }
     logging::record_cache(logging::CacheStatus::Miss);
 
-    let resolved = resolve(app, name, &snapshot, now, monotonic).await?;
-    let (body, content_type) = render(app, name, &resolved, &representation);
+    let resolved = resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal).await?;
+    let refused = principal.and_then(|_| refused_listing(&policy, now, name, &resolved));
+    if let (Some(verdict), Some(principal), Some(managed)) = (refused, principal, app.managed()) {
+        managed.record_decision(principal, Ecosystem::PyPi, name.as_str(), None, &verdict);
+    }
+    let (body, content_type) = render(app, name, &resolved, &representation, registry_id);
     let body: Arc<[u8]> = Arc::from(body);
 
-    if resolved.deadline_utc_micros > now {
+    if registry_id == 0 && resolved.deadline_utc_micros > now {
         caches.rendered.insert(
             render_key,
             Arc::new(RenderedResponse {
@@ -124,6 +152,7 @@ pub async fn serve(
                 digest_generation: resolved.digest_generation,
                 deadline_utc_micros: resolved.deadline_utc_micros,
                 deadline_monotonic: resolved.deadline_monotonic,
+                refused,
             }),
             body.len() as u64 + 256,
         );
@@ -135,20 +164,32 @@ pub async fn serve(
 /// `GET /pypi/simple/` — the projects *this instance* has already fetched, which
 /// SPEC §7 is explicit is not a mirror of PyPI. Installing a project that is absent
 /// from it still works through its own endpoint.
-pub async fn index(app: &App, representation: &Representation) -> Result<Rendered, ApiError> {
-    let now = app.clock.now_utc_micros();
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(now) {
-        return Err(ApiError::PolicyUnavailable);
+pub async fn index(
+    app: &App,
+    principal: Option<&Principal>,
+    representation: &Representation,
+) -> Result<Rendered, ApiError> {
+    // A managed firewall ignores its local blocklist (C109).
+    if principal.is_none() {
+        let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+        if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
+            return Err(ApiError::PolicyUnavailable);
+        }
     }
 
     // Every known project is listed, including one the blocklist denies outright:
     // its own listing is what answers for it, and that listing is already empty.
-    let projects = app
-        .store()
-        .list_known_projects(Ecosystem::PyPi)
-        .await
-        .map_err(storage_error)?;
+    //
+    // Not in managed mode: the list is every project any tenant's client fetched, so
+    // each tenant would see what the others install (T8, C1). It is empty instead.
+    let projects = match principal {
+        Some(_) => Vec::new(),
+        None => app
+            .store()
+            .list_known_projects(Ecosystem::PyPi)
+            .await
+            .map_err(storage_error)?,
+    };
 
     let (body, content_type) = match representation {
         Representation::PypiJson => (render::index_json(&projects), render::JSON_CONTENT_TYPE),
@@ -169,6 +210,8 @@ struct Resolved {
     digest_generation: u64,
     deadline_utc_micros: i64,
     deadline_monotonic: Instant,
+    /// What the decisions were made from, for an activity row's candidate.
+    cached: Arc<CachedProject>,
 }
 
 /// The project snapshot a decision must be made from: the cached one while it is
@@ -179,8 +222,10 @@ async fn current_project(
     name: &ProjectName,
     now: i64,
     monotonic: Instant,
+    registry_id: u64,
+    principal: Option<&Principal>,
 ) -> Result<Arc<CachedProject>, ApiError> {
-    let key = ProjectKey::new(Ecosystem::PyPi, name.as_str());
+    let key = ProjectKey::in_registry(registry_id, Ecosystem::PyPi, name.as_str());
     let caches = app.store().caches();
     let ttl = Duration::from_secs(app.config.metadata_ttl_seconds);
     let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
@@ -203,7 +248,7 @@ async fn current_project(
 
     let cached = match cached {
         Some(cached) => Some(cached),
-        None => load_project(app, name).await?.map(Arc::new),
+        None => load_project(app, name, registry_id).await?.map(Arc::new),
     };
 
     // SPEC rev 3 §10: age since the last FULL fetch, which no `304` advances. Once
@@ -230,7 +275,7 @@ async fn current_project(
         // being dropped here: its validators are what make that revalidation
         // conditional — unless it is over-age, in which case the refresh sends none
         // at all.
-        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale).await?,
+        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, principal).await?,
     };
 
     caches
@@ -248,6 +293,10 @@ async fn current_project(
 /// is what SPEC §12's warm-artifact target needs on a project carrying thousands of
 /// files.
 pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertised>, ApiError> {
+    ensure_fresh_project_in(app, name, 0, None).await
+}
+
+pub async fn ensure_fresh_project_in(app: &App, name: &str, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<Advertised>, ApiError> {
     // Already normalised when it was stored; rebuilt rather than trusted, and a name
     // that is no longer a normal form is a reference nothing can be served for.
     let name = ProjectName::from_normalized(name).ok_or_else(|| {
@@ -259,6 +308,8 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
         &name,
         app.clock.now_utc_micros(),
         app.clock.now_monotonic(),
+        registry_id,
+        principal,
     )
     .await?;
 
@@ -266,7 +317,7 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
         return Ok(Arc::clone(advertised));
     }
 
-    let files = parse_stored(app, &name, &cached.row.payload)?;
+    let files = parse_stored(app, &name, &cached.row.payload, registry_id)?;
     let advertised = Arc::new(Advertised::new(
         files
             .iter()
@@ -278,19 +329,23 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
     Ok(advertised)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve(
     app: &App,
     name: &ProjectName,
+    policy: &CompiledPolicy,
     snapshot: &BlocklistSnapshot,
     now: i64,
     monotonic: Instant,
+    registry_id: u64,
+    principal: Option<&Principal>,
 ) -> Result<Resolved, ApiError> {
-    let cached = current_project(app, name, now, monotonic).await?;
+    let cached = current_project(app, name, now, monotonic, registry_id, principal).await?;
     let ttl_micros =
         i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
             .unwrap_or(i64::MAX);
 
-    let files = parse_stored(app, name, &cached.row.payload)?;
+    let files = parse_stored(app, name, &cached.row.payload, registry_id)?;
 
     // Every file is judged at once, so a cold project's OSV checks share one batch
     // rather than paying one OSV round trip per file.
@@ -310,14 +365,7 @@ async fn resolve(
             // an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&file.id),
         };
-        crate::osv::evaluate(
-            &app.osv,
-            Some(snapshot),
-            now,
-            app.config.cooldown_seconds,
-            &candidate,
-        )
-        .await
+        crate::osv::evaluate(&app.osv, policy, now, &candidate).await
     }))
     .await;
     let next_release = decisions
@@ -336,7 +384,7 @@ async fn resolve(
     // would serve an over-age snapshot from memory without ever reaching
     // [`current_project`] — which is the one thing "never served" forbids.
     let ceiling = store::effective_max_age_micros(
-        &ProjectKey::new(Ecosystem::PyPi, name.as_str()),
+        &ProjectKey::in_registry(registry_id, Ecosystem::PyPi, name.as_str()),
         app.config.metadata_max_age_seconds,
     )
     .map_or(i64::MAX, |ceiling| {
@@ -359,6 +407,7 @@ async fn resolve(
         decisions,
         deadline_utc_micros,
         deadline_monotonic,
+        cached,
     })
 }
 
@@ -376,10 +425,10 @@ fn publication_of(file: &ProjectFile, first_seen: &HashMap<ReferenceId, i64>) ->
     }
 }
 
-async fn load_project(app: &App, name: &ProjectName) -> Result<Option<CachedProject>, ApiError> {
+async fn load_project(app: &App, name: &ProjectName, registry_id: u64) -> Result<Option<CachedProject>, ApiError> {
     let row = app
         .store()
-        .get_project(Ecosystem::PyPi, name.as_str())
+        .get_project_in(registry_id, Ecosystem::PyPi, name.as_str())
         .await
         .map_err(storage_error)?;
     let Some(row) = row else {
@@ -387,12 +436,12 @@ async fn load_project(app: &App, name: &ProjectName) -> Result<Option<CachedProj
     };
     let first_seen = app
         .store()
-        .list_project_first_seen(Ecosystem::PyPi, name.as_str())
+        .list_project_first_seen_in(registry_id, Ecosystem::PyPi, name.as_str())
         .await
         .map_err(storage_error)?;
     let pins = app
         .store()
-        .list_project_pins(Ecosystem::PyPi, name.as_str())
+        .list_project_pins_in(registry_id, Ecosystem::PyPi, name.as_str())
         .await
         .map_err(storage_error)?;
     Ok(Some(CachedProject {
@@ -417,6 +466,7 @@ async fn load_project(app: &App, name: &ProjectName) -> Result<Option<CachedProj
 /// `stale` is the expired snapshot this request found, when there was one. Only the
 /// leader's is used — a joiner is answered from the leader's result, which is the point
 /// of the latch.
+#[allow(clippy::too_many_arguments)]
 async fn refresh_coalesced(
     app: &App,
     name: &ProjectName,
@@ -425,6 +475,7 @@ async fn refresh_coalesced(
     monotonic: Instant,
     over_age: bool,
     stale: Option<Arc<CachedProject>>,
+    principal: Option<&Principal>,
 ) -> Result<Arc<CachedProject>, ApiError> {
     let refreshes = app.downloads.metadata();
     let (slot, leader, _waiter) = refreshes.join(key.clone());
@@ -441,7 +492,7 @@ async fn refresh_coalesced(
         Err(ApiError::InternalFailure),
         name.as_str().to_owned(),
     );
-    let refreshed = refresh(app, name, key, now, monotonic, over_age, stale).await;
+    let refreshed = refresh(app, name, key, now, monotonic, over_age, stale, principal).await;
     resolution.answer(refreshed.clone());
     refreshed
 }
@@ -454,6 +505,7 @@ async fn refresh_coalesced(
 /// what SPEC §10's second clause asks for: the caller re-judges *this* document against
 /// the blocklist in force now, so a file blocked since the last full fetch is excluded
 /// rather than carried along on a representation nobody rebuilt.
+#[allow(clippy::too_many_arguments)]
 async fn refresh(
     app: &App,
     name: &ProjectName,
@@ -462,13 +514,16 @@ async fn refresh(
     monotonic: Instant,
     over_age: bool,
     stale: Option<Arc<CachedProject>>,
+    principal: Option<&Principal>,
 ) -> Result<Arc<CachedProject>, ApiError> {
     // `/simple/{project}/`, built by pushing segments onto the origin — never joined
     // and never formatted. The trailing empty segment is the canonical form upstream
     // would otherwise redirect to.
-    let url = app
-        .origins
-        .url_for(OriginKind::PypiMetadata, &["simple", name.as_str(), ""])
+    let selected = principal.and_then(|p| p.registry_origin.as_ref()).map(|origin|
+        crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()))
+    ).transpose().map_err(|_| ApiError::NotFound)?;
+    let url = selected.as_ref().unwrap_or(&app.origins)
+        .url_for(if selected.is_some() { OriginKind::NpmMetadata } else { OriginKind::PypiMetadata }, &["simple", name.as_str(), ""])
         .map_err(|rejection| {
             tracing::warn!(project = %name, %rejection, "refused to build an upstream URL");
             ApiError::NotFound
@@ -478,6 +533,9 @@ async fn refresh(
         .transport
         .fetch_metadata(MetadataRequest {
             url,
+            origin: principal.and_then(|p| p.registry_origin.clone()),
+            private_cidrs: principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+            read_authorization: principal.and_then(|p| p.registry_read_authorization.clone()),
             accept: PYPI_ACCEPT,
             // SPEC §10: revalidate rather than refetch in full. These are *our* stored
             // validators going upstream, which is the only direction they travel — SPEC
@@ -499,6 +557,7 @@ async fn refresh(
             max_bytes: app.config.max_metadata_bytes.get(),
         })
         .await;
+    app.upstreams.record_upstream(Call::PypiMetadata, &fetched);
 
     let (payload, validators, fetched_at_micros): (Arc<[u8]>, _, i64) = match fetched {
         Ok(MetadataResponse::Fresh { body, validators }) => {
@@ -554,7 +613,7 @@ async fn refresh(
         }
     };
 
-    let files = parse_files(app, name, &payload)?;
+    let files = parse_files(app, name, &payload, key.registry_id)?;
     let references = files
         .iter()
         .map(|file| ReferenceUpsert {
@@ -568,17 +627,11 @@ async fn refresh(
         })
         .collect();
 
-    // A refresh carries existing pins forward rather than changing them, but it does
-    // replace the cached project, so they are read back with it.
-    let pins = app
-        .store()
-        .list_project_pins(Ecosystem::PyPi, name.as_str())
-        .await
-        .map_err(storage_error)?;
-
+    #[cfg(feature = "test-support")]
+    crate::pause::at("before refresh commit", name.as_str()).await;
     let committed = app
         .store()
-        .commit_project_refresh(ProjectRefresh {
+        .commit_project_refresh_in(key.registry_id, ProjectRefresh {
             ecosystem: Ecosystem::PyPi,
             name: name.as_str().to_owned(),
             payload: Arc::clone(&payload),
@@ -587,6 +640,17 @@ async fn refresh(
             fetched_at_micros,
             references,
         })
+        .await
+        .map_err(storage_error)?;
+
+    // A refresh carries existing pins forward rather than changing them, but it does
+    // replace the cached project, so they are read back with it.
+    // After the commit, never before: a pin that lands between the two, with its
+    // digest-generation bump, would otherwise travel with the newer generation it bumped
+    // to and show a version a policy blocks until the metadata TTL (C104, SPEC §9).
+    let pins = app
+        .store()
+        .list_project_pins_in(key.registry_id, Ecosystem::PyPi, name.as_str())
         .await
         .map_err(storage_error)?;
 
@@ -607,12 +671,63 @@ async fn refresh(
     }))
 }
 
+/// Managed mode (S3-8): a listing with no eligible file left is PyPI's refusal (SPEC §7
+/// answers it with an empty listing). Its verdict is the one for the file a block is
+/// reported for first, else the earliest hold; each request it is served to records a
+/// row with no version, and the cached listing keeps the verdict for the next. A
+/// listing that still serves a file is no refusal.
+fn refused_listing(
+    policy: &CompiledPolicy,
+    now: i64,
+    name: &ProjectName,
+    resolved: &Resolved,
+) -> Option<crate::policy::PolicyVerdict> {
+    if resolved.decisions.contains(&Decision::Allow) {
+        return None;
+    }
+    let blocked = resolved
+        .decisions
+        .iter()
+        .position(|decision| matches!(decision, Decision::Deny(_)));
+    let held = || {
+        resolved
+            .decisions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, decision)| match decision {
+                Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, index)),
+                _ => None,
+            })
+            .min()
+            .map(|(_, index)| index)
+    };
+    let index = blocked.or_else(held)?;
+    let file = &resolved.files[index];
+    let candidate = Candidate {
+        ecosystem: Ecosystem::PyPi,
+        name: name.as_str(),
+        version: &file.identity.version,
+        publication: publication_of(file, &resolved.cached.first_seen),
+        advertised_digests: &file.reference.expected,
+        pinned_digests: resolved.cached.pins_of(&file.id),
+    };
+    Some(crate::managed::refused_verdict(
+        policy,
+        now,
+        &candidate,
+        resolved.decisions[index],
+    ))
+}
+
 fn render(
     app: &App,
     name: &ProjectName,
     resolved: &Resolved,
     representation: &Representation,
+    registry_id: u64,
 ) -> (Vec<u8>, &'static str) {
+    let mut public_url = app.config.public_url.clone();
+    if registry_id != 0 { public_url.set_path(&format!("/registry/pypi/{registry_id}/")); }
     let mut listed = Vec::new();
     let mut versions = BTreeSet::new();
     for (file, decision) in resolved.files.iter().zip(&resolved.decisions) {
@@ -622,7 +737,7 @@ fn render(
         versions.insert(file.identity.version.clone());
         listed.push(ListedFile {
             url: crate::npm::render::artifact_url(
-                &app.config.public_url,
+                &public_url,
                 file.reference.ecosystem,
                 &file.id,
                 &file.reference.filename,
@@ -688,15 +803,17 @@ fn parse_stored(
     app: &App,
     name: &ProjectName,
     payload: &[u8],
+    registry_id: u64,
 ) -> Result<Vec<ProjectFile>, ApiError> {
     app.store().caches().note_stored_parse();
-    parse_files(app, name, payload)
+    parse_files(app, name, payload, registry_id)
 }
 
 fn parse_files(
     app: &App,
     name: &ProjectName,
     payload: &[u8],
+    registry_id: u64,
 ) -> Result<Vec<ProjectFile>, ApiError> {
     let document: Value = serde_json::from_slice(payload).map_err(|err| {
         tracing::warn!(project = %name, error = %err, "the Simple API document is unusable");
@@ -723,7 +840,7 @@ fn parse_files(
 
     let mut files = Vec::with_capacity(raw_files.len());
     for raw in raw_files {
-        match project_file(name, raw) {
+        match project_file(name, raw, registry_id) {
             Ok(file) => files.push(file),
             Err(reason) => {
                 let filename = raw
@@ -760,7 +877,7 @@ fn parse_files(
     Ok(files)
 }
 
-fn project_file(name: &ProjectName, raw: &Value) -> Result<ProjectFile, UnusableFile> {
+fn project_file(name: &ProjectName, raw: &Value, registry_id: u64) -> Result<ProjectFile, UnusableFile> {
     let filename = raw
         .get("filename")
         .and_then(Value::as_str)
@@ -802,7 +919,7 @@ fn project_file(name: &ProjectName, raw: &Value) -> Result<ProjectFile, Unusable
     };
 
     Ok(ProjectFile {
-        id: ReferenceId::compute(&reference),
+        id: ReferenceId::compute_in_registry(registry_id, &reference),
         reference,
         identity,
         // PEP 700's per-file `upload-time`. Each file is judged on its own, so a

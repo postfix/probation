@@ -3,7 +3,15 @@
 //! that same baseline.
 //!
 //! Run with `cargo bench --bench artifact_throughput`. The numbers this prints are
-//! the ones recorded in `docs/operations.md`.
+//! the ones recorded in `docs/operations.md`. Every target ends in one
+//! `SPEC §12 <target> PASS` (or `FAIL`) line; with `-- --assert` a `FAIL` makes the run
+//! exit non-zero.
+//!
+//! `-- --managed` measures C83 instead: the same warm artifact through a standalone
+//! firewall and a managed one (warm key cache, fake management server), sampled
+//! alternately, on the representative shape. It prints `managed overhead p95 <x> ms
+//! <= 1 ms` (time to first byte) and `managed throughput <r>% >= 90%`, each `PASS` or
+//! `FAIL`, and exits non-zero on a `FAIL`.
 //!
 //! **Two project shapes, deliberately.** SPEC §12 says "Test both the representative
 //! fixture and large real-shaped metadata", and for this row that instruction is
@@ -32,6 +40,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::body::Body;
 use axum::routing::get;
+use common::sync::{client_with_key, standalone_equivalent};
 use common::{
     FakeAnswer, FakeRegistry, TestClock, TestServer, artifact_path, config_with_open_blocklist,
     fake_origins, npm_artifact_upstream_path, npm_tarball_url, npm_upstream_path,
@@ -68,14 +77,133 @@ const WARMUP: usize = 10;
 const SAMPLES: usize = 1_000;
 
 fn main() {
+    let (assert, managed) = flags();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("a benchmark runtime");
-    runtime.block_on(run());
+    let mut failed = false;
+    if assert || !managed {
+        let verdicts = runtime.block_on(run());
+        for (target, met) in &verdicts {
+            println!("SPEC §12 {target} {}", if *met { "PASS" } else { "FAIL" });
+        }
+        failed |= assert && verdicts.iter().any(|(_, met)| !met);
+    }
+    if managed {
+        let verdicts = runtime.block_on(run_managed());
+        for (target, met) in &verdicts {
+            println!("{target} {}", if *met { "PASS" } else { "FAIL" });
+        }
+        failed |= verdicts.iter().any(|(_, met)| !met);
+    }
+    if failed {
+        std::process::exit(1);
+    }
 }
 
-async fn run() {
+/// `--assert` turns a missed SPEC §12 target into a failing exit; `--managed` runs the
+/// C83 comparison instead, and fails on a miss by itself. Cargo itself passes
+/// `--bench`; anything else is refused rather than silently ignored.
+fn flags() -> (bool, bool) {
+    let (mut assert, mut managed) = (false, false);
+    for argument in std::env::args().skip(1) {
+        match argument.as_str() {
+            "--assert" => assert = true,
+            "--managed" => managed = true,
+            "--bench" => {}
+            other => {
+                eprintln!("unknown argument `{other}`; the options are --assert and --managed");
+                std::process::exit(2);
+            }
+        }
+    }
+    (assert, managed)
+}
+
+/// C83 on the artifact path: at most 1 ms more time to first byte at p95, and at least
+/// 90 % of the standalone throughput, both firewalls serving the same warm artifact.
+async fn run_managed() -> Vec<(String, bool)> {
+    let payload = payload();
+    let (shape, versions) = SHAPES[0];
+    let upstream = document(versions);
+    println!("C83 managed overhead, verified warm artifact ({shape}), sampled alternately");
+
+    let (standalone, standalone_client, standalone_url, _a) =
+        firewall(&payload, &upstream, false).await;
+    let (managed, managed_client, managed_url, _b) = firewall(&payload, &upstream, true).await;
+    warm_up(&standalone_client, &standalone_url).await;
+    warm_up(&managed_client, &managed_url).await;
+    let (baseline, measured) = measure_paired(
+        (&standalone_client, &standalone_url),
+        (&managed_client, &managed_url),
+    )
+    .await;
+    report("  standalone firewall", &baseline);
+    report("  managed firewall", &measured);
+    standalone.shutdown().await;
+    managed.shutdown().await;
+
+    let overhead =
+        millis(percentile(&measured.ttfb, 0.95)) - millis(percentile(&baseline.ttfb, 0.95));
+    let ratio = mib_per_second(measured.bytes, percentile(&measured.total, 0.50))
+        / mib_per_second(baseline.bytes, percentile(&baseline.total, 0.50));
+    vec![
+        (
+            format!("managed overhead p95 {overhead:.3} ms <= 1 ms"),
+            overhead <= 1.0,
+        ),
+        (
+            format!("managed throughput {:.1}% >= 90%", ratio * 100.0),
+            ratio >= 0.9,
+        ),
+    ]
+}
+
+/// One firewall serving `payload` behind `upstream`, standalone or managed, with a
+/// client that can reach it and the artifact URL that client is given.
+async fn firewall(
+    payload: &str,
+    upstream: &str,
+    managed: bool,
+) -> (TestServer, reqwest::Client, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut config = config_with_open_blocklist(dir.path());
+    config.cooldown_seconds = ONE_DAY;
+    let client = if managed {
+        // The fake server's task outlives this handle, for as long as the runtime runs.
+        let (sync, key) = standalone_equivalent(ONE_DAY).await;
+        config = sync.managed(config);
+        client_with_key(&key)
+    } else {
+        common::downstream_client()
+    };
+
+    let registry = FakeRegistry::new();
+    registry.answer(
+        &npm_upstream_path(WIDGET),
+        FakeAnswer::Body(upstream.to_owned()),
+    );
+    registry.answer(
+        &npm_artifact_upstream_path(WIDGET, FILENAME),
+        FakeAnswer::Body(payload.to_owned()),
+    );
+    let clock = TestClock::at_rfc3339(NOW);
+    let server =
+        TestServer::start_with_upstream(config, clock.shared(), registry, fake_origins()).await;
+
+    let response = client
+        .get(server.url(&format!("/npm/{WIDGET}")))
+        .send()
+        .await
+        .expect("the request completes");
+    let rendered: Value =
+        serde_json::from_slice(&response.bytes().await.expect("a body")).expect("a document");
+    let url = server.url(&artifact_path(&rendered, TARGET));
+    (server, client, url, dir)
+}
+
+async fn run() -> Vec<(String, bool)> {
     let payload = payload();
     let dir = tempfile::tempdir().expect("a temporary directory");
     let blob = dir.path().join("blob.bin");
@@ -88,6 +216,7 @@ async fn run() {
     let baseline_client = common::downstream_client();
     let baseline_url = format!("http://{baseline_addr}/blob");
 
+    let mut verdicts = Vec::new();
     for (shape, versions) in SHAPES {
         let upstream = document(versions);
         println!(
@@ -101,8 +230,9 @@ async fn run() {
             &baseline,
         );
         report(&format!("  firewall, {shape}"), &measured);
-        compare(shape, &baseline, &measured);
+        verdicts.extend(compare(shape, &baseline, &measured));
     }
+    verdicts
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +488,7 @@ fn report(what: &str, measured: &Measured) {
     );
 }
 
-fn compare(shape: &str, baseline: &Measured, measured: &Measured) {
+fn compare(shape: &str, baseline: &Measured, measured: &Measured) -> [(String, bool); 2] {
     let extra = millis(percentile(&measured.ttfb, 0.95)) - millis(percentile(&baseline.ttfb, 0.95));
     let ratio = mib_per_second(measured.bytes, percentile(&measured.total, 0.50))
         / mib_per_second(baseline.bytes, percentile(&baseline.total, 0.50));
@@ -371,6 +501,19 @@ fn compare(shape: &str, baseline: &Measured, measured: &Measured) {
         ratio * 100.0,
         verdict(ratio >= 0.85)
     );
+    [
+        (
+            format!("artifact additional p95 ttfb {extra:+.3} ms <= 5 ms ({shape})"),
+            extra <= 5.0,
+        ),
+        (
+            format!(
+                "artifact throughput {:.1}% of baseline >= 85% ({shape})",
+                ratio * 100.0
+            ),
+            ratio >= 0.85,
+        ),
+    ]
 }
 
 fn verdict(met: bool) -> &'static str {

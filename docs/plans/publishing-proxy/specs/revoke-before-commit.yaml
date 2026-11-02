@@ -1,0 +1,9 @@
+# Rust ordered-call property only. Tests check the same host and stale-cache refusal.
+name: revoke-before-commit
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [mark_host_revoked]}}
+operation: {calls: {name: [commit]}}
+relation: {must_dominate: true}
+where: "caller_function == 'revoke_host'"

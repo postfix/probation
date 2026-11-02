@@ -1,0 +1,5 @@
+# D40/D41 control-rebind Red Team review
+
+Fresh independent review on 2026-10-28 returned **SOUND** with no blocking finding. The eight rebound `from` strings match guarded calls in the frozen Slice 4 source; their results feed the destination/action send, restored revision body, marker consume and commit, or current origin/bearer choice. No approved D40/D41 guarantee was removed.
+
+The structural controls deliberately replace a named guard with an undefined `unchecked_*` call. This tests whether the analyzer detects the missing guard name on syntactically mutated source; it is not an executable runtime defect. `revision-links-before-action` and `restored-revision-before-send` share one spec and mutation, so eight obligations cover seven distinct mutation sites. Exact destination/credential bytes, revision binding and one-use behavior remain mandatory Slice 4 runtime and independent-review checks. The review inspected the frozen source with SMTC successfully, with no truncation or source edits.

@@ -69,6 +69,18 @@ impl ReferenceId {
         ReferenceId(hasher.finalize().into())
     }
 
+    /// A selected registry is part of artifact identity, including after remove/re-add.
+    pub fn compute_in_registry(registry_id: u64, reference: &ArtifactReference) -> ReferenceId {
+        if registry_id == 0 {
+            return Self::compute(reference);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"probation-registry-reference-v1");
+        hasher.update(registry_id.to_be_bytes());
+        hasher.update(Self::compute(reference).as_bytes());
+        ReferenceId(hasher.finalize().into())
+    }
+
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
@@ -135,6 +147,19 @@ mod tests {
             original,
             ReferenceId::compute(&shifted),
             "the same concatenated bytes split differently must not collide"
+        );
+    }
+
+    #[test]
+    fn same_artifact_in_two_registries_has_distinct_reference_ids() {
+        let item = reference();
+        assert_ne!(
+            ReferenceId::compute_in_registry(41, &item),
+            ReferenceId::compute_in_registry(42, &item)
+        );
+        assert_eq!(
+            ReferenceId::compute_in_registry(0, &item),
+            ReferenceId::compute(&item)
         );
     }
 

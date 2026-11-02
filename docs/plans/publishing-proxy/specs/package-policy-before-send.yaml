@@ -1,0 +1,10 @@
+# Resolution evaluates each package version before rendering response bytes.
+# The returned policy value and every route's final send need runtime controls.
+name: package-policy-before-send
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [resolve]}}
+operation: {calls: {name: [render]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'serve_with_url'"

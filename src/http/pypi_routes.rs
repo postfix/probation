@@ -39,8 +39,8 @@ fn specificity(range: &str, types: &[&str; 2]) -> u8 {
 
 /// `GET /pypi/simple/`.
 pub async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let _permit = super::admit(&app)?;
-    let rendered = pypi::index(&app, &negotiate(&headers)?).await?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
+    let rendered = pypi::index(&app, principal.as_ref(), &negotiate(&headers)?).await?;
     Ok(respond(rendered))
 }
 
@@ -55,7 +55,7 @@ pub async fn project(
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path(project) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
     let name = parse_name(&project)?;
     // Negotiated before the redirect, so a client that accepts nothing this server
     // produces is told so once rather than sent to a second URL to be refused there.
@@ -63,7 +63,7 @@ pub async fn project(
     if !name.is_canonical() {
         return Ok(canonical_redirect(&name));
     }
-    let rendered = pypi::serve(&app, &name, representation).await?;
+    let rendered = pypi::serve(&app, principal.as_ref(), &name, representation).await?;
     Ok(respond(rendered))
 }
 
@@ -173,6 +173,7 @@ fn respond(rendered: pypi::Rendered) -> Response {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -236,4 +237,154 @@ mod tests {
             "one acceptable type among several is enough"
         );
     }
+}
+
+/// Selected Simple API project. The registry identity is part of every cache and file reference.
+pub async fn selected_project(
+    State(app): State<Arc<App>>,
+    peer: Option<axum::Extension<crate::managed::certificates::VerifiedPeer>>,
+    headers: HeaderMap,
+    Path((registry, project)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let registry = super::registry_read::registry_id(&registry)?;
+    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let name = parse_name(&project)?;
+    let representation = negotiate(&headers)?;
+    if !name.is_canonical() {
+        let mut response = StatusCode::MOVED_PERMANENTLY.into_response();
+        let location = format!("/registry/pypi/{}/simple/{}/", registry.0, name.as_str());
+        response.headers_mut().insert(header::LOCATION, HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?);
+        return Ok(response);
+    }
+    let rendered = pypi::serve_in(&app, Some(&principal), &name, representation, registry.0).await?;
+    let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
+    if current.policy.policy.fingerprint != principal.policy.policy.fingerprint
+        || current.registry_origin != principal.registry_origin
+        || current.registry_trusted != principal.registry_trusted
+        || current.registry_private_cidrs != principal.registry_private_cidrs
+        || current.registry_read_authorization != principal.registry_read_authorization {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    Ok(respond(rendered))
+}
+
+pub async fn selected_project_without_slash(
+    State(app): State<Arc<App>>,
+    peer: Option<axum::Extension<crate::managed::certificates::VerifiedPeer>>,
+    headers: HeaderMap,
+    Path((registry, project)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let registry = super::registry_read::registry_id(&registry)?;
+    let (_permit, _principal) = super::registry_read::admit_pypi(&app, peer, registry, &headers).await?;
+    let name = parse_name(&project)?;
+    let mut response = StatusCode::MOVED_PERMANENTLY.into_response();
+    let location = format!("/registry/pypi/{}/simple/{}/", registry.0, name.as_str());
+    response.headers_mut().insert(header::LOCATION, HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?);
+    Ok(response)
+}
+
+pub async fn selected_index(
+    State(app): State<Arc<App>>,
+    peer: Option<axum::Extension<crate::managed::certificates::VerifiedPeer>>,
+    headers: HeaderMap,
+    Path(registry): Path<String>,
+) -> Result<Response, ApiError> {
+    let registry = super::registry_read::registry_id(&registry)?;
+    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let policy = app.policy_for(Some(&principal)).ok_or(ApiError::PolicyUnavailable)?;
+    if !policy.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros())) {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    let rendered = pypi::index(&app, Some(&principal), &negotiate(&headers)?).await?;
+    super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
+    Ok(respond(rendered))
+}
+
+pub async fn selected_artifact(
+    State(app): State<Arc<App>>,
+    peer: Option<axum::Extension<crate::managed::certificates::VerifiedPeer>>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    Path((registry, reference, filename)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let registry = super::registry_read::registry_id(&registry)?;
+    let (permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let id = crate::store::rows::ReferenceId::parse_hex(&reference)
+        .map_err(|_| ApiError::InvalidInput("a reference id is 64 hexadecimal characters"))?;
+    let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok());
+    let response = crate::artifacts::serve_artifact_in(
+        &app, Some(&principal), crate::policy::Ecosystem::PyPi, registry.0,
+        id, &filename, &method, range,
+    ).await?;
+    let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
+    if current.policy.policy.fingerprint != principal.policy.policy.fingerprint
+        || current.registry_origin != principal.registry_origin
+        || current.registry_trusted != principal.registry_trusted
+        || current.registry_private_cidrs != principal.registry_private_cidrs
+        || current.registry_read_authorization != principal.registry_read_authorization {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    Ok(response.under(&app.limits, permit).into_response())
+}
+
+pub async fn selected_upload(
+    State(app): State<Arc<App>>,
+    peer: Option<axum::Extension<crate::managed::certificates::VerifiedPeer>>,
+    headers: HeaderMap,
+    Path(registry): Path<String>,
+    body: axum::body::Body,
+) -> Result<Response, ApiError> {
+    use futures_util::StreamExt;
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+    let registry = super::registry_read::registry_id(&registry)?;
+    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let origin = principal.registry_origin.clone().ok_or(ApiError::NotFound)?;
+    let origins = crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), principal.registry_private_cidrs.clone())
+        .map_err(|_| ApiError::NotFound)?;
+    origins.admit(&origin, crate::upstream::OriginKind::NpmMetadata).map_err(|_| ApiError::NotFound)?;
+    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
+        .filter(|value| (value.starts_with("Basic ") && value.len() > 6) || (value.starts_with("Bearer ") && value.len() > 7))
+        .ok_or(ApiError::Unauthenticated)?.to_owned();
+    let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("multipart/form-data; boundary=") && value.len() <= 256)
+        .ok_or(ApiError::InvalidInput("Twine upload requires multipart content type"))?.to_owned();
+    let cap = app.config.max_artifact_bytes.get().checked_mul(2)
+        .and_then(|limit| limit.checked_add(app.config.max_metadata_bytes.get()))
+        .ok_or(ApiError::InvalidInput("upload size limit overflow"))?;
+    if headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok()).is_some_and(|length| length > cap) {
+        return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
+    }
+    let file = tempfile::tempfile_in(&app.config.data_dir).map_err(|_| ApiError::StorageUnusable)?;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut length = 0u64;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ApiError::InvalidInput("upload is incomplete"))?;
+        length = length.saturating_add(chunk.len() as u64);
+        if length > cap { return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response()); }
+        file.write_all(&chunk).await.map_err(|_| ApiError::StorageUnusable)?;
+    }
+    file.flush().await.map_err(|_| ApiError::StorageUnusable)?;
+    file.seek(std::io::SeekFrom::Start(0)).await.map_err(|_| ApiError::StorageUnusable)?;
+    let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
+    if current.registry_origin != principal.registry_origin
+        || current.registry_private_cidrs != principal.registry_private_cidrs
+        || current.policy.policy.fingerprint != principal.policy.policy.fingerprint {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    let result = app.transport.send_action(crate::upstream::ActionRequest {
+        url: origin.clone(), origin, private_cidrs: principal.registry_private_cidrs.clone(),
+        method: axum::http::Method::POST, authorization: Some(auth), content_type: Some(content_type),
+        body: file, body_len: length, max_bytes: app.config.max_metadata_bytes.get(),
+    }).await.map_err(|error| match error {
+        crate::upstream::UpstreamError::Timeout => ApiError::UpstreamTimeout,
+        _ => ApiError::UpstreamFailure,
+    })?;
+    let status = StatusCode::from_u16(result.status).map_err(|_| ApiError::UpstreamInvalid)?;
+    let mut response = (status, result.body).into_response();
+    if let Some(content_type) = result.content_type.and_then(|value| value.parse().ok()) {
+        response.headers_mut().insert(header::CONTENT_TYPE, content_type);
+    }
+    Ok(response)
 }

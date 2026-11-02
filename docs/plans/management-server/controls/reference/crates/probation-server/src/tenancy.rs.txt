@@ -1,0 +1,25 @@
+//! Where someone belongs and what they may do.
+
+use probation_policy::CheckedEdit;
+
+pub struct EditPermit {
+    login_id: i64,
+    place: PlaceRef,
+}
+
+impl EditPermit {
+    fn granted(login_id: i64, place: PlaceRef) -> Self {
+        Self { login_id, place }
+    }
+}
+
+pub struct Denied;
+
+/// Permit `actor` to save `checked` only if their role on its place may edit that layer.
+pub fn authorize(actor: &Actor, checked: &CheckedEdit) -> Result<EditPermit, Denied> {
+    let role = role_on(actor, checked.place()).ok_or(Denied)?;
+    if !role.may_edit(checked.layer_kind()) {
+        return Err(Denied);
+    }
+    Ok(EditPermit::granted(actor.login_id(), checked.place()))
+}

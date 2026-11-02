@@ -7,20 +7,21 @@ Principles: KISS, YAGNI, fast warm requests, bounded resource use
 
 ### Changed after revision 3
 
-Four features were specified later, each in its own `docs/plans/<name>/` folder, and are documented for operators in `docs/operations.md`. Where they contradict this document, they win:
+Five features were specified later, the first four each in its own `docs/plans/<name>/` folder. They are documented for operators in `docs/operations.md`; the management server and its portal are in `docs/management-server.md`. Where they contradict this document, they win:
 
 - **OSV vulnerability checks** (`docs/plans/osv-intel/`). §8's "No remote intelligence request is made during an installation" no longer holds: a candidate the blocklist allows is also checked against `https://api.osv.dev/v1/querybatch`, failing open. Config keys `osv_cache_ttl_seconds`, `osv_request_timeout_ms`, `osv_mode`.
 - **Decision log delivery** (`docs/plans/decision-log-delivery/`): optional file and SIEM sinks. Config keys `log_file_path`, `log_file_max_bytes`, `log_queue_max_bytes`, `siem_url`, `siem_auth_header`, `siem_queue_max_bytes`, `log_consumer_identification`.
 - **Rated-load guard** (`docs/plans/rated-load-guard/`): bounded queue budgets for those sinks and `GET /health/delivery`.
+- **Managed mode** (`docs/plans/management-server/`), complete. The management server and self-service portal are a second binary, `probation-server` (`crates/probation-server`). With a `[management]` section a firewall serves each request under the policy of the API key it carries, looked up from a management server, keeps that policy in sync with the server, ignores its local blocklist, and applies settings the server pushes; it amends §3, §4, §7, §9, §10, §11 and §13 where marked "Managed mode". Config: `[management]` (`url`, `token_file`, `key_cache_ttl_seconds`, `key_cache_max_entries`, `lookup_budget_per_second`, `client_lookup_allowance_per_second`, `request_timeout_seconds`, `sync_margin_seconds`, `trusted_proxies`) and `sync_interval_seconds`. The upstream origins are configurable in any mode: `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`.
 - **Built-in TLS**: `serve` terminates TLS when `tls_cert_path` and `tls_key_path` are both set (§3 already says so). `SIGTERM` is handled like `SIGINT`.
 
-`max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license named in §13 is Apache-2.0.
+`max_references_per_project` (default 20000) is also accepted in §4's file. `check-config` takes the path as a positional argument as well as with `--config`. The license (§13) is the Elastic License 2.0 (`Elastic-2.0`) for every release after 0.2.2; releases 0.1.0 to 0.2.2 were Apache-2.0.
 
 ## 1. Problem and solution
 
 Developers and CI systems can install a compromised package immediately after publication, before a malware feed identifies it. Blocking only known malicious releases leaves this detection window open. Simply refusing a new download also breaks installations that could have used an older compatible release.
 
-Probation is an open-source, self-hosted registry proxy for public npm and PyPI packages, implemented in Rust. It hides releases younger than a configured delay and hides known malicious packages and artifacts. Existing package managers resolve dependencies against the remaining candidates. Every artifact download through the firewall is checked before delivery.
+Probation is a source-available, self-hosted registry proxy for public npm and PyPI packages, implemented in Rust. It hides releases younger than a configured delay and hides known malicious packages and artifacts. Existing package managers resolve dependencies against the remaining candidates. Every artifact download through the firewall is checked before delivery.
 
 The default delay is 24 hours, configurable in seconds. An eligible package has passed the configured checks; eligibility is not proof that the package is harmless.
 
@@ -45,7 +46,7 @@ Automatic fallback occurs during metadata-based resolution. A client that has al
 
 ## 3. Small deployment and implementation
 
-Ship one Rust binary and a container image built from it. Run one process against one local data directory. `serve` terminates TLS itself when `tls_cert_path`/`tls_key_path` are both configured; a reverse proxy is still required for per-client rate limiting and is optional for TLS. The default listener is loopback. All consumers of an instance share one policy.
+Ship one Rust binary and a container image built from it. Run one process against one local data directory. `serve` terminates TLS itself when `tls_cert_path`/`tls_key_path` are both configured; a reverse proxy is still required for per-client rate limiting and is optional for TLS. The default listener is loopback. All consumers of an instance share one policy. Managed mode: each API key has its own policy, and consumers share one policy only when their keys do.
 
 The binary performs four jobs:
 
@@ -77,7 +78,7 @@ Open `data_dir/state/firewall.db` using `turso::Builder::new_local(...).build().
 
 Pin a published Turso crate release and Cargo.lock before implementation validation. Test that exact version's SQL, transaction, checkpoint, and recovery behavior. The upstream project reports production users but remains pre-1.0 and documents compatibility differences; this specification does not treat SQLite compatibility as a guarantee that every SQLite setting or operation works. [Project status](https://github.com/tursodatabase/turso#faq), [Compatibility](https://github.com/tursodatabase/turso/blob/main/COMPAT.md).
 
-The MVP does not include a UI, package publishing, private registry federation, vendor feed adapters, archive-content scanning, LLM analysis, distributed storage, or an administrative REST API. These are scope boundaries, not an implementation backlog.
+The MVP does not include a UI, package publishing, private registry federation, vendor feed adapters, archive-content scanning, LLM analysis, distributed storage, or an administrative REST API. These are scope boundaries, not an implementation backlog. Managed mode: the management server, `probation-server`, adds a self-service web portal and the API firewalls sync with; the firewall itself still has no UI or administrative API.
 
 ## 4. Configuration and commands
 
@@ -99,10 +100,16 @@ max_metadata_bytes = 67108864        # 64 MiB after decompression
 max_blocklist_bytes = 134217728       # 128 MiB
 max_upstream_requests = 32
 max_artifact_downloads = 8
+download_wait_seconds = 5             # optional; at most 60, 0 refuses at once
+max_download_waiters = 64             # optional; 0 means none waits
 max_active_requests = 1024
 ```
 
-Public upstreams are fixed in this release: `https://registry.npmjs.org` and `https://pypi.org`. PyPI artifact downloads use `https://files.pythonhosted.org`. The public URL has no query, fragment, or path prefix. Configuration changes require a restart; blocklist changes do not.
+Public upstreams default to `https://registry.npmjs.org` and `https://pypi.org`, and PyPI artifact downloads to `https://files.pythonhosted.org`. Exactly three keys replace them: `npm_upstream_url`, `pypi_upstream_url` and `pypi_artifacts_url`, each an `https` origin with no credentials, query, fragment or path prefix, and never a private, loopback or link-local address; every rule of §11 still applies to what they name. No other key or environment variable reaches the upstream boundary. The public URL uses `https` and has no query, fragment, or path prefix. Configuration changes require a restart; blocklist changes do not.
+
+Managed mode: `blocklist_file` and `blocklist_poll_seconds` may be left out and are ignored. The management server may push settings. A push may set any key except `[management]`, `listen`, `data_dir`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url` and `siem_auth_header`, and a pushed path must name a file of its own under `data_dir`. A push is validated as start-up validates and written to `<data_dir>/managed-settings.toml`, which is merged over the configuration file at start. Then the firewall drains and exits with code 75 for its supervisor to restart it. Its reports keep naming the revision it runs with (`settings_revision`) until it has restarted on the new one, so a firewall that never comes back is never counted as having applied the push. An invalid push changes nothing and is reported to the server. A pushed file that fails at the next start is replaced by the previous one (or set aside when there is none), and the failure is reported. A refused push is never applied again; the report names its revision (`failed_revision`), so its error never fails a newer push. The configuration file itself is never written.
+
+Managed mode: `[management] trusted_proxies` lists the reverse proxies whose `X-Forwarded-For` is read; it is never pushed. From a listed peer the client address is the rightmost entry that is not a listed proxy, or the peer when there is none; an entry may be a bare address, `ip:port`, `[v6]` or `[v6]:port`, and anything else (`unknown`, an obfuscated name) does not parse. RFC 7239 `Forwarded` is not read; from any other peer the header is ignored. That address is used for the network lock, its `403` text and the per-client lookup allowance; logs keep the TCP peer. PROXY protocol is not supported.
 
 Reject invalid configuration, including an artifact limit larger than the total cache budget, a public URL or collector URL carrying a username or password, and a cooldown above ten years (315360000 seconds), past which an eligibility deadline cannot be represented. Durations are nonnegative integers; zero cooldown explicitly disables only the age rule. Zero polling intervals and zero capacity limits are invalid. A nonzero `metadata_max_age_seconds` below `metadata_ttl_seconds` is invalid, because a ceiling beneath the revalidation interval would expire every copy before it could be revalidated; zero explicitly disables the ceiling and restores unbounded revalidation.
 
@@ -177,7 +184,7 @@ Serve both Simple API HTML and JSON with correct content negotiation. Rewrite ar
 
 For simplicity, omit optional separate core-metadata advertisements and provenance links in this release. Clients obtain dependency metadata from the verified distribution itself. Do not leave upstream auxiliary download links in the response. This deliberately trades some cold-resolution speed for a smaller implementation.
 
-Serve `/pypi/simple/` as a valid index of projects already known to this instance, not a mirror of all PyPI projects. Installation of a project not listed there still works through its project endpoint. For an existing project with no eligible files, return an empty valid project listing; pip reports no matching distribution. Log why the files were excluded.
+Serve `/pypi/simple/` as a valid index of projects already known to this instance, not a mirror of all PyPI projects. Managed mode: the index is always empty, because it would show every tenant what the others install. Installation of a project not listed there still works through its project endpoint. For an existing project with no eligible files, return an empty valid project listing; pip reports no matching distribution. Log why the files were excluded.
 
 The cooldown applies to wheels, source distributions, and build dependencies fetched through the configured index. It does not inspect code executed by package installers.
 
@@ -246,7 +253,7 @@ Artifacts are served under the same path prefix as the ecosystem's metadata beca
 
 `reference_id` is a SHA-256 digest of an unambiguous, length-prefixed encoding of the exact artifact reference. It is a lookup key, not a content hash or authorization token. Persist its record before advertising the URL. The filename preserves the original extension and wheel name. The server looks up the record; it never constructs an upstream URL from an arbitrary client URL parameter.
 
-npm tarballs are also served at upstream's own path, `/npm/{package}/-/{filename}`, because that is what an existing lockfile names: npm rewrites only the host of a `resolved` URL to the configured registry. The server finds the reference the current upstream snapshot advertises under that filename and then decides exactly as for the reference-id URL. A filename that no reference, or more than one, is advertised under is not found. npm 11 and later leave the registry path off a URL whose path already starts with it, so the package named `npm` is asked for at `/npm/-/npm-{version}.tgz`, the one path under npm's `-` namespace that is served.
+npm tarballs are also served at upstream's own path, `/npm/{package}/-/{filename}`, because that is what an existing lockfile names: npm rewrites only the host of a `resolved` URL to the configured registry. The server finds the reference the current upstream snapshot advertises under that filename and then decides exactly as for the reference-id URL. A filename that no reference, or more than one, is advertised under is not found. npm 11 and later leave the registry path off a URL whose path already starts with it, so the package named `npm` is asked for at `/npm/-/npm-{version}.tgz`, the only tarball path under npm's `-` namespace that is served.
 
 The ecosystem in the URL is part of what the client is asserting, and it is checked the same way: the server compares it with the stored record's own ecosystem and answers `404` on a mismatch, on every method and for a byte range as well as a whole body. Because the reference id is derived from public metadata and is not an authorization token, an unchecked ecosystem segment would let a valid reference be served, and logged, under an ecosystem that did not decide it.
 
@@ -284,7 +291,7 @@ The first complete, upstream-integrity-verified download pins the reference's co
 
 Do not forward any body bytes before full verification. Do not redirect artifact downloads to upstream. Disable HTTP content decoding for artifact transfers so hashes and cached bytes refer to the distribution itself.
 
-Concurrent requests for one reference share one fetch and verification result. Each waiter rechecks policy before its own response starts. Bound active downloads globally. A download failure removes its temporary file and is returned consistently to waiters. A subsequent request may retry; no detached infinite retry loop.
+Concurrent requests for one reference share one fetch and verification result. Each waiter rechecks policy before its own response starts. Managed mode: the shared transfer publishes verified bytes without a policy decision of its own, and each waiter decides under its own key's policy, so one tenant's block never refuses another's download. Bound active downloads globally. A cold request that finds every download permit taken waits for one, first come first served, for at most `download_wait_seconds` in one of `max_download_waiters` places; past either bound, and with no place free, it is refused with `503 OVERLOADED` and `Retry-After: 5`. A waiter whose last client leaves gives its place back. A download failure removes its temporary file and is returned consistently to waiters. A subsequent request may retry; no detached infinite retry loop.
 
 A disconnected waiter releases its request resources without canceling other waiters. If the last waiter leaves before artifact publication, cancel the fetch and remove its temporary file and reservation. Once the durable publication transaction starts, finish that bounded operation and leave a valid cache entry. Apply a 30-second downstream write-idle timeout and a 15-minute response-body lifetime; timeout or disconnect releases file pins and permits. These are initial implementation defaults, to be included in slow-client tests.
 
@@ -314,6 +321,8 @@ Cache verified files under a path derived from their content SHA-256. Flush and 
 
 If database recovery fails, keep readiness false and stop package delivery; never silently recreate the database and lose first-seen times, digest pins, or the blocklist revision. Keep independent backups of configuration, the producer's current blocklist, and the stopped service's complete `state/` directory. Artifact bytes are replaceable; policy and identity records are not. Restore while stopped, reload a current blocklist before readiness, and treat uncertain metadata freshness as expired. No SQLite-to-Turso migration is needed because this task changes a specification, not a deployed database.
 
+Managed mode: the firewall asks the management server for changes every `sync_interval_seconds` minus `sync_margin_seconds` and keeps keys, layers and the network-lock table in memory, written to `<data_dir>/managed-cache.json` after every sync the server answers. While the server cannot be reached it keeps serving what it has cached, past the TTL; a key it has never seen gets `401`. A `reset` answer, also one at a revision lower than its cursor (a restored server database), drops the whole cache, adopts the answered revision and discards every lookup or layers answer asked for before the reset. A `401` to the sync retires the firewall: it refuses every key. Blocked, held and would-block decisions and refused known keys are queued as activity rows and sent with the next sync, at most 1,000 a call. The queue holds at most 10,000 rows, dropping the oldest when full, and 1,000 per account; an account's rows beyond that are counted as dropped. A batch the server refuses is counted as dropped; one that cannot be sent is queued again. Every graceful stop, the exit 75 included, sends the rows queued since the last sync in one last call, bounded by `request_timeout_seconds`; a stop with nothing queued and no settings push to apply makes no call. What is still queued after that call (rows it could not deliver, or past one call's cap) is written to `<data_dir>/managed-activity.json`, versioned and within the queue's caps, and queued again by the next start; each row keeps its event id, so the server stores it once. A layer received newer than the one cached keys were built on, as with another key's lookup before the next sync, rebuilds the policy of every cached key whose chain holds it at once, not when their entries expire. A `2xx` answer to `changes`, `lookup` or `layers` that does not decode is handled as an unreachable server's: the firewall keeps serving its cache and a stale layer stays in use, and it stays ready. It logs the cause at error level with its own version, and each report carries it in `last_apply_error`, with `failed_revision` 0 so it never fails a settings rollout step, until a later `changes` answer is read; an apply error takes precedence.
+
 Memory caches are bounded and hold parsed project metadata, hot reference records, and serialized filtered responses. On a fully warm request, policy and response lookup require no database query, upstream call, or repeated JSON parsing. Immutable policy snapshots can use `ArcSwap`; ordinary bounded cache synchronization is sufficient elsewhere.
 
 A rendered metadata cache entry is reusable only while all of these match:
@@ -340,7 +349,7 @@ Send `Cache-Control: no-store` on downstream metadata, artifacts, and errors. Do
 
 Disk eviction uses approximate least-recently-used order, with access updates batched off the request path. Never evict open files. Reserve capacity for temporary downloads; count unknown-length downloads against `max_artifact_bytes` until their final size is known. If capacity cannot be reserved or reclaimed, refuse the cold request without deleting in-use files. Reject an artifact exceeding its size cap even when `Content-Length` is missing.
 
-The memory-cache budget excludes the required blocklist and bounded in-flight buffers. Document actual total RSS. Use semaphores and bounded queues; reject overload instead of allowing unbounded waiters or tasks.
+The memory-cache budget excludes the required blocklist and bounded in-flight buffers. Document actual total RSS. Use semaphores and bounded queues; reject overload instead of allowing unbounded waiters or tasks. The only wait is the download-permit wait of §9, bounded in time and in places; every other bound, `max_active_requests` included, refuses at once. Every `503 OVERLOADED` carries `Retry-After: 5`.
 
 The artifact cache limit does not cap the persistent state database or WAL. Monitor their size and filesystem free space separately; preserve sufficient operational headroom for a blocklist commit and checkpoint. Checkpoint with the pinned engine's supported API outside HTTP handling, and verify WAL growth under sustained updates. Do not assume deleting rows shrinks the database file or require experimental in-place vacuum. Storage write failures make readiness false and deny package responses with `503` until storage is usable again; never relax policy to free space.
 
@@ -357,7 +366,7 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | `GET, HEAD /npm/{package}/-/{filename}` | The same delivery, at upstream's tarball path, for lockfiles. |
 | `GET, HEAD /pypi/artifacts/{reference_id}/{filename}` | Verified artifact delivery for a PyPI reference. |
 | `GET /health/live` | Process liveness. |
-| `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. |
+| `GET /health/ready` | Valid policy, usable storage, service ready; no live upstream probe. Managed mode: a cache snapshot loaded or a sync applied, not retired, usable storage, and the management server not refusing even an empty sync; an unreachable server, or an answer it cannot read, does not make it not ready. |
 
 `{package}` denotes npm's validated logical package name, including scoped names; implement explicit routes rather than a catch-all proxy. Reject request methods outside the supported set, including `HEAD` on every route not listed with it.
 
@@ -368,13 +377,18 @@ The artifact cache limit does not cap the persistent state database or WAL. Moni
 | Invalid input | `400`. |
 | Unsupported route/method/representation | `404`, `405`, or `406` as applicable. |
 | Missing/expired blocklist, local capacity exhausted, overloaded | `503`. |
+| Managed mode: missing, malformed, unknown, revoked or suspended API key, or a retired firewall | `401 AUTHENTICATION_REQUIRED` with `WWW-Authenticate: Basic realm="probation"`, one fixed reason naming no account. |
+| Managed mode: the key cannot be checked now (lookup budget spent, server busy) | `503 LOOKUP_BUSY` with `Retry-After: 1`; a valid key is never answered `401` for it. |
+| Managed mode: no cache snapshot loaded and no sync applied yet, or no peer address | `503 NOT_READY` with `Retry-After: 1`. |
+| Managed mode: another organisation's approved network range holds the client address (§4), or, from a listed proxy, an `X-Forwarded-For` entry read from the right does not parse | `403 NETWORK_NOT_ALLOWED`, showing the address and nothing else. |
+| Managed mode: the key's account is over its requests per minute on this firewall | `429 TOO_MANY_REQUESTS`. |
 | Upstream failure, invalid upstream metadata, integrity failure | `502`; timeout is `504`. |
 
 Policy errors include `error`, `reason`, `request_id`, and, for cooldown, `eligible_at`. Include a numeric `Retry-After` on cooldown responses. Do not require clients to recognize custom error fields for correctness. Log exclusions that cannot be represented in an ecosystem listing.
 
 Use a pooled upstream HTTP client. Set connect timeout to 5 seconds, metadata total timeout to 30 seconds, artifact idle timeout to 30 seconds, and artifact total timeout to 15 minutes. Do not add automatic application-level retries in the MVP; clients can retry failed requests.
 
-Allow only the fixed upstream HTTPS origins. Reject cross-origin redirects, URL credentials, unexpected ports, and addresses resolving to loopback/private/link-local networks. Never forward a client's authorization, cookies, or proxy credentials upstream. Treat package names, filenames, upstream JSON, and HTML attributes as untrusted data.
+Allow only the configured upstream HTTPS origins (§4). An artifact is fetched only from its own ecosystem's origins: an npm tarball from `npm_upstream_url`, a PyPI file from `pypi_artifacts_url` or `pypi_upstream_url`; any other host is refused without a request. Reject cross-origin redirects, URL credentials, unexpected ports, and addresses resolving to loopback/private/link-local networks. Never forward a client's authorization, cookies, or proxy credentials upstream. Treat package names, filenames, upstream JSON, and HTML attributes as untrusted data.
 
 Example client configuration:
 
@@ -415,7 +429,7 @@ Test both the representative fixture and large real-shaped metadata. Size limits
 
 ## 13. Verification and completion criteria
 
-Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no origin override or private-address bypass. Test the pure policy first, then protocol behavior, then real package-manager installations.
+Use a local deterministic fake registry with harmless package fixtures. Control the clock; do not rely on publishing real packages or downloading malware. The test harness injects its transport and origins into the application constructor; the release binary exposes no private-address bypass and no origin override. Managed mode: §4's three origin keys, added with it, are the one exception, and apply to every instance. Test the pure policy first, then protocol behavior, then real package-manager installations.
 
 Required behavior tests:
 
@@ -436,7 +450,7 @@ Required behavior tests:
 
 Run end-to-end installations using pinned, recorded versions of current stable npm and pip at implementation time, plus the previous supported npm major and pip minor. Use `npm install --audit=false` and `npm ci --audit=false`; verify an allowed lockfile succeeds and a blocked pinned dependency fails without rewriting it. Use fresh client caches for proxy enforcement tests and one deliberate cache-reuse test documenting the boundary. Test pip installation and resolution from both wheels and source distributions.
 
-The MVP is complete when these tests pass, benchmark results meet or explicitly revise the agreed targets, startup/operation instructions work from a clean container, and every decision is explainable from the policy and logs. Deliver source, Cargo.lock, container build, sample configuration, sample normalized blocklist, tests, benchmark harness/results, and an operations README. Select an explicit open-source license before public release.
+The MVP is complete when these tests pass, benchmark results meet or explicitly revise the agreed targets, startup/operation instructions work from a clean container, and every decision is explainable from the policy and logs. Deliver source, Cargo.lock, container build, sample configuration, sample normalized blocklist, tests, benchmark harness/results, and an operations README. The license is the Elastic License 2.0 (`Elastic-2.0`) for every release after 0.2.2; releases 0.1.0 to 0.2.2 were Apache-2.0.
 
 Implement in this order: pure policy and fake-registry fixtures; local Turso persistence/recovery tests; npm and PyPI metadata; artifact verification and cache; client integration; mixed cold/warm load and restart tests. Do not infer persistence speed from Rust alone. Benchmark cold reference reads, batched project writes, blocklist commits under download load, restart recovery, and total process memory for the pinned Turso version. These are production release gates, not reasons to add another database backend.
 

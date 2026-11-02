@@ -505,6 +505,40 @@ async fn a_full_fetch_time_survives_a_restart() {
     task.await.expect("the storage task stops");
 }
 
+#[tokio::test]
+async fn same_name_registry_state_remains_isolated_after_restart() {
+    let dir = tempfile::tempdir().expect("a temporary data directory");
+    let (first, task) = store(&dir).await;
+    let item = reference("1.0.0", "widget-1.0.0.tgz");
+    for (registry_id, marker) in [(41, b'A'), (42, b'B')] {
+        let id = ReferenceId::compute_in_registry(registry_id, &item);
+        let mut project = refresh(registry_id as i64, vec![ReferenceUpsert {
+            id,
+            reference: item.clone(),
+            publication_micros: None,
+            first_seen_micros: Some(registry_id as i64),
+        }]);
+        project.payload = Arc::from(vec![marker]);
+        first.commit_project_refresh_in(registry_id, project).await.expect("scoped refresh");
+    }
+    drop(first);
+    task.await.expect("store stops");
+
+    let (restarted, task) = store(&dir).await;
+    for (registry_id, marker) in [(41, b'A'), (42, b'B')] {
+        let row = restarted.get_project_in(registry_id, Ecosystem::Npm, "widget")
+            .await.expect("query").expect("scoped project");
+        assert_eq!(row.payload.as_ref(), &[marker]);
+        let id = ReferenceId::compute_in_registry(registry_id, &item);
+        let reference = restarted.get_reference(id).await.expect("query").expect("scoped reference");
+        assert_eq!(reference.registry_id, registry_id);
+        assert_eq!(reference.first_seen_micros, Some(registry_id as i64));
+    }
+    assert!(restarted.get_project(Ecosystem::Npm, "widget").await.expect("query").is_none());
+    drop(restarted);
+    task.await.expect("store stops");
+}
+
 /// The trap this column exists to close, across a restart. A reloaded snapshot is
 /// revalidated conditionally; the `304` that answers must carry the ORIGINAL
 /// full-fetch time forward. A restart is not a fetch, and if it reset this column an

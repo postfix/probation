@@ -38,9 +38,9 @@ pub async fn package(
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path(package) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
     let name = parse_name(&package)?;
-    let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
+    let rendered = npm::serve(&app, principal.as_ref(), &name, negotiate(&headers)).await?;
     Ok(respond(rendered))
 }
 
@@ -57,15 +57,17 @@ pub async fn package_version(
     path: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path((package, version_or_tag)) = path?;
-    let _permit = super::admit(&app)?;
+    let (_permit, principal) = super::admit(&app, &headers).await?;
+    let principal = principal.as_ref();
     if package.starts_with('@') && !package.contains('/') {
         let name = parse_name(&format!("{package}/{version_or_tag}"))?;
-        let rendered = npm::serve(&app, &name, negotiate(&headers)).await?;
+        let rendered = npm::serve(&app, principal, &name, negotiate(&headers)).await?;
         return Ok(respond(rendered));
     }
 
     let name = parse_name(&package)?;
-    let rendered = npm::serve(&app, &name, Representation::NpmVersion(version_or_tag)).await?;
+    let representation = Representation::NpmVersion(version_or_tag);
+    let rendered = npm::serve(&app, principal, &name, representation).await?;
     Ok(respond(rendered))
 }
 
@@ -79,11 +81,11 @@ pub(super) fn parse_name(raw: &str) -> Result<PackageName, ApiError> {
 /// SPEC §6: the abbreviated install response is derived from the same snapshot as
 /// the full one. Anything that does not ask for it by name gets the full document,
 /// which is what every other client expects.
-fn negotiate(headers: &HeaderMap) -> Representation {
+pub(super) fn negotiate(headers: &HeaderMap) -> Representation {
     let accepts_abbreviated = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|accept| accept.contains(ABBREVIATED_ACCEPT));
+        .is_some_and(|accept| accept.split(',').any(names_abbreviated));
 
     if accepts_abbreviated {
         Representation::NpmAbbreviated
@@ -92,11 +94,74 @@ fn negotiate(headers: &HeaderMap) -> Representation {
     }
 }
 
-fn respond(rendered: npm::Rendered) -> Response {
+/// One `Accept` entry whose media type is exactly [`ABBREVIATED_ACCEPT`], in any case,
+/// with a quality above 0. A `q` that does not parse counts as 1, as it would without
+/// one.
+fn names_abbreviated(entry: &str) -> bool {
+    let mut parts = entry.split(';');
+    let media = parts.next().unwrap_or_default().trim();
+    let quality = parts
+        .filter_map(|parameter| {
+            let (name, value) = parameter.split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case("q")
+                .then(|| value.trim().parse::<f32>().ok())
+                .flatten()
+        })
+        .next()
+        .unwrap_or(1.0);
+    media.eq_ignore_ascii_case(ABBREVIATED_ACCEPT) && quality > 0.0
+}
+
+pub(super) fn respond(rendered: npm::Rendered) -> Response {
     let mut response = rendered.body.to_vec().into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static(rendered.content_type),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accepting(accept: &str) -> Representation {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            HeaderValue::from_str(accept).expect("a header"),
+        );
+        negotiate(&headers)
+    }
+
+    /// F14: the abbreviated form only for an entry naming it with a quality above 0.
+    #[test]
+    fn only_an_acceptable_entry_selects_the_abbreviated_form() {
+        for accept in [
+            "application/vnd.npm.install-v1+json",
+            "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*",
+            "Application/VND.npm.Install-v1+JSON;q=0.5",
+        ] {
+            assert!(
+                matches!(accepting(accept), Representation::NpmAbbreviated),
+                "{accept}"
+            );
+        }
+        for accept in [
+            "application/vnd.npm.install-v1+json;q=0, application/json",
+            "application/vnd.npm.install-v1+json; q=0.0",
+            "application/vnd.npm.install-v1+jsonx",
+            "application/json",
+        ] {
+            assert!(
+                matches!(accepting(accept), Representation::NpmFull),
+                "{accept}"
+            );
+        }
+        assert!(matches!(
+            negotiate(&HeaderMap::new()),
+            Representation::NpmFull
+        ));
+    }
 }

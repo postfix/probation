@@ -1,0 +1,9 @@
+# Rust ordered-call property only. Runtime controls check route, token, and upstream values.
+name: canonical-token-packument
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [check_canonical_token_packument]}}
+operation: {calls: {name: [send_selected_upstream_packument]}}
+relation: {must_dominate: true}
+where: "caller_function == 'serve_token_packument'"

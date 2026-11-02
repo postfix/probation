@@ -15,6 +15,7 @@
 //!
 //! Sixteen shards is a starting number and a tuning knob; the lock shape is not.
 
+use probation_policy::PolicyFingerprint;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,6 +31,7 @@ const SHARDS: usize = 16;
 /// tag it already prints in log lines is what gets hashed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProjectKey {
+    pub registry_id: u64,
     pub ecosystem: Ecosystem,
     pub name: String,
 }
@@ -37,6 +39,19 @@ pub struct ProjectKey {
 impl ProjectKey {
     pub fn new(ecosystem: Ecosystem, name: impl Into<String>) -> ProjectKey {
         ProjectKey {
+            registry_id: 0,
+            ecosystem,
+            name: name.into(),
+        }
+    }
+
+    pub fn in_registry(
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: impl Into<String>,
+    ) -> ProjectKey {
+        ProjectKey {
+            registry_id,
             ecosystem,
             name: name.into(),
         }
@@ -45,6 +60,7 @@ impl ProjectKey {
 
 impl Hash for ProjectKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.registry_id.hash(state);
         self.ecosystem.as_tag().hash(state);
         self.name.hash(state);
     }
@@ -65,10 +81,14 @@ pub enum Representation {
     PypiJson,
 }
 
+/// A rendered response is reused only under the same effective policy (C103): every
+/// request with that policy shares the entry, and a changed policy has a new
+/// fingerprint, so its stale entries age out under the byte cap.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RenderKey {
     pub project: ProjectKey,
     pub representation: Representation,
+    pub policy: PolicyFingerprint,
 }
 
 /// A response already serialised, with everything needed to decide whether it may be
@@ -86,6 +106,10 @@ pub struct RenderedResponse {
     /// The same deadline on the monotonic clock, so a backward wall-clock jump
     /// cannot extend an entry's life (SPEC §5).
     pub deadline_monotonic: Instant,
+    /// Managed mode: a PyPI listing with no eligible file left is a refusal, and each
+    /// request it is served to, from here too, records an activity row with this
+    /// verdict (S3-8). `None` for everything else.
+    pub refused: Option<crate::policy::PolicyVerdict>,
 }
 
 impl RenderedResponse {
@@ -612,6 +636,16 @@ mod tests {
     }
 
     #[test]
+    fn same_name_in_two_registries_has_distinct_cache_identity() {
+        let first = ProjectKey::in_registry(41, Ecosystem::Npm, "same-name");
+        let second = ProjectKey::in_registry(42, Ecosystem::Npm, "same-name");
+        assert_ne!(first, second);
+        let cache = cache();
+        cache.insert(first.clone(), Arc::new(1), 8);
+        assert!(cache.get(&second).is_none());
+    }
+
+    #[test]
     fn reuse_requires_every_condition_of_spec_10() {
         let now = 1_000_000i64;
         let monotonic = Instant::now();
@@ -623,6 +657,7 @@ mod tests {
             digest_generation: 2,
             deadline_utc_micros: now + 1,
             deadline_monotonic: monotonic + std::time::Duration::from_secs(60),
+            refused: None,
         };
 
         assert!(rendered.is_reusable(Generation(4), 7, 2, now, monotonic));

@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Find users and certificates</title><link rel="stylesheet" href="style.css"><style>[hidden]{display:none!important}</style>
+<header>Probation · Users</header><main>
+<section class="card" data-case="no-user"><h1>No user found</h1><p>No member matches this name or email in your organisation.</p><p><a href="user-management.html">Change search</a> · <a href="user-management.html">Invite user</a></p></section>
+<section class="card" data-case="no-certs" hidden><h1>No Probation-issued certificates for Ada</h1><p>Ada is an active Engineering member, but no certificate has been issued to this account. Her package access will work after she receives one while self-service is enabled.</p><p><a href="user-management.html">Back to Ada</a></p></section>
+</main><script>const selected=new URLSearchParams(location.search).get('case')==='no-certs'?'no-certs':'no-user';document.querySelectorAll('[data-case]').forEach(section=>section.hidden=section.dataset.case!==selected);</script></html>

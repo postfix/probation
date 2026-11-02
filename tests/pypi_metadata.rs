@@ -1251,6 +1251,13 @@ fn projection(harness: &Harness) -> Option<Arc<probation::store::cache::Rendered
         .get(&RenderKey {
             project: ProjectKey::new(Ecosystem::PyPi, BARD),
             representation: Representation::PypiJson,
+            policy: harness
+                .server
+                .app()
+                .policy()
+                .expect("a policy")
+                .policy
+                .fingerprint,
         })
 }
 
@@ -1643,6 +1650,13 @@ fn projection_of(
         .get(&RenderKey {
             project: ProjectKey::new(Ecosystem::PyPi, name),
             representation: Representation::PypiJson,
+            policy: harness
+                .server
+                .app()
+                .policy()
+                .expect("a policy")
+                .policy
+                .fingerprint,
         })
 }
 
@@ -1879,6 +1893,9 @@ async fn a_304_with_a_body_and_extra_headers_yields_no_bytes() {
         .transport
         .fetch_metadata(MetadataRequest {
             url,
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: None,
             accept: "application/vnd.pypi.simple.v1+json",
             validators: Some(UpstreamValidators {
                 etag: Some(ETAG.to_owned()),

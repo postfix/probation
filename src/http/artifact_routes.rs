@@ -17,6 +17,7 @@ use crate::App;
 use crate::artifacts::{self};
 use crate::http::error::ApiError;
 use crate::http::npm_routes;
+use crate::managed::Principal;
 use crate::npm;
 use crate::policy::Ecosystem;
 use crate::store::rows::ReferenceId;
@@ -57,7 +58,7 @@ async fn serve(
     let Path((reference_id, filename)) = path?;
     // The permit is handed to the response below, so it is held for as long as bytes
     // are still going out and not merely until this function returns.
-    let permit = super::admit(&app)?;
+    let (permit, principal) = super::admit(&app, &headers).await?;
 
     // A reference id is 64 hexadecimal characters and nothing else. SPEC §9: it is a
     // lookup key, so an unparseable one is invalid input rather than a miss.
@@ -66,7 +67,11 @@ async fn serve(
         ApiError::InvalidInput("a reference id is 64 hexadecimal characters")
     })?;
 
-    deliver(&app, ecosystem, id, &filename, &method, &headers, permit).await
+    let principal = principal.as_ref();
+    deliver(
+        &app, principal, ecosystem, id, &filename, &method, &headers, permit,
+    )
+    .await
 }
 
 /// `GET|HEAD /npm/{package}/-/{filename}`: upstream's own tarball path, which is what
@@ -131,14 +136,27 @@ async fn serve_npm_named(
     method: &Method,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
-    let permit = super::admit(app)?;
+    let (permit, principal) = super::admit(app, headers).await?;
     let name = npm_routes::parse_name(package)?;
     let id = npm::reference_for_file(app, &name, filename).await?;
-    deliver(app, Ecosystem::Npm, id, filename, method, headers, permit).await
+    let principal = principal.as_ref();
+    deliver(
+        app,
+        principal,
+        Ecosystem::Npm,
+        id,
+        filename,
+        method,
+        headers,
+        permit,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     app: &Arc<App>,
+    principal: Option<&Principal>,
     ecosystem: Ecosystem,
     id: ReferenceId,
     filename: &str,
@@ -150,6 +168,7 @@ async fn deliver(
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok());
 
-    let response = artifacts::serve_artifact(app, ecosystem, id, filename, method, range).await?;
+    let response =
+        artifacts::serve_artifact(app, principal, ecosystem, id, filename, method, range).await?;
     Ok(response.under(&app.limits, permit).into_response())
 }

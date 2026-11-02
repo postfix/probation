@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Global admin · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html">API keys</a><a href="activity.html">Activity</a><a href="organisation.html">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html" aria-current="page">Global admin</a><a href="fleet.html">Fleet</a><a href="account.html">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>Global admin</h1>
+<p class="mut">Only global admins (the service operators) see this screen. There can be several. The platform policy, which every organisation and personal account inherits, is edited in the <a href="policy.html">policy editor</a> (layer: Platform).</p>
+
+<section class="state"><p class="tag">State: organisations (default)</p>
+<h2>Organisations</h2>
+<p class="row"><input placeholder="search by name"> <select><option>All</option><option>Active</option><option>Suspended</option><option>Deleted, waiting to be erased</option></select></p>
+<div class="wrap"><table>
+<tr><th>Organisation</th><th>Status</th><th>Members</th><th>Keys</th><th>Created</th><th></th></tr>
+<tr><td>Acme</td><td class="good">Active</td><td>5</td><td>7</td><td>1 Oct 2026</td><td><button>Open as org admin</button> <button>Suspend</button> <button>Reset an org admin's authenticator</button></td></tr>
+<tr><td>Northwind</td><td class="good">Active</td><td>23</td><td>31</td><td>12 Sep 2026</td><td><button>Open as org admin</button> <button>Suspend</button> <button>Reset an org admin's authenticator</button></td></tr>
+<tr><td>Globex</td><td class="bad">Suspended</td><td>11</td><td>4</td><td>3 Aug 2026</td><td><button>Open as org admin</button> <button class="pri">Re-activate</button></td></tr>
+<tr><td>Initech</td><td class="mut">Deleted, erased on 19 Nov 2026</td><td>8</td><td>0</td><td>2 Jul 2026</td><td></td></tr>
+</table></div>
+<p class="mut">An organisation is active as soon as it signs up; there is nothing to approve. There is no billing yet, so all you can do is suspend it and re-activate it by hand.</p>
+<p class="mut">"Open as org admin" takes you into the organisation with everything an org admin can do: edit its policy, members, groups and keys, and appoint org admins. Every change you make there appears in that organisation's audit log, marked "(operator)", where its org admins can see it.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, suspend an organisation</p>
+<h2>Suspend Northwind?</h2>
+<p>Probation refuses all of Northwind's 31 keys until you re-activate it. Its 23 members can still sign in to the portal, read-only, with a banner explaining the suspension.</p>
+<p class="row"><button class="danger">Suspend</button> <button>Cancel</button></p>
+</section>
+
+<section class="state"><p class="tag">State: inside an organisation as org admin</p>
+<p class="open"><b>You are in Acme as an org admin (operator).</b> Every change you make here is recorded in Acme's audit log, marked "(operator)". <button>Back to Global admin</button></p>
+<p>You now see Acme's <a href="policy.html">Policy</a>, <a href="api-keys.html">API keys</a>, <a href="activity.html">Activity</a>, <a href="organisation.html">Organisation</a> and <a href="audit-log.html">Audit log</a> screens as Acme's org admins do, and can change everything they can.</p>
+</section>
+
+<section class="state"><p class="tag">State: network lock requests</p>
+<h2>Network lock requests</h2>
+<div class="wrap"><table>
+<tr><th>Organisation</th><th>IP range</th><th>Asked by</th><th>Asked</th><th></th></tr>
+<tr><td>Acme</td><td><code>198.51.100.16/28</code></td><td>alice@acme.com</td><td>19 Oct 2026</td><td><button class="pri">Approve</button> <button>Refuse</button></td></tr>
+<tr><td>Northwind</td><td><code>100.64.0.0/10</code></td><td>lee@northwind.example</td><td>20 Oct 2026</td><td><button class="pri">Approve</button> <button>Refuse</button></td></tr>
+</table></div>
+<p class="mut">A range an org admin adds does nothing until you approve it. From an approved range, Probation refuses every key that is not the organisation's own, so check the range really is that organisation's office or VPN.</p>
+<p class="mut">The network lock is a secondary control. Phone networks and country-wide address sharing put unrelated people behind one address, so a range cannot identify a company on its own. Approving such a range would refuse everyone else's keys there.</p>
+</section>
+
+<section class="state"><p class="tag">State: network lock requests, empty</p>
+<p class="empty">No network lock ranges are waiting for approval.</p>
+</section>
+
+<section class="state"><p class="tag">State: global admins</p>
+<h2>Global admins</h2>
+<div class="wrap"><table>
+<tr><th>Email</th><th></th></tr>
+<tr><td>ops@probation.example</td><td><button>Remove</button></td></tr>
+<tr><td>kim@probation.example</td><td><button>Remove</button></td></tr>
+</table></div>
+<p class="row"><input type="email" placeholder="email address" value="lee@probation.example"> <button class="pri">Add global admin</button></p>
+<p class="mut">A new global admin must set up an authenticator app before using admin features. There is always at least one global admin: the last one cannot be removed.</p>
+</section>
+
+<section class="state"><p class="tag">State: personal accounts</p>
+<h2>Personal accounts</h2>
+<p class="row"><input placeholder="search by email"></p>
+<div class="wrap"><table>
+<tr><th>Email</th><th>Status</th><th>Keys</th><th>Created</th><th></th></tr>
+<tr><td>bob@acme.com</td><td class="good">Active</td><td>1</td><td>5 Oct 2026</td><td><button>Suspend</button> <button>Revoke keys</button> <button>Reset authenticator</button> <button>Delete</button></td></tr>
+<tr><td>jane@example.com</td><td class="good">Active</td><td>3</td><td>18 Oct 2026</td><td><button>Suspend</button> <button>Revoke keys</button> <button>Reset authenticator</button> <button>Delete</button></td></tr>
+<tr><td>sam.dev@example.net</td><td class="bad">Suspended</td><td>5</td><td>2 Sep 2026</td><td><button class="pri">Make active</button> <button>Revoke keys</button> <button>Reset authenticator</button> <button>Delete</button></td></tr>
+</table></div>
+<p class="mut">You can reset anyone's authenticator, including a login that belongs to several places. Org admins can reset only logins that belong to their organisation alone.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, act on a personal account</p>
+<h2>Delete jane@example.com's personal account?</h2>
+<p>Its 3 keys stop working within about 1 minute. Everything else is erased after 30 days and can be restored until then.</p>
+<p class="row"><button class="danger">Delete account</button> <button>Cancel</button></p>
+<p class="mut">"Revoke keys" asks the same way: "Revoke all 3 of jane@example.com's keys? Anything using them stops downloading within about 1 minute. This cannot be undone."</p>
+</section>
+
+<section class="state"><p class="tag">State: personal accounts, empty</p>
+<p class="empty">No personal accounts yet.</p>
+</section>
+
+<section class="state"><p class="tag">State: limits</p>
+<h2>Limits per kind of account</h2>
+<div class="wrap"><table>
+<tr><th>Kind of account</th><th>Most requests per minute, per account</th><th>Most keys, per person</th><th>Most service keys</th></tr>
+<tr><td>Personal account</td><td><input type="number" value="60" style="width:6em"></td><td><input type="number" value="5" style="width:5em"></td><td class="mut">none</td></tr>
+<tr><td>Organisation (default)</td><td><input type="number" value="600" style="width:6em"></td><td><input type="number" value="10" style="width:5em"> per member</td><td><input type="number" value="20" style="width:5em"></td></tr>
+</table></div>
+<button class="pri">Save limits</button>
+<p class="err">The most keys for a personal account must be at least 1.</p>
+<p class="mut">Requests over the limit are refused with a "too many requests" error. Lowering a key limit stops no existing key; the account just cannot create new ones until it is under the limit.</p>
+<h3>Limits for one organisation</h3>
+<div class="wrap"><table>
+<tr><th>Organisation</th><th>Requests per minute</th><th>Keys per member</th><th>Service keys</th><th></th></tr>
+<tr><td>Northwind</td><td><input type="number" value="2000" style="width:6em"></td><td><input type="number" value="10" style="width:5em"></td><td><input type="number" value="100" style="width:5em"></td><td><button>Back to default</button></td></tr>
+</table></div>
+<p class="row"><select><option>Acme</option><option>Globex</option></select> <button>Set own limits</button></p>
+</section>
+
+<section class="state"><p class="tag">State: retention</p>
+<h2>How long history is kept</h2>
+<label>Blocked and held downloads (Activity) <input type="number" value="90" style="width:6em"> days <span class="mut">default 90 days</span></label>
+<label>Audit log <input type="number" value="365" style="width:6em"> days <span class="mut">default 1 year</span></label>
+<button class="pri">Save</button>
+<p class="err">Must be at least 7 days.</p>
+<p class="mut">At least 7 days each; no maximum.</p>
+</section>
+</main>
+</body>
+</html>

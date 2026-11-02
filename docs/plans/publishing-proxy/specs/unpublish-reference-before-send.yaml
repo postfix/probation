@@ -1,0 +1,8 @@
+name: unpublish-reference-before-send
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [check_registry_reference]}}
+operation: {calls: {name: [admit_stored_destination]}}
+relation: {must_dominate: true}
+where: "caller_function == 'send_unpublish_delete'"

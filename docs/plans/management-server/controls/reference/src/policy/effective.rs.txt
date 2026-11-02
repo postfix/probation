@@ -1,0 +1,58 @@
+//! Decide one request against the compiled policy of the key that made it.
+
+use std::sync::Arc;
+
+use probation_policy::{CandidateRules, EffectivePolicy, LayerKind, OsvSetting};
+
+use super::{evaluate, BlocklistSnapshot, Candidate, Decision};
+
+/// An effective policy plus the firewall's block snapshot built from it, interned by
+/// fingerprint. Standalone holds the loaded blocklist file's snapshot, with its expiry.
+pub struct CompiledPolicy {
+    pub policy: EffectivePolicy,
+    pub snapshot: Option<Arc<BlocklistSnapshot>>,
+}
+
+/// Today's decision, plus the layer that caused it and the OSV log-only mark (C23, C81, C92).
+pub struct PolicyVerdict {
+    pub decision: Decision,
+    pub layer: Option<LayerKind>,
+    pub would_block: bool,
+}
+
+/// The arguments today's `evaluate` takes, with every check an exception lifts removed.
+struct Rules {
+    snapshot: Option<Arc<BlocklistSnapshot>>,
+    cooldown_seconds: u64,
+    osv_matched: bool,
+    would_block: bool,
+    own: CandidateRules,
+}
+
+/// Decide with the policy passed in; exceptions lift rules before the rules run.
+pub fn decide(compiled: &CompiledPolicy, candidate: &Candidate<'_>, now_utc_micros: i64, osv_matched: bool) -> PolicyVerdict {
+    let rules = apply_exceptions(compiled, candidate, osv_matched);
+    let decision = evaluate(rules.snapshot.as_deref(), now_utc_micros, rules.cooldown_seconds, candidate, rules.osv_matched);
+    attribute(candidate, decision, &rules)
+}
+
+fn apply_exceptions(compiled: &CompiledPolicy, candidate: &Candidate<'_>, osv_matched: bool) -> Rules {
+    // Per candidate: an exception at layer E lifts only rules owned at or above E (C8, C46);
+    // freeze and OSV are the C8 merge over the unlifted layers, top to bottom: a stricter value
+    // replaces the one above, a looser one only where every layer above allows it (C11).
+    let own = compiled.policy.rules_for(candidate.ecosystem, candidate.name, candidate.version);
+    Rules {
+        snapshot: compiled.snapshot.as_ref().map(|snapshot| snapshot.without(&own.lifted_blocks)),
+        cooldown_seconds: own.freeze_seconds,
+        osv_matched: osv_matched && own.osv == OsvSetting::On,
+        would_block: osv_matched && own.osv == OsvSetting::LogOnly,
+        own,
+    }
+}
+
+/// Name the layer behind a Deny or Hold from the rules that survived the lift: the highest
+/// unlifted block owner, `freeze_from`, or `osv_from` (C23, C92).
+fn attribute(candidate: &Candidate<'_>, decision: Decision, rules: &Rules) -> PolicyVerdict {
+    let layer = rules.own.layer_behind(&decision, candidate, rules.would_block);
+    PolicyVerdict { decision, layer, would_block: rules.would_block }
+}

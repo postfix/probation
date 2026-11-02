@@ -47,7 +47,8 @@ use crate::artifacts::content::{ContentError, PinnedFile};
 use crate::artifacts::stream::{ArtifactResponse, Authorized, RangeRequest};
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
-use crate::policy::{BlocklistSnapshot, Candidate, Decision, DenyReason, Digest, Ecosystem};
+use crate::managed::Principal;
+use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, Digest, Ecosystem};
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::{npm, osv, pypi};
 
@@ -58,9 +59,27 @@ pub use reference::{ArtifactReference, InvalidReferenceId};
 ///
 /// `ecosystem` is the root the request arrived under, which the route decided rather
 /// than the client.
+///
+/// `principal` names the policy in managed mode. Each request decides under its own:
+/// waiters sharing one transfer share only its verified bytes (C104).
 pub async fn serve_artifact(
     app: &Arc<App>,
+    principal: Option<&Principal>,
     ecosystem: Ecosystem,
+    id: ReferenceId,
+    filename: &str,
+    method: &Method,
+    range_header: Option<&str>,
+) -> Result<ArtifactResponse, ApiError> {
+    serve_artifact_in(app, principal, ecosystem, 0, id, filename, method, range_header).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_artifact_in(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    ecosystem: Ecosystem,
+    registry_id: u64,
     id: ReferenceId,
     filename: &str,
     method: &Method,
@@ -68,9 +87,15 @@ pub async fn serve_artifact(
 ) -> Result<ArtifactResponse, ApiError> {
     // The ordering point, read before anything else about this request. PERF-01: a
     // locally conclusive answer is reached without a single upstream call.
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    if !snapshot.is_valid_at(now) {
+    if !policy
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
 
@@ -85,7 +110,7 @@ pub async fn serve_artifact(
     // root; serving it there would log the wrong ecosystem for a decision the other
     // ecosystem's policy made. Refusing here is one comparison, and it runs before
     // anything else this request could be measured by.
-    if row.reference.ecosystem != ecosystem {
+    if row.registry_id != registry_id || row.reference.ecosystem != ecosystem {
         return Err(ApiError::NotFound);
     }
     // The filename is part of what the reference *is*; a URL that names another one
@@ -96,16 +121,19 @@ pub async fn serve_artifact(
     }
 
     let pinned = row.pinned_digests();
-    match evaluate(app, &snapshot, now, &row, &pinned).await {
+    match evaluate(app, &policy, now, &row, &pinned).await {
         Decision::Allow => {}
-        other => return Err(decision_error(other, now)),
+        other => return Err(refused(app, principal, &policy, now, &row, &pinned, other)),
     }
 
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
-    ensure_membership(app, &row).await?;
+    let origin = principal.and_then(|p| p.registry_origin.as_ref());
+    let private_cidrs = principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice());
+    let read_authorization = principal.and_then(|p| p.registry_read_authorization.as_deref());
+    ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
 
-    let (file, pinned, downloaded) = open_or_download(app, &row, pinned).await?;
+    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, origin, private_cidrs, read_authorization).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
     // exactly this: were the bytes already verified on disk, or did this request pay
     // for the transfer?
@@ -122,18 +150,24 @@ pub async fn serve_artifact(
     // working out whether the TTL lapsed mid-flight: it is one comparison stricter,
     // and a great deal simpler to be sure of.
     if downloaded {
-        ensure_membership(app, &row).await?;
+        ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
     }
 
     // The final check. SPEC §9: "A request is authorized by its final successful
     // policy check immediately before response creation."
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    let decision = evaluate(app, &snapshot, now, &row, &pinned).await;
-    let Some(auth) = Authorized::from_decision(decision, Some(snapshot.revision)) else {
+    let decision = evaluate(app, &policy, now, &row, &pinned).await;
+    let revision = policy.snapshot.as_ref().map(|snapshot| snapshot.revision);
+    let Some(auth) = Authorized::from_decision(decision, revision) else {
         // No witness, no body — and not because a caller remembered to check.
-        return Err(decision_error(decision, now));
+        return Err(refused(
+            app, principal, &policy, now, &row, &pinned, decision,
+        ));
     };
+    record_would_block(app, principal, &policy, now, &row, &pinned).await;
 
     if method == Method::HEAD {
         // SPEC §9: HEAD runs every check, including a cold verification, and returns
@@ -161,10 +195,10 @@ pub async fn serve_artifact(
 /// Every artifact request reaches this, warm ones included, so the set it asks for is
 /// parsed once per project snapshot and kept with it rather than recomputed per call
 /// (SPEC §12's warm-artifact target).
-async fn ensure_membership(app: &App, row: &ReferenceRow) -> Result<(), ApiError> {
+async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Principal>, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet], read_authorization: Option<&str>) -> Result<(), ApiError> {
     let advertised = match row.reference.ecosystem {
-        Ecosystem::Npm => npm::ensure_fresh_project(app, &row.reference.name).await?,
-        Ecosystem::PyPi => pypi::ensure_fresh_project(app, &row.reference.name).await?,
+        Ecosystem::Npm => npm::ensure_fresh_project_at(app, &row.reference.name, row.registry_id, origin, private_cidrs, read_authorization).await?,
+        Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {
@@ -182,32 +216,88 @@ async fn ensure_membership(app: &App, row: &ReferenceRow) -> Result<(), ApiError
     Err(ApiError::NotFound)
 }
 
-/// One `now`, one snapshot, and both kinds of digest knowledge: what upstream
+/// One `now`, one policy, and both kinds of digest knowledge: what upstream
 /// advertised and what we computed ourselves (SPEC §9). Routes through
 /// `osv::evaluate` (D2) rather than calling `policy::evaluate` directly, so OSV is
 /// resolved for a candidate this checkpoint would otherwise allow.
 async fn evaluate(
     app: &App,
-    snapshot: &BlocklistSnapshot,
+    policy: &CompiledPolicy,
     now: i64,
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
-    osv::evaluate(
-        &app.osv,
-        Some(snapshot),
-        now,
-        app.config.cooldown_seconds,
-        &Candidate {
-            ecosystem: row.reference.ecosystem,
-            name: &row.reference.name,
-            version: &row.reference.version,
-            publication: row.publication_time(),
-            advertised_digests: &row.reference.expected,
-            pinned_digests: pinned,
-        },
-    )
-    .await
+    osv::evaluate(&app.osv, policy, now, &candidate(row, pinned)).await
+}
+
+fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {
+    Candidate {
+        ecosystem: row.reference.ecosystem,
+        name: &row.reference.name,
+        version: &row.reference.version,
+        publication: row.publication_time(),
+        advertised_digests: &row.reference.expected,
+        pinned_digests: pinned,
+    }
+}
+
+/// The error for a refused artifact. In managed mode the refusal is also an activity
+/// row for the key's owner, naming the rule and the layer behind it (C23, C92).
+fn refused(
+    app: &App,
+    principal: Option<&Principal>,
+    policy: &CompiledPolicy,
+    now: i64,
+    row: &ReferenceRow,
+    pinned: &[Digest],
+    decision: Decision,
+) -> ApiError {
+    if let (Some(principal), Some(managed)) = (principal, app.managed()) {
+        managed.record_refused(
+            principal,
+            policy,
+            now,
+            &candidate(row, pinned),
+            decision,
+            true,
+        );
+    }
+    decision_error(decision, now)
+}
+
+/// A served artifact whose OSV setting is log-only and which OSV flags is recorded as
+/// "would have blocked" (C81). The OSV answer is the one `osv::evaluate` just cached.
+async fn record_would_block(
+    app: &App,
+    principal: Option<&Principal>,
+    policy: &CompiledPolicy,
+    now: i64,
+    row: &ReferenceRow,
+    pinned: &[Digest],
+) {
+    let (Some(principal), Some(managed)) = (principal, app.managed()) else {
+        return;
+    };
+    let candidate = candidate(row, pinned);
+    let rules = policy
+        .policy
+        .rules_for(candidate.ecosystem, candidate.name, candidate.version);
+    if rules.osv != probation_policy::OsvSetting::LogOnly
+        || !app
+            .osv
+            .check(candidate.ecosystem, candidate.name, candidate.version)
+            .await
+    {
+        return;
+    }
+    let verdict = crate::policy::decide(policy, &candidate, now, true);
+    managed.record_decision(
+        principal,
+        candidate.ecosystem,
+        candidate.name,
+        Some(candidate.version),
+        &verdict,
+    );
 }
 
 /// The reference record, from memory where possible. SPEC §9: the record is
@@ -249,6 +339,9 @@ async fn open_or_download(
     app: &Arc<App>,
     row: &ReferenceRow,
     pinned: Vec<Digest>,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<(PinnedFile, Vec<Digest>, bool), ApiError> {
     if let (Some(key), Some(size)) = (row.content_key, row.pinned_size) {
         match app.content.open_verified(&key, size).await {
@@ -276,7 +369,7 @@ async fn open_or_download(
         }
     }
 
-    let verified = download::fetch(app, row)
+    let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned))
         .await
         .map_err(|err| download_error(&err, app.clock.now_utc_micros()))?;
     // The row in hand predates the pins this download just established.

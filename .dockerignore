@@ -3,6 +3,9 @@
 # build. The Dockerfile copies only the manifests, `src/` and `benches/`; everything
 # else here is either output or analysis state.
 /target
+/.scratch
+/tmp
+/tests/e2e/node_modules
 /local
 .smtc-cache/
 .git

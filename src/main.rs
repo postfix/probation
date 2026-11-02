@@ -6,11 +6,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use probation::AppDeps;
 use probation::clock::{Clock, SystemClock};
 use probation::config::Config;
 use probation::policy::blocklist;
 use probation::upstream::{OriginSet, ReqwestTransport};
-use probation::{App, AppDeps};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
@@ -152,13 +152,18 @@ async fn serve(config_path: &Path) -> ExitCode {
         }
     };
 
-    let running = match App::start(AppDeps {
-        config,
-        clock: Arc::new(SystemClock),
-        transport: Arc::new(ReqwestTransport::production()),
-        origins: OriginSet::production(),
-        osv_client: reqwest::Client::new(),
-        osv_base_url: None,
+    // The settings overlay is merged in, and rolled back if the start fails on it (C105,
+    // C71). The origins follow whatever configuration finally starts.
+    let running = match probation::start_with_settings(config, |config| {
+        let origins = OriginSet::configured(&config);
+        AppDeps {
+            config,
+            clock: Arc::new(SystemClock),
+            transport: Arc::new(ReqwestTransport::for_origins(origins.clone())),
+            origins,
+            osv_client: reqwest::Client::new(),
+            osv_base_url: None,
+        }
     })
     .await
     {
@@ -171,17 +176,30 @@ async fn serve(config_path: &Path) -> ExitCode {
 
     tracing::info!(addr = %running.local_addr, "listening");
 
-    let signal = signals.received().await;
-    tracing::info!(signal, "shutting down");
+    // A managed firewall that wrote a settings push drains and exits 75, for its
+    // supervisor to start it again on the new settings (C105).
+    let exit = tokio::select! {
+        signal = signals.received() => {
+            tracing::info!(signal, "shutting down");
+            ExitCode::SUCCESS
+        }
+        () = running.restart_requested() => {
+            tracing::info!("restarting to apply pushed settings");
+            ExitCode::from(RESTART_FOR_SETTINGS)
+        }
+    };
 
     match running.shutdown().await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => exit,
         Err(err) => {
             tracing::error!(error = %err, "unclean shutdown");
             ExitCode::FAILURE
         }
     }
 }
+
+/// The exit code that asks the supervisor for a restart after a settings push: EX_TEMPFAIL.
+const RESTART_FOR_SETTINGS: u8 = 75;
 
 /// `SIGTERM` is what a service manager sends — systemd's `stop` and a container
 /// runtime's `stop` both do — so it must reach the same graceful path as `SIGINT`.

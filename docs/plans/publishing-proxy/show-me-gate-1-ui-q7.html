@@ -1,0 +1,87 @@
+<div id="registry-review-q7">
+  <style>
+    #registry-review-q7 { color: var(--foreground); font: 400 14px/1.45 system-ui, sans-serif; max-width: 100%; }
+    #registry-review-q7 * { box-sizing: border-box; }
+    #registry-review-q7 h2 { font-size: 18px; font-weight: 500; margin: 18px 0 7px; }
+    #registry-review-q7 p { margin: 6px 0; }
+    #registry-review-q7 .review-flow { margin: 8px 0 16px; padding-left: 18px; }
+    #registry-review-q7 .review-flow li { margin: 4px 0; }
+    #registry-review-q7 .review-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+    #registry-review-q7 .review-tabs button { font: inherit; border: 1px solid var(--border); background: var(--card); color: var(--card-foreground); border-radius: 6px; padding: 8px 12px; min-height: 40px; }
+    #registry-review-q7 .review-tabs button[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    #registry-review-q7 button:focus-visible, #registry-review-q7 input:focus-visible, #registry-review-q7 select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    #registry-review-q7 .mock { --p-text: light-dark(#172332,#edf3f8); --p-bg: light-dark(#f5f7fa,#111d29); --p-header: light-dark(#153450,#0b263c); --p-card: light-dark(#fff,#1b2c3b); --p-border: light-dark(#d6dfe7,#496071); --p-muted: light-dark(#526474,#bdcbd7); --p-button: light-dark(#165b8e,#4c9bd1); --p-button-text: light-dark(#fff,#0b1c2a); --p-danger: light-dark(#ad2b32,#e06b70); --p-error: light-dark(#fff0f0,#3a1d21); color-scheme: light dark; color: var(--p-text); background: var(--p-bg); border: 1px solid var(--p-border); border-radius: 10px; overflow: hidden; }
+    #registry-review-q7 .mock header { background: var(--p-header); color: #fff; padding: 14px 24px; }
+    #registry-review-q7 .mock main { max-width: 920px; margin: 24px auto; padding: 0 20px; }
+    #registry-review-q7 .mock h1 { font-size: 24px; font-weight: 500; margin: 0 0 12px; }
+    #registry-review-q7 .mock h2 { font-size: 18px; font-weight: 500; margin: 0 0 10px; }
+    #registry-review-q7 .mock .muted { color: var(--p-muted); }
+    #registry-review-q7 .mock .card { background: var(--p-card); border: 1px solid var(--p-border); border-radius: 12px; padding: 20px; margin: 16px 0; }
+    #registry-review-q7 .mock table { width: 100%; border-collapse: collapse; }
+    #registry-review-q7 .mock th, #registry-review-q7 .mock td { padding: 10px; text-align: left; border-bottom: 1px solid var(--p-border); }
+    #registry-review-q7 .mock label { display: block; font-weight: 500; margin: 12px 0 5px; }
+    #registry-review-q7 .mock input:not([type="checkbox"]), #registry-review-q7 .mock select { width: 100%; padding: 9px; font: inherit; color: var(--p-text); background: var(--p-card); border: 1px solid var(--p-border); }
+    #registry-review-q7 .mock input[type="checkbox"] { margin-right: 6px; }
+    #registry-review-q7 .mock button { border: 0; border-radius: 7px; background: var(--p-button); color: var(--p-button-text); padding: 9px 14px; font: inherit; }
+    #registry-review-q7 .mock button.danger { background: var(--p-danger); color: #fff; }
+    #registry-review-q7 .mock .error { background: var(--p-error); border: 1px solid var(--p-danger); padding: 12px; }
+    #registry-review-q7 .mock .table-wrap { overflow-x: auto; }
+    #registry-review-q7 .review-meta { color: var(--muted-foreground); font-size: 12px; }
+    #registry-review-q7 .decision { font-weight: 500; margin-top: 16px; }
+    @media (max-width: 520px) { #registry-review-q7 .mock header { padding: 12px 16px; } #registry-review-q7 .mock main { margin: 16px auto; padding: 0 14px; } #registry-review-q7 .mock .card { padding: 14px; } #registry-review-q7 .mock th, #registry-review-q7 .mock td { padding: 7px; font-size: 12px; } }
+  </style>
+  <h2>What problem do we have?</h2>
+  <p>Company admins need to configure several npm and Python registries, including private ones. Projects must select the intended registry; private downloads need a shared read-only connection, and the admin decides whether new releases wait under policy or install immediately.</p>
+  <h2>How will we solve it?</h2>
+  <ul class="review-flow">
+    <li>Add a registry → name, ecosystem, address, optional read-only download credential, and explicit trust choice.</li>
+    <li>Review configured registries → see package ecosystem and new release rule.</li>
+    <li>Handle a failed connection → correct the address or download connection and try again; no registry was added.</li>
+    <li>Remove a registry → warn that projects lose access until they select another; no silent fallback.</li>
+  </ul>
+  <div class="review-tabs" role="tablist" aria-label="Registry admin mockup states">
+    <button type="button" role="tab" id="q7-tab-configured" aria-controls="q7-configured" aria-selected="true">Configured</button>
+    <button type="button" role="tab" id="q7-tab-empty" aria-controls="q7-empty" aria-selected="false">Empty</button>
+    <button type="button" role="tab" id="q7-tab-error" aria-controls="q7-error" aria-selected="false">Connection error</button>
+    <button type="button" role="tab" id="q7-tab-remove" aria-controls="q7-remove" aria-selected="false">Remove</button>
+  </div>
+  <section id="q7-configured" role="tabpanel" aria-labelledby="q7-tab-configured" class="mock">
+    <header>Probation · Organisation settings</header><main><h1>Package registries</h1><p class="muted">Choose one registry per project. Probation never substitutes another registry when a package name overlaps.</p>
+    <section class="card"><h2>Configured registries</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Packages</th><th>New release rule</th><th></th></tr></thead><tbody>
+    <tr><td>Public npm</td><td>npm</td><td>Wait under policy</td><td>View</td></tr>
+    <tr><td>Company npm</td><td>npm</td><td>Trusted: available immediately</td><td>Edit · Remove</td></tr>
+    <tr><td>Company Python</td><td>Python</td><td>Trusted: available immediately</td><td>Edit · Remove</td></tr>
+    </tbody></table></div></section>
+    <section class="card"><h2>Add a registry</h2><label for="q7-name">Name</label><input id="q7-name" value="Team packages"><label for="q7-kind">Package ecosystem</label><select id="q7-kind"><option>npm</option><option>Python</option></select><label for="q7-address">Registry address</label><input id="q7-address" value="https://packages.company.example/"><label for="q7-read">Read-only download credential, if required</label><input id="q7-read" type="password" placeholder="Enter once"><p><label><input type="checkbox"> Trust new releases from this registry for immediate installation</label></p><button type="button">Add registry</button></section>
+    </main>
+  </section>
+  <section id="q7-empty" role="tabpanel" aria-labelledby="q7-tab-empty" class="mock" hidden>
+    <header>Probation · Organisation settings</header><main><h1>Package registries</h1><section class="card"><h2>No company registries yet</h2><p>Public npm and PyPI remain available. Add a company registry to let projects select it for installs and publishing.</p><button type="button">Add a registry</button></section></main>
+  </section>
+  <section id="q7-error" role="tabpanel" aria-labelledby="q7-tab-error" class="mock" hidden>
+    <header>Probation · Organisation settings</header><main><h1>Add a registry</h1><div class="error" role="alert">Probation could not reach this registry. Check its address and download connection, then try again. No registry was added.</div><section class="card"><label for="q7-error-name">Name</label><input id="q7-error-name" value="Team packages"><label for="q7-error-address">Registry address</label><input id="q7-error-address" value="https://packages.company.example/"><label for="q7-error-read">Read-only download credential</label><input id="q7-error-read" type="password" placeholder="Re-enter credential"><p><button type="button">Try again</button></p></section></main>
+  </section>
+  <section id="q7-remove" role="tabpanel" aria-labelledby="q7-tab-remove" class="mock" hidden>
+    <header>Probation · Organisation settings</header><main><h1>Remove Company npm?</h1><section class="card"><p>Projects using this registry will lose access until they select another one. Probation will not fall back to a registry that happens to contain the same package name.</p><button class="danger" type="button">Remove registry</button> <button type="button">Cancel</button></section></main>
+  </section>
+  <h2>How will we confirm it is solved?</h2>
+  <p>Admin reviews all four mockup states → accepts or corrects how adding, trust, troubleshooting, and removal should work → Gate 1 product UI clarification is settled. These are proposed screens; no behavior has been implemented or tested.</p>
+  <p>Recommendation: Review and settle the four states before Gate 1 approval, because they carry the registry management choices in the product brief.</p>
+  <p>Limits: Disposable mockups; controls are illustrative. render: not inspected.</p>
+  <p class="review-meta">Status: Gate 1 UI clarification Q7; this is not Gate 1 approval.</p>
+  <p class="review-meta">Sources: 01-product.md; mockups/registries.html; mockups/registries-empty.html; mockups/registries-error.html; mockups/registries-remove.html; mockups/style.css.</p>
+  <p class="decision">Does this registry admin screen match how company admins should add, trust, troubleshoot, and remove registries? Reply "agree" to accept it, or state what should change.</p>
+  <script>
+    (() => {
+      const root = document.getElementById('registry-review-q7');
+      const tabs = [...root.querySelectorAll('[role="tab"]')];
+      tabs.forEach(tab => tab.addEventListener('click', () => {
+        tabs.forEach(item => {
+          const selected = item === tab;
+          item.setAttribute('aria-selected', String(selected));
+          root.querySelector('#' + item.getAttribute('aria-controls')).hidden = !selected;
+        });
+      }));
+    })();
+  </script>
+</div>

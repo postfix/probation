@@ -12,8 +12,10 @@
 //! one.
 
 pub mod cache;
+pub mod action_leases;
 pub mod lock;
 pub mod rows;
+pub mod registry_state;
 pub mod schema;
 pub mod startup;
 
@@ -52,26 +54,26 @@ const SELECT_BLOCKLIST: &str =
 
 const SELECT_PROJECT: &str = "SELECT ecosystem, name, payload, etag, last_modified, \
      validated_at_micros, fetched_at_micros, generation, digest_generation \
-     FROM projects WHERE ecosystem = ?1 AND name = ?2";
+     FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3";
 
 /// SPEC §7's known-project index: the projects *this instance* has fetched, in a
 /// stable order so two renderings of one index are byte-identical.
-const SELECT_KNOWN_PROJECTS: &str = "SELECT name FROM projects WHERE ecosystem = ?1 ORDER BY name";
+const SELECT_KNOWN_PROJECTS: &str = "SELECT name FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 ORDER BY name";
 
 const SELECT_PROJECT_GENERATIONS: &str =
-    "SELECT generation, digest_generation FROM projects WHERE ecosystem = ?1 AND name = ?2";
+    "SELECT generation, digest_generation FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3";
 
 /// The only statement that writes `fetched_at_micros`. It is a full-row upsert, so
 /// the value has to be threaded through the caller's per-branch choice of payload
 /// and validators: a `304` supplies the stored value, a `200` supplies `now`.
 const REPLACE_PROJECT: &str = "INSERT OR REPLACE INTO projects \
-     (ecosystem, name, payload, etag, last_modified, validated_at_micros, \
+     (registry_id, ecosystem, name, payload, etag, last_modified, validated_at_micros, \
       fetched_at_micros, generation, digest_generation) \
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
 const SELECT_REFERENCE: &str = "SELECT id, ecosystem, name, version, filename, upstream_url, \
      expected, publication_micros, first_seen_micros, pinned_sha256, pinned_sha512, pinned_size, \
-     content_key FROM artifact_references WHERE id = ?1";
+     content_key, registry_id FROM artifact_references WHERE id = ?1";
 
 /// Everything a refresh must carry forward rather than overwrite: the committed
 /// first-seen time (SPEC §5) and the permanent pins and content mapping (STATE-01).
@@ -79,18 +81,18 @@ const SELECT_REFERENCE_CARRIED: &str = "SELECT first_seen_micros, pinned_sha256,
      pinned_size, content_key FROM artifact_references WHERE id = ?1";
 
 const SELECT_PROJECT_FIRST_SEEN: &str = "SELECT id, first_seen_micros FROM artifact_references \
-     WHERE ecosystem = ?1 AND name = ?2 AND first_seen_micros IS NOT NULL";
+     WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3 AND first_seen_micros IS NOT NULL";
 
 const REPLACE_REFERENCE: &str = "INSERT OR REPLACE INTO artifact_references \
-     (id, ecosystem, name, version, filename, upstream_url, expected, publication_micros, \
+     (id, registry_id, ecosystem, name, version, filename, upstream_url, expected, publication_micros, \
       first_seen_micros, pinned_sha256, pinned_sha512, pinned_size, content_key) \
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)";
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)";
 
 /// Every pin this instance holds for one project, for the metadata path: a block on
 /// a digest we computed ourselves has to deny the version in the listing too
 /// (SPEC §9), and a listing must not ask per version.
 const SELECT_PROJECT_PINS: &str = "SELECT id, pinned_sha256, pinned_sha512 FROM \
-     artifact_references WHERE ecosystem = ?1 AND name = ?2 AND pinned_sha256 IS NOT NULL";
+     artifact_references WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3 AND pinned_sha256 IS NOT NULL";
 
 const SELECT_REFERENCE_PINS: &str =
     "SELECT pinned_sha256, pinned_sha512, pinned_size FROM artifact_references WHERE id = ?1";
@@ -128,7 +130,7 @@ const TOUCH_CONTENT: &str = "UPDATE content SET accessed_micros = ?2 WHERE key =
 /// SPEC §9: a computed digest that reveals what upstream metadata never advertised
 /// invalidates every response rendered from that project.
 const BUMP_DIGEST_GENERATION: &str = "UPDATE projects \
-     SET digest_generation = digest_generation + 1 WHERE ecosystem = ?1 AND name = ?2";
+     SET digest_generation = digest_generation + 1 WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3";
 
 /// How old one project's snapshot may become since its last FULL fetch, in
 /// microseconds, or `None` when the ceiling is disabled (SPEC rev 3 §10).
@@ -225,6 +227,11 @@ enum Channels {
 }
 
 enum StoreCommand {
+    CommitActionLeases { registry_id: u64, member_id: u32, package: String, leases: Vec<action_leases::ActionLease>, now: i64, reply: oneshot::Sender<StoreResult<()>> },
+    GetActionLease { registry_id: u64, member_id: u32, id: ReferenceId, now: i64, reply: oneshot::Sender<StoreResult<Option<action_leases::ActionLease>>> },
+    ListActionLeases { registry_id: u64, member_id: u32, package: String, now: i64, reply: oneshot::Sender<StoreResult<Vec<action_leases::ActionLease>>> },
+    MarkRemovedLeases { registry_id: u64, member_id: u32, removed: Vec<ReferenceId>, revision: String, reply: oneshot::Sender<StoreResult<()>> },
+    ConsumeActionMarker { registry_id: u64, member_id: u32, id: ReferenceId, revision: String, now: i64, reply: oneshot::Sender<StoreResult<bool>> },
     /// The whole accepted snapshot in one transaction, before it is published.
     CommitBlocklist {
         snapshot: Arc<BlocklistSnapshot>,
@@ -234,6 +241,7 @@ enum StoreCommand {
         reply: oneshot::Sender<StoreResult<Option<BlocklistRow>>>,
     },
     GetProject {
+        registry_id: u64,
         ecosystem: Ecosystem,
         name: String,
         reply: oneshot::Sender<StoreResult<Option<ProjectRow>>>,
@@ -241,6 +249,7 @@ enum StoreCommand {
     /// Snapshot, reference upserts and new first-seen values in ONE transaction
     /// (SPEC §10, finding REL-01), before the new generation is published.
     CommitProjectRefresh {
+        registry_id: u64,
         refresh: Box<ProjectRefresh>,
         reply: oneshot::Sender<StoreResult<CommittedProject>>,
     },
@@ -249,15 +258,18 @@ enum StoreCommand {
         reply: oneshot::Sender<StoreResult<Option<ReferenceRow>>>,
     },
     ListProjectFirstSeen {
+        registry_id: u64,
         ecosystem: Ecosystem,
         name: String,
         reply: oneshot::Sender<StoreResult<HashMap<ReferenceId, i64>>>,
     },
     ListKnownProjects {
+        registry_id: u64,
         ecosystem: Ecosystem,
         reply: oneshot::Sender<StoreResult<Vec<String>>>,
     },
     ListProjectPins {
+        registry_id: u64,
         ecosystem: Ecosystem,
         name: String,
         reply: oneshot::Sender<StoreResult<HashMap<ReferenceId, Vec<Digest>>>>,
@@ -287,6 +299,7 @@ enum StoreCommand {
         reply: oneshot::Sender<StoreResult<()>>,
     },
     BumpDigestGeneration {
+        registry_id: u64,
         ecosystem: Ecosystem,
         name: String,
         reply: oneshot::Sender<StoreResult<()>>,
@@ -309,6 +322,25 @@ enum StoreCommand {
 }
 
 impl StoreHandle {
+    pub async fn commit_action_leases(&self, registry_id: u64, member_id: u32, package: &str, leases: Vec<action_leases::ActionLease>, now: i64) -> StoreResult<()> {
+        self.critical(|reply| StoreCommand::CommitActionLeases { registry_id, member_id, package: package.to_owned(), leases, now, reply }).await
+    }
+
+    pub async fn get_action_lease(&self, registry_id: u64, member_id: u32, id: ReferenceId, now: i64) -> StoreResult<Option<action_leases::ActionLease>> {
+        self.critical(|reply| StoreCommand::GetActionLease { registry_id, member_id, id, now, reply }).await
+    }
+
+    pub async fn list_action_leases(&self, registry_id: u64, member_id: u32, package: &str, now: i64) -> StoreResult<Vec<action_leases::ActionLease>> {
+        self.critical(|reply| StoreCommand::ListActionLeases { registry_id, member_id, package: package.to_owned(), now, reply }).await
+    }
+
+    pub async fn mark_removed_leases(&self, registry_id: u64, member_id: u32, removed: Vec<ReferenceId>, revision: String) -> StoreResult<()> {
+        self.critical(|reply| StoreCommand::MarkRemovedLeases { registry_id, member_id, removed, revision, reply }).await
+    }
+
+    pub async fn consume_action_marker(&self, registry_id: u64, member_id: u32, id: ReferenceId, revision: String, now: i64) -> StoreResult<bool> {
+        self.critical(|reply| StoreCommand::ConsumeActionMarker { registry_id, member_id, id, revision, now, reply }).await
+    }
     /// A handle whose database never opened. Named rather than defaulted so a
     /// caller cannot produce one by accident.
     pub fn unusable(
@@ -346,8 +378,18 @@ impl StoreHandle {
         ecosystem: Ecosystem,
         name: &str,
     ) -> StoreResult<Option<ProjectRow>> {
+        self.get_project_in(0, ecosystem, name).await
+    }
+
+    pub async fn get_project_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<Option<ProjectRow>> {
         let name = name.to_owned();
         self.critical(|reply| StoreCommand::GetProject {
+            registry_id,
             ecosystem,
             name,
             reply,
@@ -363,8 +405,16 @@ impl StoreHandle {
         &self,
         refresh: ProjectRefresh,
     ) -> StoreResult<CommittedProject> {
+        self.commit_project_refresh_in(0, refresh).await
+    }
+
+    pub async fn commit_project_refresh_in(
+        &self,
+        registry_id: u64,
+        refresh: ProjectRefresh,
+    ) -> StoreResult<CommittedProject> {
         let refresh = Box::new(refresh);
-        self.critical(|reply| StoreCommand::CommitProjectRefresh { refresh, reply })
+        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, reply })
             .await
     }
 
@@ -381,8 +431,18 @@ impl StoreHandle {
         ecosystem: Ecosystem,
         name: &str,
     ) -> StoreResult<HashMap<ReferenceId, i64>> {
+        self.list_project_first_seen_in(0, ecosystem, name).await
+    }
+
+    pub async fn list_project_first_seen_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<HashMap<ReferenceId, i64>> {
         let name = name.to_owned();
         self.critical(|reply| StoreCommand::ListProjectFirstSeen {
+            registry_id,
             ecosystem,
             name,
             reply,
@@ -400,8 +460,18 @@ impl StoreHandle {
         ecosystem: Ecosystem,
         name: &str,
     ) -> StoreResult<HashMap<ReferenceId, Vec<Digest>>> {
+        self.list_project_pins_in(0, ecosystem, name).await
+    }
+
+    pub async fn list_project_pins_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<HashMap<ReferenceId, Vec<Digest>>> {
         let name = name.to_owned();
         self.critical(|reply| StoreCommand::ListProjectPins {
+            registry_id,
             ecosystem,
             name,
             reply,
@@ -412,7 +482,11 @@ impl StoreHandle {
     /// Every project this instance has fetched, in name order. SPEC §7 serves this
     /// as PyPI's index and is explicit that it is not a mirror of the upstream one.
     pub async fn list_known_projects(&self, ecosystem: Ecosystem) -> StoreResult<Vec<String>> {
-        self.critical(|reply| StoreCommand::ListKnownProjects { ecosystem, reply })
+        self.list_known_projects_in(0, ecosystem).await
+    }
+
+    pub async fn list_known_projects_in(&self, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<Vec<String>> {
+        self.critical(|reply| StoreCommand::ListKnownProjects { registry_id, ecosystem, reply })
             .await
     }
 
@@ -498,8 +572,18 @@ impl StoreHandle {
         ecosystem: Ecosystem,
         name: &str,
     ) -> StoreResult<()> {
+        self.bump_digest_generation_in(0, ecosystem, name).await
+    }
+
+    pub async fn bump_digest_generation_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<()> {
         let name = name.to_owned();
         self.critical(|reply| StoreCommand::BumpDigestGeneration {
+            registry_id,
             ecosystem,
             name,
             reply,
@@ -704,6 +788,11 @@ async fn run(
 /// caller hears the answer.
 async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &AtomicBool) {
     match command {
+        StoreCommand::CommitActionLeases { registry_id, member_id, package, leases, now, reply } => answer(healthy, WRITE, reply, action_leases::commit(connection, registry_id, member_id, &package, &leases, now).await),
+        StoreCommand::GetActionLease { registry_id, member_id, id, now, reply } => answer(healthy, READ, reply, action_leases::get(connection, registry_id, member_id, id, now).await),
+        StoreCommand::ListActionLeases { registry_id, member_id, package, now, reply } => answer(healthy, READ, reply, action_leases::list_package(connection, registry_id, member_id, &package, now).await),
+        StoreCommand::MarkRemovedLeases { registry_id, member_id, removed, revision, reply } => answer(healthy, WRITE, reply, action_leases::mark_removed(connection, registry_id, member_id, &removed, &revision).await),
+        StoreCommand::ConsumeActionMarker { registry_id, member_id, id, revision, now, reply } => answer(healthy, WRITE, reply, action_leases::consume_marker(connection, registry_id, member_id, id, &revision, now).await),
         StoreCommand::CommitBlocklist { snapshot, reply } => {
             let result = commit_blocklist(connection, &snapshot).await;
             answer(healthy, WRITE, reply, result);
@@ -712,38 +801,41 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             answer(healthy, READ, reply, load_blocklist(connection).await);
         }
         StoreCommand::GetProject {
+            registry_id,
             ecosystem,
             name,
             reply,
         } => {
-            let result = get_project(connection, ecosystem, &name).await;
+            let result = get_project(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::CommitProjectRefresh { refresh, reply } => {
-            let result = commit_project_refresh(connection, &refresh).await;
+        StoreCommand::CommitProjectRefresh { registry_id, refresh, reply } => {
+            let result = commit_project_refresh(connection, registry_id, &refresh).await;
             answer(healthy, WRITE, reply, result);
         }
         StoreCommand::GetReference { id, reply } => {
             answer(healthy, READ, reply, get_reference(connection, id).await);
         }
         StoreCommand::ListProjectFirstSeen {
+            registry_id,
             ecosystem,
             name,
             reply,
         } => {
-            let result = list_project_first_seen(connection, ecosystem, &name).await;
+            let result = list_project_first_seen(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::ListKnownProjects { ecosystem, reply } => {
-            let result = list_known_projects(connection, ecosystem).await;
+        StoreCommand::ListKnownProjects { registry_id, ecosystem, reply } => {
+            let result = list_known_projects(connection, registry_id, ecosystem).await;
             answer(healthy, READ, reply, result);
         }
         StoreCommand::ListProjectPins {
+            registry_id,
             ecosystem,
             name,
             reply,
         } => {
-            let result = list_project_pins(connection, ecosystem, &name).await;
+            let result = list_project_pins(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
         StoreCommand::PinComputedDigests {
@@ -774,11 +866,12 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             answer(healthy, WRITE, reply, result);
         }
         StoreCommand::BumpDigestGeneration {
+            registry_id,
             ecosystem,
             name,
             reply,
         } => {
-            let result = bump_digest_generation(connection, ecosystem, &name).await;
+            let result = bump_digest_generation(connection, registry_id, ecosystem, &name).await;
             answer(healthy, WRITE, reply, result);
         }
         StoreCommand::TouchContent { keys } => {
@@ -830,11 +923,12 @@ fn record<T>(healthy: &AtomicBool, wrote: bool, result: &StoreResult<T>) {
 
 async fn get_project(
     connection: &mut Connection,
+    registry_id: u64,
     ecosystem: Ecosystem,
     name: &str,
 ) -> StoreResult<Option<ProjectRow>> {
     let mut rows = connection
-        .query(SELECT_PROJECT, (ecosystem.as_tag(), name))
+        .query(SELECT_PROJECT, (registry_id as i64, ecosystem.as_tag(), name))
         .await?;
     match rows.next().await? {
         Some(row) => ProjectRow::from_row(&row).map(Some),
@@ -857,11 +951,12 @@ async fn get_reference(
 
 async fn list_project_first_seen(
     connection: &mut Connection,
+    registry_id: u64,
     ecosystem: Ecosystem,
     name: &str,
 ) -> StoreResult<HashMap<ReferenceId, i64>> {
     let mut rows = connection
-        .query(SELECT_PROJECT_FIRST_SEEN, (ecosystem.as_tag(), name))
+        .query(SELECT_PROJECT_FIRST_SEEN, (registry_id as i64, ecosystem.as_tag(), name))
         .await?;
     let mut first_seen = HashMap::new();
     while let Some(row) = rows.next().await? {
@@ -874,11 +969,12 @@ async fn list_project_first_seen(
 
 async fn list_project_pins(
     connection: &mut Connection,
+    registry_id: u64,
     ecosystem: Ecosystem,
     name: &str,
 ) -> StoreResult<HashMap<ReferenceId, Vec<Digest>>> {
     let mut rows = connection
-        .query(SELECT_PROJECT_PINS, (ecosystem.as_tag(), name))
+        .query(SELECT_PROJECT_PINS, (registry_id as i64, ecosystem.as_tag(), name))
         .await?;
     let mut pins = HashMap::new();
     while let Some(row) = rows.next().await? {
@@ -900,10 +996,11 @@ async fn list_project_pins(
 
 async fn list_known_projects(
     connection: &mut Connection,
+    registry_id: u64,
     ecosystem: Ecosystem,
 ) -> StoreResult<Vec<String>> {
     let mut rows = connection
-        .query(SELECT_KNOWN_PROJECTS, (ecosystem.as_tag(),))
+        .query(SELECT_KNOWN_PROJECTS, (registry_id as i64, ecosystem.as_tag()))
         .await?;
     let mut names = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -959,22 +1056,24 @@ pub struct CommittedProject {
 /// error: a generation read as zero would hand out a generation already used.
 async fn commit_project_refresh(
     connection: &mut Connection,
+    registry_id: u64,
     refresh: &ProjectRefresh,
 ) -> StoreResult<CommittedProject> {
     let transaction = connection.transaction().await?;
-    let result = refresh_in(&transaction, refresh).await;
+    let result = refresh_in(&transaction, registry_id, refresh).await;
     settle(transaction, result).await
 }
 
 async fn refresh_in(
     transaction: &Transaction<'_>,
+    registry_id: u64,
     refresh: &ProjectRefresh,
 ) -> StoreResult<CommittedProject> {
     let (generation, digest_generation) = {
         let mut rows = transaction
             .query(
                 SELECT_PROJECT_GENERATIONS,
-                (refresh.ecosystem.as_tag(), refresh.name.as_str()),
+                (registry_id as i64, refresh.ecosystem.as_tag(), refresh.name.as_str()),
             )
             .await?;
         match rows.next().await? {
@@ -996,6 +1095,7 @@ async fn refresh_in(
         .execute(
             REPLACE_PROJECT,
             (
+                registry_id as i64,
                 refresh.ecosystem.as_tag(),
                 refresh.name.as_str(),
                 refresh.payload.to_vec(),
@@ -1017,6 +1117,7 @@ async fn refresh_in(
                 REPLACE_REFERENCE,
                 (
                     upsert.id.as_bytes().to_vec(),
+                    registry_id as i64,
                     upsert.reference.ecosystem.as_tag(),
                     upsert.reference.name.as_str(),
                     upsert.reference.version.as_str(),
@@ -1208,11 +1309,12 @@ async fn clear_content_key(connection: &mut Connection, key: ContentKey) -> Stor
 
 async fn bump_digest_generation(
     connection: &mut Connection,
+    registry_id: u64,
     ecosystem: Ecosystem,
     name: &str,
 ) -> StoreResult<()> {
     connection
-        .execute(BUMP_DIGEST_GENERATION, (ecosystem.as_tag(), name))
+        .execute(BUMP_DIGEST_GENERATION, (registry_id as i64, ecosystem.as_tag(), name))
         .await?;
     Ok(())
 }

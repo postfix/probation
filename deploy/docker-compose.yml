@@ -1,0 +1,49 @@
+# Example deployment (docs/management-server.md): the management server and one managed
+# firewall. Copy it and edit it; the tests do not use it. Postgres is yours, reached
+# through PROBATION_SERVER_DATABASE_URL. Publish both ports only to your TLS reverse
+# proxy: the server speaks plain HTTP, and a firewall only syncs with an https server.
+services:
+  server:
+    # docker build -f crates/probation-server/Dockerfile -t probation-server .
+    image: probation-server:latest
+    # PROBATION_SERVER_DATABASE_URL, PROBATION_SERVER_SECRET_KEY, and the provider and
+    # SMTP secrets your server.toml needs (docs/management-server.md).
+    env_file: server.env
+    volumes:
+      - ./server.toml:/etc/probation-server/config.toml:ro
+    ports:
+      - "127.0.0.1:8090:8080"
+    restart: unless-stopped
+    # The image has no curl: the binary asks its own /health/ready (Postgres answers).
+    healthcheck:
+      test: ["CMD", "probation-server", "health"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
+    # Longer than the 20 s the server gives requests in flight and job runs.
+    stop_grace_period: 30s
+
+  firewall:
+    # docker build -t probation .
+    image: probation:latest
+    volumes:
+      # config.sample.toml with its [management] section filled in, and with
+      # listen = "0.0.0.0:8080": the sample's 127.0.0.1 is unreachable from outside
+      # the container.
+      - ./config.toml:/etc/probation/config.toml:ro
+      # Readable by the image's `firewall` user (for example mode 0644, or owned by
+      # its uid), or the firewall cannot start.
+      - ./firewall.token:/etc/probation/firewall.token:ro
+      - firewall-data:/var/lib/probation
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Required. A settings push from the fleet page is written under the data volume,
+    # and the firewall exits with code 75 for this policy to restart it onto the new
+    # settings (C105). Without a restart policy it stays stopped.
+    restart: unless-stopped
+    # Longer than the 30 s the firewall gives requests in flight, so its log drain runs.
+    stop_grace_period: 45s
+
+volumes:
+  firewall-data:

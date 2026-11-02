@@ -25,6 +25,10 @@ pub const RESPONSE_LIFETIME: Duration = Duration::from_secs(15 * 60);
 
 pub struct Limits {
     downloads: Arc<Semaphore>,
+    /// One place per request waiting for a download permit (`max_download_waiters`).
+    download_waiters: Arc<Semaphore>,
+    max_download_waiters: usize,
+    download_wait: Duration,
     active: Arc<Semaphore>,
     active_permits: usize,
     write_idle_millis: AtomicU64,
@@ -36,6 +40,9 @@ impl Limits {
         let active_permits = config.max_active_requests.get() as usize;
         Limits {
             downloads: Arc::new(Semaphore::new(config.max_artifact_downloads.get() as usize)),
+            download_waiters: Arc::new(Semaphore::new(config.max_download_waiters as usize)),
+            max_download_waiters: config.max_download_waiters as usize,
+            download_wait: Duration::from_secs(config.download_wait_seconds),
             active: Arc::new(Semaphore::new(active_permits)),
             active_permits,
             write_idle_millis: AtomicU64::new(WRITE_IDLE.as_millis() as u64),
@@ -66,14 +73,34 @@ impl Limits {
 
     /// SPEC §9: "Bound active downloads globally." Taken once per upstream transfer,
     /// by whichever request starts it; concurrent requests for the same reference
-    /// share that one transfer and therefore that one permit. `None` is overload and
-    /// is refused rather than queued, for the same reason as above.
-    pub fn download_permit(&self) -> Option<OwnedSemaphorePermit> {
-        Arc::clone(&self.downloads).try_acquire_owned().ok()
+    /// share that one transfer and therefore that one permit.
+    ///
+    /// With none free, the request waits for one in one of `max_download_waiters`
+    /// places, first come first served, for at most `download_wait_seconds` (decision
+    /// 2026-10-23: npm opens more connections than the default permits). `None`, a
+    /// `503`, when every place is taken or the wait runs out: the queue and the wait
+    /// are both bounded. Dropping the future gives its place back.
+    pub async fn download_permit(&self) -> Option<OwnedSemaphorePermit> {
+        if let Ok(permit) = Arc::clone(&self.downloads).try_acquire_owned() {
+            return Some(permit);
+        }
+        let _place = Arc::clone(&self.download_waiters)
+            .try_acquire_owned()
+            .ok()?;
+        let waited = Arc::clone(&self.downloads).acquire_owned();
+        tokio::time::timeout(self.download_wait, waited)
+            .await
+            .ok()?
+            .ok()
     }
 
     pub fn download_available(&self) -> usize {
         self.downloads.available_permits()
+    }
+
+    /// How many requests are waiting for a download permit now.
+    pub fn download_waiting(&self) -> usize {
+        self.max_download_waiters - self.download_waiters.available_permits()
     }
 
     pub fn write_idle(&self) -> Duration {

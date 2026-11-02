@@ -1,0 +1,9 @@
+# Dispatcher call order only. Types and runtime tests must prove access provenance and password freshness.
+name: install-auth-before-send
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [admit_install]}}
+operation: {calls: {name: [serve_package_read]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'dispatch_registry_request'"

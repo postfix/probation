@@ -1,0 +1,9 @@
+# Rust ordered-call property only. Tests check origin/value and credential flow.
+name: action-origin-before-send
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [admit_selected_origin]}}
+operation: {calls: {name: [send_action]}}
+relation: {must_dominate: true}
+where: "caller_function == 'forward_registry_action'"

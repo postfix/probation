@@ -1,0 +1,33 @@
+# Slice 2 evidence: enterprise certificates and registry isolation
+
+## Deferred invariant disposition
+
+- KEEP: `live-status-before-grant` implements the approved Slice 2 disposition in `03-program-design.md`. The existing structural spec reports no finding on the implementation and its saved safe control, and the saved unsafe cached-status control produces the expected finding. This establishes guard order only; issuer, serial, nonce, revocation and outage outcomes require the runtime witness and source review.
+- KEEP: `registry-identity-before-state-use` implements the approved Slice 2 disposition in `03-program-design.md`. The existing structural spec reports no finding on the implementation and its saved safe control, and the saved unsafe unchecked-state control produces the expected finding. This establishes guard order only; exact keys, old references, migration and restart require the runtime witness and source review.
+
+## Direct witness
+
+`test -f tests/e2e/scenarios/publishing-enterprise-registry.mjs && node tests/e2e/harness/run.mjs --only E2E-publishing-enterprise-registry` selected one scenario and passed it: 1 passed, 0 failed, 0 not run. The final run rebuilt the server and firewall images after the post-OCSP authorization and lock-order fix, then ran with the isolated test stack; scenario time was 80.2 seconds. The stack was removed after the run. The scenario covers the two organization roots, issuer-signed nonce-bound good/revoked status and refusal modes, private destination approval and redirects, same-name registry isolation through restart and remove/re-add, root removal on a reused TLS connection, prior database upgrade, and held issuer responses while settings, sample membership, administrator role, or session change. The old server image failed the new administrator-demotion assertion; the rebuilt image passed it and the session-revocation assertion. All red/green controls are recorded in `tdd-slice-2.md`.
+
+`cargo test --workspace --no-fail-fast -- --test-threads=1` passed 748 tests, failed 0, ignored 21 across 49 groups with isolated Postgres before the final portal race fix. After that fix, `cargo check --workspace`, JavaScript syntax, and `git diff --check` passed. Fresh `router molecule-check` returned `PASS`; fresh `router molecule-verify --slice 2` returned nine due source obligations `PASS`, with three absent later-slice sources `PENDING` as planned (`run-bmI4DR`). The structural result covers guard order, while the runtime witness and source review cover values and state behavior.
+
+## Reviews
+
+Fresh reviews of the source hashes in `.scratch/slice2-review-subject-actor-fixed.txt`: code review **SHIP**, security review **CLEAR**, adversarial testing **PASS**, and independent implementation QA **VERIFIED**. The reviews inspected the post-OCSP transaction, live session and role checks, sample membership, settings revision, issuer status, registry routing, and private egress. The security analyzer's missing-guard and validation-gap inventories reported Stub/Lossy coverage; they were not treated as proof of absence. The runtime witness uses a fake issuer; a real selected issuer must demonstrate read-after-write status before production activation. The full workspace run predates the final portal race fix; the selected rebuilt-image E2E and workspace compilation passed afterward.
+
+## Distinct selected URL revalidation
+
+After Slice 1 moved selected npm registries to `/registry/npm/{id}/`, the existing enterprise scenario still sent `/npm/{id}/` requests. Against current product source it failed at the first registry collision check: `E2E FAIL E2E-publishing-enterprise-registry: Error: selected roots answered: A=401, B=401` (0 passed, 1 failed, 0 not run). The scenario now probes both selected IDs and their returned artifact references through the distinct namespace; it also uses that namespace for the reused TLS connection and the upgraded second firewall. No product source or fake fixture changed for this revalidation.
+
+The exact selected command, `test -f tests/e2e/scenarios/publishing-enterprise-registry.mjs && TMPDIR="$PWD/.scratch/tmp" node tests/e2e/harness/run.mjs --only E2E-publishing-enterprise-registry`, passed 1 selected, 1 passed, 0 failed, 0 not run (scenario 81.2 seconds). The list command selected only this ID. `node --check tests/e2e/scenarios/publishing-enterprise-registry.mjs`, `TMPDIR="$PWD/.scratch/tmp" cargo check --workspace`, and `router molecule-check` passed. Fresh `router molecule-verify --slice 2` passed all nine source obligations due by Slice 2; its overall result was `PENDING` only for three obligations planned in Slices 3 and 4 (`run-AWWQEN`). Structural checks establish the named order guarantees, while the focused E2E establishes URL selection, artifact bytes, stale ID refusal, keepalive admission, and restart behavior under the changed namespace. The prior full workspace suite was not rerun for this test-only URL migration.
+
+The main agent independently reran that exact E2E on the final scenario: 1 passed, 0 failed, 0 not run (82.5 seconds). `cargo check --workspace` and `molecule-check` passed again; all nine source obligations due through Slice 2 passed with raw evidence at `/home/john/.local/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-8HinUC`. The source verifier's overall PENDING result contains only the three absent Slice 3/4 sources.
+
+| Fresh revalidation review | Verdict | Deciding result |
+|---|---|---|
+| Code | SHIP | Both selected registry URLs, artifact references, keepalive and second-firewall paths now use the distinct namespace; no defect. |
+| Security | CLEAR | Current registry identity, certificate admission, live status, private egress and artifact containment were inspected against the focused run; no finding. Broad SMTC guard inventories remained Stub/Lossy and were not used as clean proof. |
+| Adversarial | PASS | The changed scenario reaches colliding registries, distinct artifact bytes, restart, removal, status changes and second firewall under the selected URL; no demonstrated defect. |
+| Implementation verification | VERIFIED | Independent source/test hash checks, selected route and renderer wiring, runtime result, model and nine due source controls matched the approved Slice 2 outcome. |
+
+This URL revalidation changed only the enterprise E2E and evidence. The historical full Rust suite predates the final Slice 2 portal race fix; it was not rerun for this test-only migration. A real selected issuer must still demonstrate the approved committed-revocation read-after-write behavior before production activation.

@@ -1,0 +1,8 @@
+name: revision-links-before-action
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [restore_revision_links]}}
+operation: {calls: {name: [send_action]}}
+relation: {must_dominate: true}
+where: "caller_function == 'forward_revision_put'"

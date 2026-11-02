@@ -41,6 +41,9 @@ const A_MEGABYTE: u64 = 1024 * 1024;
 fn metadata(url: Url) -> MetadataRequest {
     MetadataRequest {
         url,
+        origin: None,
+        private_cidrs: Vec::new(),
+        read_authorization: None,
         accept: NPM_ACCEPT,
         validators: None,
         max_bytes: A_MEGABYTE,
@@ -49,6 +52,19 @@ fn metadata(url: Url) -> MetadataRequest {
 
 fn parse(text: &str) -> Url {
     Url::parse(text).expect("a test URL")
+}
+
+#[test]
+fn selected_private_registry_allows_only_approved_destination_addresses() {
+    let selected = OriginSet::selected_npm_with_private(
+        parse("https://registry.internal.example:8443/npm/"),
+        vec!["10.42.7.0/24".parse().unwrap()],
+    ).expect("approved selected origin");
+    assert!(selected.allows_address("10.42.7.9".parse().unwrap()));
+    assert!(!selected.allows_address("10.42.8.9".parse().unwrap()));
+    assert!(!selected.allows_address("127.0.0.1".parse().unwrap()));
+    assert!(OriginSet::selected_npm(parse("https://10.42.7.9:8443/npm/")).is_err());
+    assert!(selected.admit(&parse("https://other.internal.example:8443/npm/pkg"), OriginKind::NpmMetadata).is_err());
 }
 
 /// A `wiremock` socket the transport is pointed at, built while holding
@@ -273,6 +289,9 @@ async fn the_transport_resolves_through_the_guard() {
     let refused = transport
         .open_artifact(ArtifactRequest {
             url,
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: None,
             max_bytes: A_MEGABYTE,
         })
         .await;
@@ -305,6 +324,9 @@ async fn an_ip_literal_never_leaves_through_the_production_transport() {
         );
         let refused = transport
             .open_artifact(ArtifactRequest {
+                origin: None,
+            private_cidrs: Vec::new(),
+                read_authorization: None,
                 url: parse(literal),
                 max_bytes: A_MEGABYTE,
             })
@@ -419,6 +441,37 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         assert!(
             Config::from_toml_str(&relaxed).is_err(),
             "a configuration carrying `{forbidden}` must be refused"
+        );
+    }
+
+    //    The three origin keys (C35) name an origin and nothing more: an `https` one
+    //    with no credentials, path or private address literal, and the set built from
+    //    them keeps both gates closed.
+    for key in [
+        "npm_upstream_url",
+        "pypi_upstream_url",
+        "pypi_artifacts_url",
+    ] {
+        for refused in [
+            "http://127.0.0.1:1",
+            "https://127.0.0.1",
+            "https://user:pw@registry.example",
+            "https://registry.example/prefix",
+        ] {
+            let relaxed = format!("{sample}\n{key} = \"{refused}\"\n");
+            assert!(
+                Config::from_toml_str(&relaxed).is_err(),
+                "`{key} = {refused}` must be refused"
+            );
+        }
+        let configured = format!("{sample}\n{key} = \"https://registry.example\"\n");
+        let config = Config::from_toml_str(&configured).expect("an https origin");
+        let origins = OriginSet::configured(&config);
+        assert!(!origins.allows_private_addresses(), "{key} opens no gate");
+        assert_eq!(
+            origins.admit(&parse("http://registry.example/x"), OriginKind::NpmMetadata),
+            Err(UrlRejection::Scheme),
+            "{key}: http stays refused"
         );
     }
 
@@ -576,6 +629,41 @@ fn visit_rust_files(dir: &std::path::Path, seen: &mut impl FnMut(&std::path::Pat
 // ---------------------------------------------------------------------------
 // The wire: what the real client does when upstream misbehaves
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn shared_read_credential_reaches_metadata_but_not_an_artifact_redirect() {
+    let upstream = upstream().await;
+    Mock::given(method("GET"))
+        .and(path("/metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&upstream.server).await;
+    Mock::given(method("GET"))
+        .and(path("/first.tgz"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/second.tgz"))
+        .mount(&upstream.server).await;
+    Mock::given(method("GET"))
+        .and(path("/second.tgz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifact"))
+        .mount(&upstream.server).await;
+
+    let mut request = metadata(parse(&upstream.url("/metadata")));
+    request.read_authorization = Some("Bearer shared-read-secret".to_owned());
+    upstream.transport.fetch_metadata(request).await.expect("metadata read");
+    let body = upstream.transport.open_artifact(ArtifactRequest {
+        url: parse(&upstream.url("/first.tgz")), origin: None,
+        private_cidrs: Vec::new(), read_authorization: Some("Bearer shared-read-secret".to_owned()),
+        max_bytes: A_MEGABYTE,
+    }).await.expect("artifact read");
+    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    assert_eq!(bytes, b"artifact");
+
+    let requests = upstream.server.received_requests().await.expect("request log");
+    assert_eq!(requests.len(), 3);
+    for request in &requests[..2] {
+        assert_eq!(request.headers.get("authorization").unwrap().to_str().unwrap(), "Bearer shared-read-secret");
+    }
+    assert!(requests[2].headers.get("authorization").is_none());
+}
 
 /// A redirect off the admitted origin is refused, and the host it pointed at never
 /// sees a request. `attempt.stop()` hands the 3xx back to us, so the refusal can
@@ -1016,6 +1104,9 @@ async fn the_artifact_client_does_not_decode_what_the_metadata_client_does() {
     let body = upstream
         .transport
         .open_artifact(ArtifactRequest {
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: None,
             url: url.clone(),
             max_bytes: A_MEGABYTE,
         })

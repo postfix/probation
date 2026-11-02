@@ -1,0 +1,7475 @@
+{
+  "version": 1,
+  "assumptions": [
+    "The TLS connection alone creates Peer from a presented client certificate; HTTP headers cannot create it.",
+    "A direct canonical tarball DELETE is classified as an unknown/refused route, never a generic action; a runtime control must confirm zero outbound requests even with a developer bearer.",
+    "Certificate admission checks current chain, validity, client-auth purpose, exactly one URI SAN UUID, selected organization root, active member/group and registry on every package request.",
+    "Organization-issued admission verifies an issuer-authorized OCSP response matching a fresh nonce and the presented issuer name/key hash plus serial. The issuer responder reflects every committed revocation before acknowledging it; no positive status cache crosses requests.",
+    "Every outbound registry/status peer satisfies the per-organization HTTPS, public-routable or operator-approved private host/port/CIDR policy at DNS resolution, connection and redirect hops.",
+    "Operation contracts describe future source. Runtime tests must prove exact peer/member/registry values, issuer signature/freshness, response links, clients and no stale-success cache.",
+    "Only canonical npm packument GETs carrying a developer token reach serve_token_packument; its selected-upstream token result is authoritative for metadata and does not grant artifact bytes or a later write.",
+    "The token-packument operation has no shared-metadata read/write or coalesced result; Slice 3 source review and two-client sequential, concurrent and restart checks must establish this planned contract.",
+    "The finite registry-state flows model two same-name registries, a distinct replacement ID after removal, and one old artifact reference. Slice 2 source review and X01/X03 runtime controls must establish exact keys, references, migration, persistence and restart behavior.",
+    "Audit outcome selection depends on validating upstream bulk/quick data and current group-visible versions; the finite model checks declared response guarantees, while Slice 3 byte-level tests and independent security review prove input classification, 1,024-lookup bounds and client compatibility.",
+    "Version-unpublish lookup is keyed by immutable selected registry, admitted member, npm package, version, filename and digest of the exact upstream-advertised URL; only an atomic, bounded 24-hour encrypted action lease from an admitted `?write=true` preflight can supply it. Runtime tests establish commit, origin/path approval, sealed query, quota, expiry, restart persistence and current principal binding.",
+    "A revision PUT parser checks every leased version against its exact selected local link or exact original upstream URL, restores the original for either value, rejects changed URLs before outbound PUT, and preserves ordinary upstream URLs for versions with no lease; N10/N11 runtime tests compare outgoing upstream JSON byte values.",
+    "Destination approval is exact registry plus HTTPS origin and segment-boundary path prefix, checked again at DELETE with DNS/connected-peer validation. Credential mode is selected-origin bearer, approved extra-origin bearer, or approved extra-origin anonymous; no redirects. A durable marker from an accepted selected-upstream revision PUT is required for every version DELETE.",
+    "Only an accepted selected-upstream revision PUT whose compared prior/current version set removes the exact leased reference may commit a removal marker. A commit failure after acceptance returns uncertain partial write, never success; denied or unchanged PUTs create no marker. Runtime tests prove marker binding and atomic durability.",
+    "A successful removal obtains the resulting revision from the selected-upstream PUT response or an immediate authenticated fresh selected-upstream GET that verifies the version absent. Failure to establish it after accepted PUT is uncertain partial write. The marker binds that revision, member and reference, is matched exactly against DELETE, and is consumed once before outbound DELETE; concurrent or replayed DELETE cannot send again."
+  ],
+  "sources": [
+    "docs/plans/publishing-proxy/01-product.md",
+    "docs/plans/publishing-proxy/evidence/client-operation-matrix.md",
+    "docs/plans/publishing-proxy/evidence/research-4.md",
+    "docs/plans/publishing-proxy/02-architecture.md",
+    "docs/plans/publishing-proxy/03-program-design.md",
+    "docs/plans/publishing-proxy/04-slices.md"
+  ],
+  "predicates": [
+    {
+      "id": "read_route",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "action_route",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "login_route",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "unknown_route",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "classified_read",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "classified_action",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "classified_login",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "classified_refused",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "peer_verified",
+      "types": [
+        "Peer"
+      ]
+    },
+    {
+      "id": "certificate_current",
+      "types": [
+        "Peer"
+      ],
+      "dependsOn": [
+        "certificates"
+      ]
+    },
+    {
+      "id": "peer_member_active",
+      "types": [
+        "Peer"
+      ],
+      "dependsOn": [
+        "memberships"
+      ]
+    },
+    {
+      "id": "same_org_registry",
+      "types": [
+        "Peer",
+        "RegistryId"
+      ],
+      "dependsOn": [
+        "memberships",
+        "registries"
+      ]
+    },
+    {
+      "id": "issuer_status_current",
+      "types": [
+        "Peer"
+      ],
+      "dependsOn": [
+        "certificates"
+      ]
+    },
+    {
+      "id": "admitted",
+      "types": [
+        "Principal",
+        "Peer",
+        "RegistryId"
+      ]
+    },
+    {
+      "id": "read_policy_passed",
+      "types": [
+        "Response",
+        "Principal"
+      ]
+    },
+    {
+      "id": "response_registry",
+      "types": [
+        "Response",
+        "RegistryId"
+      ]
+    },
+    {
+      "id": "no_secret_leak",
+      "types": [
+        "Response",
+        "Principal"
+      ]
+    },
+    {
+      "id": "upstream_refusal_preserved",
+      "types": [
+        "Response",
+        "Principal"
+      ]
+    },
+    {
+      "id": "certificate_revoked",
+      "types": [
+        "Peer"
+      ],
+      "dependsOn": [
+        "certificates"
+      ]
+    },
+    {
+      "id": "session_owns_member",
+      "types": [
+        "Session",
+        "Member"
+      ],
+      "dependsOn": [
+        "memberships"
+      ]
+    },
+    {
+      "id": "issuance_enabled",
+      "types": [
+        "Member"
+      ],
+      "dependsOn": [
+        "self_service"
+      ]
+    },
+    {
+      "id": "bundle_owned",
+      "types": [
+        "Bundle",
+        "Member"
+      ]
+    },
+    {
+      "id": "no_certificate",
+      "types": [
+        "Peer"
+      ]
+    },
+    {
+      "id": "certificate_refused",
+      "types": [
+        "Peer"
+      ]
+    },
+    {
+      "id": "foreign_session",
+      "types": [
+        "Session",
+        "Member"
+      ]
+    },
+    {
+      "id": "member_disabled",
+      "types": [
+        "Peer"
+      ],
+      "dependsOn": [
+        "memberships"
+      ]
+    },
+    {
+      "id": "canonical_token_packument",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "group_hidden",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "upstream_token_accepted",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "upstream_packument_metadata",
+      "types": [
+        "Response",
+        "RegistryId"
+      ]
+    },
+    {
+      "id": "no_artifact_bytes",
+      "types": [
+        "Response"
+      ]
+    },
+    {
+      "id": "shared_metadata_unchanged",
+      "types": [],
+      "dependsOn": [
+        "shared_metadata"
+      ]
+    },
+    {
+      "id": "request_local_packument",
+      "types": [
+        "Response"
+      ]
+    },
+    {
+      "id": "registry_ids_distinct",
+      "types": [
+        "RegistryId",
+        "RegistryId"
+      ]
+    },
+    {
+      "id": "collision_phase",
+      "types": []
+    },
+    {
+      "id": "removal_phase",
+      "types": []
+    },
+    {
+      "id": "readd_phase",
+      "types": []
+    },
+    {
+      "id": "same_name_project_separate",
+      "types": [
+        "RegistryId",
+        "RegistryId",
+        "Package"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "same_name_cache_separate",
+      "types": [
+        "RegistryId",
+        "RegistryId",
+        "Package"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "same_name_artifact_separate",
+      "types": [
+        "RegistryId",
+        "RegistryId",
+        "Package"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "reference_bound_to_registry",
+      "types": [
+        "Reference",
+        "RegistryId"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "registry_reference_refused",
+      "types": [
+        "Reference",
+        "RegistryId"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "registry_removed",
+      "types": [
+        "RegistryId"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "registry_readded_new_identity",
+      "types": [
+        "RegistryId",
+        "RegistryId",
+        "Reference",
+        "Reference"
+      ],
+      "dependsOn": [
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "audit_route",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "audit_visible_signal",
+      "types": [
+        "Response",
+        "Principal"
+      ]
+    },
+    {
+      "id": "audit_no_hidden_fields",
+      "types": [
+        "Response",
+        "Principal"
+      ]
+    },
+    {
+      "id": "audit_refused_not_clean",
+      "types": [
+        "Response"
+      ]
+    },
+    {
+      "id": "audit_unsupported_bulk_error",
+      "types": [
+        "Response"
+      ]
+    },
+    {
+      "id": "audit_work_bounded",
+      "types": [
+        "Response"
+      ]
+    },
+    {
+      "id": "unpublish_destination_bound",
+      "types": [
+        "Url",
+        "RegistryId",
+        "Principal",
+        "PackageName",
+        "Filename",
+        "ReferenceId"
+      ]
+    },
+    {
+      "id": "revision_links_restored",
+      "types": [
+        "Request",
+        "RegistryId",
+        "Principal"
+      ]
+    },
+    {
+      "id": "deletion_destination_approved",
+      "types": [
+        "Url",
+        "RegistryId",
+        "Principal",
+        "CredentialMode"
+      ]
+    },
+    {
+      "id": "revision_removal_committed",
+      "types": [
+        "RegistryId",
+        "Principal",
+        "ReferenceId",
+        "Revision"
+      ]
+    },
+    {
+      "id": "accepted_revision_removed_reference",
+      "types": [
+        "Response",
+        "RegistryId",
+        "Principal",
+        "ReferenceId",
+        "Revision"
+      ]
+    },
+    {
+      "id": "changed_leased_tarball_url",
+      "types": [
+        "Request",
+        "RegistryId",
+        "Principal"
+      ]
+    }
+  ],
+  "states": [
+    {
+      "id": "certificates",
+      "kind": "state"
+    },
+    {
+      "id": "memberships",
+      "kind": "state"
+    },
+    {
+      "id": "registries",
+      "kind": "state"
+    },
+    {
+      "id": "self_service",
+      "kind": "state"
+    },
+    {
+      "id": "shared_metadata",
+      "kind": "state"
+    },
+    {
+      "id": "registry_persisted_state",
+      "kind": "state"
+    }
+  ],
+  "molecules": [
+    {
+      "id": "request_classification",
+      "owns": []
+    },
+    {
+      "id": "identity_catalog",
+      "owns": [
+        "certificates",
+        "memberships",
+        "registries",
+        "self_service"
+      ]
+    },
+    {
+      "id": "package_read",
+      "owns": [
+        "shared_metadata",
+        "registry_persisted_state"
+      ]
+    },
+    {
+      "id": "registry_action",
+      "owns": []
+    }
+  ],
+  "operations": [
+    {
+      "id": "classify_registry_request",
+      "molecule": "request_classification",
+      "inputs": {
+        "request": "Request"
+      },
+      "outputs": {},
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "route_0000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_login",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "classified_action",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_action",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_0111",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_read",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "route_1111",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "read_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "action_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "login_route",
+                "arguments": [
+                  "request"
+                ]
+              },
+              {
+                "predicate": "unknown_route",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "admit_certificate",
+      "molecule": "identity_catalog",
+      "inputs": {
+        "peer": "Peer",
+        "registry": "RegistryId"
+      },
+      "outputs": {
+        "principal": "Principal"
+      },
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "admit_00000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_00111",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_01111",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_10111",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11000",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11001",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11010",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11011",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11100",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11101",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11110",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "admit_11111",
+          "produces": [
+            "principal"
+          ],
+          "establishes": [
+            {
+              "predicate": "admitted",
+              "arguments": [
+                "principal",
+                "peer",
+                "registry"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "peer_verified",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "certificate_current",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "peer_member_active",
+                "arguments": [
+                  "peer"
+                ]
+              },
+              {
+                "predicate": "same_org_registry",
+                "arguments": [
+                  "peer",
+                  "registry"
+                ]
+              },
+              {
+                "predicate": "issuer_status_current",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "no_certificate",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "certificates",
+              "memberships",
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "missing_peer",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "when": {
+            "all": [
+              {
+                "predicate": "no_certificate",
+                "arguments": [
+                  "peer"
+                ]
+              }
+            ],
+            "none": []
+          },
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "serve_package_read",
+      "molecule": "package_read",
+      "inputs": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_read",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "allowed",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "read_policy_passed",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "blocked",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "forward_registry_action",
+      "molecule": "registry_action",
+      "inputs": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "accepted",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "upstream_denied",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "credential_denied",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "revoke_certificate",
+      "molecule": "identity_catalog",
+      "inputs": {
+        "peer": "Peer"
+      },
+      "outputs": {},
+      "requires": [
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "revoked",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "certificate_revoked",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "certificate_current",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "certificates"
+            ],
+            "writes": [
+              "certificates"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "issue_setup_bundle",
+      "molecule": "identity_catalog",
+      "inputs": {
+        "session": "Session",
+        "member": "Member"
+      },
+      "outputs": {
+        "peer": "Peer",
+        "bundle": "Bundle"
+      },
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "issue_00",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "memberships",
+              "self_service"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "session_owns_member",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              },
+              {
+                "predicate": "issuance_enabled",
+                "arguments": [
+                  "member"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "issue_01",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "memberships",
+              "self_service"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "issuance_enabled",
+                "arguments": [
+                  "member"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "session_owns_member",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "issue_10",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "memberships",
+              "self_service"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "session_owns_member",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "issuance_enabled",
+                "arguments": [
+                  "member"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "issue_11",
+          "produces": [
+            "peer",
+            "bundle"
+          ],
+          "establishes": [
+            {
+              "predicate": "certificate_current",
+              "arguments": [
+                "peer"
+              ]
+            },
+            {
+              "predicate": "bundle_owned",
+              "arguments": [
+                "bundle",
+                "member"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "memberships",
+              "self_service"
+            ],
+            "writes": [
+              "certificates"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "session_owns_member",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              },
+              {
+                "predicate": "issuance_enabled",
+                "arguments": [
+                  "member"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "foreign_session",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "foreign",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "when": {
+            "all": [
+              {
+                "predicate": "foreign_session",
+                "arguments": [
+                  "session",
+                  "member"
+                ]
+              }
+            ],
+            "none": []
+          },
+          "effects": {
+            "reads": [
+              "memberships"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "disable_member",
+      "molecule": "identity_catalog",
+      "inputs": {
+        "peer": "Peer"
+      },
+      "outputs": {},
+      "requires": [
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "disabled",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "member_disabled",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "peer_member_active",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "memberships"
+            ],
+            "writes": [
+              "memberships"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "serve_token_packument",
+      "molecule": "package_read",
+      "inputs": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_read",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "canonical_token_packument",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "visible",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "upstream_packument_metadata",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "no_artifact_bytes",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "request_local_packument",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "upstream_token_accepted",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ],
+            "none": []
+          }
+        },
+        {
+          "id": "upstream_denied",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "upstream_token_accepted",
+                "arguments": [
+                  "request"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "apply_registry_state",
+      "molecule": "package_read",
+      "inputs": {
+        "first": "RegistryId",
+        "second": "RegistryId",
+        "replacement": "RegistryId",
+        "package": "Package",
+        "previous": "Reference"
+      },
+      "outputs": {
+        "reference": "Reference"
+      },
+      "requires": [
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "replacement"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "second",
+            "replacement"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "collision_isolated",
+          "produces": [
+            "reference"
+          ],
+          "establishes": [
+            {
+              "predicate": "removal_phase",
+              "arguments": []
+            },
+            {
+              "predicate": "same_name_project_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_cache_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_artifact_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "reference",
+                "first"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "collision_phase",
+              "arguments": []
+            }
+          ],
+          "when": {
+            "all": [
+              {
+                "predicate": "collision_phase",
+                "arguments": []
+              }
+            ],
+            "none": []
+          },
+          "effects": {
+            "reads": [],
+            "writes": [
+              "registry_persisted_state"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "removed_reference_refused",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "readd_phase",
+              "arguments": []
+            },
+            {
+              "predicate": "registry_removed",
+              "arguments": [
+                "first"
+              ]
+            },
+            {
+              "predicate": "registry_reference_refused",
+              "arguments": [
+                "previous",
+                "first"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "removal_phase",
+              "arguments": []
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "previous",
+                "first"
+              ]
+            }
+          ],
+          "when": {
+            "all": [
+              {
+                "predicate": "removal_phase",
+                "arguments": []
+              }
+            ],
+            "none": [
+              {
+                "predicate": "collision_phase",
+                "arguments": []
+              }
+            ]
+          },
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [
+              "registry_persisted_state"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "readded_stale_refused",
+          "produces": [
+            "reference"
+          ],
+          "establishes": [
+            {
+              "predicate": "registry_readded_new_identity",
+              "arguments": [
+                "first",
+                "replacement",
+                "previous",
+                "reference"
+              ]
+            },
+            {
+              "predicate": "registry_reference_refused",
+              "arguments": [
+                "previous",
+                "first"
+              ]
+            },
+            {
+              "predicate": "registry_removed",
+              "arguments": [
+                "first"
+              ]
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "reference",
+                "replacement"
+              ]
+            },
+            {
+              "predicate": "same_name_project_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_cache_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_artifact_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "readd_phase",
+              "arguments": []
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "previous",
+                "first"
+              ]
+            },
+            {
+              "predicate": "registry_reference_refused",
+              "arguments": [
+                "reference",
+                "replacement"
+              ]
+            }
+          ],
+          "when": {
+            "all": [
+              {
+                "predicate": "readd_phase",
+                "arguments": []
+              }
+            ],
+            "none": [
+              {
+                "predicate": "collision_phase",
+                "arguments": []
+              },
+              {
+                "predicate": "removal_phase",
+                "arguments": []
+              }
+            ]
+          },
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [
+              "registry_persisted_state"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "serve_audit_read",
+      "molecule": "package_read",
+      "inputs": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_read",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "audit_route",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "visible_safe",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "audit_visible_signal",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "audit_no_hidden_fields",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "invalid_refused",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "audit_refused_not_clean",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "limit_refused",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "audit_refused_not_clean",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "bulk_unsupported",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "audit_unsupported_bulk_error",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "audit_refused_not_clean",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "resolve_unpublish_reference",
+      "molecule": "package_read",
+      "inputs": {
+        "registry": "RegistryId",
+        "reference": "ReferenceId",
+        "package": "PackageName",
+        "filename": "Filename",
+        "principal": "Principal"
+      },
+      "outputs": {
+        "destination": "Url"
+      },
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "found",
+          "produces": [
+            "destination"
+          ],
+          "establishes": [
+            {
+              "predicate": "unpublish_destination_bound",
+              "arguments": [
+                "destination",
+                "registry",
+                "principal",
+                "package",
+                "filename",
+                "reference"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "missing",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "authorize_deletion_destination",
+      "molecule": "identity_catalog",
+      "inputs": {
+        "destination": "Url",
+        "registry": "RegistryId",
+        "principal": "Principal"
+      },
+      "outputs": {
+        "mode": "CredentialMode"
+      },
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "approved",
+          "produces": [
+            "mode"
+          ],
+          "establishes": [
+            {
+              "predicate": "deletion_destination_approved",
+              "arguments": [
+                "destination",
+                "registry",
+                "principal",
+                "mode"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "refused",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registries"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "check_revision_put_marker",
+      "molecule": "package_read",
+      "inputs": {
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "reference": "ReferenceId",
+        "revision": "Revision"
+      },
+      "outputs": {},
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "found",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "revision_removal_committed",
+              "arguments": [
+                "registry",
+                "principal",
+                "reference",
+                "revision"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "missing",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "classify_accepted_revision_removal",
+      "molecule": "package_read",
+      "inputs": {
+        "response": "Response",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "outgoing": "Request"
+      },
+      "outputs": {
+        "reference": "ReferenceId",
+        "revision": "Revision"
+      },
+      "requires": [
+        {
+          "predicate": "response_registry",
+          "arguments": [
+            "response",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "revision_links_restored",
+          "arguments": [
+            "outgoing",
+            "registry",
+            "principal"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "removed",
+          "produces": [
+            "reference",
+            "revision"
+          ],
+          "establishes": [
+            {
+              "predicate": "accepted_revision_removed_reference",
+              "arguments": [
+                "response",
+                "registry",
+                "principal",
+                "reference",
+                "revision"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unchanged",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unverifiable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "commit_revision_removal_marker",
+      "molecule": "package_read",
+      "inputs": {
+        "response": "Response",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "reference": "ReferenceId",
+        "revision": "Revision"
+      },
+      "outputs": {},
+      "requires": [
+        {
+          "predicate": "accepted_revision_removed_reference",
+          "arguments": [
+            "response",
+            "registry",
+            "principal",
+            "reference",
+            "revision"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "committed",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "revision_removal_committed",
+              "arguments": [
+                "registry",
+                "principal",
+                "reference",
+                "revision"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [
+              "registry_persisted_state"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "failed",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [
+              "registry_persisted_state"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "send_unpublish_delete",
+      "molecule": "registry_action",
+      "inputs": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request",
+        "destination": "Url",
+        "package": "PackageName",
+        "filename": "Filename",
+        "reference": "ReferenceId",
+        "mode": "CredentialMode",
+        "revision": "Revision"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "unpublish_destination_bound",
+          "arguments": [
+            "destination",
+            "registry",
+            "principal",
+            "package",
+            "filename",
+            "reference"
+          ]
+        },
+        {
+          "predicate": "deletion_destination_approved",
+          "arguments": [
+            "destination",
+            "registry",
+            "principal",
+            "mode"
+          ]
+        },
+        {
+          "predicate": "revision_removal_committed",
+          "arguments": [
+            "registry",
+            "principal",
+            "reference",
+            "revision"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "accepted",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "upstream_denied",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unsafe",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "restore_revision_packument",
+      "molecule": "package_read",
+      "inputs": {
+        "request": "Request",
+        "registry": "RegistryId",
+        "principal": "Principal"
+      },
+      "outputs": {
+        "outgoing": "Request"
+      },
+      "requires": [
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "restored",
+          "produces": [
+            "outgoing"
+          ],
+          "establishes": [
+            {
+              "predicate": "revision_links_restored",
+              "arguments": [
+                "outgoing",
+                "registry",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "changed_leased_tarball_url",
+                "arguments": [
+                  "request",
+                  "registry",
+                  "principal"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "invalid",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [],
+            "none": [
+              {
+                "predicate": "changed_leased_tarball_url",
+                "arguments": [
+                  "request",
+                  "registry",
+                  "principal"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "changed_leased_url",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "registry_persisted_state"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "changed_leased_tarball_url",
+                "arguments": [
+                  "request",
+                  "registry",
+                  "principal"
+                ]
+              }
+            ],
+            "none": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "send_restored_revision",
+      "molecule": "registry_action",
+      "inputs": {
+        "outgoing": "Request",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "peer": "Peer"
+      },
+      "outputs": {
+        "response": "Response"
+      },
+      "requires": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "revision_links_restored",
+          "arguments": [
+            "outgoing",
+            "registry",
+            "principal"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "accepted",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "upstream_denied",
+          "produces": [
+            "response"
+          ],
+          "establishes": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "install",
+      "values": {
+        "request": "Request",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "response": "Response"
+      },
+      "inputs": [
+        "request",
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "read_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "wrong_route",
+            "route_0001": "wrong_route",
+            "route_0010": "wrong_route",
+            "route_0011": "wrong_route",
+            "route_0100": "wrong_route",
+            "route_0101": "wrong_route",
+            "route_0110": "wrong_route",
+            "route_0111": "wrong_route",
+            "route_1000": "admit",
+            "route_1001": "wrong_route",
+            "route_1010": "wrong_route",
+            "route_1011": "wrong_route",
+            "route_1100": "wrong_route",
+            "route_1101": "wrong_route",
+            "route_1110": "wrong_route",
+            "route_1111": "wrong_route"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "read",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        },
+        {
+          "id": "read",
+          "operation": "serve_package_read",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "response": "response"
+          },
+          "routes": {
+            "allowed": "success",
+            "blocked": "blocked",
+            "unavailable": "unavailable"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "success",
+          "outcome": "install_allowed",
+          "requires": [
+            {
+              "predicate": "read_policy_passed",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "install_blocked",
+          "requires": []
+        },
+        {
+          "id": "refused",
+          "outcome": "certificate_refused",
+          "requires": []
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": []
+        },
+        {
+          "id": "wrong_route",
+          "outcome": "wrong_route",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "install_allowed",
+        "install_blocked",
+        "unavailable"
+      ]
+    },
+    {
+      "id": "publish",
+      "values": {
+        "request": "Request",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "response": "Response"
+      },
+      "inputs": [
+        "request",
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "action_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "wrong_route",
+            "route_0001": "wrong_route",
+            "route_0010": "wrong_route",
+            "route_0011": "wrong_route",
+            "route_0100": "admit",
+            "route_0101": "wrong_route",
+            "route_0110": "wrong_route",
+            "route_0111": "wrong_route",
+            "route_1000": "wrong_route",
+            "route_1001": "wrong_route",
+            "route_1010": "wrong_route",
+            "route_1011": "wrong_route",
+            "route_1100": "wrong_route",
+            "route_1101": "wrong_route",
+            "route_1110": "wrong_route",
+            "route_1111": "wrong_route"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "action",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        },
+        {
+          "id": "action",
+          "operation": "forward_registry_action",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "response": "response"
+          },
+          "routes": {
+            "accepted": "success",
+            "upstream_denied": "denied",
+            "credential_denied": "credential_denied",
+            "unavailable": "unavailable"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "success",
+          "outcome": "write_accepted",
+          "requires": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "denied",
+          "outcome": "write_denied",
+          "requires": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "credential_denied",
+          "outcome": "credential_denied",
+          "requires": []
+        },
+        {
+          "id": "refused",
+          "outcome": "certificate_refused",
+          "requires": []
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": []
+        },
+        {
+          "id": "wrong_route",
+          "outcome": "wrong_route",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "write_accepted",
+        "write_denied",
+        "credential_denied",
+        "unavailable"
+      ]
+    },
+    {
+      "id": "revocation",
+      "values": {
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal"
+      },
+      "inputs": [
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "revoke",
+      "nodes": [
+        {
+          "id": "revoke",
+          "operation": "revoke_certificate",
+          "bindings": {
+            "peer": "peer"
+          },
+          "routes": {
+            "revoked": "admit"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "unexpected",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "revoked_refused",
+          "requires": [
+            {
+              "predicate": "certificate_revoked",
+              "arguments": [
+                "peer"
+              ]
+            },
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "certificate_current",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": [
+            {
+              "predicate": "certificate_revoked",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": [],
+          "forbids": [
+            {
+              "predicate": "admitted",
+              "arguments": [
+                "principal",
+                "peer",
+                "registry"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "revoked_refused",
+        "unavailable"
+      ]
+    },
+    {
+      "id": "setup-bundle",
+      "values": {
+        "member": "Member",
+        "peer": "Peer",
+        "bundle": "Bundle",
+        "session": "Session"
+      },
+      "inputs": [
+        "session",
+        "member"
+      ],
+      "initial": [
+        {
+          "predicate": "session_owns_member",
+          "arguments": [
+            "session",
+            "member"
+          ]
+        }
+      ],
+      "entry": "issue",
+      "nodes": [
+        {
+          "id": "issue",
+          "operation": "issue_setup_bundle",
+          "bindings": {
+            "member": "member",
+            "peer": "peer",
+            "bundle": "bundle",
+            "session": "session"
+          },
+          "routes": {
+            "issue_00": "refused",
+            "issue_01": "refused",
+            "issue_10": "refused",
+            "issue_11": "issued",
+            "foreign": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "issued",
+          "outcome": "bundle_issued",
+          "requires": [
+            {
+              "predicate": "certificate_current",
+              "arguments": [
+                "peer"
+              ]
+            },
+            {
+              "predicate": "bundle_owned",
+              "arguments": [
+                "bundle",
+                "member"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "refused",
+          "outcome": "bundle_refused",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "bundle_issued",
+        "bundle_refused"
+      ]
+    },
+    {
+      "id": "unknown-route",
+      "values": {
+        "request": "Request"
+      },
+      "inputs": [
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "unknown_route",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "refused",
+            "route_0001": "refused",
+            "route_0010": "unexpected",
+            "route_0011": "refused",
+            "route_0100": "unexpected",
+            "route_0101": "refused",
+            "route_0110": "refused",
+            "route_0111": "refused",
+            "route_1000": "unexpected",
+            "route_1001": "refused",
+            "route_1010": "refused",
+            "route_1011": "refused",
+            "route_1100": "refused",
+            "route_1101": "refused",
+            "route_1110": "refused",
+            "route_1111": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "unknown_refused",
+          "requires": [
+            {
+              "predicate": "classified_refused",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "unknown_refused"
+      ]
+    },
+    {
+      "id": "missing-certificate",
+      "values": {
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal"
+      },
+      "inputs": [
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "no_certificate",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "admit",
+      "nodes": [
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "unexpected",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "missing_cert_refused",
+          "requires": [
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": []
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "missing_cert_refused"
+      ]
+    },
+    {
+      "id": "login-bootstrap",
+      "values": {
+        "request": "Request",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "response": "Response"
+      },
+      "inputs": [
+        "request",
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "login_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "wrong_route",
+            "route_0001": "wrong_route",
+            "route_0010": "admit",
+            "route_0011": "wrong_route",
+            "route_0100": "wrong_route",
+            "route_0101": "wrong_route",
+            "route_0110": "wrong_route",
+            "route_0111": "wrong_route",
+            "route_1000": "wrong_route",
+            "route_1001": "wrong_route",
+            "route_1010": "wrong_route",
+            "route_1011": "wrong_route",
+            "route_1100": "wrong_route",
+            "route_1101": "wrong_route",
+            "route_1110": "wrong_route",
+            "route_1111": "wrong_route"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "action",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        },
+        {
+          "id": "action",
+          "operation": "forward_registry_action",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "response": "response"
+          },
+          "routes": {
+            "accepted": "success",
+            "upstream_denied": "denied",
+            "credential_denied": "credential_denied",
+            "unavailable": "unavailable"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "success",
+          "outcome": "login_started",
+          "requires": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "denied",
+          "outcome": "login_denied",
+          "requires": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "credential_denied",
+          "outcome": "credential_denied",
+          "requires": []
+        },
+        {
+          "id": "refused",
+          "outcome": "certificate_refused",
+          "requires": []
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": []
+        },
+        {
+          "id": "wrong_route",
+          "outcome": "wrong_route",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "login_started",
+        "login_denied"
+      ]
+    },
+    {
+      "id": "cross-account-bundle",
+      "values": {
+        "session": "Session",
+        "member": "Member",
+        "peer": "Peer",
+        "bundle": "Bundle"
+      },
+      "inputs": [
+        "session",
+        "member"
+      ],
+      "initial": [
+        {
+          "predicate": "foreign_session",
+          "arguments": [
+            "session",
+            "member"
+          ]
+        },
+        {
+          "predicate": "issuance_enabled",
+          "arguments": [
+            "member"
+          ]
+        }
+      ],
+      "entry": "issue",
+      "nodes": [
+        {
+          "id": "issue",
+          "operation": "issue_setup_bundle",
+          "bindings": {
+            "session": "session",
+            "member": "member",
+            "peer": "peer",
+            "bundle": "bundle"
+          },
+          "routes": {
+            "issue_00": "refused",
+            "issue_01": "refused",
+            "issue_10": "refused",
+            "issue_11": "unexpected",
+            "foreign": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "cross_account_refused",
+          "requires": []
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "cross_account_refused"
+      ]
+    },
+    {
+      "id": "member-disable",
+      "values": {
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal"
+      },
+      "inputs": [
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "disable",
+      "nodes": [
+        {
+          "id": "disable",
+          "operation": "disable_member",
+          "bindings": {
+            "peer": "peer"
+          },
+          "routes": {
+            "disabled": "admit"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "unexpected",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "disabled_member_refused",
+          "requires": [
+            {
+              "predicate": "member_disabled",
+              "arguments": [
+                "peer"
+              ]
+            },
+            {
+              "predicate": "certificate_refused",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "peer_member_active",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": [
+            {
+              "predicate": "member_disabled",
+              "arguments": [
+                "peer"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "disabled_member_refused"
+      ]
+    },
+    {
+      "id": "token-packument-hidden",
+      "values": {
+        "request": "Request",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "response": "Response"
+      },
+      "inputs": [
+        "request",
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "read_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "canonical_token_packument",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "group_hidden",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "shared_metadata_unchanged",
+          "arguments": []
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "wrong_route",
+            "route_0001": "wrong_route",
+            "route_0010": "wrong_route",
+            "route_0011": "wrong_route",
+            "route_0100": "wrong_route",
+            "route_0101": "wrong_route",
+            "route_0110": "wrong_route",
+            "route_0111": "wrong_route",
+            "route_1000": "admit",
+            "route_1001": "wrong_route",
+            "route_1010": "wrong_route",
+            "route_1011": "wrong_route",
+            "route_1100": "wrong_route",
+            "route_1101": "wrong_route",
+            "route_1110": "wrong_route",
+            "route_1111": "wrong_route"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "read",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        },
+        {
+          "id": "read",
+          "operation": "serve_token_packument",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "response": "response"
+          },
+          "routes": {
+            "visible": "visible",
+            "upstream_denied": "denied",
+            "unavailable": "unavailable"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "certificate_refused",
+          "requires": [
+            {
+              "predicate": "shared_metadata_unchanged",
+              "arguments": []
+            }
+          ]
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": [
+            {
+              "predicate": "shared_metadata_unchanged",
+              "arguments": []
+            }
+          ]
+        },
+        {
+          "id": "wrong_route",
+          "outcome": "wrong_route",
+          "requires": [
+            {
+              "predicate": "shared_metadata_unchanged",
+              "arguments": []
+            }
+          ]
+        },
+        {
+          "id": "visible",
+          "outcome": "hidden_packument_visible",
+          "requires": [
+            {
+              "predicate": "group_hidden",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "upstream_packument_metadata",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_artifact_bytes",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "shared_metadata_unchanged",
+              "arguments": []
+            },
+            {
+              "predicate": "request_local_packument",
+              "arguments": [
+                "response"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "denied",
+          "outcome": "upstream_token_denied",
+          "requires": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "shared_metadata_unchanged",
+              "arguments": []
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "hidden_packument_visible",
+        "upstream_token_denied",
+        "unavailable"
+      ]
+    },
+    {
+      "id": "registry-collision-isolation",
+      "values": {
+        "first": "RegistryId",
+        "second": "RegistryId",
+        "replacement": "RegistryId",
+        "package": "Package",
+        "seed": "Reference",
+        "first_ref": "Reference"
+      },
+      "inputs": [
+        "first",
+        "second",
+        "replacement",
+        "package",
+        "seed"
+      ],
+      "initial": [
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "replacement"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "second",
+            "replacement"
+          ]
+        },
+        {
+          "predicate": "collision_phase",
+          "arguments": []
+        }
+      ],
+      "entry": "bind_collision",
+      "nodes": [
+        {
+          "id": "bind_collision",
+          "operation": "apply_registry_state",
+          "bindings": {
+            "first": "first",
+            "second": "second",
+            "replacement": "replacement",
+            "package": "package",
+            "previous": "seed",
+            "reference": "first_ref"
+          },
+          "routes": {
+            "collision_isolated": "isolated",
+            "removed_reference_refused": "unexpected",
+            "readded_stale_refused": "unexpected"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "isolated",
+          "outcome": "same_name_isolated",
+          "requires": [
+            {
+              "predicate": "same_name_project_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_cache_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_artifact_separate",
+              "arguments": [
+                "first",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "first_ref",
+                "first"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected_registry_transition",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "same_name_isolated"
+      ]
+    },
+    {
+      "id": "registry-remove-readd",
+      "values": {
+        "first": "RegistryId",
+        "second": "RegistryId",
+        "replacement": "RegistryId",
+        "package": "Package",
+        "seed": "Reference",
+        "old_ref": "Reference",
+        "unused_ref": "Reference",
+        "new_ref": "Reference"
+      },
+      "inputs": [
+        "first",
+        "second",
+        "replacement",
+        "package",
+        "seed"
+      ],
+      "initial": [
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "first",
+            "replacement"
+          ]
+        },
+        {
+          "predicate": "registry_ids_distinct",
+          "arguments": [
+            "second",
+            "replacement"
+          ]
+        },
+        {
+          "predicate": "collision_phase",
+          "arguments": []
+        }
+      ],
+      "entry": "bind_collision",
+      "nodes": [
+        {
+          "id": "bind_collision",
+          "operation": "apply_registry_state",
+          "bindings": {
+            "first": "first",
+            "second": "second",
+            "replacement": "replacement",
+            "package": "package",
+            "previous": "seed",
+            "reference": "old_ref"
+          },
+          "routes": {
+            "collision_isolated": "remove_first",
+            "removed_reference_refused": "unexpected",
+            "readded_stale_refused": "unexpected"
+          }
+        },
+        {
+          "id": "remove_first",
+          "operation": "apply_registry_state",
+          "bindings": {
+            "first": "first",
+            "second": "second",
+            "replacement": "replacement",
+            "package": "package",
+            "previous": "old_ref",
+            "reference": "unused_ref"
+          },
+          "routes": {
+            "collision_isolated": "unexpected",
+            "removed_reference_refused": "readd_first",
+            "readded_stale_refused": "unexpected"
+          }
+        },
+        {
+          "id": "readd_first",
+          "operation": "apply_registry_state",
+          "bindings": {
+            "first": "first",
+            "second": "second",
+            "replacement": "replacement",
+            "package": "package",
+            "previous": "old_ref",
+            "reference": "new_ref"
+          },
+          "routes": {
+            "collision_isolated": "unexpected",
+            "removed_reference_refused": "unexpected",
+            "readded_stale_refused": "stale_refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "stale_refused",
+          "outcome": "stale_reference_refused_after_readd",
+          "requires": [
+            {
+              "predicate": "registry_readded_new_identity",
+              "arguments": [
+                "first",
+                "replacement",
+                "old_ref",
+                "new_ref"
+              ]
+            },
+            {
+              "predicate": "registry_reference_refused",
+              "arguments": [
+                "old_ref",
+                "first"
+              ]
+            },
+            {
+              "predicate": "registry_removed",
+              "arguments": [
+                "first"
+              ]
+            },
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "new_ref",
+                "replacement"
+              ]
+            },
+            {
+              "predicate": "same_name_project_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_cache_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            },
+            {
+              "predicate": "same_name_artifact_separate",
+              "arguments": [
+                "replacement",
+                "second",
+                "package"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "reference_bound_to_registry",
+              "arguments": [
+                "old_ref",
+                "first"
+              ]
+            },
+            {
+              "predicate": "registry_reference_refused",
+              "arguments": [
+                "new_ref",
+                "replacement"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected_registry_transition",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "stale_reference_refused_after_readd"
+      ]
+    },
+    {
+      "id": "audit-policy-safe",
+      "values": {
+        "request": "Request",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "principal": "Principal",
+        "response": "Response"
+      },
+      "inputs": [
+        "request",
+        "peer",
+        "registry"
+      ],
+      "initial": [
+        {
+          "predicate": "read_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "audit_route",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "peer_verified",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "certificate_current",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "peer_member_active",
+          "arguments": [
+            "peer"
+          ]
+        },
+        {
+          "predicate": "same_org_registry",
+          "arguments": [
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "issuer_status_current",
+          "arguments": [
+            "peer"
+          ]
+        }
+      ],
+      "entry": "classify",
+      "nodes": [
+        {
+          "id": "classify",
+          "operation": "classify_registry_request",
+          "bindings": {
+            "request": "request"
+          },
+          "routes": {
+            "route_0000": "wrong_route",
+            "route_0001": "wrong_route",
+            "route_0010": "wrong_route",
+            "route_0011": "wrong_route",
+            "route_0100": "wrong_route",
+            "route_0101": "wrong_route",
+            "route_0110": "wrong_route",
+            "route_0111": "wrong_route",
+            "route_1000": "admit",
+            "route_1001": "wrong_route",
+            "route_1010": "wrong_route",
+            "route_1011": "wrong_route",
+            "route_1100": "wrong_route",
+            "route_1101": "wrong_route",
+            "route_1110": "wrong_route",
+            "route_1111": "wrong_route"
+          }
+        },
+        {
+          "id": "admit",
+          "operation": "admit_certificate",
+          "bindings": {
+            "peer": "peer",
+            "registry": "registry",
+            "principal": "principal"
+          },
+          "routes": {
+            "admit_00000": "refused",
+            "admit_00001": "refused",
+            "admit_00010": "refused",
+            "admit_00011": "refused",
+            "admit_00100": "refused",
+            "admit_00101": "refused",
+            "admit_00110": "refused",
+            "admit_00111": "refused",
+            "admit_01000": "refused",
+            "admit_01001": "refused",
+            "admit_01010": "refused",
+            "admit_01011": "refused",
+            "admit_01100": "refused",
+            "admit_01101": "refused",
+            "admit_01110": "refused",
+            "admit_01111": "refused",
+            "admit_10000": "refused",
+            "admit_10001": "refused",
+            "admit_10010": "refused",
+            "admit_10011": "refused",
+            "admit_10100": "refused",
+            "admit_10101": "refused",
+            "admit_10110": "refused",
+            "admit_10111": "refused",
+            "admit_11000": "refused",
+            "admit_11001": "refused",
+            "admit_11010": "refused",
+            "admit_11011": "refused",
+            "admit_11100": "refused",
+            "admit_11101": "refused",
+            "admit_11110": "refused",
+            "admit_11111": "audit",
+            "unavailable": "unavailable",
+            "missing_peer": "refused"
+          }
+        },
+        {
+          "id": "audit",
+          "operation": "serve_audit_read",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "response": "response"
+          },
+          "routes": {
+            "visible_safe": "visible",
+            "invalid_refused": "invalid",
+            "limit_refused": "overlimit",
+            "bulk_unsupported": "unsupported",
+            "unavailable": "unavailable"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "wrong_route",
+          "outcome": "wrong_route",
+          "requires": []
+        },
+        {
+          "id": "refused",
+          "outcome": "certificate_refused",
+          "requires": []
+        },
+        {
+          "id": "unavailable",
+          "outcome": "unavailable",
+          "requires": []
+        },
+        {
+          "id": "visible",
+          "outcome": "audit_visible_safe",
+          "requires": [
+            {
+              "predicate": "audit_visible_signal",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "audit_no_hidden_fields",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "audit_invalid_refused",
+          "requires": [
+            {
+              "predicate": "audit_refused_not_clean",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "overlimit",
+          "outcome": "audit_overlimit_refused",
+          "requires": [
+            {
+              "predicate": "audit_refused_not_clean",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unsupported",
+          "outcome": "audit_bulk_unsupported",
+          "requires": [
+            {
+              "predicate": "audit_unsupported_bulk_error",
+              "arguments": [
+                "response"
+              ]
+            },
+            {
+              "predicate": "audit_work_bounded",
+              "arguments": [
+                "response"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "audit_visible_safe",
+        "audit_invalid_refused",
+        "audit_overlimit_refused",
+        "audit_bulk_unsupported"
+      ]
+    },
+    {
+      "id": "version-unpublish-reference",
+      "values": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request",
+        "reference": "ReferenceId",
+        "destination": "Url",
+        "response": "Response",
+        "package": "PackageName",
+        "filename": "Filename",
+        "mode": "CredentialMode",
+        "revision": "Revision"
+      },
+      "inputs": [
+        "principal",
+        "peer",
+        "registry",
+        "request",
+        "reference",
+        "package",
+        "filename",
+        "revision"
+      ],
+      "initial": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "entry": "lookup",
+      "nodes": [
+        {
+          "id": "lookup",
+          "operation": "resolve_unpublish_reference",
+          "bindings": {
+            "registry": "registry",
+            "reference": "reference",
+            "destination": "destination",
+            "package": "package",
+            "filename": "filename",
+            "principal": "principal"
+          },
+          "routes": {
+            "found": "approval",
+            "missing": "refused"
+          }
+        },
+        {
+          "id": "approval",
+          "operation": "authorize_deletion_destination",
+          "bindings": {
+            "destination": "destination",
+            "registry": "registry",
+            "principal": "principal",
+            "mode": "mode"
+          },
+          "routes": {
+            "approved": "marker",
+            "refused": "refused"
+          }
+        },
+        {
+          "id": "marker",
+          "operation": "check_revision_put_marker",
+          "bindings": {
+            "registry": "registry",
+            "principal": "principal",
+            "reference": "reference",
+            "revision": "revision"
+          },
+          "routes": {
+            "found": "delete",
+            "missing": "refused"
+          }
+        },
+        {
+          "id": "delete",
+          "operation": "send_unpublish_delete",
+          "bindings": {
+            "principal": "principal",
+            "peer": "peer",
+            "registry": "registry",
+            "request": "request",
+            "destination": "destination",
+            "response": "response",
+            "package": "package",
+            "filename": "filename",
+            "reference": "reference",
+            "mode": "mode",
+            "revision": "revision"
+          },
+          "routes": {
+            "accepted": "success",
+            "upstream_denied": "upstream_refused",
+            "unsafe": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "success",
+          "outcome": "deleted",
+          "requires": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "no_secret_leak",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "upstream_refused",
+          "outcome": "upstream_denied",
+          "requires": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "refused",
+          "outcome": "refused",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "deleted",
+        "upstream_denied",
+        "refused"
+      ]
+    },
+    {
+      "id": "revision-put-link-restore",
+      "values": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request",
+        "outgoing": "Request",
+        "response": "Response",
+        "reference": "ReferenceId",
+        "revision": "Revision"
+      },
+      "inputs": [
+        "principal",
+        "peer",
+        "registry",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        }
+      ],
+      "entry": "restore",
+      "nodes": [
+        {
+          "id": "restore",
+          "operation": "restore_revision_packument",
+          "bindings": {
+            "request": "request",
+            "registry": "registry",
+            "principal": "principal",
+            "outgoing": "outgoing"
+          },
+          "routes": {
+            "restored": "send",
+            "invalid": "refused",
+            "changed_leased_url": "refused"
+          }
+        },
+        {
+          "id": "send",
+          "operation": "send_restored_revision",
+          "bindings": {
+            "outgoing": "outgoing",
+            "registry": "registry",
+            "principal": "principal",
+            "peer": "peer",
+            "response": "response"
+          },
+          "routes": {
+            "accepted": "classify_removal",
+            "upstream_denied": "denied",
+            "unavailable": "refused"
+          }
+        },
+        {
+          "id": "classify_removal",
+          "operation": "classify_accepted_revision_removal",
+          "bindings": {
+            "response": "response",
+            "registry": "registry",
+            "principal": "principal",
+            "outgoing": "outgoing",
+            "reference": "reference",
+            "revision": "revision"
+          },
+          "routes": {
+            "removed": "commit_marker",
+            "unchanged": "success",
+            "unverifiable": "uncertain"
+          }
+        },
+        {
+          "id": "commit_marker",
+          "operation": "commit_revision_removal_marker",
+          "bindings": {
+            "response": "response",
+            "registry": "registry",
+            "principal": "principal",
+            "reference": "reference",
+            "revision": "revision"
+          },
+          "routes": {
+            "committed": "success",
+            "failed": "uncertain"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "success",
+          "outcome": "forwarded",
+          "requires": [
+            {
+              "predicate": "response_registry",
+              "arguments": [
+                "response",
+                "registry"
+              ]
+            },
+            {
+              "predicate": "revision_links_restored",
+              "arguments": [
+                "outgoing",
+                "registry",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "denied",
+          "outcome": "upstream_denied",
+          "requires": [
+            {
+              "predicate": "upstream_refusal_preserved",
+              "arguments": [
+                "response",
+                "principal"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "refused",
+          "outcome": "refused",
+          "requires": []
+        },
+        {
+          "id": "uncertain",
+          "outcome": "uncertain_partial_write",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "forwarded",
+        "upstream_denied",
+        "refused",
+        "uncertain_partial_write"
+      ]
+    },
+    {
+      "id": "revision-put-changed-leased-url",
+      "values": {
+        "principal": "Principal",
+        "peer": "Peer",
+        "registry": "RegistryId",
+        "request": "Request",
+        "outgoing": "Request"
+      },
+      "inputs": [
+        "principal",
+        "peer",
+        "registry",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "admitted",
+          "arguments": [
+            "principal",
+            "peer",
+            "registry"
+          ]
+        },
+        {
+          "predicate": "classified_action",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "changed_leased_tarball_url",
+          "arguments": [
+            "request",
+            "registry",
+            "principal"
+          ]
+        }
+      ],
+      "entry": "restore",
+      "nodes": [
+        {
+          "id": "restore",
+          "operation": "restore_revision_packument",
+          "bindings": {
+            "request": "request",
+            "registry": "registry",
+            "principal": "principal",
+            "outgoing": "outgoing"
+          },
+          "routes": {
+            "restored": "unexpected",
+            "invalid": "unexpected",
+            "changed_leased_url": "refused"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "refused",
+          "outcome": "refused",
+          "requires": []
+        },
+        {
+          "id": "unexpected",
+          "outcome": "unexpected",
+          "requires": []
+        }
+      ],
+      "requiredOutcomes": [
+        "refused"
+      ]
+    }
+  ]
+}

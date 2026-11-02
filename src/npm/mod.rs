@@ -26,9 +26,11 @@ use crate::App;
 use crate::concurrency::Resolution;
 use crate::http::error::{ApiError, storage_error};
 use crate::http::logging;
+use crate::managed::Principal;
+use crate::managed::report::Call;
 use crate::npm::document::{PackageDocument, VersionEntry};
 use crate::policy::{
-    BlocklistSnapshot, Candidate, Decision, DenyReason, Ecosystem, PublicationTime,
+    BlocklistSnapshot, Candidate, CompiledPolicy, Decision, DenyReason, Ecosystem, PublicationTime,
 };
 use crate::store;
 use crate::store::cache::{
@@ -52,22 +54,64 @@ pub struct Rendered {
 /// in the representation they ask for.
 pub async fn serve(
     app: &App,
+    principal: Option<&Principal>,
     name: &PackageName,
     representation: Representation,
+) -> Result<Rendered, ApiError> {
+    serve_with_url(
+        app,
+        principal,
+        name,
+        representation,
+        &app.config.public_url,
+        true,
+        0,
+    )
+    .await
+}
+
+/// A certificate registry uses its own URL prefix in rendered tarball links. Its
+/// response is rendered after current admission, so it is never reused under an
+/// earlier certificate policy or another registry prefix.
+pub async fn serve_registry(
+    app: &App,
+    principal: &Principal,
+    name: &PackageName,
+    representation: Representation,
+    registry: u64,
+) -> Result<Rendered, ApiError> {
+    let mut url = app.config.public_url.clone();
+    url.set_path(&format!("/registry/npm/{registry}/"));
+    serve_with_url(app, Some(principal), name, representation, &url, false, registry).await
+}
+
+async fn serve_with_url(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &PackageName,
+    representation: Representation,
+    public_url: &url::Url,
+    reusable: bool,
+    registry_id: u64,
 ) -> Result<Rendered, ApiError> {
     let now = app.clock.now_utc_micros();
     let monotonic = app.clock.now_monotonic();
 
     // SPEC §9's ordering point, read exactly once for this request.
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(now) {
-        return Err(ApiError::PolicyUnavailable);
-    }
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    let snapshot = policy
+        .snapshot
+        .as_deref()
+        .filter(|snapshot| snapshot.is_valid_at(now))
+        .ok_or(ApiError::PolicyUnavailable)?;
 
-    let project = ProjectKey::new(Ecosystem::Npm, name.as_str());
+    let project = ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str());
     let render_key = RenderKey {
         project: project.clone(),
         representation: representation.clone(),
+        policy: policy.policy.fingerprint,
     };
     let caches = app.store().caches();
 
@@ -75,7 +119,8 @@ pub async fn serve(
     // five conditions of SPEC §10, and the project generation it compares against
     // comes from the memory cache rather than from a query — a project whose record
     // has been evicted is not a warm request.
-    if let Some(rendered) = caches.rendered.get(&render_key)
+    if reusable
+        && let Some(rendered) = caches.rendered.get(&render_key)
         && let Some(cached) = caches.projects.get(&project)
         && rendered.is_reusable(
             cached.row.generation,
@@ -96,11 +141,39 @@ pub async fn serve(
     }
     logging::record_cache(logging::CacheStatus::Miss);
 
-    let resolved = resolve(app, name, &snapshot, now, monotonic).await?;
-    let (body, content_type) = render(app, &resolved, &representation, now)?;
+    let resolved = resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal.and_then(|p| p.registry_origin.as_ref()), principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice()), principal.and_then(|p| p.registry_read_authorization.as_deref())).await?;
+    let (body, content_type) = match render(&resolved, &representation, public_url, now) {
+        Ok(rendered) => rendered,
+        Err(refused) => {
+            // Managed mode: a request refused for one version is one activity row
+            // (S3-8). A listing served with some versions hidden records none.
+            if let (Some((index, names_version)), Some(principal), Some(managed)) =
+                (refused.entry, principal, app.managed())
+            {
+                let entry = &resolved.entries[index];
+                let candidate = Candidate {
+                    ecosystem: Ecosystem::Npm,
+                    name: name.as_str(),
+                    version: entry.version(),
+                    publication: publication_of(entry, &resolved.cached.first_seen),
+                    advertised_digests: &entry.reference.expected,
+                    pinned_digests: resolved.cached.pins_of(&entry.id),
+                };
+                managed.record_refused(
+                    principal,
+                    &policy,
+                    now,
+                    &candidate,
+                    resolved.decisions[index],
+                    names_version,
+                );
+            }
+            return Err(refused.error);
+        }
+    };
     let body: Arc<[u8]> = Arc::from(body);
 
-    if resolved.deadline_utc_micros > now {
+    if reusable && resolved.deadline_utc_micros > now {
         caches.rendered.insert(
             render_key,
             Arc::new(RenderedResponse {
@@ -111,6 +184,8 @@ pub async fn serve(
                 digest_generation: resolved.digest_generation,
                 deadline_utc_micros: resolved.deadline_utc_micros,
                 deadline_monotonic: resolved.deadline_monotonic,
+                // npm refusals are never cached; they are recorded each time.
+                refused: None,
             }),
             body.len() as u64 + 256,
         );
@@ -131,6 +206,21 @@ struct Resolved {
     digest_generation: u64,
     deadline_utc_micros: i64,
     deadline_monotonic: Instant,
+    /// What the decisions were made from, for an activity row's candidate.
+    cached: Arc<CachedProject>,
+}
+
+/// A refusal, and the entry it was decided on: its index, and whether the route named
+/// its version.
+struct Refused {
+    error: ApiError,
+    entry: Option<(usize, bool)>,
+}
+
+impl From<ApiError> for Refused {
+    fn from(error: ApiError) -> Refused {
+        Refused { error, entry: None }
+    }
 }
 
 /// The project snapshot a decision must be made from: the cached one while it is
@@ -138,13 +228,18 @@ struct Resolved {
 ///
 /// Separate from [`resolve`] because the artifact path needs exactly this and nothing
 /// else — SPEC §9's "ensure current project metadata, refreshing if its TTL expired".
+#[allow(clippy::too_many_arguments)]
 async fn current_project(
     app: &App,
     name: &PackageName,
     now: i64,
     monotonic: Instant,
+    registry_id: u64,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<Arc<CachedProject>, ApiError> {
-    let key = ProjectKey::new(Ecosystem::Npm, name.as_str());
+    let key = ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str());
     let caches = app.store().caches();
     let ttl = Duration::from_secs(app.config.metadata_ttl_seconds);
     let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
@@ -167,7 +262,7 @@ async fn current_project(
 
     let cached = match cached {
         Some(cached) => Some(cached),
-        None => load_project(app, name).await?.map(Arc::new),
+        None => load_project(app, name, registry_id).await?.map(Arc::new),
     };
 
     // SPEC rev 3 §10: age since the last FULL fetch, which no `304` advances. Once
@@ -195,7 +290,7 @@ async fn current_project(
         // The expired snapshot travels with the refresh rather than being dropped
         // here: its validators are what make that revalidation conditional — unless
         // it is over-age, in which case the refresh sends none at all.
-        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale).await?,
+        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, origin, private_cidrs, read_authorization).await?,
     };
 
     caches
@@ -216,6 +311,25 @@ async fn current_project(
 /// is what SPEC §12's warm-artifact target needs on a project carrying thousands of
 /// versions.
 pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertised>, ApiError> {
+    ensure_fresh_project_in(app, name, 0).await
+}
+
+pub async fn ensure_fresh_project_in(
+    app: &App,
+    name: &str,
+    registry_id: u64,
+) -> Result<Arc<Advertised>, ApiError> {
+    ensure_fresh_project_at(app, name, registry_id, None, &[], None).await
+}
+
+pub async fn ensure_fresh_project_at(
+    app: &App,
+    name: &str,
+    registry_id: u64,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
+) -> Result<Arc<Advertised>, ApiError> {
     // The stored name is a name this instance already accepted from upstream; it is
     // re-validated here rather than trusted, and a name that no longer parses is a
     // reference nothing can be served for.
@@ -228,9 +342,13 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
         &name,
         app.clock.now_utc_micros(),
         app.clock.now_monotonic(),
+        registry_id,
+        origin,
+        private_cidrs,
+        read_authorization,
     )
     .await?;
-    advertised(app, &name, &cached)
+    advertised(app, &name, &cached, registry_id)
 }
 
 /// What `cached` advertises, parsed once per snapshot.
@@ -238,6 +356,7 @@ fn advertised(
     app: &App,
     name: &PackageName,
     cached: &CachedProject,
+    registry_id: u64,
 ) -> Result<Arc<Advertised>, ApiError> {
     if let Some(advertised) = cached.advertised.get() {
         return Ok(Arc::clone(advertised));
@@ -245,7 +364,7 @@ fn advertised(
 
     let document = parse_stored(app, name, &cached.row.payload)?;
     let entries = document
-        .entries(app.config.max_references_per_project.get())
+        .entries_in_registry(registry_id, app.config.max_references_per_project.get())
         .map_err(|err| reference_cap_error(name, err))?;
     let advertised = Arc::new(Advertised::new(
         entries
@@ -270,23 +389,35 @@ pub async fn reference_for_file(
     name: &PackageName,
     filename: &str,
 ) -> Result<ReferenceId, ApiError> {
-    let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
-    if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
-        return Err(ApiError::PolicyUnavailable);
+    reference_for_file_in(app, name, filename, 0).await
+}
+
+pub async fn reference_for_file_in(
+    app: &App,
+    name: &PackageName,
+    filename: &str,
+    registry_id: u64,
+) -> Result<ReferenceId, ApiError> {
+    // A managed firewall ignores its local blocklist (C109): its key's policy decides.
+    if app.managed().is_none() {
+        let snapshot = app.blocklist().ok_or(ApiError::PolicyUnavailable)?;
+        if !snapshot.is_valid_at(app.clock.now_utc_micros()) {
+            return Err(ApiError::PolicyUnavailable);
+        }
     }
 
-    let key = ProjectKey::new(Ecosystem::Npm, name.as_str());
+    let key = ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str());
     let held = match app.store().caches().projects.get(&key) {
         Some(cached) => Some(cached),
-        None => load_project(app, name).await?.map(Arc::new),
+        None => load_project(app, name, registry_id).await?.map(Arc::new),
     };
     if let Some(held) = held
-        && let Some(id) = advertised(app, name, &held)?.by_filename(filename)
+        && let Some(id) = advertised(app, name, &held, registry_id)?.by_filename(filename)
     {
         return Ok(id);
     }
 
-    ensure_fresh_project(app, name.as_str())
+    ensure_fresh_project_in(app, name.as_str(), registry_id)
         .await?
         .by_filename(filename)
         .ok_or(ApiError::NotFound)
@@ -309,21 +440,27 @@ fn parse_stored(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve(
     app: &App,
     name: &PackageName,
+    policy: &CompiledPolicy,
     snapshot: &BlocklistSnapshot,
     now: i64,
     monotonic: Instant,
+    registry_id: u64,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<Resolved, ApiError> {
-    let cached = current_project(app, name, now, monotonic).await?;
+    let cached = current_project(app, name, now, monotonic, registry_id, origin, private_cidrs, read_authorization).await?;
     let ttl_micros =
         i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
             .unwrap_or(i64::MAX);
 
     let document = parse_stored(app, name, &cached.row.payload)?;
     let entries = document
-        .entries(app.config.max_references_per_project.get())
+        .entries_in_registry(registry_id, app.config.max_references_per_project.get())
         .map_err(|err| reference_cap_error(name, err))?;
 
     // Every version is judged at once, so a cold project's OSV checks share one
@@ -342,14 +479,7 @@ async fn resolve(
             // reader putting an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&entry.id),
         };
-        crate::osv::evaluate(
-            &app.osv,
-            Some(snapshot),
-            now,
-            app.config.cooldown_seconds,
-            &candidate,
-        )
-        .await
+        crate::osv::evaluate(&app.osv, policy, now, &candidate).await
     }))
     .await;
 
@@ -381,7 +511,7 @@ async fn resolve(
     // would serve an over-age snapshot from memory without ever reaching
     // [`current_project`] — which is the one thing "never served" forbids.
     let ceiling = store::effective_max_age_micros(
-        &ProjectKey::new(Ecosystem::Npm, name.as_str()),
+        &ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str()),
         app.config.metadata_max_age_seconds,
     )
     .map_or(i64::MAX, |ceiling| {
@@ -407,6 +537,7 @@ async fn resolve(
         tags,
         deadline_utc_micros,
         deadline_monotonic,
+        cached,
     })
 }
 
@@ -424,23 +555,21 @@ fn publication_of(entry: &VersionEntry, first_seen: &HashMap<ReferenceId, i64>) 
     }
 }
 
-async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProject>, ApiError> {
-    let row = app
-        .store()
-        .get_project(Ecosystem::Npm, name.as_str())
-        .await
-        .map_err(storage_error)?;
+async fn load_project(app: &App, name: &PackageName, registry_id: u64) -> Result<Option<CachedProject>, ApiError> {
+    let row = crate::store::registry_state::apply_registry_state(
+        app.store(), registry_id, name.as_str(), None,
+    ).await.map_err(storage_error)?;
     let Some(row) = row else {
         return Ok(None);
     };
     let first_seen = app
         .store()
-        .list_project_first_seen(Ecosystem::Npm, name.as_str())
+        .list_project_first_seen_in(registry_id, Ecosystem::Npm, name.as_str())
         .await
         .map_err(storage_error)?;
     let pins = app
         .store()
-        .list_project_pins(Ecosystem::Npm, name.as_str())
+        .list_project_pins_in(registry_id, Ecosystem::Npm, name.as_str())
         .await
         .map_err(storage_error)?;
     Ok(Some(CachedProject {
@@ -485,6 +614,7 @@ async fn load_project(app: &App, name: &PackageName) -> Result<Option<CachedProj
 /// `stale` is the expired snapshot this request found, when there was one. Only the
 /// leader's is used — a joiner is answered from the leader's result, which is the
 /// point of the latch.
+#[allow(clippy::too_many_arguments)]
 async fn refresh_coalesced(
     app: &App,
     name: &PackageName,
@@ -493,6 +623,9 @@ async fn refresh_coalesced(
     monotonic: Instant,
     over_age: bool,
     stale: Option<Arc<CachedProject>>,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<Arc<CachedProject>, ApiError> {
     let refreshes = app.downloads.metadata();
     let (slot, leader, _waiter) = refreshes.join(key.clone());
@@ -509,7 +642,7 @@ async fn refresh_coalesced(
         Err(ApiError::InternalFailure),
         name.as_str().to_owned(),
     );
-    let refreshed = refresh(app, name, key, now, monotonic, over_age, stale).await;
+    let refreshed = refresh(app, name, key, now, monotonic, over_age, stale, origin, private_cidrs, read_authorization).await;
     resolution.answer(refreshed.clone());
     refreshed
 }
@@ -523,6 +656,7 @@ async fn refresh_coalesced(
 /// what SPEC §10's second clause asks for: the caller re-judges *this* document against
 /// the blocklist in force now, so a version blocked since the last full fetch is
 /// excluded rather than carried along on a representation nobody rebuilt.
+#[allow(clippy::too_many_arguments)]
 async fn refresh(
     app: &App,
     name: &PackageName,
@@ -531,11 +665,15 @@ async fn refresh(
     monotonic: Instant,
     over_age: bool,
     stale: Option<Arc<CachedProject>>,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
 ) -> Result<Arc<CachedProject>, ApiError> {
     // Built by cloning the origin and pushing one segment, never joined or
     // formatted; `url_for` re-admits the finished URL before handing it back.
-    let url = app
-        .origins
+    let selected = origin.map(|origin| crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec()))
+        .transpose().map_err(|_| ApiError::NotFound)?;
+    let url = selected.as_ref().unwrap_or(&app.origins)
         .url_for(OriginKind::NpmMetadata, &[name.upstream_segment()])
         .map_err(|rejection| {
             tracing::warn!(package = %name, %rejection, "refused to build an upstream URL");
@@ -546,6 +684,9 @@ async fn refresh(
         .transport
         .fetch_metadata(MetadataRequest {
             url,
+            origin: origin.cloned(),
+            private_cidrs: private_cidrs.to_vec(),
+            read_authorization: read_authorization.map(str::to_owned),
             accept: NPM_ACCEPT,
             // SPEC §10: revalidate rather than refetch in full. These are *our* stored
             // validators going upstream, which is the only direction they travel — SPEC
@@ -567,6 +708,7 @@ async fn refresh(
             max_bytes: app.config.max_metadata_bytes.get(),
         })
         .await;
+    app.upstreams.record_upstream(Call::Npm, &fetched);
 
     let (payload, validators, fetched_at_micros): (Arc<[u8]>, _, i64) = match fetched {
         Ok(MetadataResponse::Fresh { body, validators }) => {
@@ -633,7 +775,7 @@ async fn refresh(
         return Err(ApiError::UpstreamInvalid);
     }
     let entries = document
-        .entries(app.config.max_references_per_project.get())
+        .entries_in_registry(key.registry_id, app.config.max_references_per_project.get())
         .map_err(|err| reference_cap_error(name, err))?;
 
     let references = entries
@@ -651,17 +793,11 @@ async fn refresh(
         })
         .collect();
 
-    // A refresh does not change a pin — `commit_project_refresh` carries them
-    // forward — but it does replace the cached project, so they are read back with it.
-    let pins = app
-        .store()
-        .list_project_pins(Ecosystem::Npm, name.as_str())
-        .await
-        .map_err(storage_error)?;
-
+    #[cfg(feature = "test-support")]
+    crate::pause::at("before refresh commit", name.as_str()).await;
     let committed = app
         .store()
-        .commit_project_refresh(ProjectRefresh {
+        .commit_project_refresh_in(key.registry_id, ProjectRefresh {
             ecosystem: Ecosystem::Npm,
             name: name.as_str().to_owned(),
             payload: Arc::clone(&payload),
@@ -670,6 +806,17 @@ async fn refresh(
             fetched_at_micros,
             references,
         })
+        .await
+        .map_err(storage_error)?;
+
+    // A refresh does not change a pin — `commit_project_refresh` carries them
+    // forward — but it does replace the cached project, so they are read back with it.
+    // After the commit, never before: a pin that lands between the two, with its
+    // digest-generation bump, would otherwise travel with the newer generation it bumped
+    // to and show a version a policy blocks until the metadata TTL (C104, SPEC §9).
+    let pins = app
+        .store()
+        .list_project_pins_in(key.registry_id, Ecosystem::Npm, name.as_str())
         .await
         .map_err(storage_error)?;
 
@@ -691,13 +838,11 @@ async fn refresh(
 }
 
 fn render(
-    app: &App,
     resolved: &Resolved,
     representation: &Representation,
+    public_url: &url::Url,
     now: i64,
-) -> Result<(Vec<u8>, &'static str), ApiError> {
-    let public_url = &app.config.public_url;
-
+) -> Result<(Vec<u8>, &'static str), Refused> {
     if let Representation::NpmVersion(spelling) = representation {
         return single_version(resolved, spelling, public_url, now);
     }
@@ -732,13 +877,13 @@ fn single_version(
     spelling: &str,
     public_url: &url::Url,
     now: i64,
-) -> Result<(Vec<u8>, &'static str), ApiError> {
+) -> Result<(Vec<u8>, &'static str), Refused> {
     let target = if resolved.document.dist_tags.contains_key(spelling) {
         // A tag upstream really has. It is resolved through the *filtered* tags, so
         // `latest` gives its fallback and a tag the rules dropped is simply gone.
         match resolved.tags.get(spelling).and_then(Value::as_str) {
             Some(target) => target.to_owned(),
-            None => return Err(ApiError::NotFound),
+            None => return Err(ApiError::NotFound.into()),
         }
     } else {
         spelling.to_owned()
@@ -749,32 +894,42 @@ fn single_version(
         .iter()
         .position(|entry| entry.version() == target)
     else {
-        return Err(ApiError::NotFound);
+        return Err(ApiError::NotFound.into());
     };
 
+    let refused = |error| Refused {
+        error,
+        entry: Some((index, true)),
+    };
     match resolved.decisions[index] {
         Decision::Allow => Ok((
             render::single_version(&resolved.entries[index], public_url),
             render::FULL_CONTENT_TYPE,
         )),
-        Decision::Hold { eligible_at_micros } => Err(ApiError::held(eligible_at_micros, now)),
-        Decision::Deny(reason) => Err(ApiError::Blocked {
+        Decision::Hold { eligible_at_micros } => {
+            Err(refused(ApiError::held(eligible_at_micros, now)))
+        }
+        Decision::Deny(reason) => Err(refused(ApiError::Blocked {
             reason: deny_reason(reason),
-        }),
-        Decision::Unavailable => Err(ApiError::PolicyUnavailable),
+        })),
+        Decision::Unavailable => Err(ApiError::PolicyUnavailable.into()),
     }
 }
 
 /// The denial for a project whose every version was excluded. A project held only by
 /// age says when it will be back; one with anything blocked in it does not, because
 /// a block has no deadline.
-fn denial(resolved: &Resolved, now: i64) -> ApiError {
+/// The refusal names the version it was decided on, for its activity row.
+fn denial(resolved: &Resolved, now: i64) -> Refused {
     // A block is reported ahead of a hold: it is the more specific answer, and it is
     // the one a client must not read as "try again later".
-    for decision in &resolved.decisions {
+    for (index, decision) in resolved.decisions.iter().enumerate() {
         if let Decision::Deny(reason) = decision {
-            return ApiError::Blocked {
-                reason: deny_reason(*reason),
+            return Refused {
+                error: ApiError::Blocked {
+                    reason: deny_reason(*reason),
+                },
+                entry: Some((index, false)),
             };
         }
     }
@@ -782,17 +937,21 @@ fn denial(resolved: &Resolved, now: i64) -> ApiError {
     let earliest = resolved
         .decisions
         .iter()
-        .filter_map(|decision| match decision {
-            Decision::Hold { eligible_at_micros } => Some(*eligible_at_micros),
+        .enumerate()
+        .filter_map(|(index, decision)| match decision {
+            Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, index)),
             _ => None,
         })
         .min();
 
     match earliest {
-        Some(eligible_at_micros) => ApiError::held(eligible_at_micros, now),
+        Some((eligible_at_micros, index)) => Refused {
+            error: ApiError::held(eligible_at_micros, now),
+            entry: Some((index, false)),
+        },
         // Nothing here could even be identified, so there is nothing to serve and
         // nothing to wait for.
-        None => ApiError::NotFound,
+        None => ApiError::NotFound.into(),
     }
 }
 

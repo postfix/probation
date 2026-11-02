@@ -339,6 +339,7 @@ mod tests {
             duration_micros: 0,
             bytes: 0,
             consumer: None,
+            place: None,
         })
     }
 

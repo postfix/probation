@@ -15,6 +15,7 @@
 //! needs them can see them and the client cannot.
 
 use std::borrow::Borrow;
+use std::net::IpAddr;
 
 use axum::Json;
 use axum::extract::rejection::PathRejection;
@@ -57,6 +58,8 @@ pub enum ApiError {
     /// Storage is unusable, so no state change a response would depend on can be
     /// committed (SPEC §10).
     StorageUnusable,
+    /// Upstream accepted a revision PUT but its removal marker could not be made durable.
+    PartialWriteUncertain,
     /// Work this instance started did not finish, for a reason that is neither
     /// upstream's, nor policy's, nor a bound being reached — a transfer task that
     /// died, say.
@@ -81,6 +84,22 @@ pub enum ApiError {
     /// The one upstream failure SPEC §11 separates out, because a client may
     /// reasonably retry it.
     UpstreamTimeout,
+    /// Managed mode: no key, or one the management server does not accept. One fixed
+    /// answer for every reason, naming no account (C13).
+    Unauthenticated,
+    /// Managed mode: the key could not be checked right now — the lookup budget is
+    /// spent or the server is busy. `Retry-After: 1`, because a valid key must never be
+    /// told it is wrong (T10).
+    LookupBusy,
+    /// Managed mode: another organisation's network lock covers the client's address
+    /// (C30, C92). The body shows the address and nothing else; the decision line's
+    /// reason does not carry it (C12).
+    NetworkNotAllowed(IpAddr),
+    /// Managed mode: the key's account is over its rate on this firewall (C66).
+    TooManyRequests,
+    /// Managed mode: no cache snapshot is loaded and no sync applied yet, so nothing is
+    /// served (T1, C109).
+    NotReady,
 }
 
 impl ApiError {
@@ -98,7 +117,10 @@ impl ApiError {
 
     pub fn status(&self) -> StatusCode {
         match self {
-            ApiError::Held { .. } | ApiError::Blocked { .. } => StatusCode::FORBIDDEN,
+            ApiError::Held { .. } | ApiError::Blocked { .. } | ApiError::NetworkNotAllowed(_) => {
+                StatusCode::FORBIDDEN
+            }
+            ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
@@ -107,7 +129,11 @@ impl ApiError {
             | ApiError::Overloaded
             | ApiError::CapacityExhausted
             | ApiError::StorageUnusable
-            | ApiError::InternalFailure => StatusCode::SERVICE_UNAVAILABLE,
+            | ApiError::PartialWriteUncertain
+            | ApiError::InternalFailure
+            | ApiError::LookupBusy
+            | ApiError::NotReady => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::UpstreamFailure | ApiError::UpstreamInvalid | ApiError::IntegrityMismatch => {
                 StatusCode::BAD_GATEWAY
             }
@@ -128,11 +154,17 @@ impl ApiError {
             ApiError::Overloaded => "OVERLOADED",
             ApiError::CapacityExhausted => "CAPACITY_EXHAUSTED",
             ApiError::StorageUnusable => "STORAGE_UNUSABLE",
+            ApiError::PartialWriteUncertain => "PARTIAL_WRITE_UNCERTAIN",
             ApiError::InternalFailure => "INTERNAL_FAILURE",
             ApiError::UpstreamFailure => "UPSTREAM_FAILURE",
             ApiError::UpstreamInvalid => "UPSTREAM_INVALID",
             ApiError::IntegrityMismatch => "INTEGRITY_MISMATCH",
             ApiError::UpstreamTimeout => "UPSTREAM_TIMEOUT",
+            ApiError::Unauthenticated => "AUTHENTICATION_REQUIRED",
+            ApiError::LookupBusy => "LOOKUP_BUSY",
+            ApiError::NetworkNotAllowed(_) => "NETWORK_NOT_ALLOWED",
+            ApiError::TooManyRequests => "TOO_MANY_REQUESTS",
+            ApiError::NotReady => "NOT_READY",
         }
     }
 
@@ -159,6 +191,7 @@ impl ApiError {
             ApiError::StorageUnusable => {
                 "local storage is unusable, so no decision can be committed".to_owned()
             }
+            ApiError::PartialWriteUncertain => "upstream accepted a revision change but deletion cannot be confirmed; ask an administrator to recover it".to_owned(),
             ApiError::InternalFailure => {
                 "the request could not be completed; a later attempt may succeed".to_owned()
             }
@@ -170,6 +203,30 @@ impl ApiError {
                 "the artifact does not match its expected digests".to_owned()
             }
             ApiError::UpstreamTimeout => "the upstream registry did not answer in time".to_owned(),
+            ApiError::Unauthenticated => "a valid API key is required".to_owned(),
+            ApiError::LookupBusy => {
+                "the API key could not be checked right now; retry shortly".to_owned()
+            }
+            ApiError::NetworkNotAllowed(_) => {
+                "this API key may not be used from this network".to_owned()
+            }
+            ApiError::TooManyRequests => {
+                "this account has sent too many requests; retry later".to_owned()
+            }
+            ApiError::NotReady => {
+                "the firewall has not loaded its policies yet; retry shortly".to_owned()
+            }
+        }
+    }
+
+    /// The reason a client is shown: [`ApiError::reason`], except that a network-lock
+    /// refusal names the address it refused (C92). Only the response carries it.
+    fn shown_reason(&self) -> String {
+        match self {
+            ApiError::NetworkNotAllowed(client) => {
+                format!("this API key may not be used from {client}")
+            }
+            _ => self.reason(),
         }
     }
 
@@ -201,7 +258,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
             error: self.error_code(),
-            reason: self.reason(),
+            reason: self.shown_reason(),
             // The ID this request already has, so the one a client is told and the one
             // its decision line carries are the same string rather than two counters
             // that happen to agree.
@@ -217,6 +274,29 @@ impl IntoResponse for ApiError {
             && let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string())
         {
             response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        match self {
+            ApiError::LookupBusy | ApiError::NotReady => {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            }
+            // Past the front door's or the download wait's bound: a client that honours
+            // it comes back once a permit has had time to free (decision 2026-10-23).
+            ApiError::Overloaded => {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            }
+            // RFC 9110 §15.5.2: a 401 names the scheme it accepts. Basic, so pip and uv
+            // know to send the key as a password.
+            ApiError::Unauthenticated => {
+                response.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Basic realm=\"probation\""),
+                );
+            }
+            _ => {}
         }
         // Carried out to `logging::decide`, which is outside every handler and
         // therefore the only place that can log one line for every answer including

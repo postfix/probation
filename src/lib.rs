@@ -12,6 +12,7 @@ pub mod config;
 /// public Rust surface.
 pub(crate) mod delivery;
 pub mod http;
+pub mod managed;
 pub mod npm;
 pub mod osv;
 pub mod policy;
@@ -19,6 +20,63 @@ pub mod pypi;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
+
+/// Named points where a test can hold one request still while it changes the world
+/// around it. **Compiled only under `test-support`**, so no build that ships has them.
+#[cfg(feature = "test-support")]
+pub mod pause {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::Semaphore;
+
+    /// One armed point: the request that reaches it waits until [`Pause::release`].
+    pub struct Pause {
+        reached: Semaphore,
+        released: Semaphore,
+    }
+
+    impl Pause {
+        /// Returns once a request is waiting at the point.
+        pub async fn reached(&self) {
+            let _ = self.reached.acquire().await.expect("the pause is open");
+        }
+
+        pub fn release(&self) {
+            self.released.add_permits(1);
+        }
+    }
+
+    type Armed = Vec<(&'static str, String, Arc<Pause>)>;
+    static ARMED: Mutex<Armed> = Mutex::new(Vec::new());
+
+    /// Holds the next request that reaches `point` for `subject`, once.
+    pub fn arm(point: &'static str, subject: &str) -> Arc<Pause> {
+        let pause = Arc::new(Pause {
+            reached: Semaphore::new(0),
+            released: Semaphore::new(0),
+        });
+        ARMED.lock().expect("the armed points").push((
+            point,
+            subject.to_owned(),
+            Arc::clone(&pause),
+        ));
+        pause
+    }
+
+    pub(crate) async fn at(point: &'static str, subject: &str) {
+        let pause = {
+            let mut armed = ARMED.lock().expect("the armed points");
+            let found = armed.iter().position(|(armed_point, armed_subject, _)| {
+                *armed_point == point && armed_subject == subject
+            });
+            found.map(|index| armed.remove(index).2)
+        };
+        if let Some(pause) = pause {
+            pause.reached.add_permits(1);
+            let _ = pause.released.acquire().await;
+        }
+    }
+}
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -34,7 +92,9 @@ use crate::artifacts::download::DownloadCoordinator;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::http::limits::Limits;
-use crate::policy::BlocklistSnapshot;
+use crate::managed::report::UpstreamHealth;
+use crate::managed::{Managed, Principal};
+use crate::policy::{BlocklistSnapshot, CompiledPolicy};
 use crate::store::StoreHandle;
 use crate::store::cache::MemoryCaches;
 use crate::tasks::Tasks;
@@ -86,7 +146,10 @@ pub struct App {
     /// `src/policy/blocklist.rs`. They live here until the slice that owns that file
     /// again can lift them out; the seam is the same either way, because every
     /// reader and the one writer already go through these methods.
-    policy: ArcSwapOption<BlocklistSnapshot>,
+    ///
+    /// The snapshot is published inside the policy compiled from it, so a request that
+    /// loads one reads both from the same publication.
+    policy: ArcSwapOption<CompiledPolicy>,
     store: StoreHandle,
     /// Verified artifact bytes on disk (SPEC §9, §10).
     pub content: ContentStore,
@@ -96,6 +159,7 @@ pub struct App {
     /// The bounded work SPEC §10 requires: active requests, artifact downloads, and
     /// the two response deadlines.
     pub limits: Limits,
+    pub(crate) login_rates: http::registry_action::LoginRates,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -103,6 +167,11 @@ pub struct App {
     /// privacy: reached only through `osv::evaluate` call sites that already hold
     /// `&App`.
     osv: osv::OsvClient,
+    /// Present only when `[management]` is set: each request's key names its policy.
+    managed: Option<Managed>,
+    /// Whether each upstream answered this sync period, for the managed report (C69).
+    /// Recorded in standalone too, where nothing reads it.
+    pub(crate) upstreams: Arc<UpstreamHealth>,
 }
 
 impl App {
@@ -113,23 +182,54 @@ impl App {
     /// Inside a request it also records the revision handed out, so the decision line
     /// names the snapshot the request was judged against.
     pub fn blocklist(&self) -> Option<Arc<BlocklistSnapshot>> {
-        let snapshot = self.policy.load_full();
-        if let Some(snapshot) = &snapshot {
+        self.policy().and_then(|policy| policy.snapshot.clone())
+    }
+
+    /// The policy every request decides under: the blocklist in force, compiled with
+    /// `cooldown_seconds` and `osv_mode`. Records the revision like `blocklist`.
+    pub fn policy(&self) -> Option<Arc<CompiledPolicy>> {
+        let policy = self.policy.load_full();
+        if let Some(snapshot) = policy.as_ref().and_then(|policy| policy.snapshot.as_ref()) {
             http::logging::record_blocklist_revision(snapshot.revision);
         }
-        snapshot
+        policy
+    }
+
+    /// The policy one request decides under: its key's in managed mode, otherwise
+    /// [`App::policy`]'s, read at the moment of the call.
+    pub fn policy_for(&self, principal: Option<&Principal>) -> Option<Arc<CompiledPolicy>> {
+        match principal {
+            Some(principal) => Some(Arc::clone(&principal.policy)),
+            None => self.policy(),
+        }
+    }
+
+    /// Managed mode's key cache and server client, when `[management]` is set.
+    pub fn managed(&self) -> Option<&Managed> {
+        self.managed.as_ref()
     }
 
     /// Makes `snapshot` the one in force for every request that loads it from here
     /// on. Called only after the snapshot has been committed (SPEC §10).
     pub fn publish_blocklist(&self, snapshot: Arc<BlocklistSnapshot>) {
-        self.policy.store(Some(snapshot));
+        let policy = CompiledPolicy::standalone(
+            self.config.cooldown_seconds,
+            self.config.osv_mode,
+            snapshot,
+        );
+        self.policy.store(Some(Arc::new(policy)));
     }
 
+    /// The revision of the blocklist file in force. A managed firewall ignores its file
+    /// (C109), so it has none, and its decision lines never name one.
     pub fn blocklist_revision(&self) -> Option<u64> {
+        if self.managed.is_some() {
+            return None;
+        }
         self.policy
             .load()
             .as_ref()
+            .and_then(|policy| policy.snapshot.as_ref())
             .map(|snapshot| snapshot.revision)
     }
 
@@ -201,25 +301,34 @@ impl App {
         let osv_cache_ttl = std::time::Duration::from_secs(deps.config.osv_cache_ttl_seconds.get());
         let osv_request_timeout =
             std::time::Duration::from_millis(deps.config.osv_request_timeout_ms.get());
+        let upstreams = Arc::new(UpstreamHealth::default());
         let (osv, osv_task) = match deps.osv_base_url {
             Some(url) => osv::OsvClient::spawn_with(
                 deps.osv_client,
                 url,
                 osv_cache_ttl,
                 osv_request_timeout,
-                deps.config.osv_mode,
                 drain.clone(),
+                Arc::clone(&upstreams),
             ),
             None => osv::OsvClient::new(
                 deps.osv_client,
                 osv_cache_ttl,
                 osv_request_timeout,
-                deps.config.osv_mode,
                 drain.clone(),
+                Arc::clone(&upstreams),
             ),
         };
         delivery_tasks.push(osv_task);
 
+        let managed = deps.config.management.as_ref().map(|management| {
+            Managed::new(
+                management,
+                Duration::from_secs(deps.config.sync_interval_seconds.get()),
+                Arc::clone(&deps.clock),
+                &deps.config.data_dir,
+            )
+        });
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
             // injected. Ahead of `config`, which the next field moves.
@@ -235,17 +344,23 @@ impl App {
             content,
             downloads: DownloadCoordinator::new(),
             limits,
+            login_rates: http::registry_action::LoginRates::default(),
             delivery,
             osv,
+            managed,
+            upstreams,
         });
 
-        restore_blocklist(&app).await;
-
-        // One pass before the listener accepts anything, so an instance with a valid
-        // blocklist file is ready on its first request rather than one poll interval
-        // later. The poll loop continues from the state this pass leaves behind.
+        // A managed firewall ignores its local blocklist (C109): nothing is restored or
+        // read, and the poller does not run.
         let mut watcher = Watcher::new();
-        blocklist_poller::poll_once(&app, &mut watcher).await;
+        if app.managed.is_none() {
+            restore_blocklist(&app).await;
+            // One pass before the listener accepts anything, so an instance with a valid
+            // blocklist file is ready on its first request rather than one poll interval
+            // later. The poll loop continues from the state this pass leaves behind.
+            blocklist_poller::poll_once(&app, &mut watcher).await;
+        }
 
         let addr = app.config.listen;
 
@@ -253,11 +368,9 @@ impl App {
         // `tls_cert_path`/`tls_key_path` set means `serve` terminates TLS itself,
         // instead of requiring a reverse proxy in front of it for that one job.
         let tls = match (&app.config.tls_cert_path, &app.config.tls_key_path) {
-            (Some(cert), Some(key)) => Some(
-                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
-                    .await
-                    .map_err(StartupError::Tls)?,
-            ),
+            (Some(cert), Some(key)) => {
+                Some(managed::certificates::tls_config(cert, key).map_err(StartupError::Tls)?)
+            }
             _ => None,
         };
 
@@ -273,7 +386,13 @@ impl App {
         let local_addr = std_listener.local_addr().map_err(StartupError::Serve)?;
 
         let shutdown = CancellationToken::new();
-        let tasks = tasks::spawn(Arc::clone(&app), shutdown.clone(), watcher, delivery_tasks);
+        let tasks = tasks::spawn(
+            Arc::clone(&app),
+            shutdown.clone(),
+            drain.clone(),
+            watcher,
+            delivery_tasks,
+        );
 
         // `axum_server` on both paths, because its `Handle` is the one shutdown that
         // takes a deadline: past it, the connections still open are closed rather
@@ -286,14 +405,19 @@ impl App {
                 // `into_make_service_with_connect_info` changes the service type, so
                 // each arm owns its whole expression rather than assigning to one
                 // variable. The peer address is offered to the router only when an
-                // operator has asked for it to be recorded.
-                let consumer_identification = app.config.log_consumer_identification;
+                // operator has asked for it to be recorded, or managed mode counts
+                // lookups against it.
+                let connect_info =
+                    app.config.log_consumer_identification || app.config.management.is_some();
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {
-                        let server =
-                            axum_server::from_tcp_rustls(std_listener, tls_config)?.handle(handle);
-                        if consumer_identification {
+                        let server = axum_server::from_tcp(std_listener)?
+                            .acceptor(managed::certificates::PeerAcceptor(
+                                axum_server::tls_rustls::RustlsAcceptor::new(tls_config),
+                            ))
+                            .handle(handle);
+                        if connect_info {
                             server
                                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await
@@ -303,7 +427,7 @@ impl App {
                     }
                     None => {
                         let server = axum_server::from_tcp(std_listener)?.handle(handle);
-                        if consumer_identification {
+                        if connect_info {
                             server
                                 .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                                 .await
@@ -346,6 +470,120 @@ pub async fn check_delivery(config: &Config) -> Result<(), StartupError> {
         let _ = task.await;
     }
     Ok(())
+}
+
+/// `config` with its settings overlay, `<data_dir>/managed-settings.toml`, in managed
+/// mode (C105). An overlay that fails start-up validation, `check_delivery` included,
+/// is swapped back for the previous one and the failure recorded for the next report
+/// (C71); one with no previous one is set aside. Standalone is returned as it is.
+pub async fn with_settings_overlay(config: Config) -> Config {
+    if config.management.is_none() {
+        return config;
+    }
+    let dir = config.data_dir.clone();
+    let overlay = dir.join(config::SETTINGS_OVERLAY);
+    loop {
+        let Ok(text) = std::fs::read_to_string(&overlay) else {
+            return config;
+        };
+        let merged = match config.with_overlay(&text) {
+            Ok(merged) => check_delivery(&merged)
+                .await
+                .map(|()| merged)
+                .map_err(|err| err.to_string()),
+            Err(reason) => Err(reason),
+        };
+        let reason = match merged {
+            Ok(merged) => return merged,
+            Err(reason) => reason,
+        };
+        if roll_back_settings(&dir, reason).is_err() {
+            return config;
+        }
+    }
+}
+
+/// Swaps the settings overlay in `dir` for the previous one, or sets it aside when
+/// there is none, and records `reason` and the failed revision for the next report
+/// (C71). The failed revision is never applied again.
+fn roll_back_settings(dir: &std::path::Path, reason: String) -> std::io::Result<()> {
+    tracing::error!(error = %reason, "the pushed settings fail at start; restoring the previous ones");
+    let overlay = dir.join(config::SETTINGS_OVERLAY);
+    let previous = dir.join(config::PREVIOUS_SETTINGS_OVERLAY);
+    let mut state = config::SettingsState::load(dir);
+    state.failed_revision = Some(state.settings_revision);
+    state.settings_revision = state.previous_revision;
+    state.previous_revision = 0;
+    state.last_apply_error = Some(reason);
+    let restored = if previous.exists() {
+        std::fs::rename(&previous, &overlay)
+    } else {
+        std::fs::rename(&overlay, dir.join("managed-settings.failed.toml"))
+    };
+    let rolled = restored.and_then(|()| state.save(dir));
+    if let Err(err) = &rolled {
+        tracing::error!(error = %err, "the failed settings could not be set aside");
+    }
+    rolled
+}
+
+/// [`App::start`] on `local` with its settings overlay (C105). A start that fails while
+/// an overlay is in force, in a way a pushed setting can cause (delivery), rolls the
+/// overlay back (C71) and is tried once more, so a push that passed every check and
+/// still breaks the start cannot hold the firewall in a crash loop. The overlay is read
+/// and rolled back only while this process holds the data directory, so a second
+/// instance on a held directory changes nothing.
+pub async fn start_with_settings(
+    local: Config,
+    deps: impl Fn(Config) -> AppDeps,
+) -> Result<Running, StartupError> {
+    if local.management.is_none() {
+        return App::start(deps(local)).await;
+    }
+    let held = hold_data_dir(&local.data_dir, false).await?;
+    let config = with_settings_overlay(local.clone()).await;
+    let overlaid = local.data_dir.join(config::SETTINGS_OVERLAY).exists();
+    drop(held);
+    let err = match App::start(deps(config)).await {
+        // The data directory, the listener and the TLS files are this host's: a push
+        // cannot set them, so their failures leave the overlay alone.
+        Err(err @ StartupError::Delivery(_)) if overlaid => err,
+        started => return started,
+    };
+    // The failed start's store lets go of the lock as it winds down.
+    let held = hold_data_dir(&local.data_dir, true).await?;
+    if roll_back_settings(&local.data_dir, err.to_string()).is_err() {
+        return Err(err);
+    }
+    let config = with_settings_overlay(local).await;
+    drop(held);
+    App::start(deps(config)).await
+}
+
+/// The data directory's lock, held by this process; with `wait`, for up to two seconds.
+async fn hold_data_dir(
+    dir: &std::path::Path,
+    wait: bool,
+) -> Result<store::lock::DataDirLock, StartupError> {
+    std::fs::create_dir_all(dir).map_err(|source| {
+        StartupError::DataDir(store::startup::StartupError::Directory {
+            path: dir.to_path_buf(),
+            source,
+        })
+    })?;
+    let mut attempts = if wait { 100 } else { 1 };
+    loop {
+        attempts -= 1;
+        match store::lock::acquire(dir) {
+            Ok(held) => return Ok(held),
+            Err(_) if attempts > 0 => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(err) => {
+                return Err(StartupError::DataDir(store::startup::StartupError::Lock(
+                    err,
+                )));
+            }
+        }
+    }
 }
 
 /// Publishes the last accepted snapshot when it is still valid (SPEC §8: "Persist
@@ -424,6 +662,15 @@ impl Running {
     #[cfg(feature = "test-support")]
     pub fn background_task_count(&self) -> usize {
         self.tasks.count()
+    }
+
+    /// Resolves when a managed firewall has written a settings push and should drain
+    /// and exit with code 75 for its supervisor to restart it (C105). Never, otherwise.
+    pub async fn restart_requested(&self) {
+        match self.app.managed() {
+            Some(managed) => managed.restart_requested().await,
+            None => std::future::pending().await,
+        }
     }
 
     /// Asks the server to stop accepting and waits for in-flight requests to finish.

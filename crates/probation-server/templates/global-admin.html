@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Global admin</h1>
+<p class="mut">Only global admins (the service operators) see this page. The platform policy, which every organisation and personal account inherits, is edited in the <a href="/policy/platform-1">policy editor (layer: Platform)</a>.</p>
+<p><a href="/admin/private-egress">Private egress approvals</a></p>
+{% if let Some(error) = view.error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+
+<section aria-labelledby="orgs-heading">
+<h2 id="orgs-heading">Organisations</h2>
+{% if view.orgs.is_empty() %}
+<p class="mut">No organisations yet.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Every organisation</caption>
+<thead><tr><th scope="col">Organisation</th><th scope="col">Status</th><th scope="col">Members</th><th scope="col">Keys</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for org in view.orgs %}
+<tr><td>{{ org.name }}</td>
+<td>{% if let Some(on) = org.deleted %}<span class="mut">Deleted, erased on {{ on }}</span>{% else if org.suspended %}<span class="bad">Suspended</span>{% else %}<span class="good">Active</span>{% endif %}</td>
+<td>{{ org.members }}</td><td>{{ org.keys }}</td>
+<td class="row">{% if org.deleted.is_none() %}<a href="/org/{{ org.id }}" aria-label="Open as org admin: {{ org.name }}">Open as org admin</a>
+{% if org.suspended %}<form method="post" action="/admin/orgs/{{ org.id }}/activate"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri" aria-label="Re-activate {{ org.name }}">Re-activate</button></form>
+{% else %}<a href="/admin/orgs/{{ org.id }}/suspend" aria-label="Suspend {{ org.name }}">Suspend</a>{% endif %}{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<p class="mut">An organisation is active as soon as it signs up. Suspending it refuses all of its keys within about 1 minute; its members can still sign in to the portal, read-only, with a banner explaining the suspension.</p>
+<p class="mut">"Open as org admin" takes you into the organisation with everything an org admin can do there, including resetting an org admin's authenticator. Every change you make there appears in that organisation's audit log, marked "(operator)".</p>
+</section>
+
+<section aria-labelledby="ranges-heading">
+<h2 id="ranges-heading">Network lock ranges</h2>
+{% if view.ranges.is_empty() %}
+<p class="mut">No network lock ranges are waiting for approval.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Ranges waiting for approval, then approved ranges</caption>
+<thead><tr><th scope="col">Organisation</th><th scope="col">IP range</th><th scope="col">Asked by</th><th scope="col">Asked</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for range in view.ranges %}
+<tr><td>{{ range.org }}</td><td><code>{{ range.cidr }}</code></td><td>{{ range.asked_by }}</td><td>{{ range.asked }}</td>
+<td class="row">{% if range.approved %}<span class="good">Approved</span>
+<form method="post" action="/admin/ranges/{{ range.id }}/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove the range {{ range.cidr }} of {{ range.org }}">Remove</button></form>
+{% else %}<form method="post" action="/admin/ranges/{{ range.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri" aria-label="Approve the range {{ range.cidr }} of {{ range.org }}">Approve</button></form>
+<form method="post" action="/admin/ranges/{{ range.id }}/refuse" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="refuse-{{ range.id }}">Reason</label><input id="refuse-{{ range.id }}" name="reason" required autocomplete="off">
+<button type="submit" aria-label="Refuse the range {{ range.cidr }} of {{ range.org }}">Refuse</button></form>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<p class="mut">A range an org admin adds does nothing until you approve it. From an approved range, Probation refuses every key that is not the organisation's own, so check the range really is that organisation's office or VPN. Phone networks and country-wide address sharing put unrelated people behind one address, so a range cannot identify a company on its own.</p>
+</section>
+
+<section aria-labelledby="admins-heading">
+<h2 id="admins-heading">Global admins</h2>
+<div class="wrap"><table>
+<caption class="mut">Global admins</caption>
+<thead><tr><th scope="col">Email</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for (login, email) in view.admins %}
+<tr><td>{{ email }}</td><td><form method="post" action="/admin/admins/{{ login }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove {{ email }} as global admin">Remove</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+<form method="post" action="/admin/admins/invite" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="admin-email">Email address</label>
+<input id="admin-email" name="email" type="email" required autocomplete="off">
+<button type="submit" class="pri">Invite global admin</button>
+</form>
+<p class="mut">The invitation is a link that works once, for 7 days, for whoever signs in and opens it. A new global admin sets up an authenticator app before using admin features. There is always at least one global admin: the last one cannot be removed.</p>
+</section>
+
+<section aria-labelledby="personal-heading">
+<h2 id="personal-heading">Personal accounts</h2>
+{% if view.personal.is_empty() %}
+<p class="mut">No personal accounts yet.</p>
+{% else %}
+<div class="wrap"><table>
+<caption class="mut">Personal accounts</caption>
+<thead><tr><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Keys</th><th scope="col">Created</th><th scope="col"><span class="mut">Actions</span></th></tr></thead>
+<tbody>
+{% for account in view.personal %}
+<tr><td>{{ account.email }}</td>
+<td>{% if let Some(on) = account.erased_on %}<span class="mut">Deleted, erased on {{ on }}</span>{% else if account.suspended %}<span class="bad">Suspended</span>{% else %}<span class="good">Active</span>{% endif %}</td>
+<td>{{ account.keys }}</td><td>{{ account.created }}</td>
+<td class="row">{% if account.erased_on.is_some() %}<form method="post" action="/admin/personal/{{ account.id }}/restore"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri" aria-label="Restore {{ account.email }}'s personal account">Restore</button></form>
+{% else %}{% if account.suspended %}<form method="post" action="/admin/personal/{{ account.id }}/activate"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri" aria-label="Make active: {{ account.email }}'s personal account">Make active</button></form>
+{% else %}<form method="post" action="/admin/personal/{{ account.id }}/suspend"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Suspend {{ account.email }}'s personal account">Suspend</button></form>{% endif %}
+<a href="/admin/personal/{{ account.id }}/revoke-keys" aria-label="Revoke keys of {{ account.email }} ({{ account.keys }} live)">Revoke keys</a>
+<form method="post" action="/admin/personal/{{ account.id }}/totp-reset"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Reset authenticator of {{ account.email }}">Reset authenticator</button></form>
+<a href="/admin/personal/{{ account.id }}/delete" aria-label="Delete {{ account.email }}'s personal account">Delete</a>{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<p class="mut">Revoking or deleting stops the account's keys within about 1 minute; revoking cannot be undone. A deleted account is erased after 30 days and can be restored until then. You can reset anyone's authenticator; org admins reset only logins that belong to their organisation alone.</p>
+</section>
+
+<section aria-labelledby="limits-heading">
+<h2 id="limits-heading">Limits per kind of account</h2>
+{% if let Some(limits) = view.personal_limits() %}
+<form method="post" action="/admin/limits">
+<fieldset><legend>Personal accounts</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="personal">
+<label for="limit-personal-rate">Most requests per minute, per account</label>
+<input id="limit-personal-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
+<label for="limit-personal-keys">Most keys</label>
+<input id="limit-personal-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
+<button type="submit" class="pri">Save personal account limits</button>
+</fieldset>
+</form>
+{% endif %}
+{% if let Some(limits) = view.org_limits() %}
+<form method="post" action="/admin/limits">
+<fieldset><legend>Organisations (default)</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="org">
+<label for="limit-org-rate">Most requests per minute, per organisation</label>
+<input id="limit-org-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
+<label for="limit-org-keys">Most keys, per member</label>
+<input id="limit-org-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
+<label for="limit-org-service">Most service keys <span class="mut">(blank = no limit)</span></label>
+<input id="limit-org-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
+<button type="submit" class="pri">Save organisation limits</button>
+</fieldset>
+</form>
+{% endif %}
+<h3>Limits for one organisation</h3>
+{% for (id, name, limits) in view.own_limits() %}
+<form method="post" action="/admin/limits/orgs/{{ id }}">
+<fieldset><legend>{{ name }}</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="limit-{{ id }}-rate">Requests per minute</label>
+<input id="limit-{{ id }}-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
+<label for="limit-{{ id }}-keys">Keys per member</label>
+<input id="limit-{{ id }}-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
+<label for="limit-{{ id }}-service">Service keys <span class="mut">(blank = no limit)</span></label>
+<input id="limit-{{ id }}-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
+<button type="submit" class="pri">Save {{ name }}'s limits</button>
+</fieldset>
+</form>
+<form method="post" action="/admin/limits/orgs/{{ id }}/reset"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Back to default for {{ name }}</button></form>
+{% endfor %}
+{% if !view.default_orgs.is_empty() %}
+<form method="post" action="/admin/limits">
+<fieldset><legend>Set an organisation's own limits</legend>
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="org">
+<label for="own-org">Organisation</label>
+<select id="own-org" name="org">{% for (id, name) in view.default_orgs %}<option value="{{ id }}">{{ name }}</option>{% endfor %}</select>
+{% if let Some(limits) = view.org_limits() %}
+<label for="own-rate">Requests per minute</label><input id="own-rate" name="rate" type="number" min="1" required value="{{ limits.rate_per_min }}">
+<label for="own-keys">Keys per member</label><input id="own-keys" name="keys" type="number" min="1" required value="{{ limits.max_keys }}">
+<label for="own-service">Service keys <span class="mut">(blank = no limit)</span></label><input id="own-service" name="service" type="number" min="0" value="{% if let Some(keys) = limits.max_service_keys %}{{ keys }}{% endif %}">
+{% endif %}
+<button type="submit">Set own limits</button>
+</fieldset>
+</form>
+{% endif %}
+<p class="mut">Requests over the limit are refused with a "too many requests" error; each firewall counts on its own. Lowering a key limit stops no existing key; the account just cannot create new ones until it is under the limit.</p>
+</section>
+
+<section aria-labelledby="retention-heading">
+<h2 id="retention-heading">How long history is kept</h2>
+<form method="post" action="/admin/retention">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="retention-activity">Blocked and held downloads (Activity), in days <span class="mut">default 90</span></label>
+<input id="retention-activity" name="activity_days" type="number" min="7" max="36500" required value="{{ view.activity_days }}">
+<label for="retention-audit">Audit log, in days <span class="mut">default 365</span></label>
+<input id="retention-audit" name="audit_days" type="number" min="7" max="36500" required value="{{ view.audit_days }}">
+<button type="submit" class="pri">Save</button>
+</form>
+<p class="mut">From 7 to 36500 days each. Older history is deleted once an hour.</p>
+</section>
+
+<section aria-labelledby="platform-heading">
+<h2 id="platform-heading">Platform automation tokens and blocklist file</h2>
+<p>An automation token lets an existing blocklist tool replace or add to the platform layer's blocks through the blocklist API, and nothing else. Every push is in the audit log.</p>
+{% if let Some(token) = view.new_token %}
+<p role="status"><b>Copy the token now. You will not see it again.</b></p>
+<pre><code id="new-token">{{ token }}</code></pre>
+{% endif %}
+{% if !view.tokens.is_empty() %}
+<div class="wrap"><table>
+<caption class="mut">Platform automation tokens</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Ends in</th><th scope="col">Created</th><th scope="col">Created by</th><th scope="col"><span class="mut">Action</span></th></tr></thead>
+<tbody>
+{% for token in view.tokens %}
+<tr><td>{{ token.name }}</td><td><code>…{{ token.last4 }}</code></td><td>{{ token.created }}</td><td>{{ token.created_by }}</td>
+<td><form method="post" action="/admin/tokens/{{ token.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Revoke the token {{ token.name }}">Revoke</button></form></td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endif %}
+<form method="post" action="/admin/tokens" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="token-name">Token name</label>
+<input id="token-name" name="name" required maxlength="100" autocomplete="off">
+<button type="submit" class="pri">Create platform token</button>
+</form>
+<p><a href="/admin/blocklist" download>Export the platform's blocks</a> as a blocklist file.</p>
+<form method="post" action="/admin/blocklist">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="blocklist-file">Blocklist file to import <span class="mut">(today's format; its blocks are added to the platform policy)</span></label>
+<textarea id="blocklist-file" name="file" rows="6" cols="60" required></textarea>
+<button type="submit" class="pri">Import</button>
+</form>
+</section>
+{% endblock %}

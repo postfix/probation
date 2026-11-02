@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+{% match view %}
+{% when SignupView::Form { error, email, org, org_name } %}
+<h1>Create an account</h1>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% if !providers.is_empty() %}
+<div class="row">
+{% for provider in providers %}<a class="button" href="/oauth/{{ provider.name }}/start">Sign up with {{ provider.label }}</a>
+{% endfor %}
+</div>
+<p class="mut">or with your email and a password</p>
+{% endif %}
+<form method="post" action="/signup">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="email">Email</label>
+<input id="email" type="email" name="email" autocomplete="email" required value="{{ email }}">
+<label for="password">Password <span class="mut">at least 12 characters</span></label>
+<input id="password" type="password" name="password" autocomplete="new-password" required minlength="12">
+<fieldset>
+<legend>What do you want to set up?</legend>
+<label><input type="radio" name="kind" value="personal"{% if !org %} checked{% endif %}> <b>A free personal account</b>: just for you. You add your own rules on top of the rules everyone gets.</label>
+<label><input type="radio" name="kind" value="org"{% if *org %} checked{% endif %}> <b>A new organisation</b>: for a company or team. You become its admin and invite the others.</label>
+<label for="org_name" class="indent">Organisation name</label>
+<input id="org_name" name="org_name" class="indent" value="{{ org_name }}">
+</fieldset>
+<button type="submit" class="pri">Create account</button>
+</form>
+<p class="mut">Already have a login and want to sign in another way too? Do not sign up again: that makes a separate login. Sign in and link the new method in Account settings.</p>
+<p class="mut">Want to join an organisation that already exists? Ask one of its admins for an invitation, or use "Sign in with company SSO" if your company has connected it.</p>
+<p>Already have a login? <a href="/signin">Sign in</a></p>
+{% when SignupView::CheckEmail { email } %}
+<h1>Check your email</h1>
+<p>We sent a link to <b>{{ email }}</b>. Open it to confirm your email address.</p>
+<form method="post" action="/verify-email/resend" class="row">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="email" value="{{ email }}">
+<button type="submit">Send the link again</button>
+<a href="/signup">Wrong address?</a>
+</form>
+<p class="mut">Nothing works until your email is confirmed.</p>
+{% when SignupView::ConfirmEmail { email } %}
+<h1>Confirm your email</h1>
+<p>We sent a link to <b>{{ email }}</b>. Open it to confirm your email address.</p>
+<p class="mut">Nothing works until your email is confirmed.</p>
+<form method="post" action="/verify-email/resend">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="email" value="{{ email }}">
+<button type="submit">Send the link again</button>
+</form>
+<form method="post" action="/signout">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Sign out</button>
+</form>
+{% when SignupView::ChoosePassword { token, error } %}
+<h1>Confirm your email</h1>
+<p>Choose your password to confirm your email address. The password chosen when the account was created stops working.</p>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/verify-email">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<label for="new">Password <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<input id="new" type="password" name="new" autocomplete="new-password" required minlength="12">
+<label for="again">Password again</label>
+<input id="again" type="password" name="again" autocomplete="new-password" required minlength="12">
+<button type="submit" class="pri">Confirm and save password</button>
+</form>
+{% when SignupView::Confirmed { next } %}
+<h1>Email confirmed</h1>
+<p class="good">Your email address is confirmed.</p>
+<p><a class="button pri" href="{{ next }}">Continue</a></p>
+{% when SignupView::BadLink %}
+<h1>Link expired</h1>
+<p class="err" role="alert">This link has expired or was already used. Ask for a new one.</p>
+<form method="post" action="/verify-email/resend">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="email">Email</label>
+<input id="email" type="email" name="email" autocomplete="email" required>
+<button type="submit">Send a new link</button>
+</form>
+{% endmatch %}
+{% endblock %}

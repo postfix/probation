@@ -1,0 +1,44 @@
+<article id="decision" aria-label="Publishing proxy design decision">
+<style>
+#decision{font:inherit;color:var(--foreground,#17212b);max-width:880px;margin:auto;padding:18px;line-height:1.48;overflow-wrap:anywhere}
+#decision *{box-sizing:border-box}#decision h2{font-size:1.35rem;margin:1.2rem 0 .4rem}#decision h2:first-of-type{margin-top:0}#decision h3{font-size:1.05rem;margin:.9rem 0 .3rem}#decision p{margin:.3rem 0 .7rem}
+#decision .lead{font-size:1.04rem}#decision .card{border:1px solid var(--border,#c7cdd2);border-radius:10px;padding:12px 14px;margin:.7rem 0;background:var(--card,#fff)}
+#decision .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}#decision .badge{display:inline-block;border-radius:20px;padding:2px 8px;background:var(--muted,#e8edf2);font-size:.85rem}
+#decision table{width:100%;border-collapse:collapse;margin:.5rem 0}#decision th,#decision td{padding:8px;border-bottom:1px solid var(--border,#c7cdd2);text-align:left;vertical-align:top}#decision th{font-weight:600}
+#decision svg{display:block;width:100%;height:auto;margin:.5rem 0}#decision svg rect{fill:var(--card,#fff);stroke:var(--border,#aab5bf);stroke-width:2}#decision svg path{fill:none;stroke:var(--foreground,#17212b);stroke-width:2}#decision svg .deny{stroke:var(--destructive,#b84040)}#decision svg text{fill:var(--foreground,#17212b);font:14px system-ui,sans-serif}
+#decision code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em}#decision a{color:var(--primary,#255da8)}#decision a:focus-visible,#decision summary:focus-visible{outline:2px solid var(--primary,#255da8);outline-offset:3px}
+#decision .mobile-flow{display:none}#decision .question{border-top:2px solid var(--border,#c7cdd2);padding-top:12px;font-size:1.1rem;font-weight:600;margin-top:1rem}
+@media(max-width:620px){#decision{padding:12px}#decision .grid{grid-template-columns:1fr}#decision tr{display:block;border-bottom:1px solid var(--border,#c7cdd2);padding:5px 0}#decision th,#decision td{display:block;border:0;padding:2px 0}#decision svg{display:none}#decision .mobile-flow{display:block}}
+</style>
+<h2>What problem do we have?</h2>
+<p class="lead">Developers use one selected Probation address for npm packages and publishing. Independent review found two ways version removal could break that promise: a direct tarball deletion address could skip the one-use removal check, and a metadata update could change a listed version’s tarball address before sending it upstream.</p>
+<h2>How will we solve it?</h2>
+<p>The approved setup, guarded reads, and upstream-controlled publishing stay in place. This revision makes the deletion route and metadata rule explicit before Slice 4 implementation resumes.</p>
+<div class="grid">
+<div class="card"><span class="badge">Rule 1 · deletion</span><h3>One checked path</h3><p>A version’s tarball can be deleted only through its member-bound reference after the upstream accepted a revision that removed that version. A direct canonical tarball DELETE is refused locally, even with a valid developer token.</p></div>
+<div class="card"><span class="badge">Rule 2 · metadata</span><h3>Keep the listed destination</h3><p>For a version with a write-preflight lease, the submitted tarball address must be its exact local link or exact original upstream address. The proxy sends the original address upstream. An ordinary upstream address for a version without a lease still works.</p></div>
+</div>
+<svg viewBox="0 0 850 165" role="img" aria-label="Write preflight lists and leases versions. Revision PUT checks exact leased URLs and records an accepted removal. Reference DELETE consumes one marker before sending. Direct canonical DELETE and changed leased URLs are refused before upstream I/O.">
+<title>Version removal flow</title><defs><marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="var(--foreground,#17212b)"/></marker></defs>
+<rect x="5" y="8" width="174" height="58" rx="8"/><text x="17" y="31">GET ?write=true</text><text x="17" y="51">list + lease versions</text>
+<rect x="228" y="8" width="174" height="58" rx="8"/><text x="240" y="31">revision PUT</text><text x="240" y="51">check exact URLs</text>
+<rect x="451" y="8" width="174" height="58" rx="8"/><text x="463" y="31">accepted removal</text><text x="463" y="51">record one marker</text>
+<rect x="674" y="8" width="171" height="58" rx="8"/><text x="686" y="31">reference DELETE</text><text x="686" y="51">consume + send once</text>
+<path d="M179 37 H228" marker-end="url(#arr)"/><path d="M402 37 H451" marker-end="url(#arr)"/><path d="M625 37 H674" marker-end="url(#arr)"/>
+<rect x="228" y="105" width="397" height="51" rx="8"/><text x="241" y="127">Changed leased URL or direct tarball DELETE</text><text x="241" y="146">local refusal; no upstream request</text>
+<path class="deny" d="M315 66 V105" marker-end="url(#arr)"/><path class="deny" d="M735 66 V85 H565 V105" marker-end="url(#arr)"/>
+</svg>
+<p class="mobile-flow"><strong>Version removal:</strong> Write preflight lists and leases versions → revision PUT checks exact leased URLs → an accepted removal records one marker → reference DELETE consumes it and sends once. A changed leased URL or direct canonical tarball DELETE is refused before any upstream request.</p>
+<h2>How will we confirm it is solved?</h2>
+<table><thead><tr><th>Check</th><th>What passing means</th><th>Now</th></tr></thead><tbody>
+<tr><td>Direct canonical DELETE with a valid token</td><td>Local refusal and zero selected-upstream calls; the reference route still allows one authorized removal.</td><td>Planned Slice 4 regression</td></tr>
+<tr><td>Changed leased URL, on another host and on the selected host</td><td>No revision PUT reaches upstream; exact original/local leased values succeed, and a valid unleased upstream URL remains usable.</td><td>Planned Slice 4 regression</td></tr>
+<tr><td>Finite model and structural source controls</td><td>The model requires the changed-URL refusal; all 21 existing source obligations and unsafe controls pass.</td><td>Passed; exact bytes and route behavior still need client tests</td></tr>
+<tr><td>Fresh design review</td><td>Threat review MODELED, Red Team SOUND, combined QA READY with no findings after the model correction.</td><td>Passed for design</td></tr>
+</tbody></table>
+<p><strong>Decision:</strong> Approve this revised rule and test plan so Slice 4 can fix the two remaining implementation gaps. Earlier completed slices and the npm/Python delivery order remain as approved.</p>
+<p><strong>Limit:</strong> The current Slice 4 code has not passed these two new regressions. Model and structural checks describe and inspect the selected contracts; the client tests and a fresh security review must establish actual refusal and exact URL behavior before Slice 4 can be presented as complete.</p>
+<p><strong>Context:</strong> Product scope and Slices 1–3 are approved and complete. This is the reopened combined design decision for Slice 4; Slice 5 follows its verified delivery.</p>
+<details><summary>Sources and exact evidence</summary><p><a href="03-program-design.md">Program design, revision PUT and DELETE contracts</a> · <a href="04-slices.md">Slice 4 witness</a> · <a href="molecule-flow.json">Finite flow model</a> · <a href="molecule-contracts.json">Structural obligations</a> · <a href="evidence/threat-model-direct-delete.md">Threat review</a> · <a href="evidence/red-team-direct-delete.md">Red Team</a> · <a href="gate-4-qa.md">READY design QA</a>. The direct-route and changed-URL claims in this view are planned behavior; the current implementation review found both gaps. Coordinator checks: <code>molecule-check</code> PASS (16 flows); <code>gate-qa verify --gate design</code> READY with sourceVerification PASS (21 obligations and controls; evidence run-uKUKm5). These checks do not establish the two runtime outcomes.</p></details>
+<p class="question">Approve the design, or what should change?</p>
+</article>

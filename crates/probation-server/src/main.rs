@@ -1,0 +1,290 @@
+//! `probation-server`: config, Postgres pool, `serve`, `migrate`, `health` and `admin`.
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use clap::{Parser, Subcommand};
+use ipnet::IpNet;
+use probation_policy::api::KeyId;
+use probation_server::accounts::{GuardedClient, Mailer, SmtpMailer};
+use probation_server::admin::{self, Bootstrap, BootstrapError};
+use probation_server::keys::RevokeError;
+use probation_server::portal::PortalDeps;
+
+/// The app role's connection (a login role in `probation_app`).
+const DATABASE_URL: &str = "PROBATION_SERVER_DATABASE_URL";
+/// The migration owner role's connection, used only by `migrate` (T17).
+const MIGRATE_DATABASE_URL: &str = "PROBATION_SERVER_MIGRATE_DATABASE_URL";
+/// Seals secrets at rest (T16).
+const SECRET_KEY: &str = "PROBATION_SERVER_SECRET_KEY";
+
+#[derive(Parser)]
+#[command(version, about = "The probation management server")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the firewall sync API, and the portal when `[portal]` is set.
+    Serve {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Apply the database migrations as the owner role.
+    Migrate,
+    /// Exit 0 when the server at `--url` answers 2xx: the container's health check, as the
+    /// image has no curl.
+    Health {
+        #[arg(long, default_value = "http://127.0.0.1:8080/health/ready")]
+        url: url::Url,
+    },
+    #[command(subcommand)]
+    Admin(AdminCommand),
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Create the first global admin, an organisation, a key and a firewall token.
+    Bootstrap {
+        /// The server's settings file: the set-password link uses its `[portal] base_url`.
+        #[arg(long)]
+        config: PathBuf,
+        /// The first global admin's email address.
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        org: String,
+        #[arg(long)]
+        firewall: String,
+        /// An address range the firewall's token is accepted from; repeatable.
+        #[arg(long = "firewall-source", required = true)]
+        firewall_sources: Vec<IpNet>,
+    },
+    /// Print a fresh set-password link for a global admin (a lost first link).
+    ResetLink {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        email: String,
+    },
+    /// Revoke an API key by its id.
+    RevokeKey {
+        #[arg(long)]
+        key_id: u64,
+    },
+    /// After restoring the database from a backup, before starting the server: every
+    /// firewall resets its cache at its next sync (docs/operations.md).
+    AfterRestore,
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+    match run(Cli::parse().command).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("probation-server: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(command: Command) -> Result<(), String> {
+    match command {
+        Command::Serve { config } => {
+            let config = probation_server::Config::load(&config)?;
+            let pool = pool(DATABASE_URL).await?;
+            let portal = portal_deps(&config, &pool)?;
+            probation_server::serve(config, pool, portal)
+                .await
+                .map_err(|err| format!("serve: {err}"))
+        }
+        Command::Health { url } => {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|err| err.to_string())?;
+            let answer = client
+                .get(url.clone())
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+                .map_err(|err| format!("{url}: {err}"))?;
+            match answer.status() {
+                status if status.is_success() => Ok(()),
+                status => Err(format!("{url}: {status}")),
+            }
+        }
+        Command::Migrate => {
+            // No statement timeout: a migration may run longer than a request.
+            let url = std::env::var(MIGRATE_DATABASE_URL)
+                .map_err(|_| format!("{MIGRATE_DATABASE_URL} is not set"))?;
+            let owner = sqlx::PgPool::connect(&url)
+                .await
+                .map_err(|err| format!("cannot connect with {MIGRATE_DATABASE_URL}: {err}"))?;
+            probation_server::migrate(&owner)
+                .await
+                .map_err(|err| format!("migrate: {err}"))
+        }
+        Command::Admin(AdminCommand::Bootstrap {
+            config,
+            email,
+            org,
+            firewall,
+            firewall_sources,
+        }) => {
+            let base_url = probation_server::Config::load(&config)?
+                .portal
+                .map(|portal| portal.base_url);
+            let pool = pool(DATABASE_URL).await?;
+            let input = Bootstrap {
+                org_name: org,
+                firewall_name: firewall,
+                firewall_sources,
+                email,
+                base_url,
+            };
+            match admin::bootstrap(&pool, input).await {
+                Ok(done) => {
+                    // Shown once: only their hashes are stored.
+                    println!("global_admin_login={}", done.login_id);
+                    println!("org={}", done.org.0);
+                    println!("key_id={}", done.key_id.0);
+                    println!("key={}", done.key);
+                    println!("firewall_id={}", done.firewall_id);
+                    println!("firewall_token={}", done.firewall_token);
+                    // Printed here only, never mailed: the operator opens it, or hands it
+                    // to the admin, before it expires.
+                    match done.set_password_link {
+                        Some(link) => println!("set_password_link={link}"),
+                        None => println!(
+                            "note: no [portal] base_url: no sign-in link; add [portal] and run `admin reset-link` later"
+                        ),
+                    }
+                    Ok(())
+                }
+                Err(BootstrapError::AlreadyDone) => Err(
+                    "bootstrap refused: a global admin exists already; nothing changed".to_owned(),
+                ),
+                Err(BootstrapError::BadEmail) => {
+                    Err("bootstrap refused: --email is not an email address".to_owned())
+                }
+                Err(BootstrapError::EmailTaken) => Err(
+                    "bootstrap refused: that address already has a sign-in; nothing changed"
+                        .to_owned(),
+                ),
+                Err(BootstrapError::Store(err)) => Err(format!("bootstrap: {err}")),
+            }
+        }
+        Command::Admin(AdminCommand::ResetLink { config, email }) => {
+            let base_url = base_url(&config)?;
+            let pool = pool(DATABASE_URL).await?;
+            match admin::reset_link(&pool, &base_url, &email).await {
+                Ok(Some(link)) => {
+                    println!("set_password_link={link}");
+                    Ok(())
+                }
+                Ok(None) => Err(format!("no live global admin signs in as {email}")),
+                Err(err) => Err(format!("reset-link: {err}")),
+            }
+        }
+        Command::Admin(AdminCommand::RevokeKey { key_id }) => {
+            let pool = pool(DATABASE_URL).await?;
+            match admin::revoke_key(&pool, KeyId(key_id)).await {
+                Ok(()) => {
+                    println!("revoked key {key_id}");
+                    Ok(())
+                }
+                Err(RevokeError::NotFound) => Err(format!("no live API key {key_id}")),
+                Err(RevokeError::Denied) => Err("revoke refused".to_owned()),
+                Err(RevokeError::Store(err)) => Err(format!("revoke-key: {err}")),
+            }
+        }
+        Command::Admin(AdminCommand::AfterRestore) => {
+            let pool = pool(DATABASE_URL).await?;
+            let raised = probation_server::sync::after_restore(&pool)
+                .await
+                .map_err(|err| format!("after-restore: {err}"))?;
+            println!(
+                "change_counter raised from value {} (pruned_through {}) to {}; every firewall resets at its next sync",
+                raised.before.0, raised.before.1, raised.after
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The portal's secrets come from the environment, never from the settings file
+/// (02 § External); each one a configured part needs must be set.
+fn portal_deps(
+    config: &probation_server::Config,
+    pool: &sqlx::PgPool,
+) -> Result<Option<PortalDeps>, String> {
+    let Some(mut portal) = config.portal.clone() else {
+        return Ok(None);
+    };
+    let required = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
+    for (variable, provider) in [
+        ("PROBATION_SERVER_GOOGLE_CLIENT_SECRET", &mut portal.google),
+        ("PROBATION_SERVER_GITHUB_CLIENT_SECRET", &mut portal.github),
+        (
+            "PROBATION_SERVER_MICROSOFT_CLIENT_SECRET",
+            &mut portal.microsoft,
+        ),
+    ] {
+        if let Some(provider) = provider {
+            provider.client_secret = required(variable)?;
+        }
+    }
+    let secret_key: [u8; 32] = hex::decode(required(SECRET_KEY)?.trim())
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| format!("{SECRET_KEY} must be 64 hex characters (32 bytes)"))?;
+    let mailer = match &portal.smtp {
+        Some(smtp) => {
+            let password = std::env::var("PROBATION_SERVER_SMTP_PASSWORD").unwrap_or_default();
+            let mailer = SmtpMailer::new(
+                &smtp.host,
+                smtp.port,
+                smtp.username.as_deref(),
+                &password,
+                &smtp.from,
+            )?;
+            Some(Arc::new(mailer) as Arc<dyn Mailer>)
+        }
+        None => None,
+    };
+    Ok(Some(PortalDeps {
+        pool: pool.clone(),
+        config: portal,
+        outbound: Arc::new(GuardedClient::new()),
+        mailer,
+        secret_key,
+        password_params: argon2::Params::default(),
+        trusted_proxies: config.server.trusted_proxies.clone(),
+    }))
+}
+
+/// `[portal] base_url` of the settings file at `path`: every link is built from it.
+fn base_url(path: &std::path::Path) -> Result<url::Url, String> {
+    let config = probation_server::Config::load(path)?;
+    config
+        .portal
+        .map(|portal| portal.base_url)
+        .ok_or_else(|| format!("{}: has no [portal] base_url for the link", path.display()))
+}
+
+async fn pool(variable: &str) -> Result<sqlx::PgPool, String> {
+    let url = std::env::var(variable).map_err(|_| format!("{variable} is not set"))?;
+    probation_server::connect(&url)
+        .await
+        .map_err(|err| format!("cannot connect with {variable}: {err}"))
+}

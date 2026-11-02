@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html" aria-current="page">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html">API keys</a><a href="activity.html">Activity</a><a href="organisation.html">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html">Global admin</a><a href="fleet.html">Fleet</a><a href="account.html">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>Sign in and sign up</h1>
+<p class="mut">Signed-out visitors see only the Probation name in the top bar; the place switcher and the menu appear after sign-in. They are shown here only to move between mockups.</p>
+
+<section class="state"><p class="tag">State: sign in (default)</p>
+<div class="row"><button>Continue with Google</button><button>Continue with GitHub</button><button>Continue with Microsoft</button></div>
+<p class="row"><button>Sign in with company SSO</button> <span class="mut">For organisations that connected their own sign-in (Microsoft Entra ID, Google Workspace, Okta).</span></p>
+<p class="mut">or use your email and password</p>
+<label>Email <input type="email" value="bob@acme.com"></label>
+<label>Password <input type="password" value="password"></label>
+<p class="row"><button class="pri">Sign in</button> <a href="#reset">Forgot your password?</a></p>
+<p>New here? <a href="#signup">Create an account</a></p>
+<p class="mut">Each sign-in method you have not linked starts a separate login, even when its email matches a login you already have. To add a method to your login, sign in first and link it in <a href="account.html">Account settings</a>.</p>
+</section>
+
+<section class="state"><p class="tag">State: error, wrong email or password</p>
+<p class="err">That email and password do not match. Try again, or reset your password.</p>
+</section>
+
+<section class="state" id="sso"><p class="tag">State: company SSO</p>
+<label>Organisation name <input value="Acme"></label>
+<button class="pri">Continue</button>
+<p class="mut">You will be sent to your company's sign-in page. The first time you sign in this way, you join your company's organisation automatically.</p>
+<p class="mut">Your company's sign-in link looks like <code>https://portal.example.org/o/acme</code>. Bookmark it to skip this step.</p>
+</section>
+
+<section class="state"><p class="tag">State: authenticator code step</p>
+<p>Enter the 6-digit code from your authenticator app.</p>
+<p class="row"><label>Code <input inputmode="numeric" placeholder="123 456" size="8"></label> <button class="pri">Verify</button></p>
+<p class="err">That code is wrong or has expired. Wait for the next code and try again.</p>
+<p class="mut">Only email-and-password accounts get this step. Google, GitHub, Microsoft and company SSO use their own checks.</p>
+<p><a href="#backup">Lost your authenticator? Use a backup code.</a> <span class="mut">No backup codes left? If your login belongs to one organisation only and you are not its org admin, ask one of its org admins to reset it. Everyone else asks the service operator.</span></p>
+</section>
+
+<section class="state"><p class="tag">State: set up an authenticator</p>
+<p>Scan this code with an authenticator app, then enter the 6-digit code it shows.</p>
+<div style="width:120px;height:120px;border:1px solid var(--line);display:grid;place-items:center" class="mut">QR code</div>
+<p class="mut">Cannot scan? Type this key instead: <code>JBSW Y3DP EHPK 3PXP</code></p>
+<p id="backup"><b>Save these 10 backup codes somewhere safe.</b> Each one gets you in once if you lose your authenticator.</p>
+<pre>4f7k-2m9q  8x3n-c6vd  t2b8-p5hw  9r4z-a1ke  m6c3-y8fj
+q1w7-e4tn  h5d2-k9ux  v3p6-z7rb  b8y1-s2mc  n4j9-g6la</pre>
+<p class="row"><button>Copy codes</button> <button>Download codes</button></p>
+<p class="row"><label>Code <input inputmode="numeric" size="8"></label> <button class="pri">Turn on</button></p>
+<p><b>Required for org admins and the global admin:</b> they must do this before using admin features. Everyone else, including bob as a group admin, sees a <button>Skip for now</button> button.</p>
+<p class="mut">Skipped it? You can turn the authenticator on later in <a href="account.html">Account settings</a>.</p>
+</section>
+
+<section class="state" id="signup"><p class="tag">State: sign up</p>
+<div class="row"><button>Sign up with Google</button><button>Sign up with GitHub</button><button>Sign up with Microsoft</button></div>
+<p class="mut">or with your email and a password</p>
+<label>Email <input type="email" value="bob@acme.com"></label>
+<label>Password <input type="password"> <span class="mut">at least 12 characters</span></label>
+<fieldset><legend>What do you want to set up?</legend>
+<label><input type="radio" name="kind" checked> <b>A free personal account</b>: just for you. You add your own rules on top of the rules everyone gets.</label>
+<label><input type="radio" name="kind"> <b>A new organisation</b>: for a company or team. You become its admin and invite the others.</label>
+<label style="margin-left:24px">Organisation name <input value="Acme"></label>
+</fieldset>
+<button class="pri">Create account</button>
+<p class="mut">Already have a login and want to sign in another way too? Do not sign up again: that makes a separate login. Sign in and link the new method in <a href="account.html">Account settings</a>.</p>
+<p class="mut">Want to join an organisation that already exists? Ask one of its admins for an invitation, or use "Sign in with company SSO" if your company has connected it.</p>
+<p class="mut">Already signed in? Add a personal account or create an organisation from <a href="account.html">Account settings</a>.</p>
+</section>
+
+<section class="state"><p class="tag">State: invitation</p>
+<p><b>alice@acme.com invited you to join Acme.</b> Sign in or create an account to accept.</p>
+<p class="row"><button class="pri">Accept and continue</button> <button>Decline</button></p>
+</section>
+
+<section class="state"><p class="tag">State: check your email</p>
+<p>We sent a link to <b>bob@acme.com</b>. Open it to confirm your email address.</p>
+<p class="row"><button>Send the link again</button> <a href="#signup">Wrong address?</a></p>
+<p class="mut">Nothing works until your email is confirmed.</p>
+<p class="mut">If this address already has an email-and-password sign-in, no new one is created: that address gets a "you already have a login" email instead, and this page looks the same, so nobody can find out which addresses are registered.</p>
+</section>
+
+<section class="state"><p class="tag">State: email confirmed</p>
+<p class="good">Your email address is confirmed.</p>
+<button class="pri">Continue</button>
+</section>
+
+<section class="state"><p class="tag">State: error, link expired or already used</p>
+<p class="err">This link has expired or was already used. Ask for a new one.</p>
+<button>Send a new link</button>
+</section>
+
+<section class="state" id="reset"><p class="tag">State: forgot password</p>
+<label>Email <input type="email" value="bob@acme.com"></label>
+<button class="pri">Send reset link</button>
+<p class="mut">After sending: "If an account uses this address, we sent it a link to choose a new password."</p>
+</section>
+
+<section class="state"><p class="tag">State: choose a new password</p>
+<label>New password <input type="password"> <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<label>New password again <input type="password"></label>
+<button class="pri">Save password</button>
+<p class="err">The two passwords do not match.</p>
+<p class="err">This password has appeared in a known data leak. Choose a different one.</p>
+</section>
+<section class="state"><p class="tag">State: signing in to a deleted login (within 30 days)</p>
+<h2>This login was deleted on 20 Oct 2026</h2>
+<p>You signed in with Google, which belongs to a login that was deleted. You can bring it back until 19 Nov 2026.</p>
+<p class="row"><button class="pri">Restore login</button> <button class="danger">Start a new login instead</button></p>
+<p class="mut">"Restore login" also brings back a personal account that was deleted with it. "Start a new login instead" erases the old login, and any personal account deleted with it, for good, now. Until the old login is restored or erased, its email address cannot be used for a new email-and-password sign-up.</p>
+</section>
+</main>
+</body>
+</html>

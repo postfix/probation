@@ -1,0 +1,65 @@
+# HOW THIS IS RUN. This is a molecule source obligation for
+# docs/plans/management-server (sidecar molecule-contracts.json). The sf-start
+# checker snapshots ONLY the declared contract sources and specs, runs this spec
+# with `smtc spec run --root <snapshot>`, and requires: zero findings on
+# production, a Protocol pipeline with find_operations >= 1, find_guards >= 1 and
+# a cfg_dominance step, and for every control a finding whose
+# evidence.caller_function equals the contract symbol. The control `from`/`to`
+# text and the reference shape live in
+# docs/plans/management-server/controls/ -- the implementation must keep each
+# `from` string matching exactly once.
+#
+# SMTC FACTS THIS RELIES ON (probed on synthetic Rust fixtures, 2026-10-21):
+#   - `relation: {must_dominate: true}` runs cfg_dominance for Rust; `{}` runs
+#     only co-occurrence, which the checker rejects.
+#   - `evidence: full` is what puts caller_function/confidence/file_path on a
+#     finding; without it the checker cannot ground the finding.
+#   - `scope.files` is a NO-OP in this build (same op counts with and without it
+#     on the product root), so it is omitted. Restriction comes from the
+#     checker snapshot (contract sources only), method names unique to the
+#     managed module, and the `where` filter on caller_function.
+#   - `scope.functions` is refused without `same_argument`, and `same_argument`
+#     is refused for Rust ("currently supports TypeScript and JavaScript only"),
+#     so nothing here proves VALUE identity -- only that one call dominates
+#     another in the same function.
+#   - caller_function is `Type.method` for methods, the bare name for free fns.
+#     A method callee resolves to `Type.method` (KeySync.drop_cache), not
+#     `self.drop_cache`; an unresolved receiver call keeps its text
+#     (self.cache.clear).
+#   - A guard and an operation on the SAME line makes dominance fail
+#     (analysis_failed); keep them on separate statements.
+#   - A guard or operation call that ends an expression statement with `?`
+#     (`foo(..).await?;`) cannot be located (analysis_failed). Bind it:
+#     `let () = foo(..).await?;` or `let x = foo(..)?;`. A plain `foo(..);`
+#     or a tail expression is fine. This applies to EVERY matching call in
+#     every analysed contract source, not only in the symbol.
+#   - Dominance is not control dependence: a guard call whose result is ignored
+#     still "dominates". Each guard below is chosen so that it is only reached
+#     on the path that makes the operation legal.
+#
+# ON TODAY'S REPOSITORY the source is absent: SMTC returns 0 breach findings
+# (only its own info-severity "obligation vacuous" record where no operation
+# site exists). The checker does not run a spec while its source is absent.
+#
+# CLAIM (obligation save_edit, 1 of 2) -- call order ONLY: in
+# PolicyStore::save_edit (crates/probation-server/src/policy.rs), insert_audit
+# is called before tx.commit, i.e. the transaction is committed only after its
+# audit_log row was written. The change_log half is
+# managed-save-edit-change-before-commit.yaml: a guard list is ANY-OF, so
+# "both rows before commit" needs two specs.
+# NOT the full guarantee (same handle, committed once, no pool write):
+# UNKNOWN -- argument identity needs same_argument, refused for Rust.
+#
+# SHAPE: `let () = insert_audit(&mut tx, ..).await?;` and
+# `let () = tx.commit().await?;` -- the `let () =` binding is required, see
+# the `?` fact above. CATCHES: the audit insert removed, or moved after the
+# commit. NOT CAUGHT: insert_audit given the pool instead of `tx`.
+# Symbol: PolicyStore.save_edit.
+name: managed-save-edit-audit-before-commit
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: ["insert_audit"]}}
+operation: {calls: {name: ["commit"], receiver_type: ["tx"]}}
+relation: {must_dominate: true}
+where: "caller_function == 'PolicyStore.save_edit'"

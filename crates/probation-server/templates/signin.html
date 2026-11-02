@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+{% match view %}
+{% when SigninView::Form { error, notice, email } %}
+<h1>Sign in</h1>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+{% if let Some(notice) = notice %}<p class="good" role="status">{{ notice }}</p>{% endif %}
+{% if !providers.is_empty() %}
+<div class="row">
+{% for provider in providers %}<a class="button" href="/oauth/{{ provider.name }}/start">Continue with {{ provider.label }}</a>
+{% endfor %}
+</div>
+{% endif %}
+<section aria-labelledby="sso-heading">
+<h2 id="sso-heading">Sign in with company SSO</h2>
+<form method="get" action="/o" class="row">
+<label for="org">Organisation name</label>
+<input id="org" name="name" autocomplete="organization">
+<button type="submit">Continue</button>
+</form>
+<p class="mut">For organisations that connected their own sign-in (Microsoft Entra ID, Google Workspace, Okta). The first time you sign in this way, you join your company's organisation automatically.</p>
+</section>
+<h2>Email and password</h2>
+<form method="post" action="/signin">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="email">Email</label>
+<input id="email" type="email" name="email" autocomplete="username" required value="{{ email }}">
+<label for="password">Password</label>
+<input id="password" type="password" name="password" autocomplete="current-password" required>
+<p class="row"><button type="submit" class="pri">Sign in</button> <a href="/reset">Forgot your password?</a></p>
+</form>
+<p>New here? <a href="/signup">Create an account</a></p>
+<p class="mut">Each sign-in method you have not linked starts a separate login, even when its email matches a login you already have. To add a method to your login, sign in first and link it in Account settings.</p>
+{% when SigninView::Reset { sent } %}
+<h1>Forgot your password</h1>
+{% if *sent %}
+<p role="status">If an account uses this address, we sent it a link to choose a new password.</p>
+<p><a href="/signin">Back to sign in</a></p>
+{% else %}
+<form method="post" action="/reset">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="email">Email</label>
+<input id="email" type="email" name="email" autocomplete="email" required>
+<button type="submit" class="pri">Send reset link</button>
+</form>
+{% endif %}
+{% when SigninView::ChooseNew { token, error } %}
+<h1>Choose a new password</h1>
+{% if let Some(error) = error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/reset/confirm">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<label for="new">New password <span class="mut">at least 12 characters; passwords known from data leaks are refused</span></label>
+<input id="new" type="password" name="new" autocomplete="new-password" required minlength="12">
+<label for="again">New password again</label>
+<input id="again" type="password" name="again" autocomplete="new-password" required minlength="12">
+<button type="submit" class="pri">Save password</button>
+</form>
+{% when SigninView::BadLink %}
+<h1>Link expired</h1>
+<p class="err" role="alert">This link has expired or was already used. Ask for a new one.</p>
+<p><a href="/reset">Send a new link</a></p>
+{% when SigninView::Deleted { on, until } %}
+<h1>This login was deleted on {{ on }}</h1>
+<p>You signed in with a method that belongs to a login that was deleted. You can bring it back until {{ until }}.</p>
+<div class="row">
+<form method="post" action="/deleted/restore"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="pri">Restore login</button></form>
+<form method="post" action="/deleted/new"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger">Start a new login instead</button></form>
+</div>
+<p class="mut">"Restore login" also brings back a personal account that was deleted with it. "Start a new login instead" erases the old login, and any personal account deleted with it, for good, now. Until the old login is restored or erased, its email address cannot be used for a new email-and-password sign-up.</p>
+{% endmatch %}
+{% endblock %}

@@ -1,0 +1,68 @@
+<style>
+  #publishing-slice-2 { color: #e8edf5; background: #101722; font: 15px/1.55 system-ui, sans-serif; max-width: 1180px; margin: auto; padding: clamp(18px, 3vw, 40px); border-radius: 20px; box-sizing: border-box; }
+  #publishing-slice-2 * { box-sizing: border-box; }
+  #publishing-slice-2 h2 { color: #fff; font-size: clamp(1.15rem, 2vw, 1.5rem); margin: 1.45em 0 .45em; }
+  #publishing-slice-2 h2:first-child { margin-top: 0; }
+  #publishing-slice-2 p { margin: .45em 0 .8em; }
+  #publishing-slice-2 a { color: #91cbff; text-underline-offset: 3px; }
+  #publishing-slice-2 a:focus-visible { outline: 3px solid #ffcc67; outline-offset: 3px; }
+  #publishing-slice-2 .lead { color: #d9e6f5; font-size: 1.1rem; }
+  #publishing-slice-2 .flow { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 8px; margin: 16px 0; }
+  #publishing-slice-2 .step { padding: 12px; min-width: 0; background: #1b2a3c; border: 1px solid #36536d; border-radius: 10px; }
+  #publishing-slice-2 .step strong { display: block; color: #a9dcff; }
+  #publishing-slice-2 .step small { display: block; color: #ced7e0; }
+  #publishing-slice-2 .step:not(:last-child)::after { content: '→'; float: right; color: #ffcc67; }
+  #publishing-slice-2 .refuse { color: #ffbeae; }
+  #publishing-slice-2 .rules { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+  #publishing-slice-2 .rule { background: #182330; border-left: 3px solid #6cbbe9; padding: 10px 13px; min-width: 0; }
+  #publishing-slice-2 .rule strong { color: #fff; }
+  #publishing-slice-2 .rule code { color: #b2e1fc; overflow-wrap: anywhere; }
+  #publishing-slice-2 code { overflow-wrap: anywhere; }
+  #publishing-slice-2 .table-wrap { overflow-x: auto; }
+  #publishing-slice-2 table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  #publishing-slice-2 th, #publishing-slice-2 td { padding: 9px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #355064; }
+  #publishing-slice-2 th { color: #a9dcff; }
+  #publishing-slice-2 .note { border: 1px solid #a68143; border-radius: 10px; padding: 12px 14px; background: #302715; }
+  #publishing-slice-2 .decision { border-top: 1px solid #59748b; margin-top: 20px; padding-top: 18px; color: #fff; font-size: 1.1rem; font-weight: 700; }
+  @media (max-width: 720px) { #publishing-slice-2 .flow, #publishing-slice-2 .rules { grid-template-columns: 1fr; } #publishing-slice-2 .step:not(:last-child)::after { content: '↓'; } #publishing-slice-2 table { min-width: 0; } #publishing-slice-2 thead { display: none; } #publishing-slice-2 tr { display: block; margin: 10px 0; border: 1px solid #355064; border-radius: 9px; } #publishing-slice-2 td { display: block; border: 0; padding: 7px 10px; } #publishing-slice-2 td::before { content: attr(data-label) ': '; display: block; font-weight: 700; } }
+  @media (prefers-color-scheme: light) { #publishing-slice-2 { color: #172331; background: #f4f8fc; } #publishing-slice-2 h2, #publishing-slice-2 .rule strong, #publishing-slice-2 .decision { color: #102235; } #publishing-slice-2 .lead { color: #28445b; } #publishing-slice-2 a { color: #075b97; } #publishing-slice-2 .step { background: #e5f0f9; border-color: #b7cfdf; } #publishing-slice-2 .step strong, #publishing-slice-2 th, #publishing-slice-2 .rule code { color: #075b97; } #publishing-slice-2 .step small { color: #38566b; } #publishing-slice-2 .rule { background: #eaf1f7; } #publishing-slice-2 .refuse { color: #9d2d18; } #publishing-slice-2 th, #publishing-slice-2 td { border-color: #bed1df; } #publishing-slice-2 .note { background: #fff4db; } }
+</style>
+<section id="publishing-slice-2" aria-label="Completed Slice 2 decision: enterprise certificates and registry isolation">
+  <h2>Delivered</h2>
+  <p class="lead">An admin can configure several registries and organization CA trust. An organization-issued client uses current, authenticated issuer status; same-name packages and persisted artifacts stay within the selected registry across restart.</p>
+  <div class="flow" role="img" aria-label="Admin saves organization CA trust and registry catalog. A package client presents its certificate to TLS. Admission checks current member and live issuer status; invalid or unavailable status refuses before upstream. The selected registry scopes package state and artifacts. An allowed npm read returns only that registry's permitted result; a wrong organization, private destination, old reference, or too-new package refuses.">
+    <div class="step"><strong>Admin setup</strong><small>CA trust + registry catalog</small></div>
+    <div class="step"><strong>TLS peer</strong><small>Certificate; portal remains certificate-free</small></div>
+    <div class="step"><strong>Admission</strong><small>Member UUID + nonce-bound OCSP; <span class="refuse">bad or unavailable → refuse</span></small></div>
+    <div class="step"><strong>Select registry</strong><small>Organization join + approved destination; <span class="refuse">wrong peer → refuse</span></small></div>
+    <div class="step"><strong>Scoped read</strong><small>Project, cache, artifact; <span class="refuse">too-new or old ID → refuse</span></small></div>
+  </div>
+  <p>Changed contracts in <a href="04-slices.md#slice-2-interfaces">Slice 2 interfaces</a>:</p>
+  <div class="rules">
+    <div class="rule"><strong>Certificate settings and admission.</strong> Settings accept only the URI SAN membership UUID selector. Activation and each admission reject an AIA mismatch. Signed OCSP must bind issuer, serial and nonce, be current and verify; committed revocation refuses the next request. The real selected issuer still needs a read-after-write demonstration before activation.</div>
+    <div class="rule"><strong>Registry selection and state.</strong> Target and ecosystem edits refuse. A removed registry ID and artifact reference stay invalid after re-add; the replacement has a new ID. Registry-partitioned project, cache and artifact state replaces the old single-origin behavior adapter; old unscoped cache rows invalidate during safe upgrade.</div>
+    <div class="rule"><strong>Private egress.</strong> Registry and OCSP private origins require operator-approved exact host/port and CIDR. DNS answers, connected peers, redirects and TLS hostname validation are checked.</div>
+    <div class="rule"><strong>Obligations.</strong> <code>live-status-before-grant</code> and <code>registry-identity-before-state-use</code> are due and pass structural guard-order checks. The Slice 1 active-member/registry join is rechecked with runtime wrong-value controls and source review.</div>
+  </div>
+  <p>Changed areas: <code>crates/probation-server/src/portal/certificates.rs</code>, <code>portal/registries.rs</code>, <code>src/managed/enterprise_certificate.rs</code>, <code>src/store/registry_state.rs</code>, <code>src/artifacts/reference.rs</code>, and <code>src/upstream/origins.rs</code>. The approved applied migration is not edited. The slice document describes changed behavior and obligations; it supplies no public signature diff.</p>
+
+  <h2>Proof</h2>
+  <div class="table-wrap"><table><thead><tr><th>Property</th><th>Executed witness / status</th><th>Assumptions and evidence limit</th></tr></thead><tbody>
+    <tr><td data-label="Property">Live status, roots and authority</td><td data-label="Executed witness / status">Selected <code>E2E-publishing-enterprise-registry</code>: 1 passed, 0 failed, 0 not run. Wrong issuer/serial/nonce, replay, outage, committed revoke, root removal on reused TLS connection, and held OCSP responses across settings, member, role and session changes were exercised.</td><td data-label="Assumptions and evidence limit">Fake nonce-capable issuer. A real selected issuer must prove read-after-write before activation.</td></tr>
+    <tr><td data-label="Property">Registry isolation and migration</td><td data-label="Executed witness / status">Same-name collision and age refusal for untrusted B after warming trusted A, across restart and remove/re-add; old ID/reference refused. Slice 1 schema 5 upgraded to 6, then restarted and served a new scoped package.</td><td data-label="Assumptions and evidence limit">Selected E2E and source review cover exact values and persisted behavior.</td></tr>
+    <tr><td data-label="Property">Guard order and private egress</td><td data-label="Executed witness / status">Fresh model check PASS; nine due source obligations PASS, with safe and unsafe controls. Selected E2E covered private DNS, approval and redirect; focused connected-peer refusal passed.</td><td data-label="Assumptions and evidence limit">Structural specs prove guard order only; three later-slice sources remain PENDING by plan. Missing-guard and validation-gap inventories have Stub/Lossy coverage.</td></tr>
+    <tr><td data-label="Property">Build and review</td><td data-label="Executed witness / status"><code>cargo check --workspace</code>, JavaScript syntax and <code>git diff --check</code> passed after the final fix. Code review SHIP; security CLEAR; adversarial PASS; independent QA VERIFIED.</td><td data-label="Assumptions and evidence limit">Full workspace run: 748 passed, 0 failed, 21 ignored before final portal race fix. Rebuilt-image selected E2E and compilation passed afterward.</td></tr>
+  </tbody></table></div>
+
+  <h2>Limits</h2>
+  <p class="note">Production activation depends on the real selected issuer's read-after-write status demonstration. The selected E2E uses a fake issuer. The full workspace suite predates the final portal race fix; the selected rebuilt-image E2E and workspace compilation passed afterward.</p>
+
+  <h2>Next</h2>
+  <p>Slice 3 extends named npm reads through the selected URL with current certificate and group policy, including the approved developer-token exception for canonical packument GETs. Other reads and artifacts remain filtered; unknown routes refuse before upstream.</p>
+
+  <h2>Recommendation</h2>
+  <p>Continue to Slice 3. Slice 2’s selected runtime witness, due source controls and four reviews passed; the real-issuer prerequisite remains explicit for production activation.</p>
+  <p>Status: Slice 2 complete; QA VERIFIED, code review SHIP, security CLEAR, adversarial PASS. Slice 3 is the current plan boundary.</p>
+  <p>Sources: <a href="04-slices.md#slice-2-interfaces">Slice 2 plan</a> · <a href="evidence/slice-2.md">execution and reviews</a> · <a href="evidence/tdd-slice-2.md">red/green controls</a> · <a href="00-status.md">current status</a>.</p>
+  <p class="decision">Continue to Slice 3 — complete guarded npm reads, or re-steer the plan?</p>
+</section>

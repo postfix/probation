@@ -1,18 +1,24 @@
 //! The explicit router (no catch-all), the layer stack, and graceful shutdown.
 
 pub mod artifact_routes;
+pub mod audit_filter;
 pub mod error;
 pub mod health;
 pub mod limits;
 pub mod logging;
 pub mod npm_routes;
 pub mod pypi_routes;
+pub mod registry_read;
+pub mod registry_action;
+pub mod registry_routes;
+pub mod token_packument;
+pub mod unpublish_reference;
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -20,6 +26,7 @@ use tokio::sync::OwnedSemaphorePermit;
 
 use crate::App;
 use crate::http::error::ApiError;
+use crate::managed::{Principal, Refusal};
 
 /// Routes are registered explicitly; every other path is `404` and every unsupported
 /// method on a route that does exist is `405` (SPEC §11).
@@ -48,10 +55,22 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/npm/-", get(unknown_route))
         .route("/npm/-/{*rest}", get(artifact_routes::serve_npm_namespace))
         .route("/npm/{package}", get(npm_routes::package))
+        .route("/registry/npm/{registry}/-/ping", get(registry_routes::ping))
+        .route("/registry/npm/{registry}/-/whoami", get(registry_routes::whoami))
+        .route("/registry/npm/{registry}/-/v1/search", get(registry_routes::search))
         .route(
             "/npm/{package}/{version_or_tag}",
             get(npm_routes::package_version),
         )
+        .route(
+            "/registry/npm/{registry}/{package}/{version}",
+            get(registry_routes::version),
+        )
+        .route("/registry/npm/{registry}/{package}", get(registry_routes::package).put(registry_routes::package_action))
+        .route("/registry/npm/{registry}/{package}/-rev/{revision}", axum::routing::put(registry_routes::revision_action).delete(registry_routes::revision_action))
+        .route("/registry/pypi/{registry}/simple/", get(pypi_routes::selected_index))
+        .route("/registry/pypi/{registry}/simple/{project}/", get(pypi_routes::selected_project))
+        .route("/registry/pypi/{registry}/simple/{project}", get(pypi_routes::selected_project_without_slash))
         .route("/pypi/simple/", get(pypi_routes::index))
         .route("/pypi/simple/{project}/", get(pypi_routes::project))
         .route(
@@ -61,9 +80,24 @@ pub fn router(app: Arc<App>) -> Router {
         // Only the routes above: the artifact routes below serve `HEAD` as SPEC §11
         // lists it.
         .route_layer(middleware::from_fn(get_only))
+        .route("/registry/pypi/{registry}/", axum::routing::post(pypi_routes::selected_upload))
+        .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
+        .route("/registry/npm/{registry}/-/npm/v1/security/audits/quick", axum::routing::post(registry_routes::audit_quick))
+        .route("/registry/npm/{registry}/-/{*rest}", axum::routing::any(registry_routes::action))
+        .route("/registry/npm/{registry}/{package}/-/{filename}", get(registry_routes::package_tarball).head(registry_routes::package_tarball))
+        .route("/registry/npm/{registry}/{package}/-/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::package_tarball_delete))
+        .route("/registry/npm/{registry}/artifacts/{reference_id}/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::unsupported_artifact_delete))
         .route(
             "/npm/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_npm).head(artifact_routes::serve_npm),
+        )
+        .route(
+            "/registry/npm/{registry}/artifacts/{reference_id}/{filename}",
+            get(registry_routes::artifact).head(registry_routes::artifact),
+        )
+        .route(
+            "/registry/pypi/{registry}/artifacts/{reference_id}/{filename}",
+            get(pypi_routes::selected_artifact).head(pypi_routes::selected_artifact),
         )
         .route(
             "/pypi/artifacts/{reference_id}/{filename}",
@@ -88,7 +122,17 @@ pub fn router(app: Arc<App>) -> Router {
             Arc::clone(&app),
             logging::decide,
         ))
+        .layer(middleware::from_fn(bound_headers))
         .with_state(app)
+}
+
+async fn bound_headers(request: Request, next: Next) -> Response {
+    let size = request.headers().iter().fold(0usize, |total, (name, value)|
+        total.saturating_add(name.as_str().len()).saturating_add(value.as_bytes().len()));
+    if size > 64 * 1024 {
+        return StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.into_response();
+    }
+    next.run(request).await
 }
 
 /// What every package route asks before it does any work: a request permit
@@ -99,16 +143,45 @@ pub fn router(app: Arc<App>) -> Router {
 ///
 /// With no valid policy in force the handler's own `POLICY_UNAVAILABLE` answers
 /// instead: SPEC §5 puts that check first, and it is the more fundamental refusal.
-fn admit(app: &App) -> Result<OwnedSemaphorePermit, ApiError> {
+///
+/// In managed mode the local blocklist is not consulted (C109): the request waits for
+/// the first sync or a loaded cache snapshot, then its key is authenticated, once, and
+/// the principal whose policy the request is decided under is handed on.
+async fn admit(
+    app: &App,
+    headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Option<Principal>), ApiError> {
     let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
-    if !app.store().is_healthy()
-        && app
+    let Some(managed) = app.managed() else {
+        let policy_valid = app
             .blocklist()
-            .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()))
-    {
+            .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()));
+        if !app.store().is_healthy() && policy_valid {
+            return Err(ApiError::StorageUnusable);
+        }
+        return Ok((permit, None));
+    };
+    // Until then the network lock would run on an empty table (T1).
+    if !managed.ready() {
+        return Err(ApiError::NotReady);
+    }
+    if !app.store().is_healthy() {
         return Err(ApiError::StorageUnusable);
     }
-    Ok(permit)
+    // Managed mode always builds the server with connect-info, so a missing address
+    // is a fault: fail closed, as not ready.
+    let peer = logging::peer().ok_or(ApiError::NotReady)?;
+    let principal = managed
+        .authenticate(headers, peer)
+        .await
+        .map_err(|refusal| match refusal {
+            Refusal::Unauthenticated => ApiError::Unauthenticated,
+            Refusal::Network(client) => ApiError::NetworkNotAllowed(client),
+            Refusal::RateLimited => ApiError::TooManyRequests,
+            Refusal::Busy => ApiError::LookupBusy,
+        })?;
+    logging::record_place(principal.place.id);
+    Ok((permit, Some(principal)))
 }
 
 async fn unknown_route() -> ApiError {

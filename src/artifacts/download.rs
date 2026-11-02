@@ -53,11 +53,12 @@ use crate::App;
 use crate::artifacts::content::{ContentError, ContentKey};
 use crate::concurrency::{Resolution, SingleFlight, Slot};
 use crate::http::error::ApiError;
+use crate::managed::report::Call;
 use crate::policy::{Candidate, Decision, Digest, Ecosystem, HashAlgorithm};
 use crate::store::cache::{CachedProject, ProjectKey};
 use crate::store::rows::{ReferenceId, ReferenceRow};
 use crate::store::{PinOutcome, StoreError};
-use crate::upstream::{ArtifactRequest, UpstreamError};
+use crate::upstream::{ArtifactRequest, OriginKind, UpstreamError, UrlRejection};
 
 /// What a complete, verified download produced.
 #[derive(Clone, Copy, Debug)]
@@ -166,6 +167,16 @@ pub async fn fetch(
     app: &Arc<App>,
     row: &ReferenceRow,
 ) -> Result<VerifiedContent, Arc<DownloadError>> {
+    fetch_at(app, row, None, Vec::new(), None).await
+}
+
+pub async fn fetch_at(
+    app: &Arc<App>,
+    row: &ReferenceRow,
+    origin: Option<url::Url>,
+    private_cidrs: Vec<ipnet::IpNet>,
+    read_authorization: Option<String>,
+) -> Result<VerifiedContent, Arc<DownloadError>> {
     let (slot, leader, _waiter) = app.downloads.transfers().join(row.id);
 
     if leader {
@@ -174,7 +185,7 @@ pub async fn fetch(
         let app = Arc::clone(app);
         let row = row.clone();
         let started = Arc::clone(&slot);
-        tokio::spawn(async move { run(app, row, started).await });
+        tokio::spawn(async move { run(app, row, origin, private_cidrs, read_authorization, started).await });
     }
 
     match slot.wait().await {
@@ -191,7 +202,7 @@ pub async fn fetch(
 /// The [`Resolution`] is what makes that "every way out" rather than "every way out
 /// this code thought of" — see `concurrency::single_flight` for why it is a `Drop`
 /// guard and not a `catch_unwind` around `transfer`.
-async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
+async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private_cidrs: Vec<ipnet::IpNet>, read_authorization: Option<String>, slot: Arc<Slot<SlotOutcome>>) {
     let mut resolution = Resolution::new(
         app.downloads.transfers().clone(),
         row.id,
@@ -200,7 +211,7 @@ async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
         row.id.to_hex(),
     );
 
-    let outcome = match transfer(&app, &row, &slot).await {
+    let outcome = match transfer(&app, &row, origin.as_ref(), &private_cidrs, read_authorization, &slot).await {
         Ok(content) => SlotOutcome::Verified(content),
         Err(err) => SlotOutcome::Failed(Arc::new(err)),
     };
@@ -210,25 +221,43 @@ async fn run(app: Arc<App>, row: ReferenceRow, slot: Arc<Slot<SlotOutcome>>) {
 async fn transfer(
     app: &App,
     row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<String>,
     slot: &Slot<SlotOutcome>,
 ) -> Result<VerifiedContent, DownloadError> {
     // SPEC §9: "Bound active downloads globally." One permit per transfer, not per
-    // waiter — the waiters above are sharing this one. SPEC §10 refuses overload
-    // rather than queueing behind it.
-    let _permit = app
-        .limits
-        .download_permit()
-        .ok_or(DownloadError::Overloaded)?;
+    // waiter — the waiters above are sharing this one. The wait for it is short and
+    // bounded (`Limits::download_permit`), and it ends when the last waiter leaves.
+    let permit = tokio::select! {
+        biased;
+        () = slot.cancelled() => return Err(DownloadError::Cancelled),
+        permit = app.limits.download_permit() => permit,
+    };
+    let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
-    let body = app
-        .transport
-        .open_artifact(ArtifactRequest {
-            url: row.reference.upstream_url.clone(),
-            max_bytes: cap,
-        })
-        .await
-        .map_err(DownloadError::Upstream)?;
+    let opened = match own_origin(app, row, origin, private_cidrs) {
+        Ok(()) => {
+            app.transport
+                .open_artifact(ArtifactRequest {
+                    url: row.reference.upstream_url.clone(),
+                    origin: origin.cloned(),
+                    private_cidrs: private_cidrs.to_vec(),
+                    read_authorization,
+                    max_bytes: cap,
+                })
+                .await
+        }
+        Err(refused) => Err(refused),
+    };
+    // Recorded under the ecosystem of the request, never by the URL (C69).
+    let call = match row.reference.ecosystem {
+        Ecosystem::Npm => Call::Npm,
+        Ecosystem::PyPi => Call::PypiArtifacts,
+    };
+    app.upstreams.record_upstream(call, &opened);
+    let body = opened.map_err(DownloadError::Upstream)?;
 
     // A declared length over the cap is refused before a byte is transferred. The
     // counted loop below is what refuses one that never declares a length at all.
@@ -313,7 +342,16 @@ async fn transfer(
             // and the next resolution loads the project afresh. Reuse is
             // generation-checked, the way `RenderedResponse::is_reusable` already is,
             // rather than bounded by `metadata_ttl_seconds`.
-            app.store().caches().projects.remove(&ProjectKey::new(
+            //
+            // Managed mode has no one policy to decide with here, and some key's policy
+            // may block this digest. So every listing rendered without it goes stale:
+            // the generation is bumped before the cached snapshot is dropped, and the
+            // next resolution reloads the project with both (C104, SPEC §9).
+            if app.managed().is_some() {
+                bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
+            }
+            app.store().caches().projects.remove(&ProjectKey::in_registry(
+                row.registry_id,
                 row.reference.ecosystem,
                 row.reference.name.as_str(),
             ));
@@ -334,28 +372,35 @@ async fn transfer(
 
     // The latest policy, against digests upstream may never have advertised.
     let now = app.clock.now_utc_micros();
-    let snapshot = app.blocklist();
     let pinned = computed.pinned_digests();
-    let decision = crate::osv::evaluate(
-        &app.osv,
-        snapshot.as_deref(),
-        now,
-        app.config.cooldown_seconds,
-        &Candidate {
-            ecosystem: row.reference.ecosystem,
-            name: &row.reference.name,
-            version: &row.reference.version,
-            publication: row.publication_time(),
-            advertised_digests: &row.reference.expected,
-            pinned_digests: &pinned,
-        },
-    )
-    .await;
+    // Managed mode has no one policy to judge by: each waiter decides with its own
+    // once the bytes are verified, so one tenant's block cannot refuse another's
+    // download (C104). The bytes are published either way.
+    let decision = if app.managed().is_some() {
+        Decision::Allow
+    } else {
+        match app.policy() {
+            Some(policy) => {
+                let candidate = Candidate {
+                    ecosystem: row.reference.ecosystem,
+                    name: &row.reference.name,
+                    version: &row.reference.version,
+                    publication: row.publication_time(),
+                    advertised_digests: &row.reference.expected,
+                    pinned_digests: &pinned,
+                };
+                crate::osv::evaluate(&app.osv, &policy, now, &candidate).await
+            }
+            // No blocklist has ever been in force: `evaluate`'s own answer to a missing
+            // snapshot.
+            None => Decision::Unavailable,
+        }
+    };
     if decision != Decision::Allow {
         // SPEC §9: "If a computed digest reveals a block not visible in upstream
         // metadata, invalidate that project's filtered metadata."
         if matches!(decision, Decision::Deny(_)) {
-            bump_digest_generation(app, row.reference.ecosystem, &row.reference.name).await;
+            bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
         }
         // The temporary file goes with `temp`; the pins stay.
         return Err(DownloadError::Refused(decision));
@@ -404,16 +449,43 @@ fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, Dow
     result.map_err(DownloadError::Capacity)
 }
 
-/// A failed bump is logged and not fatal: the artifact is refused either way, and
-/// the worst consequence is a rendered response that stays current one generation
-/// too long.
-async fn bump_digest_generation(app: &App, ecosystem: Ecosystem, name: &str) {
-    if let Err(err) = app.store().bump_digest_generation(ecosystem, name).await {
+/// F10: an artifact is fetched only from its own ecosystem's origins — an npm tarball
+/// from the npm origin, a PyPI file from the files or the index origin. The transport
+/// admits any configured origin, so without this a document could send a fetch to
+/// the other ecosystem's host.
+fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet]) -> Result<(), UpstreamError> {
+    let selected = origin.map(|origin| crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec()))
+        .transpose().map_err(UpstreamError::RejectedUrl)?;
+    let origins = selected.as_ref().unwrap_or(&app.origins);
+    let own: &[OriginKind] = match row.reference.ecosystem {
+        Ecosystem::Npm => &[OriginKind::NpmMetadata],
+        Ecosystem::PyPi => &[OriginKind::PypiArtifacts, OriginKind::PypiMetadata],
+    };
+    let url = &row.reference.upstream_url;
+    // Admitted against each own origin rather than by `kind_of`, which names only the
+    // first of several origins configured to the same URL.
+    if own.iter().any(|kind| origins.admit(url, *kind).is_ok()) {
+        return Ok(());
+    }
+    let rejection = origins.admit_any(url).err();
+    Err(UpstreamError::RejectedUrl(
+        rejection.unwrap_or(UrlRejection::ForeignOrigin),
+    ))
+}
+
+/// A failed bump is logged and not fatal. Standalone refuses the artifact either way,
+/// and the worst consequence is a rendered response that stays current one generation
+/// too long. In managed mode the bump follows a new pin and nothing is refused here:
+/// a failed one leaves other keys' listings rendered before the pin reusable, showing
+/// a version their policy blocks by this digest, until their metadata TTL ends. The
+/// artifact itself is still refused to them by their own final check.
+async fn bump_digest_generation(app: &App, registry_id: u64, ecosystem: Ecosystem, name: &str) {
+    if let Err(err) = app.store().bump_digest_generation_in(registry_id, ecosystem, name).await {
         tracing::warn!(
             package = %name,
             error = %err,
-            "could not invalidate the project's rendered metadata after a computed digest \
-             revealed a block"
+            "could not invalidate the project's rendered metadata after a new pin or a \
+             computed digest that revealed a block"
         );
     }
 }

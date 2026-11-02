@@ -1,0 +1,66 @@
+# HOW THIS IS RUN. This is a molecule source obligation for
+# docs/plans/management-server (sidecar molecule-contracts.json). The sf-start
+# checker snapshots ONLY the declared contract sources and specs, runs this spec
+# with `smtc spec run --root <snapshot>`, and requires: zero findings on
+# production, a Protocol pipeline with find_operations >= 1, find_guards >= 1 and
+# a cfg_dominance step, and for every control a finding whose
+# evidence.caller_function equals the contract symbol. The control `from`/`to`
+# text and the reference shape live in
+# docs/plans/management-server/controls/ -- the implementation must keep each
+# `from` string matching exactly once.
+#
+# SMTC FACTS THIS RELIES ON (probed on synthetic Rust fixtures, 2026-10-21):
+#   - `relation: {must_dominate: true}` runs cfg_dominance for Rust; `{}` runs
+#     only co-occurrence, which the checker rejects.
+#   - `evidence: full` is what puts caller_function/confidence/file_path on a
+#     finding; without it the checker cannot ground the finding.
+#   - `scope.files` is a NO-OP in this build (same op counts with and without it
+#     on the product root), so it is omitted. Restriction comes from the
+#     checker snapshot (contract sources only), method names unique to the
+#     managed module, and the `where` filter on caller_function.
+#   - `scope.functions` is refused without `same_argument`, and `same_argument`
+#     is refused for Rust ("currently supports TypeScript and JavaScript only"),
+#     so nothing here proves VALUE identity -- only that one call dominates
+#     another in the same function.
+#   - caller_function is `Type.method` for methods, the bare name for free fns.
+#     A method callee resolves to `Type.method` (KeySync.drop_cache), not
+#     `self.drop_cache`; an unresolved receiver call keeps its text
+#     (self.cache.clear).
+#   - A guard and an operation on the SAME line makes dominance fail
+#     (analysis_failed); keep them on separate statements.
+#   - A guard or operation call that ends an expression statement with `?`
+#     (`foo(..).await?;`) cannot be located (analysis_failed). Bind it:
+#     `let () = foo(..).await?;` or `let x = foo(..)?;`. A plain `foo(..);`
+#     or a tail expression is fine. This applies to EVERY matching call in
+#     every analysed contract source, not only in the symbol.
+#   - Dominance is not control dependence: a guard call whose result is ignored
+#     still "dominates". Each guard below is chosen so that it is only reached
+#     on the path that makes the operation legal.
+#
+# ON TODAY'S REPOSITORY the source is absent: SMTC returns 0 breach findings
+# (only its own info-severity "obligation vacuous" record where no operation
+# site exists). The checker does not run a spec while its source is absent.
+#
+# CLAIM (obligation check_edit) -- call order ONLY: in `check_edit`
+# (crates/probation-policy/src/edit.rs), find_loosening is called before
+# CheckedEdit::accepted, i.e. a CheckedEdit is created only after the
+# loosening search ran.
+# NOT the full guarantee "CheckedEdit can only be constructed here": UNKNOWN
+# (a struct literal is not a call site); enforce it with a private field and a
+# private `accepted` constructor (rustc privacy) plus a compile_fail doctest.
+#
+# The constructor is named `accepted`, not `new`: an operation named `new`
+# would match every `::new` call in every analysed source, and any one of them
+# in a `x?;` statement aborts the run.
+# CATCHES: the search removed, or a fast path that builds a CheckedEdit before
+# it. NOT CAUGHT: the search's result ignored; a struct literal
+# `CheckedEdit { .. }` anywhere.
+# Symbol: check_edit (free fn).
+name: managed-check-edit-loosening-first
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: ["find_loosening"]}}
+operation: {calls: {name: ["accepted"]}}
+relation: {must_dominate: true}
+where: "caller_function == 'check_edit'"

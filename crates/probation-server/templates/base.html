@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }} · Probation</title>
+<link rel="stylesheet" href="/static/portal.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<header class="top">
+<b>Probation</b>
+{% if let Some(top) = top %}
+{% if !top.places.is_empty() %}
+<form method="post" action="/place" class="switch">
+<input type="hidden" name="csrf" value="{{ top.csrf }}">
+<label for="place-switcher">Place</label>
+<select id="place-switcher" name="to">{% for (label, value, selected) in top.places %}<option value="{{ value }}"{% if *selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+<button type="submit">Switch</button>
+</form>
+{% endif %}
+<span>{{ top.name }}</span>
+<form method="post" action="/signout" class="inline">
+<input type="hidden" name="csrf" value="{{ top.csrf }}">
+<button type="submit" class="link">Sign out</button>
+</form>
+{% endif %}
+</header>
+{% if let Some(top) = top %}
+<nav aria-label="Portal">
+{% for (href, key, label) in [("/keys", "keys", "API keys"), ("/policy", "policy", "Policy"), ("/activity", "activity", "Activity"), ("/org", "org", "Organisation"), ("/audit", "audit", "Audit log"), ("/account", "account", "Account")] %}<a href="{{ href }}"{% if top.page == *key %} aria-current="page"{% endif %}>{{ label }}</a>
+{% endfor %}{% if top.admin %}<a href="/admin"{% if top.page == "admin" %} aria-current="page"{% endif %}>Global admin</a>
+<a href="/fleet"{% if top.page == "fleet" %} aria-current="page"{% endif %}>Fleet</a>
+{% endif %}</nav>
+{% endif %}
+<main id="main">
+{% if let Some(top) = top %}{% if let Some(kind) = top.suspended %}<p class="err" role="status">This {{ kind }} is suspended by the service operator. You can sign in and look, but nothing can be changed, and its keys are refused until it is re-activated.</p>{% endif %}{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

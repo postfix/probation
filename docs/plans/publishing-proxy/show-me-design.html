@@ -1,0 +1,161 @@
+<article id="publishing-design-d41" aria-label="Transparent package publishing design">
+<style>
+#publishing-design-d41{font:inherit;color:var(--foreground);background:transparent;max-width:1024px;margin:auto;padding:1rem;line-height:1.5;overflow-wrap:anywhere}
+#publishing-design-d41 *{box-sizing:border-box}
+#publishing-design-d41 h2{font-size:1.4rem;font-weight:500;margin:1.5rem 0 .5rem}
+#publishing-design-d41 h2:first-of-type{margin-top:0}
+#publishing-design-d41 h3{font-size:1.1rem;font-weight:500;margin:1.2rem 0 .35rem}
+#publishing-design-d41 p{margin:.4rem 0 .8rem}
+#publishing-design-d41 a{color:var(--primary);text-decoration:underline}
+#publishing-design-d41 a:focus-visible,#publishing-design-d41 summary:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+#publishing-design-d41 .flow{width:100%;height:auto;display:block;color:var(--foreground);margin:.6rem 0}
+#publishing-design-d41 .flow text{font:500 15px system-ui,sans-serif;fill:var(--foreground)}
+#publishing-design-d41 .flow .small{font:400 13px system-ui,sans-serif;fill:var(--muted-foreground)}
+#publishing-design-d41 .flow rect{fill:var(--card);stroke:var(--border);stroke-width:1.5}
+#publishing-design-d41 .flow path.edge{fill:none;stroke:var(--foreground);stroke-width:2}
+#publishing-design-d41 .flow path.fail{stroke:var(--destructive)}
+#publishing-design-d41 .mobile{display:none}
+#publishing-design-d41 .cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+#publishing-design-d41 .rule{border-left:3px solid var(--border);padding-left:.7rem;margin:.5rem 0}
+#publishing-design-d41 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--muted);color:var(--foreground);padding:.8rem;border-radius:.35rem;font-size:.83rem}
+#publishing-design-d41 code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+#publishing-design-d41 table{border-collapse:collapse;width:100%;margin:.5rem 0 1rem}
+#publishing-design-d41 th,#publishing-design-d41 td{border-bottom:1px solid var(--border);text-align:left;vertical-align:top;padding:.45rem}
+#publishing-design-d41 th{font-weight:500}
+#publishing-design-d41 .question{font-size:1.1rem;font-weight:500;border-top:2px solid var(--border);padding-top:.9rem;margin-top:1.2rem}
+@media(max-width:650px){#publishing-design-d41{padding:.7rem}#publishing-design-d41 .desktop{display:none}#publishing-design-d41 .mobile{display:block}#publishing-design-d41 .cols{grid-template-columns:1fr}#publishing-design-d41 tr{display:block;border-bottom:1px solid var(--border);padding:.35rem 0}#publishing-design-d41 th,#publishing-design-d41 td{display:block;border:0;padding:.25rem 0}}
+</style>
+<h2>What problem do we have?</h2>
+<p>Developers need npm and Python installs, publishing and supported management through one selected Probation URL. npm 11 removes a version by PUTting revised metadata before its tarball DELETE; without D40's member-bound lease, the proxy loses a noncanonical or extra-origin destination. The approved D40/D41 behavior now has frozen Slice 4 source and a passing pinned npm action witness. Eight planned unsafe-mutation strings still named illustrative statements absent from that source, so their defect controls were UNKNOWN. This approval rebinds those exact strings to guarded calls without changing the caller outcome.</p>
+<h2>How will we solve it?</h2>
+<p>Each project chooses one <code>/registry/npm/&lt;id&gt;/</code> or <code>/registry/pypi/&lt;id&gt;/</code> URL for reads and writes; legacy <code>/npm/...</code> and <code>/pypi/...</code> stay separate, including numeric npm packages. TLS supplies a unique user certificate. Admission checks the selected organization's current roots, live status, active member, group and registry. Only named reads, login and actions proceed.</p>
+<svg class="flow desktop" viewBox="0 0 900 280" role="img" aria-label="TLS peer leads to admission and route classification. Reads return policy-safe results, writes depend on upstream acceptance, and unknown or unsafe routes refuse before outbound I/O.">
+<title>Selected registry request flow</title>
+<defs><marker id="d41-arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--foreground)"/></marker></defs>
+<rect x="12" y="72" width="145" height="74" rx="6"/><text x="25" y="99">TLS peer</text><text class="small" x="25" y="122">key proof + chain</text>
+<rect x="210" y="72" width="170" height="74" rx="6"/><text x="223" y="99">admit_certificate</text><text class="small" x="223" y="122">current member / registry</text>
+<rect x="435" y="72" width="170" height="74" rx="6"/><text x="448" y="99">classify route</text><text class="small" x="448" y="122">read / login / action</text>
+<rect x="660" y="16" width="225" height="68" rx="6"/><text x="673" y="43">serve_package_read</text><text class="small" x="673" y="65">visible result or safe audit</text>
+<rect x="660" y="127" width="225" height="68" rx="6"/><text x="673" y="154">forward_registry_action</text><text class="small" x="673" y="176">upstream accepts or denies</text>
+<rect x="660" y="226" width="225" height="46" rx="6"/><text x="673" y="255">refuse before outbound I/O</text>
+<path class="edge" d="M157 109 H210" marker-end="url(#d41-arr)"/><path class="edge" d="M380 109 H435" marker-end="url(#d41-arr)"/><path class="edge" d="M605 94 C628 94 628 50 660 50" marker-end="url(#d41-arr)"/><path class="edge" d="M605 122 C630 122 630 161 660 161" marker-end="url(#d41-arr)"/><path class="edge fail" d="M520 146 V249 H660" marker-end="url(#d41-arr)"/>
+</svg>
+<svg class="flow mobile" viewBox="0 0 320 505" role="img" aria-label="TLS peer, current admission, classification, safe read, upstream-authorized action, or refusal.">
+<title>Selected registry request flow</title>
+<defs><marker id="d41-arr-m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--foreground)"/></marker></defs>
+<rect x="18" y="8" width="284" height="57" rx="6"/><text x="30" y="32">TLS peer</text><text class="small" x="30" y="52">key proof + chain</text>
+<rect x="18" y="91" width="284" height="57" rx="6"/><text x="30" y="115">admit_certificate</text><text class="small" x="30" y="135">current member / registry</text>
+<rect x="18" y="174" width="284" height="57" rx="6"/><text x="30" y="198">classify route</text><text class="small" x="30" y="218">read / login / action</text>
+<rect x="18" y="257" width="284" height="57" rx="6"/><text x="30" y="281">serve_package_read</text><text class="small" x="30" y="301">visible result or safe audit</text>
+<rect x="18" y="340" width="284" height="57" rx="6"/><text x="30" y="364">forward_registry_action</text><text class="small" x="30" y="384">upstream accepts or denies</text>
+<rect x="18" y="423" width="284" height="57" rx="6"/><text x="30" y="456">unsafe or unknown: refuse</text>
+<path class="edge" d="M160 65 V91" marker-end="url(#d41-arr-m)"/><path class="edge" d="M160 148 V174" marker-end="url(#d41-arr-m)"/><path class="edge" d="M100 231 V257" marker-end="url(#d41-arr-m)"/><path class="edge" d="M302 204 H312 V368 H302" marker-end="url(#d41-arr-m)"/><path class="edge fail" d="M18 204 H5 V450 H18" marker-end="url(#d41-arr-m)"/>
+</svg>
+<div class="cols">
+<div class="rule"><strong>Read.</strong> Tokenless metadata, search, audit and artifact bytes use current group policy. A canonical npm packument GET with a developer token may reveal selected-upstream metadata even if no write follows; its body stays request-local. Bulk and direct quick audit responses contain only visible-version signals and safe fields. Unsupported bulk remains the selected upstream's error.</div>
+<div class="rule"><strong>Action.</strong> Named web-login start/poll may be tokenless. Other publish and account actions require the developer credential and selected-upstream permission. The shared download credential cannot authorize a write. HTTPS, DNS, connected-peer and TLS vetting apply; action redirects refuse.</div>
+</div>
+<h3>Version-unpublish decision</h3>
+<svg class="flow desktop" viewBox="0 0 900 185" role="img" aria-label="The upstream's write packument creates a sealed lease, revision PUT restores URLs and records an accepted removal marker, then one DELETE reaches the approved destination. Failed guards refuse or report uncertain partial write.">
+<title>Version-unpublish action flow</title>
+<rect x="12" y="20" width="184" height="70" rx="6"/><text x="24" y="46">GET ?write=true</text><text class="small" x="24" y="70">sealed 24-hour lease</text>
+<rect x="242" y="20" width="184" height="70" rx="6"/><text x="254" y="46">revision PUT</text><text class="small" x="254" y="70">restore all local URLs</text>
+<rect x="472" y="20" width="184" height="70" rx="6"/><text x="484" y="46">accepted removal</text><text class="small" x="484" y="70">durable revision marker</text>
+<rect x="702" y="20" width="184" height="70" rx="6"/><text x="714" y="46">one DELETE</text><text class="small" x="714" y="70">current approved URL</text>
+<rect x="340" y="120" width="300" height="53" rx="6"/><text x="352" y="142">refuse / uncertain partial write</text><text class="small" x="352" y="160">invalid, denied or unverifiable</text>
+<rect x="700" y="120" width="186" height="53" rx="6"/><text x="712" y="142">accepted: deleted</text><text class="small" x="712" y="160">upstream decides</text>
+<path class="edge" d="M196 55 H242" marker-end="url(#d41-arr)"/><path class="edge" d="M426 55 H472" marker-end="url(#d41-arr)"/><path class="edge" d="M656 55 H702" marker-end="url(#d41-arr)"/>
+<path class="edge fail" d="M334 90 V104 H410 V120" marker-end="url(#d41-arr)"/><path class="edge fail" d="M564 90 V120" marker-end="url(#d41-arr)"/><path class="edge fail" d="M702 55 H680 V108 H620 V120" marker-end="url(#d41-arr)"/><path class="edge" d="M794 90 V120" marker-end="url(#d41-arr)"/>
+</svg>
+<svg class="flow mobile" viewBox="0 0 320 535" role="img" aria-label="GET write packument creates sealed lease; revision PUT restores local URLs; accepted removal creates durable revision marker; one approved DELETE follows. Accepted DELETE is deleted; failed guards refuse or report uncertain partial write.">
+<title>Version-unpublish action flow</title>
+<rect x="18" y="8" width="284" height="57" rx="6"/><text x="30" y="32">GET ?write=true</text><text class="small" x="30" y="52">sealed 24-hour lease</text>
+<rect x="18" y="91" width="284" height="57" rx="6"/><text x="30" y="115">revision PUT</text><text class="small" x="30" y="135">restore all local URLs</text>
+<rect x="18" y="174" width="284" height="57" rx="6"/><text x="30" y="198">accepted removal</text><text class="small" x="30" y="218">durable revision marker</text>
+<rect x="18" y="257" width="284" height="57" rx="6"/><text x="30" y="281">one DELETE</text><text class="small" x="30" y="301">current approved URL</text>
+<rect x="18" y="340" width="284" height="57" rx="6"/><text x="30" y="364">accepted: deleted</text><text class="small" x="30" y="384">upstream decides</text>
+<rect x="18" y="460" width="284" height="57" rx="6"/><text x="30" y="484">refuse / uncertain partial write</text><text class="small" x="30" y="504">invalid, denied or unverifiable</text>
+<path class="edge" d="M160 65 V91" marker-end="url(#d41-arr-m)"/><path class="edge" d="M160 148 V174" marker-end="url(#d41-arr-m)"/><path class="edge" d="M160 231 V257" marker-end="url(#d41-arr-m)"/>
+<path class="edge" d="M160 314 V340" marker-end="url(#d41-arr-m)"/><path class="edge fail" d="M18 120 H7 V430 H40 V460" marker-end="url(#d41-arr-m)"/><path class="edge fail" d="M302 202 H312 V430 H280 V460" marker-end="url(#d41-arr-m)"/><path class="edge fail" d="M302 285 H312"/>
+</svg>
+<p>A token-bearing npm <code>?write=true</code> packument may atomically persist a 24-hour, member- and registry-bound action lease for each exact tarball URL the selected upstream advertised. The local link has only an opaque reference; the URL, including a signed query, is encrypted at rest and absent from links and logs. A quota or storage failure refuses the packument before advertising a dead link. No developer token or packument body persists in the lease.</p>
+<p>Before a revision PUT reaches the selected upstream, every local <code>versions[*].dist.tarball</code> link must resolve to that member's live lease and be restored to the exact upstream URL. A successful PUT must remove the leased version and establish its resulting revision from the accepted response or an immediate authenticated refetch. A durable marker binds member, reference and revision before PUT success. The final DELETE requires that exact revision and consumes the marker once before outbound I/O. Denied or unchanged PUTs create no marker; verification or marker failure after upstream acceptance reports uncertain partial write.</p>
+<p>An administrator may approve an exact HTTPS origin and segment-boundary path prefix for noncanonical selected-origin paths or extra destinations. Extra-origin developer bearer forwarding is opt-in per scope, off by default; the selected origin receives the bearer. DELETE rechecks approval, certificate, member, DNS, connected peer and TLS name, rejects ambiguous encoded traversal and redirects. Removing approval makes the lease unusable.</p>
+<h3>Decisions retained</h3>
+<ol><li>Use one selected registry URL; preserve legacy numeric npm routes and upstream write authority.</li><li>Keep token-bearing canonical packument bodies request-local; persist only admitted tarball action leases.</li><li>Bind a sealed lease to immutable registry, admitted member, package, version, reference and filename for 24 hours.</li><li>Refuse the packument before advertising a new action URL if the atomic lease batch fails its per-member, per-registry or global live-lease quota.</li><li>Restore every local tarball link to its exact advertised upstream URL before revision PUT.</li><li>Create a durable resulting-revision marker only after an accepted PUT removes that version; report unverifiable accepted writes as uncertain.</li><li>Consume that marker once before DELETE, after current member, URL, origin/path and revision checks.</li><li>Send the bearer to the selected origin; send it to an extra origin only when that exact administrator-approved scope opts in.</li></ol>
+<h3>Caller contracts and exact source-control change</h3>
+<pre><code class="language-rust">// Never-reused selected registry identity; the wrapper alone does not validate it.
+pub struct RegistryId(pub u64);
+// TLS-owned chain and leaf-key possession proof, unavailable to request headers.
+pub struct VerifiedPeer { /* TLS-owned chain and leaf-key possession proof */ }
+// Result of current admission: organization, member, group/policy, registry and peer.
+pub struct RegistryPrincipal { /* current organization, member, group/policy, registry, peer */ }
+// Named certificate refusal or unavailable current identity/status state.
+pub enum AdmissionError { NoCertificate, InvalidCertificate, Revoked, UnknownMember, WrongOrganization, Unavailable }
+
+// Admit against current roots, URI SAN member, live status and selected registry.
+// Effects: current management/status lookups. Errors: AdmissionError; no stale success.
+pub async fn admit_certificate(
+    peer: VerifiedPeer,                // transport-owned proof for this request
+    registry: RegistryId,              // immutable selected registry ID
+    ecosystem: Ecosystem,              // selected package protocol
+    authority: &amp;http::uri::Authority, // request authority
+    client_ip: IpAddr                  // connecting client address
+) -&gt; Result&lt;RegistryPrincipal, AdmissionError&gt;;
+// Classify one selected method/path/query; no upstream I/O; unknown routes refuse.
+pub fn classify_registry_request(
+    ecosystem: Ecosystem, // package protocol
+    method: &amp;Method,     // request method
+    path: &amp;str,          // selected request path
+    query: Option&lt;&amp;str&gt; // optional request query
+) -&gt; RegistryRoute;
+// Serve a read under current group policy, with the canonical token exception.
+// Effects: permitted selected-upstream read; errors: ApiError or refusal.
+pub async fn serve_package_read(
+    principal: &amp;RegistryPrincipal, // same request's admitted member and registry
+    request: Request&lt;Body&gt;         // classified read request
+) -&gt; Result&lt;Response&lt;Body&gt;, ApiError&gt;;
+// Forward a named action; the selected upstream authorizes the write.
+// Effects: selected-upstream action I/O; errors: ApiError or upstream denial.
+pub async fn forward_registry_action(
+    principal: &amp;RegistryPrincipal, // same request's admitted member and registry
+    request: Request&lt;Body&gt;         // classified action request
+) -&gt; Result&lt;Response&lt;Body&gt;, ApiError&gt;;</code></pre>
+<p>These declared caller signatures are unchanged. The rebind changes only eight exact <code>from</code>/<code>to</code> strings in <code>molecule-contracts.json</code>, against frozen <code>src/http/unpublish_reference.rs</code>. It changes no source symbol, approved claim, analyzer spec, flow, slice assignment or runtime witness. The scope guard's returned origin and bearer mode now supply the outbound action, making its unsafe mutation effective.</p>
+<table><thead><tr><th>Operation / route</th><th>Obligation → rebound guard</th><th>Evidence / limit</th></tr></thead><tbody>
+<tr><td>DELETE reference</td><td><code>unpublish-reference-before-send</code> → member, registry, ID and filename-bound lease lookup</td><td>Structural PASS; exact binding needs runtime proof.</td></tr>
+<tr><td>DELETE destination</td><td><code>unpublish-origin-before-delete</code> → decrypted HTTPS destination, filename and revision validation</td><td>Structural PASS; exact URL and connected peer need runtime proof.</td></tr>
+<tr><td>Revision PUT</td><td><code>revision-links-before-action</code> and <code>restored-revision-before-send</code> → one restored JSON call</td><td>Both PASS at one shared unsafe site; exact outgoing JSON needs runtime proof.</td></tr>
+<tr><td>DELETE scope</td><td><code>unpublish-scope-before-send</code> → current approved origin and bearer mode used by the outbound action</td><td>Structural PASS; path and credential bytes need runtime proof.</td></tr>
+<tr><td>DELETE marker</td><td><code>unpublish-marker-before-send</code> → marker consume before send</td><td>Structural PASS; atomic one-use needs runtime proof.</td></tr>
+<tr><td>Accepted PUT</td><td><code>accepted-removal-before-marker</code> → accepted removal and resulting revision classification</td><td>Structural PASS; denied/unchanged PUT controls remain due.</td></tr>
+<tr><td>PUT success</td><td><code>marker-commit-before-success</code> → durable marker commit</td><td>Structural PASS; uncertain partial write controls remain due.</td></tr>
+</tbody></table>
+<h3>Security coverage and slice order</h3>
+<table><thead><tr><th>Threat / property</th><th>Spec or obligation → evidence / gap</th></tr></thead><tbody>
+<tr><td>Forged or stale certificate; cross-registry state</td><td>Existing <code>tls-peer-before-admit</code>, <code>live-status-before-grant</code> and <code>registry-identity-before-state-use</code> structural checks PASS. Exact member/registry values, issuer freshness and cache/reference isolation need runtime and source review.</td></tr>
+<tr><td>Hidden read or audit details; unsafe write</td><td><code>canonical-token-packument</code>, <code>package-policy-before-send</code>, <code>audit-filter-before-render</code> and <code>action-origin-before-send</code> have current structural checks. Exact safe bytes, token-private cache, credential destination and upstream denial need direct witnesses.</td></tr>
+<tr><td>Signed URL leak, unauthorized DELETE, replay or partial PUT</td><td>Existing specs <code>unpublish-reference-before-send</code>, <code>unpublish-origin-before-delete</code>, <code>revision-links-before-action</code>, <code>restored-revision-before-send</code>, <code>unpublish-scope-before-send</code>, <code>unpublish-marker-before-send</code>, <code>accepted-removal-before-marker</code>, <code>marker-commit-before-success</code> now have rebound source and unsafe controls PASS. Exact sealed query, path/peer/bearer, restored PUT, marker and once-only DELETE still need Slice 4 runtime and independent review.</td></tr>
+</tbody></table>
+<table><thead><tr><th>Slice</th><th>Caller outcome → direct witness</th></tr></thead><tbody>
+<tr><td>Slice 1</td><td>Own certificate setup and npm install → <code>E2E-publishing-certificate-npm</code>; complete.</td></tr>
+<tr><td>Slice 2</td><td>Enterprise status and isolated registries → <code>E2E-publishing-enterprise-registry</code>; complete.</td></tr>
+<tr><td>Slice 3</td><td>Guarded npm reads, numeric legacy paths and safe audit → <code>E2E-publishing-npm-read</code>; complete, proof retained.</td></tr>
+<tr><td>Slice 4</td><td>Same-URL npm login, publishing, account actions and D40/D41 unpublish → pinned npm 11.21.1 <code>E2E-publishing-npm-actions</code> passed; remaining negative/runtime controls and independent reviews due before delivery.</td></tr>
+<tr><td>Slice 5</td><td>Python/uv reads, Twine upload and full certificate-mode matrix → <code>E2E-publishing-full-matrix</code>; follows Slice 4.</td></tr>
+</tbody></table>
+<p>The D40/D41 source-control rebind changes no approved slice order. NORA's pinned URL-boundary cases remain a protocol test input; its npm unpublish is absent and it supplies no end-to-end acceptance witness.</p>
+<h2>How will we confirm it is solved?</h2>
+<table><thead><tr><th>Scenario → expected result</th><th>Check / status</th><th>Assumption or limit</th></tr></thead><tbody>
+<tr><td>Numeric legacy npm package/version stays legacy; selected URL targets one registry. Hidden audit text/version never leaves; malformed or excessive work errors.</td><td>Slice 3 <code>E2E-publishing-npm-read</code> passed and its delivered proof is retained.</td><td>Finite model PASS and source order alone do not prove response bytes.</td></tr>
+<tr><td>Accepted token sees its own canonical metadata; hidden artifacts refuse; upstream-denied write stays denied.</td><td>Approved two-client and action witnesses remain in the release matrix; pinned npm action E2E passed 1/1 on frozen Slice 4 source.</td><td>Metadata exception never grants artifact bytes or write permission.</td></tr>
+<tr><td>Declared D40/D41 flow and guard sensitivity match current source.</td><td>Design QA READY, no findings; finite model PASS; all 21 current source obligations and unsafe controls PASS after eight exact rebinds at seven distinct sites. Frozen source passed focused URL/scope tests 2/2 and offline workspace compile.</td><td>Mutations replace a guard with undefined <code>unchecked_*</code> names. They test structural missing-guard detection, not executable behavioral defects or exact value binding.</td></tr>
+<tr><td>Accepted version-removing PUT permits one approved canonical, noncanonical or extra-origin signed-URL DELETE with exact revision and bearer mode; unsafe or replayed paths make zero calls.</td><td>Pinned npm 11.21.1 action E2E passed 1/1; Slice 4 still owes sealed-store, quota+1, changed-approval, wrong-revision, concurrent/replay, zero-outbound and independent source/security checks.</td><td>Structural checks cannot prove exact URL/query, encrypted storage, connected-peer vetting, credential bytes or atomic marker consumption. A partial upstream unpublish may need administrator recovery.</td></tr>
+<tr><td>npm, pip, Twine and uv use selected URLs with current identity/policy, no project-file secrets or direct client upstream connections.</td><td>Slice 5 full matrix, SSO, 10,000-client, secret scan and network trace planned.</td><td>Real organization issuer must prove read-after-write committed revocation before activation.</td></tr>
+</tbody></table>
+<p><strong>Recommendation:</strong> Approve this precise source-control rebind. D40/D41 behavior and slice order are unchanged, while the previously UNKNOWN defect controls now detect removal of actual guards. Continue Slice 4 runtime and independent verification before declaring delivery.</p>
+<p><strong>Limits:</strong> Structural PASS proves selected guard order and control sensitivity, not exact URL/query, credential, marker, peer or concurrency behavior. The pinned npm action E2E passed, but Slice 4 remains in progress. A 24-hour expiry or uncertain accepted PUT may require administrator recovery at the selected upstream.</p>
+<p><strong>Status:</strong> Gate 1 product scope is approved; reopened combined design awaits renewed approval. Slice 3 is complete, Slice 4 is in progress and Slice 5 follows. Fresh Design QA READY with no findings; threat review MODELED and Red Team SOUND. Status SHA <code>c9f62cd76f7bf5766ea6aac3ebd2ebe6ba04a5b22ccb0eff5e361af4425f09e6</code>.</p>
+<details><summary>Sources and evidence scope</summary><p><a href="01-product.md">Approved product</a>; <a href="02-architecture.md">architecture D40/D41</a>; <a href="03-program-design.md">contracts and tests</a>; <a href="04-slices.md">slice order</a>; <a href="gate-4-qa.md">Design QA READY</a>; <a href="evidence/source-contract-rebind-slice4.md">exact source rebind</a>; <a href="evidence/threat-model-rebind-slice4.md">fresh threat model</a>; <a href="evidence/red-team-rebind-slice4.md">fresh Red Team</a>; <a href="evidence/slice-4.md">Slice 4 witness</a>; <a href="molecule-flow.json">finite model</a>; <a href="molecule-contracts.json">source obligations</a>. Planned checks are not passing proof.</p></details>
+<p class="question">Approve the design, or what should change?</p>
+</article>

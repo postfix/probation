@@ -28,7 +28,7 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 
@@ -957,6 +957,7 @@ async fn overload_is_refused_not_queued() {
 
     let refused = harness.server.get(&path).await;
     assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(retry_after(&refused), Some(5), "told when to come back");
     assert_eq!(common::body_error(refused).await, "OVERLOADED");
 
     let refused = harness.server.get(&format!("/npm/{WIDGET}")).await;
@@ -1121,11 +1122,24 @@ async fn max_upstream_requests_bounds_calls_in_flight() {
     server.shutdown().await;
 }
 
-/// SPEC §9: "Bound active downloads globally." The front door has room; the one
-/// download permit does not. A cold request for a second reference while the first
-/// transfer holds that permit is refused there, rather than queued behind it.
+/// `Retry-After` on a `503 OVERLOADED`, in seconds.
+fn retry_after(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
+/// SPEC §9: "Bound active downloads globally", and the bounded wait (decision
+/// 2026-10-23, replacing "refused, never queued"). The front door has room; the one
+/// download permit does not. A cold request for a second reference waits for it at
+/// most `download_wait_seconds`, then is refused with `Retry-After`, never queued
+/// longer; once the permit is free it is served.
 #[tokio::test]
-async fn a_cold_request_beyond_max_artifact_downloads_is_refused_not_queued() {
+async fn a_cold_request_beyond_max_artifact_downloads_waits_then_is_refused() {
     let gate = Gate::new();
     let harness = harness_with(
         vec![
@@ -1134,6 +1148,7 @@ async fn a_cold_request_beyond_max_artifact_downloads_is_refused_not_queued() {
         ],
         |config| {
             config.max_artifact_downloads = std::num::NonZeroU32::new(1).expect("one transfer");
+            config.download_wait_seconds = 1;
         },
     )
     .await;
@@ -1154,9 +1169,21 @@ async fn a_cold_request_beyond_max_artifact_downloads_is_refused_not_queued() {
         "and the front door is not what refuses below"
     );
 
+    let asked = Instant::now();
     let refused = harness.server.get(&second).await;
+    assert!(
+        asked.elapsed() >= Duration::from_secs(1),
+        "it waited for the permit first: {:?}",
+        asked.elapsed()
+    );
     assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(retry_after(&refused), Some(5));
     assert_eq!(common::body_error(refused).await, "OVERLOADED");
+    assert_eq!(
+        app.limits.download_waiting(),
+        0,
+        "and left no waiter behind"
+    );
     assert_eq!(
         harness.artifact_calls(V2),
         0,
@@ -1170,6 +1197,122 @@ async fn a_cold_request_beyond_max_artifact_downloads_is_refused_not_queued() {
     })
     .await;
     assert_eq!(harness.server.get(&second).await.status().as_u16(), 200);
+    drop(app);
+    harness.shutdown().await;
+}
+
+/// npm's default concurrency (decision 2026-10-23): 16 cold downloads at once against
+/// the default 8 permits all succeed when each finishes within the wait. The first 8
+/// are held at the gate until the other 8 are provably waiting.
+#[tokio::test]
+async fn sixteen_cold_downloads_share_eight_permits() {
+    let gate = Gate::new();
+    let versions: Vec<String> = (1..=16).map(|major| format!("{major}.0.0")).collect();
+    let harness = harness_with(
+        versions
+            .iter()
+            .map(|version| (version.as_str(), gated(&gate)))
+            .collect(),
+        |_| {},
+    )
+    .await;
+    let app = harness.server.app();
+    assert_eq!(app.limits.download_available(), 8, "the default permits");
+    let document = harness.server.json(&format!("/npm/{WIDGET}")).await;
+    let requests: Vec<_> = versions
+        .iter()
+        .map(|version| {
+            let url = harness.server.url(&artifact_path(&document, version));
+            let client = common::downstream_client();
+            tokio::spawn(async move {
+                let response = client.get(url).send().await.expect("the request completes");
+                (
+                    response.status().as_u16(),
+                    response.bytes().await.expect("a body"),
+                )
+            })
+        })
+        .collect();
+    wait_until("8 transfers and 8 waiters", PATIENCE, || {
+        app.limits.download_available() == 0 && app.limits.download_waiting() == 8
+    })
+    .await;
+    for _ in 0..16 {
+        gate.release();
+    }
+    for request in requests {
+        let (status, body) = request.await.expect("the request finishes");
+        assert_eq!(status, 200);
+        assert_eq!(body.as_ref(), GATED_BODY.as_bytes());
+    }
+    assert_eq!(app.limits.download_waiting(), 0);
+    drop(app);
+    harness.shutdown().await;
+}
+
+/// The waiter cap is a hard bound: past `max_download_waiters` a cold request is
+/// refused at once with `Retry-After`, however long the wait would allow, and a waiter
+/// whose client leaves gives its place back.
+#[tokio::test]
+async fn the_waiter_cap_refuses_at_once_and_a_leaving_waiter_frees_its_place() {
+    let gate = Gate::new();
+    let harness = harness_with(
+        vec![
+            (V1, gated(&gate)),
+            (V2, FakeAnswer::Body("second".to_owned())),
+            (V3, FakeAnswer::Body("third".to_owned())),
+        ],
+        |config| {
+            config.max_artifact_downloads = std::num::NonZeroU32::new(1).expect("one transfer");
+            config.max_download_waiters = 1;
+            config.download_wait_seconds = 60;
+        },
+    )
+    .await;
+    let first = harness.artifact_path(V1).await;
+    let second = harness.artifact_path(V2).await;
+    let third = harness.artifact_path(V3).await;
+    let app = harness.server.app();
+
+    let url = harness.server.url(&first);
+    let client = common::downstream_client();
+    let holding = tokio::spawn(async move {
+        let response = client.get(url).send().await.expect("the request completes");
+        response.status().as_u16()
+    });
+    gate.wait_until_reached().await;
+
+    // The one waiter, as a request whose client can leave.
+    let row = harness.reference(harness.reference_id(&second)).await;
+    let waiter = {
+        let app = Arc::clone(&app);
+        tokio::spawn(async move { download::fetch(&app, &row).await.map(|done| done.size) })
+    };
+    wait_until("the one waiter", PATIENCE, || {
+        app.limits.download_waiting() == 1
+    })
+    .await;
+
+    let asked = Instant::now();
+    let refused = harness.server.get(&third).await;
+    assert!(
+        asked.elapsed() < Duration::from_secs(30),
+        "refused at once, not after the wait"
+    );
+    assert_eq!(refused.status().as_u16(), 503);
+    assert_eq!(retry_after(&refused), Some(5));
+    assert_eq!(common::body_error(refused).await, "OVERLOADED");
+
+    waiter.abort();
+    wait_until("the leaving waiter's place is free", PATIENCE, || {
+        app.limits.download_waiting() == 0
+    })
+    .await;
+    assert_eq!(harness.artifact_calls(V2), 0, "it never reached upstream");
+
+    gate.release();
+    assert_eq!(holding.await.expect("the held request"), 200);
+    assert_eq!(harness.server.get(&third).await.status().as_u16(), 200);
     drop(app);
     harness.shutdown().await;
 }

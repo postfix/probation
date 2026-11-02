@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API keys · Probation portal mockup</title>
+<style>
+:root{--fg:#1d2329;--mut:#5d6874;--line:#d5dbe1;--bg:#f4f6f8;--card:#fff;--acc:#1f5fbf;--bad:#b42318;--badbg:#fdecea;--warnbg:#fff4d6;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+.top{background:#14213d;color:#fff;padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.top b{margin-right:auto}.top a{color:#fff}.top label{display:inline;margin:0}
+nav{background:#e6eaf0;padding:6px 16px;display:flex;flex-wrap:wrap;gap:4px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--acc);text-decoration:none}nav a[aria-current]{font-weight:700;color:var(--fg)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0}h2{font-size:18px;margin:4px 0 8px}h3{font-size:16px;margin:12px 0 4px}
+.mock{background:var(--warnbg);border:1px dashed #c9a227;padding:6px 10px;font-size:13px}
+.state{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:16px 0}
+.tag{display:inline-block;margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#e6eaf0;padding:2px 8px;border-radius:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+tr.inh td{color:var(--mut);background:#f7f8fa}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.err{background:var(--badbg);border-left:4px solid var(--bad);padding:8px 12px}
+.good{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.mut{color:var(--mut);font-size:13px}
+.open{background:#eef3ff;border-left:4px solid var(--acc);padding:6px 10px;font-size:14px}
+code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+pre{background:#f0f2f5;padding:8px 12px;overflow-x:auto}
+input,select{font:inherit;padding:3px 6px;max-width:100%}
+label{display:block;margin:6px 0}
+fieldset{border:1px solid var(--line);border-radius:4px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.empty{text-align:center;color:var(--mut);padding:20px}
+</style>
+</head>
+<body>
+<div class="top">
+<b>Probation</b>
+<label>Place: <select><option>Acme (organisation)</option><option>Northwind (organisation)</option><option>Personal account</option></select></label>
+<span>bob@acme.com · <a href="sign-in.html">Sign out</a></span>
+</div>
+<nav>
+<a href="sign-in.html">Sign in</a><a href="policy.html">Policy</a><a href="api-keys.html" aria-current="page">API keys</a><a href="activity.html">Activity</a><a href="organisation.html">Organisation</a><a href="audit-log.html">Audit log</a><a href="global-admin.html">Global admin</a><a href="fleet.html">Fleet</a><a href="account.html">Account</a>
+</nav>
+<main>
+<p class="mock">Mockup for content approval only, not the visual design. Each grey label marks one state of this screen. Notes marked C34 or C35 point to details settled in design.</p>
+<h1>API keys</h1>
+<p>An API key lets npm or pip download through Probation. Every key belongs to the place selected at the top (here: Acme), and that decides which rules apply to every download made with it.</p>
+
+<section class="state"><p class="tag">State: your keys (default)</p>
+<h2>Your keys in Acme</h2>
+<p class="mut">These keys use your own policy (bob@acme.com, in the Frontend group).</p>
+<div class="wrap"><table>
+<tr><th>Name</th><th>Created</th><th></th></tr>
+<tr><td>work laptop</td><td>2 Oct 2026</td><td><button>Revoke</button></td></tr>
+<tr><td>home desktop</td><td>14 Oct 2026</td><td><button>Revoke</button></td></tr>
+</table></div>
+<p class="row"><label style="display:inline">New key name <input value="build box"></label> <button class="pri">Create key</button></p>
+<p class="mut">Keys do not expire. A key stops working only when it is revoked, when its owner is removed from Acme, or when Acme is deleted.</p>
+</section>
+
+<section class="state"><p class="tag">State: new key created, shown once</p>
+<p><b>Copy this key now. You will not be able to see it again.</b></p>
+<pre>prb_7Hq2xK9mVw4TzL0aNc8RbY3eUj6sPd1f</pre>
+<p class="row"><button class="pri">Copy key</button> <button>I have copied it</button></p>
+<h3>Point npm at Probation: add to <code>.npmrc</code></h3>
+<pre>registry=https://packages.example.org/npm/
+//packages.example.org/npm/:_authToken=prb_7Hq2xK9mVw4TzL0aNc8RbY3eUj6sPd1f
+audit=false</pre>
+<button>Copy</button>
+<h3>Point pip at Probation: add to <code>pip.conf</code></h3>
+<pre>[global]
+index-url = https://key:prb_7Hq2xK9mVw4TzL0aNc8RbY3eUj6sPd1f@packages.example.org/pypi/simple/</pre>
+<button>Copy</button>
+<p class="mut">Exact lines decided in design (C34).</p>
+</section>
+
+<section class="state"><p class="tag">State: empty</p>
+<h2>Your keys in Acme</h2>
+<p class="empty">You have no keys in Acme yet. Create one, then paste the lines it shows into .npmrc or pip.conf.</p>
+<p class="row"><label style="display:inline">New key name <input placeholder="e.g. work laptop"></label> <button class="pri">Create key</button></p>
+</section>
+
+<section class="state"><p class="tag">State: service keys (org admins and group admins)</p>
+<h2>Service keys</h2>
+<p>A service key belongs to Acme, not to a person, so it keeps working when people leave. Every download made with it gets the policy of the group (or of the organisation) it is attached to. Push it to company devices with your device management tool (for example Intune).</p>
+<div class="wrap"><table>
+<tr><th>Name</th><th>Attached to</th><th>Created by</th><th>Created</th><th></th></tr>
+<tr><td>Frontend devices</td><td>Frontend group</td><td>bob@acme.com</td><td>3 Oct 2026</td><td><button>Revoke</button></td></tr>
+<tr><td>Build servers</td><td>Frontend group</td><td>alice@acme.com</td><td>9 Oct 2026</td><td><button>Revoke</button></td></tr>
+<tr><td>All laptops</td><td>Acme organisation</td><td>alice@acme.com</td><td>1 Oct 2026</td><td><button>Revoke</button></td></tr>
+</table></div>
+<fieldset><legend>New service key</legend>
+<div class="row"><input placeholder="name" value="Design team Macs"> <label style="display:inline">Attach to <select><option>Frontend group</option><option>Acme organisation</option></select></label> <button class="pri">Create service key</button></div>
+<p class="mut">Org admins can attach to any group or to Acme itself. Group admins see only their own group, and can revoke any service key attached to it, whoever created it.</p>
+</fieldset>
+<p class="mut">After creating, the key is shown once with the same .npmrc and pip.conf lines as above.</p>
+<p class="mut">In a personal account this section does not appear: personal accounts have only their owner's keys.</p>
+</section>
+
+<section class="state"><p class="tag">State: error, key limit reached</p>
+<p class="err"><b>Key not created.</b> You already have 10 keys in Acme, the most each member may have. Revoke a key you no longer use, or ask the service operator to raise the limit.</p>
+<p class="err"><b>Service key not created.</b> Acme already has 20 service keys, the most it may have.</p>
+<p class="mut">Your existing keys keep working. This also happens when the service operator lowers a limit below what you already have: nothing stops, but no new key can be made until you are under it.</p>
+</section>
+
+<section class="state"><p class="tag">State: destructive confirm, revoke a key</p>
+<h2>Revoke "work laptop"?</h2>
+<p>Anything still using this key will stop downloading packages within about 1 minute. This cannot be undone; you would need to create a new key and paste it in again.</p>
+<p class="row"><button class="danger">Revoke key</button> <button>Cancel</button></p>
+</section>
+</main>
+</body>
+</html>

@@ -1,0 +1,13 @@
+body { font: 16px system-ui, sans-serif; color: #172332; background: #f5f7fa; margin: 0; }
+header { background: #153450; color: white; padding: 16px 32px; }
+main { max-width: 920px; margin: 40px auto; padding: 0 20px; }
+.card { background: white; border: 1px solid #d6dfe7; border-radius: 12px; padding: 24px; margin: 20px 0; }
+.muted { color: #526474; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8ee; }
+label { display: block; font-weight: 600; margin: 14px 0 6px; }
+input, select { box-sizing: border-box; width: 100%; padding: 10px; font: inherit; }
+input[type=checkbox] { width: auto; }
+button { border: 0; border-radius: 7px; background: #165b8e; color: white; padding: 10px 16px; font: inherit; cursor: pointer; }
+.danger { background: #ad2b32; }
+.error { background: #fff0f0; border: 1px solid #d34a4a; padding: 12px; }

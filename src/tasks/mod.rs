@@ -6,6 +6,7 @@
 
 pub mod blocklist_poller;
 pub mod maintenance;
+pub mod policy_sync;
 
 use std::sync::Arc;
 
@@ -14,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::App;
 
-/// The loops this build runs: the blocklist poller and the maintenance pass (batched
-/// access times, eviction and the WAL checkpoint).
+/// The loops this build runs: the blocklist poller (the policy sync in managed mode)
+/// and the maintenance pass (batched access times, eviction and the WAL checkpoint).
 pub struct Tasks {
     handles: Vec<JoinHandle<()>>,
 }
@@ -26,20 +27,26 @@ pub struct Tasks {
 /// `delivery` carries the sink tasks, which `delivery::build` has already spawned
 /// with the *drain* token rather than `shutdown`. They are only adopted here, so the
 /// existing `Tasks::join` waits for them along with everything else.
+/// `drain` is cancelled once the last request is answered; the policy sync waits for
+/// it to send the activity those requests recorded before the process stops (C105, F2).
 pub fn spawn(
     app: Arc<App>,
     shutdown: CancellationToken,
+    drain: CancellationToken,
     watcher: blocklist_poller::Watcher,
     delivery: Vec<JoinHandle<()>>,
 ) -> Tasks {
-    let mut handles = vec![
+    let policy = if app.managed().is_some() {
+        // A managed firewall ignores its local blocklist (C109).
+        tokio::spawn(policy_sync::run(Arc::clone(&app), shutdown.clone(), drain))
+    } else {
         tokio::spawn(blocklist_poller::run(
             Arc::clone(&app),
             shutdown.clone(),
             watcher,
-        )),
-        tokio::spawn(maintenance::run(app, shutdown)),
-    ];
+        ))
+    };
+    let mut handles = vec![policy, tokio::spawn(maintenance::run(app, shutdown))];
     handles.extend(delivery);
 
     Tasks { handles }

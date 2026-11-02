@@ -1,0 +1,38 @@
+//! The bounded queue of blocked and held decisions waiting for the next sync.
+
+use std::collections::VecDeque;
+use std::sync::{Mutex, PoisonError};
+
+use probation_policy::ActivityEvent;
+
+pub const ACTIVITY_QUEUE_CAP: usize = 10_000;
+
+#[derive(Default)]
+pub struct ActivityQueue {
+    events: Mutex<VecDeque<ActivityEvent>>,
+}
+
+impl ActivityQueue {
+    /// Queue one blocked or held decision, dropping the oldest events beyond the cap.
+    pub fn record_activity(&self, event: ActivityEvent) {
+        let mut queue = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        let overflow = (queue.len() + 1).saturating_sub(ACTIVITY_QUEUE_CAP);
+        queue.drain(..overflow);
+        queue.push_back(event);
+    }
+
+    /// Take everything queued so far for one sync upload.
+    pub fn take_batch(&self) -> VecDeque<ActivityEvent> {
+        let mut queue = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *queue)
+    }
+
+    /// Put an unsent batch back in front of newer events, still dropping the oldest beyond the cap.
+    pub fn requeue(&self, mut batch: VecDeque<ActivityEvent>) {
+        let mut queue = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        batch.append(&mut queue);
+        let overflow = batch.len().saturating_sub(ACTIVITY_QUEUE_CAP);
+        batch.drain(..overflow);
+        *queue = batch;
+    }
+}

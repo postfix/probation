@@ -5,9 +5,9 @@
 # no heredocs, because `docker` in this project's environment is an alias for podman
 # and the image has to build under both.
 #
-# Two stages, and each one carries a dependency the other does not:
+# Build stages and a runtime stage, and each side carries a dependency the other does not:
 #
-#   * The **build** stage needs `cmake`, a C compiler and `perl`. reqwest 0.13's
+#   * The **build** stages need `cmake`, a C compiler and `perl`. reqwest 0.13's
 #     default rustls crypto provider is `aws-lc-rs`, which builds `aws-lc-sys` from C
 #     (Gate 3 dependency note 3). The C compiler comes with the `rust` image; cmake
 #     and perl do not.
@@ -18,13 +18,19 @@
 #     metadata fetch and every artifact download fails — so this package is
 #     load-bearing rather than cosmetic.
 
-FROM docker.io/library/rust:1.96.0-bookworm AS build
+FROM docker.io/library/rust:1.96.0-bookworm AS chef
 
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends cmake perl \
+ && apt-get install --yes --no-install-recommends cmake perl libssl-dev \
  && rm -rf /var/lib/apt/lists/*
+# cargo-chef splits the build in two: the dependencies, cached as one layer that only
+# a Cargo.toml or Cargo.lock change invalidates, then this workspace's own crates. It
+# changes how the binary is built, not what is in it.
+RUN cargo install cargo-chef --locked --version 0.1.78
 
 WORKDIR /src
+
+FROM chef AS planner
 
 # The manifest names the bench targets, so their sources have to be present for the
 # manifest to describe a buildable package. Tests are discovered rather than declared
@@ -32,16 +38,32 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 COPY benches ./benches
+# The workspace members: `probation-policy`, which the firewall depends on.
+COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
 
+FROM chef AS build
+
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
 # `--locked` is the point of shipping Cargo.lock: the image is built from the exact
 # dependency graph the tests ran against, and a lockfile that no longer matches the
 # manifest fails the build instead of silently resolving something else.
+RUN cargo chef cook --release --locked --bin probation --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY benches ./benches
+COPY crates ./crates
 RUN cargo build --release --locked --bin probation
 
 FROM docker.io/library/debian:bookworm-slim
 
+LABEL org.opencontainers.image.title="probation" \
+      org.opencontainers.image.licenses="Elastic-2.0"
+
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends ca-certificates \
+ && apt-get install --yes --no-install-recommends ca-certificates libssl3 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/target/release/probation /usr/local/bin/probation

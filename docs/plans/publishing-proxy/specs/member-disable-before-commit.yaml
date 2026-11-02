@@ -1,0 +1,10 @@
+# The membership UPDATE auto-commits through execute before the success redirect.
+# All-cert next-request refusal needs an active-membership runtime check.
+name: member-disable-before-commit
+kind: ordered_obligation
+severity: critical
+evidence: full
+guard: {calls: {name: [execute]}}
+operation: {calls: {name: [redirect]}}
+relation: {must_dominate: true, allow_caller_paths: false}
+where: "caller_function == 'disable_member'"

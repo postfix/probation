@@ -54,8 +54,9 @@ pub(crate) const FIELD_CEILING_BYTES: u64 = 256 * 4 * 10 + 2;
 ///   request_id               =     64   `req-` and sixteen hex digits is 20 bytes
 ///   reason                   =    512   every `ApiError` arm is a `&'static str`; the longest is 77 bytes
 ///   size_of::<Decision>()    =    256   allowed for six `String`, three `&'static str`, four
-///                                       integers and one `Option<IpAddr>`; the assert below
-///                                       reads the real size rather than trusting this figure
+///                                       integers, one `Option<IpAddr>` and one `Option<u32>`;
+///                                       the assert below reads the real size rather than
+///                                       trusting this figure
 ///   ------------------------------------
 ///   total                      31_622, rounded up to the next power of two.
 pub(crate) const BYTES_PER_RECORD: u64 = 32 * 1024;
@@ -69,11 +70,11 @@ const _: () = assert!(
     BYTES_PER_RECORD >= 3 * FIELD_CEILING_BYTES + 64 + 64 + 512 + size_of::<Decision>() as u64
 );
 
-/// The struct's own allowance, tight where the sum above is loose: 240 bytes today
-/// against 256 allowed. One added field larger than 16 bytes trips this at compile
-/// time; a pointer-shaped field (`Box<str>`, `Arc<str>`, `u64`) fits the remaining
-/// slack and passes silently, as does a `bool` in the struct's 5 bytes of tail
-/// padding — which is why the re-derivation below is not optional.
+/// The struct's own allowance, tight where the sum above is loose: 248 bytes today
+/// (240 before `place`, C107) against 256 allowed. One added field larger than 8 bytes
+/// trips this at compile time; a `u64` fits the remaining slack and passes silently, as
+/// does a `bool` in the struct's tail padding — which is why the re-derivation below is
+/// not optional.
 ///
 /// **Neither assert sees heap content.** `size_of` measures the struct, so a new
 /// `String` field adds 24 bytes here while adding its whole capacity — unbounded,
@@ -83,6 +84,9 @@ const _: () = assert!(
 /// these two lines buy is that the compiler makes them notice, not that it checks
 /// the answer.
 const _: () = assert!(size_of::<Decision>() <= 256);
+
+#[cfg(test)]
+const _: () = assert!(size_of::<Decision>() == 248, "C107: 240 bytes plus `place`");
 
 /// The per-sink budget an operator who writes neither key gets.
 ///
@@ -177,6 +181,11 @@ pub(crate) struct Decision {
     /// one, so the default key set an operator reads is the twelve above.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer: Option<IpAddr>,
+    /// The management server's id of the place whose key a managed request carried
+    /// (C107). Absent in standalone, so its records are byte-identical to before. Never
+    /// the key or its hash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<u32>,
 }
 
 /// The periodic counter summary, plus the per-sink drop counts for the window it
@@ -609,6 +618,7 @@ mod tests {
             duration_micros: 0,
             bytes: 0,
             consumer: None,
+            place: None,
         })
     }
 

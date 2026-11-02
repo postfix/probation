@@ -20,8 +20,42 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # `probation-server`'s tests need Postgres; each makes its own database in it.
+      - run: docker compose -f docker-compose.test.yml up -d --wait postgres
+      - run: cargo test --workspace --locked
+
+  # The release e2e gate (D6): the release suite on the stack of the exact images,
+  # offline against the fakes. It includes E2E-signup-to-install and M-propagation
+  # (C82): a new organisation signs up and installs with npm through a managed firewall
+  # in under 10 minutes, and changes reach two firewalls within one sync interval.
+  # Nothing is published unless this passes. The images it tested are what `images`
+  # publishes; they build here without the Actions cache, so nothing a branch wrote into
+  # the cache reaches a published image.
+  e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # E2E-010 builds the previous release from its tag.
+          fetch-depth: 0
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/harness/run.mjs --suite release
+      - run: docker save localhost/probation:e2e localhost/probation-server:e2e | gzip > images.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: images
+          path: images.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-release
+          path: target/e2e/out
+          if-no-files-found: ignore
 
   codeql:
     needs: test
@@ -75,7 +109,7 @@ jobs:
             probation-*.tar.gz.sha256
 
   release:
-    needs: build
+    needs: [build, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,7 +123,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   publish:
-    needs: release
+    needs: [release, e2e]
     runs-on: ubuntu-latest
     # Give this environment required reviewers in the repository settings, so a
     # pushed tag alone cannot publish to crates.io.
@@ -99,8 +133,42 @@ jobs:
         with:
           persist-credentials: false
       # The verification build runs every dependency's build script; it runs here,
-      # before the registry token is in the environment.
-      - run: cargo package --locked
-      - run: cargo publish --locked --no-verify
+      # before the registry token is in the environment. `probation` depends on
+      # `probation-policy` at the same version (C117): `--workspace` packages both,
+      # verifying `probation` against the locally packaged `probation-policy`, and
+      # publishes `probation-policy` first, waiting for it to reach the index. If that
+      # wait times out after `probation-policy` is uploaded, finish with
+      # `cargo publish -p probation` rather than re-running `--workspace`.
+      # `probation-server` is `publish = false` (C117): `publish --workspace` skips it,
+      # and `package` would otherwise still package and verify it.
+      - run: cargo package --workspace --exclude probation-server --locked
+      - run: cargo publish --workspace --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # D7: both images, exactly as the e2e gate tested them, to the GitHub Container
+  # Registry, tagged with the version and the commit. Compiles nothing, so it may write.
+  images:
+    needs: [release, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: images
+      - name: Push
+        run: |
+          set -euo pipefail
+          gunzip -c images.tar.gz | docker load
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          version="${GITHUB_REF_NAME#v}"
+          for image in probation probation-server; do
+            for tag in "$version" "$GITHUB_SHA"; do
+              docker tag "localhost/$image:e2e" "ghcr.io/postfix/$image:$tag"
+              docker push "ghcr.io/postfix/$image:$tag"
+            done
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
