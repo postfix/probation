@@ -1,7 +1,7 @@
 // Red/green check for clients.mjs using fake client executables on PATH (POSIX only).
 // NATIVE_TEST_SCRATCH=<disk dir> node tests/e2e/native/clients.test.mjs
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,28 @@ const good = {
   twine: "twine version 7.0.0 (importlib-metadata: 1)", uv: "uv 0.13.5 (abc 2026-01-01)", uvPython: "Python 3.15.1",
 };
 
+/// macOS runs a `#!` script only when its interpreter is a real executable, never another script (ENOEXEC; Linux allows a
+/// short chain), and reads a limited line. Every fake is checked for both, so the test cannot pass here and fail there.
+function assertRunnableEverywhere(dir) {
+  for (const name of readdirSync(dir)) {
+    const file = join(dir, name);
+    const fd = openSync(file, "r");
+    const head = Buffer.alloc(300);
+    const n = readSync(fd, head, 0, 300, 0);
+    closeSync(fd);
+    const text = head.subarray(0, n).toString("latin1");
+    if (!text.startsWith("#!")) continue;
+    const line = text.split("\n")[0];
+    assert.ok(line.length <= 127, `${file}: a shebang line over 127 characters is not portable (${line.length})`);
+    const interpreter = line.slice(2).trim().split(/\s+/)[0];
+    const interpreterHead = Buffer.alloc(2);
+    const ifd = openSync(realpathSync(interpreter), "r");
+    readSync(ifd, interpreterHead, 0, 2, 0);
+    closeSync(ifd);
+    assert.notEqual(interpreterHead.toString("latin1"), "#!", `${file}: its interpreter ${interpreter} is itself a script, which macOS cannot execute`);
+  }
+}
+
 /// `change`: field -> output text (or null to omit the tool); `stderr`: tools that print on stderr.
 function run({ change = {}, stderr = [], env = {}, pinsChange = {}, shadow = null } = {}) {
   const dir = mkdtempSync(join(scratch, "clients-"));
@@ -38,16 +60,16 @@ function run({ change = {}, stderr = [], env = {}, pinsChange = {}, shadow = nul
     script_("python", `case "$1" in
   -m) ${out.pip === null ? "exit 1" : say("pip", out.pip)} ;;
   -c) echo '${prefix}'; echo '${join(bin, "python")}' ;;
-  */twine) ${say("twine", out.twine ?? "")} ;;
   *) ${say("python", out.python)} ;;
 esac`);
   }
-  // A real twine script starts with its interpreter's path; the fake one names the fake python.
+  // A real twine script starts with the path of the interpreter it was installed for. The fake names `pyinterp`, a symlink inside
+  // the prefix to a real executable (/bin/sh) that runs the script body: never another script, which macOS cannot execute.
   if (out.twine !== null) {
-    const interpreter = change.twineInterpreter ?? join(bin, "python");
-    writeFileSync(join(bin, "twine"), `#!${interpreter}\n`);
+    symlinkSync("/bin/sh", join(bin, "pyinterp"));
+    const interpreter = change.twineInterpreter ?? join(bin, "pyinterp");
+    writeFileSync(join(bin, "twine"), `#!${interpreter}\n${say("twine", out.twine)}\n`);
     chmodSync(join(bin, "twine"), 0o755);
-    if (change.twineInterpreter) writeFileSync(join(bin, "twine"), `#!${interpreter}\n${say("twine", out.twine)}\n`);
   }
   if (out.uv !== null) {
     const elsewhere = change.uvPythonOutside ? join(dir, "elsewhere") : bin;
@@ -62,6 +84,8 @@ esac`);
     writeFileSync(join(early, shadow.tool), `#!/bin/sh\necho '${shadow.text}'\n`);
     chmodSync(join(early, shadow.tool), 0o755);
   }
+  assertRunnableEverywhere(bin);
+  if (shadow) assertRunnableEverywhere(join(dir, "early"));
   const pins = { node: process.versions.node, npm: "11.21.1", python: "3.15.1", pip: "26.2.2", twine: "7.0.0", uv: "0.13.5", ...pinsChange };
   writeFileSync(join(dir, "pins.json"), JSON.stringify(pins));
   const path = shadow ? `${join(dir, "early")}:${bin}` : bin;
@@ -79,6 +103,14 @@ const fails = (what, options, pattern) => {
   if (pattern) assert.match(r.stdout, pattern, what);
 };
 
+// An interpreter is judged as installed: a venv's python is a symlink to the base interpreter and still lives in the venv.
+{
+  const venv = join(scratch, "venv");
+  mkdirSync(join(venv, "bin"), { recursive: true });
+  try { symlinkSync("/bin/sh", join(venv, "bin", "python")); } catch (error) { if (error.code !== "EEXIST") throw error; }
+  assert.ok(inside(join(venv, "bin", "python"), venv, { followFinal: false }), "a symlinked interpreter inside the prefix");
+  assert.ok(!inside(join(venv, "bin", "python"), venv), "followed to /bin/sh it is outside, which is right for a tool but not for an interpreter");
+}
 // inside(): symlinked parents, paths that do not exist yet, siblings with a shared name prefix and `..` traversal.
 {
   const prefix = join(scratch, "pfx");

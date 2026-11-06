@@ -25,6 +25,18 @@ assert.match(scenario, /start\("client-native"\)/, "and starts it");
 // Windows: a dynamic import needs a file URL, never a drive-letter path; the CA script needs forward slashes under Git bash.
 assert.match(read("../harness/run.mjs"), /import\(pathToFileURL\(join\(dir, file\)\)\.href\)/, "run.mjs imports scenarios by file URL");
 
+// Test fakes that are scripts name a real executable as interpreter (macOS cannot run a script through another script): only
+// /bin/sh, or the pyinterp symlink to it, in every test file.
+{
+  const { readdirSync } = await import("node:fs");
+  const dir = fileURLToPath(new URL("./", import.meta.url));
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".test.mjs") && f !== "scope.test.mjs")) {
+    for (const [, interpreter] of readFileSync(`${dir}${file}`, "utf8").matchAll(/`#!([^\n`\\]+)/g)) {
+      assert.match(interpreter, /^(\/bin\/sh|\$\{interpreter\})$/, `${file}: unexpected fake interpreter ${interpreter}`);
+    }
+  }
+}
+
 // C10: `until` has no unused label.
 assert.match(read("./publishing.mjs"), /const until = async \(check\) =>/);
 // CI acceptance uses the real server: in GitHub Actions publishing.mjs refuses the in-process snapshot fixture.

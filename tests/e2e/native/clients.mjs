@@ -9,7 +9,7 @@
 //   NATIVE_PINS_FILE (test seam only; the workflow check forbids it) overrides pins.json
 import { accessSync, constants, openSync, readFileSync, readSync, closeSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { delimiter, join, resolve, sep } from "node:path";
+import { basename, delimiter, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { launch } from "./spawn-args.mjs";
 import { dirname } from "node:path";
@@ -32,7 +32,8 @@ export function which(command, env = process.env) {
 
 /// `path` with its real location: the longest part of it that exists is resolved (symlinks such as macOS's /var ->
 /// /private/var), the rest is appended as spelled. A path that does not exist yet must not escape the comparison.
-function realish(path) {
+function realish(path, followFinal = true) {
+  if (!followFinal) return join(realish(dirname(resolve(path))), basename(path));
   let rest = "";
   let head = resolve(path);
   for (;;) {
@@ -44,10 +45,11 @@ function realish(path) {
   }
 }
 
-/// Is `path` inside `prefix` (after resolving both)?
-export function inside(path, prefix) {
+/// Is `path` inside `prefix` (after resolving both)? `followFinal: false` keeps the last component as installed: an interpreter
+/// is where it was put (a venv's python is a symlink to the base interpreter and still belongs to the venv), unlike a tool.
+export function inside(path, prefix, { followFinal = true } = {}) {
   const fold = (p) => (win ? p.toLowerCase() : p);
-  const p = fold(realish(path)), root = fold(realish(prefix));
+  const p = fold(realish(path, followFinal)), root = fold(realish(prefix));
   return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
@@ -111,7 +113,7 @@ export function checkClients({ pins, platformWanted, env = process.env, runningN
     if (twinePath && !inside(twinePath, prefix)) failures.push(`twine: ${twinePath} is outside the python prefix ${prefix}`);
     else if (twinePath && !win) {
       const interpreter = shebang(twinePath);
-      if (!interpreter || !inside(interpreter, prefix)) failures.push(`twine: the script runs under ${interpreter ?? "no named interpreter"}, not the pinned python in ${prefix}`);
+      if (!interpreter || !inside(interpreter, prefix, { followFinal: false })) failures.push(`twine: the script runs under ${interpreter ?? "no named interpreter"}, not the pinned python in ${prefix}`);
     }
   }
   if (seen.paths.npm && seen.paths.node && !same(dirname(seen.paths.npm), dirname(seen.paths.node))) {
@@ -126,7 +128,7 @@ export function checkClients({ pins, platformWanted, env = process.env, runningN
     const r = output(interpreter, ["--version"], env);
     seen.uvPython = r.ok ? r.text.match(/^Python (\S+)$/)?.[1] ?? null : null;
     if (seen.uvPython !== pins.python) failures.push(`uv's python: want ${pins.python}, got ${seen.uvPython ?? "unreadable"} (${interpreter})`);
-    if (prefix && !inside(interpreter, prefix)) failures.push(`uv's python: ${interpreter} is outside the python prefix ${prefix}`);
+    if (prefix && !inside(interpreter, prefix, { followFinal: false })) failures.push(`uv's python: ${interpreter} is outside the python prefix ${prefix}`);
   }
   return { observed: seen, pinned: pins, failures };
 }
