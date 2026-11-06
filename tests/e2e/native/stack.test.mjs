@@ -1,7 +1,7 @@
 // Cleanup, gating and quoting of stack.mjs. node tests/e2e/native/stack.test.mjs
 // NATIVE_TEST_SCRATCH must name a disk directory (not /tmp).
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { HANDLED_SIGNALS, composeTrustBundle, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
@@ -92,6 +92,19 @@ const refused = (port) => new Promise((resolve) => { const c = net.connect(port,
   assert.notEqual(statSync(hostsFile).ino, before, "replaced by rename, never truncated in place");
   if (process.platform !== "win32") assert.equal(statSync(hostsFile).mode & 0o777, 0o640, "mode kept");
   assert.deepEqual(readdirSync(dir).filter((f) => f.includes("tmp")), [], "no temporary file left");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// macOS keeps /etc/hosts as a symlink to /private/etc/hosts: replacing it must change the target and keep the link.
+if (process.platform !== "win32") {
+  const dir = mkdtempSync(join(scratch, "stack-"));
+  const target = join(dir, "real-hosts");
+  const link = join(dir, "hosts");
+  writeFileSync(target, "127.0.0.1 localhost\n");
+  symlinkSync(target, link);
+  writeHostsAtomically(link, "127.0.0.1 localhost\n127.0.0.1 pypi.org # x\n");
+  assert.ok(lstatSync(link).isSymbolicLink(), "the symlink is still a symlink");
+  assert.equal(readFileSync(target, "utf8"), "127.0.0.1 localhost\n127.0.0.1 pypi.org # x\n", "the target was updated");
   rmSync(dir, { recursive: true, force: true });
 }
 

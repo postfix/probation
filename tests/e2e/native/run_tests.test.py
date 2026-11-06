@@ -46,6 +46,11 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
     py_ok = py("fine", 'print("fine.test: 3 bypasses all fail")\n')
     assert run_tests.run_one(py_ok, minimum=0) == [], "a good python test is accepted"
 
+# A Windows path is not a valid --import specifier for node; a file URL is.
+assert run_tests.count_import().startswith("file:///"), run_tests.count_import()
+assert run_tests.count_import().endswith("/count-asserts.mjs")
+rejected += 0
+
 # The canary: a checker that always exits 0 must make check_workflow.test.py fail.
 assert run_tests.stub_checker_canary(), "check_workflow.test.py passed against a checker that always exits 0"
 rejected += 1

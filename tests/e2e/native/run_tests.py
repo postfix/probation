@@ -12,6 +12,11 @@ SKIP_ON = {"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}  # their fa
 BAD_LINE = re.compile(r"^(BYPASS|CRASH|FAIL)\b")
 
 
+def count_import():
+    """The --import specifier of the assertion counter: a file URL, because node rejects a Windows path."""
+    return (here / "count-asserts.mjs").as_uri()
+
+
 def success_pattern(path):
     stem = path.name.split(".test.")[0]
     return re.compile(rf"^{re.escape(stem)}\.test: " + (r"ok$" if path.suffix == ".mjs" else r".+$"))
@@ -37,7 +42,7 @@ def run_one(path, minimum, extra_env=None):
         with tempfile.TemporaryDirectory(dir=os.environ.get("NATIVE_TEST_SCRATCH")) as d:
             counts = pathlib.Path(d) / "count"
             env["NATIVE_ASSERT_COUNT_FILE"] = str(counts)
-            r = subprocess.run(["node", "--import", str(here / "count-asserts.mjs"), str(path)], capture_output=True, text=True, env=env, timeout=900)
+            r = subprocess.run(["node", "--import", count_import(), str(path)], capture_output=True, text=True, env=env, timeout=900)
             count = int(counts.read_text()) if counts.exists() else None
     else:
         r = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, env=env, timeout=900)

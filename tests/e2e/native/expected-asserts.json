@@ -4,6 +4,7 @@
   "cloudflared.test.mjs": 15,
   "dockerfile.test.mjs": 5,
   "linux-exec.test.mjs": 3,
+  "lockfile.test.mjs": 11,
   "pf.test.mjs": 15,
   "rendezvous-cli.test.mjs": 23,
   "rendezvous.test.mjs": 19,

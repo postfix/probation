@@ -5,7 +5,7 @@
 // private (loopback) destinations, so the policy snapshot carries the operator-approved
 // exact origin and CIDR for each; the product's refusal of unapproved origins is untouched.
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, copyFileSync, mkdirSync, readFileSync, writeFileSync, openSync, chmodSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, copyFileSync, realpathSync, mkdirSync, readFileSync, writeFileSync, openSync, chmodSync, renameSync, statSync, unlinkSync } from "node:fs";
 import dns from "node:dns/promises";
 import https from "node:https";
 import net from "node:net";
@@ -89,7 +89,8 @@ const MARK = "# probation-native-e2e";
 /// a crash) never sees a half-written hosts file; keeps the mode. A file that cannot be
 /// renamed over (a bind-mounted /etc/hosts) is written in place instead; without the
 /// right to write the directory on POSIX, `sudo` does the same copy-and-rename.
-export function writeHostsAtomically(file, text) {
+export function writeHostsAtomically(link, text) {
+  const file = realpathSync(link); // /etc/hosts is a symlink on macOS: change what it points at, keep the link
   const temp = `${file}.native-e2e.tmp`;
   try {
     writeFileSync(temp, text);
@@ -125,6 +126,13 @@ function removeStaleTrust() {
   else if (process.platform === "win32") run("certutil", ["-delstore", "Root", "probation-e2e-ca"]);
 }
 
+/// Best effort, CI only: macOS and Windows cache name lookups, and a hosts-file change should not wait for them.
+function flushResolverCache() {
+  if (!process.env.GITHUB_ACTIONS) return;
+  if (process.platform === "darwin") { run("sudo", ["-n", "dscacheutil", "-flushcache"]); run("sudo", ["-n", "killall", "-HUP", "mDNSResponder"]); }
+  else if (process.platform === "win32") run("ipconfig", ["/flushdns"]);
+}
+
 /// A selected PyPI registry fetches its files only from the public PyPI origins (the
 /// service admits no other file host), so the fake PyPI answers as https://pypi.org:443
 /// on loopback, with the registry's operator-approved CIDR covering 127.0.0.1. The
@@ -141,7 +149,8 @@ async function mapPypiHost({ hostsFile, lookup, allowMap }) {
   const strip = (text) => text.split("\n").filter((l) => !l.includes(MARK)).join("\n");
   const original = readFileSync(hostsFile, "utf8");
   writeHostsAtomically(hostsFile, `${strip(original).replace(/\n*$/, "\n")}127.0.0.1 pypi.org ${MARK}\n`);
-  const undo = () => writeHostsAtomically(hostsFile, strip(readFileSync(hostsFile, "utf8")).replace(/\n*$/, "\n"));
+  flushResolverCache();
+  const undo = () => { writeHostsAtomically(hostsFile, strip(readFileSync(hostsFile, "utf8")).replace(/\n*$/, "\n")); flushResolverCache(); };
   // C4: the line is only useful if the resolver reads it.
   let now = null;
   try { now = await lookup(); } catch (error) { now = `unresolved (${error.code ?? error})`; }
