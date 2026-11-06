@@ -98,7 +98,7 @@ NATIVE_STEPS = [
     {"name": "Install the harness dependencies", "run": "npm ci --prefix tests/e2e --no-audit --no-fund"},
     {"name": "Run the native harness unit tests", "shell": "bash", "env": CHECK_ENV, "run": UNIT_TESTS},
     {"name": "Verify exact client versions", "run": "node tests/e2e/native/clients.mjs"},
-    {"name": "Build the native service", "run": "cargo build --locked --bin probation"},
+    {"name": "Build the native service", "env": {"AWS_LC_SYS_USE_SYSTEM": "0"}, "run": "cargo build --locked --bin probation"},
     {"name": "Allow the low loopback port", "shell": "bash", "run": 'if [ "$RUNNER_OS" = Linux ]; then sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0; fi\n'},
     {"name": "Wait for the real server's handshake", "shell": "bash", "env": {"GH_TOKEN": "${{ github.token }}"},
      "run": 'node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --out "$RUNNER_TEMP/handshake" --timeout-min 50'},

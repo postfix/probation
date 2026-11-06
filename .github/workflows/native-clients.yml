@@ -105,7 +105,12 @@ jobs:
           "$CHECK_PYTHON" tests/e2e/native/run_tests.py
       - name: Verify exact client versions
         run: node tests/e2e/native/clients.mjs
+      # aws-lc-sys (via rustls) auto-detects a system-installed AWS-LC through pkg-config and, if it finds one, links
+      # `-lcrypto` from it instead of building its own copy; the macOS runner image has one that the linker cannot
+      # use ("ld: library 'crypto' not found"). USE_SYSTEM=0 always builds the bundled source, as the Linux runner does.
       - name: Build the native service
+        env:
+          AWS_LC_SYS_USE_SYSTEM: "0"
         run: cargo build --locked --bin probation
       # The fake PyPI answers as pypi.org:443 on loopback (the service admits no other PyPI
       # file host); a Linux runner needs the low port opened to unprivileged processes.

@@ -115,6 +115,9 @@ mutations = {
     "pull_request_target": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n"),
     "Python UTF-8 mode dropped from the job env": sub('      PYTHONUTF8: "1"\n', ""),
     "Python IO encoding dropped from the job env": sub("      PYTHONIOENCODING: utf-8\n", ""),
+    "native build may adopt a system AWS-LC (env dropped)": sub('        env:\n          AWS_LC_SYS_USE_SYSTEM: "0"\n        run: cargo build', "        run: cargo build"),
+    "native build requires a system AWS-LC": sub('AWS_LC_SYS_USE_SYSTEM: "0"', 'AWS_LC_SYS_USE_SYSTEM: "1"'),
+    "native build with a Homebrew install step": sub("      - name: Build the native service\n", "      - name: Install openssl\n        run: brew install openssl@3\n      - name: Build the native service\n"),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 
