@@ -1,14 +1,21 @@
 // Red/green check for clients.mjs using fake client executables on PATH (POSIX only).
 // NATIVE_TEST_SCRATCH=<disk dir> node tests/e2e/native/clients.test.mjs
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inside } from "./clients.mjs";
 
 const script = fileURLToPath(new URL("./clients.mjs", import.meta.url));
-const scratch = process.env.NATIVE_TEST_SCRATCH;
-assert(scratch, "set NATIVE_TEST_SCRATCH to a disk directory (not /tmp)");
+const scratchRoot = process.env.NATIVE_TEST_SCRATCH;
+assert(scratchRoot, "set NATIVE_TEST_SCRATCH to a disk directory (not /tmp)");
+// macOS temp directories live under /var, a symlink to /private/var: every fake is built through a symlinked parent, so the
+// provenance checks meet paths whose real path differs from the spelled one on every platform (not only on macOS).
+mkdirSync(join(scratchRoot, "real"), { recursive: true });
+try { symlinkSync(join(scratchRoot, "real"), join(scratchRoot, "link"), "dir"); } catch (error) { if (error.code !== "EEXIST") throw error; }
+const scratch = process.platform === "win32" ? scratchRoot : join(scratchRoot, "link");
+assert.notEqual(realpathSync(scratch), scratch, "the fakes live behind a symlink");
 const platform = `${process.platform}-${process.arch}`;
 const good = {
   node: `v${process.versions.node}`, npm: "11.21.1", python: "Python 3.15.1", pip: "pip 26.2.2 from @PREFIX@/lib/python3.15/site-packages/pip (python 3.15)",
@@ -72,6 +79,17 @@ const fails = (what, options, pattern) => {
   if (pattern) assert.match(r.stdout, pattern, what);
 };
 
+// inside(): symlinked parents, paths that do not exist yet, siblings with a shared name prefix and `..` traversal.
+{
+  const prefix = join(scratch, "pfx");
+  mkdirSync(join(prefix, "bin"), { recursive: true });
+  assert.ok(inside(join(prefix, "bin"), prefix), "an existing directory inside");
+  assert.ok(inside(join(prefix, "lib", "site-packages", "pip"), prefix), "a path that does not exist yet, below a symlinked parent");
+  assert.ok(inside(join(realpathSync(scratch), "pfx", "lib", "x"), prefix), "spelled through the real path, prefix through the link");
+  assert.ok(!inside(`${prefix}-evil/bin`, prefix), "a sibling sharing the name prefix");
+  assert.ok(!inside(join(prefix, "..", "elsewhere"), prefix), "a .. traversal");
+  assert.ok(!inside("/definitely/elsewhere/pip", prefix));
+}
 const ok = run();
 assert.equal(ok.status, 0, `all pinned clients must pass: ${ok.stdout}${ok.stderr}`);
 const report = JSON.parse(ok.stdout);
@@ -91,7 +109,10 @@ fails("a wrong prefix line (uv)", { change: { uv: "xuv 0.13.5 (abc)" } });
 fails("a wrong prefix line (python)", { change: { python: "Pythonic 3.15.1" } });
 fails("a wrong prefix line (twine)", { change: { twine: "mytwine version 7.0.0" } });
 fails("an npm line with extra words", { change: { npm: "npm 11.21.1" } });
-fails("a wrong node pin", { pinsChange: { node: "24.22.1" } }, /node/);
+// A pin that differs from whatever node runs the test (a hosted runner may well run the pinned one).
+const otherNode = `${Number(process.versions.node.split(".")[0]) + 1}.0.0`;
+assert.notEqual(otherNode, process.versions.node);
+fails("a wrong node pin", { pinsChange: { node: otherNode } }, /node/);
 fails("a node on PATH that is not the pinned one", { change: { node: "v20.0.0" } }, /node on PATH/);
 fails("a shadowing npm earlier on PATH", { shadow: { tool: "npm", text: "10.0.0" } }, /npm/);
 // C1: a shadow that prints the right version is still the wrong binary: npm must sit beside the node

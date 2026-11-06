@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { HANDLED_SIGNALS, composeTrustBundle, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
+import { HANDLED_SIGNALS, composeTrustBundle, posixPath, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
 
 const scratch = process.env.NATIVE_TEST_SCRATCH;
 assert(scratch, "set NATIVE_TEST_SCRATCH");
@@ -43,6 +43,10 @@ const refused = (port) => new Promise((resolve) => { const c = net.connect(port,
   assert.equal(composeTrustBundle({ nativePem: "NATIVE", publicTrust: true, platform: "darwin", read }), "NATIVE", "macOS and Windows verify against the system store");
   assert.throws(() => composeTrustBundle({ nativePem: "NATIVE", publicTrust: true, platform: "linux", read: () => null }), /system CA bundle/);
 }
+
+// Git bash reads a backslash as an escape: paths handed to bash scripts use forward slashes.
+assert.equal(posixPath("C:\\Users\\runner\\work\\make-ca.sh"), "C:/Users/runner/work/make-ca.sh");
+assert.equal(posixPath("/home/x/y"), "/home/x/y");
 
 // SEC1: a run killed hard (SIGKILL, a Windows kill) leaves its marked hosts line and trust entry; the next run
 // removes both before it starts, even though the stale line makes pypi.org look like loopback.

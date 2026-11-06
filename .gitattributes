@@ -1,0 +1,9 @@
+# Line endings: what bash, YAML/TOML parsers and the hash and line-based checks read must be LF on every checkout (a Windows
+# core.autocrlf would otherwise turn scripts and requirements files into CRLF).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff2 binary
+*.gz binary

@@ -43,6 +43,10 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         findings = run_tests.run_one(path, minimum=1)
         assert findings, f"{name} must be rejected"
         rejected += 1
+    # A failing test's own stderr and stdout tail are in the findings, so a hosted failure can be diagnosed from the log.
+    crash = js("crashing", 'import assert from "node:assert/strict";\nconsole.log("progress-marker");\nconsole.error("stderr-marker boom");\nprocess.exitCode = 1;\n')
+    shown = "\n".join(run_tests.run_one(crash, minimum=0))
+    assert "stderr-marker boom" in shown and "progress-marker" in shown, shown
     py_ok = py("fine", 'print("fine.test: 3 bypasses all fail")\n')
     assert run_tests.run_one(py_ok, minimum=0) == [], "a good python test is accepted"
 

@@ -177,6 +177,9 @@ function defaultRestrict(file) {
   return run("icacls", [file, "/inheritance:r", "/grant:r", `${process.env.USERNAME}:F`]);
 }
 
+/// Git bash reads a backslash as an escape: every path handed to a bash script uses forward slashes.
+export const posixPath = (path) => path.replaceAll("\\", "/");
+
 /// What the Rust service trusts: the run's CA, a real server's CA, and, when the policy server is behind a public
 /// certificate (the tunnel), the system roots on Linux, where SSL_CERT_FILE replaces them (macOS and Windows verify
 /// against the system store, which the run's CA is added to separately).
@@ -247,7 +250,7 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   mkdirSync(work, { recursive: true });
   removeStaleHostsLines(hooks.hostsFile ?? HOSTS);
   (hooks.staleTrust ?? removeStaleTrust)();
-  const ca = run(BASH, [join(root, "tests/e2e/fixtures/make-ca.sh"), work.replaceAll("\\", "/")]);
+  const ca = run(BASH, [posixPath(join(root, "tests/e2e/fixtures/make-ca.sh")), posixPath(work)]);
   if (ca.status !== 0) throw new Error(`make-ca failed: ${ca.out}`);
   const caFile = join(work, "ca", "ca.pem");
   const tls = { cert: readFileSync(join(work, "tls", "cert.pem")), key: readFileSync(join(work, "tls", "key.pem")) };

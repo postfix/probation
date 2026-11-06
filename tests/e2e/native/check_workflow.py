@@ -337,7 +337,7 @@ for problem in requirement_findings(option("--ci-requirements", root / "tests/e2
     need(False, problem)
 for problem in requirement_findings(option("--checker-requirements", root / "tests/e2e/native/checker-requirements.txt").read_text(), "checker-requirements.txt", want_extra=("pyyaml",), tools=False):
     need(False, problem)
-for problem in requirement_findings((root / "tests/e2e/compose/clients/native-requirements.txt").read_text(), "native-requirements.txt"):
+for problem in requirement_findings(option("--native-requirements", root / "tests/e2e/compose/clients/native-requirements.txt").read_text(), "native-requirements.txt"):
     need(False, problem)
 
 # Every *.test.* file is run by the one wrapper step (the canonical "Run the native harness unit

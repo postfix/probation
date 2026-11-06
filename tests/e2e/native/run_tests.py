@@ -47,7 +47,11 @@ def run_one(path, minimum, extra_env=None):
     else:
         r = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, env=env, timeout=900)
         count = None
-    return judge(path, r.returncode, r.stdout, count, minimum)
+    findings = judge(path, r.returncode, r.stdout, count, minimum)
+    if findings:  # a hosted failure is diagnosed from this log: the test's own stderr and the tail of its stdout
+        tail = lambda text: "\n".join(text.rstrip().splitlines()[-40:])
+        findings.append(f"{path.name} stderr:\n{tail(r.stderr) or '(empty)'}\n{path.name} stdout tail:\n{tail(r.stdout) or '(empty)'}")
+    return findings
 
 
 def stub_checker_canary():

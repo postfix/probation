@@ -22,6 +22,9 @@ const scenario = read("../scenarios/publishing-native-linux.mjs");
 assert.match(scenario, /compose\(\["build", "client-native"\]\)/, "the native scenario builds it");
 assert.match(scenario, /start\("client-native"\)/, "and starts it");
 
+// Windows: a dynamic import needs a file URL, never a drive-letter path; the CA script needs forward slashes under Git bash.
+assert.match(read("../harness/run.mjs"), /import\(pathToFileURL\(join\(dir, file\)\)\.href\)/, "run.mjs imports scenarios by file URL");
+
 // C10: `until` has no unused label.
 assert.match(read("./publishing.mjs"), /const until = async \(check\) =>/);
 // CI acceptance uses the real server: in GitHub Actions publishing.mjs refuses the in-process snapshot fixture.

@@ -30,10 +30,24 @@ export function which(command, env = process.env) {
 }
 
 
+/// `path` with its real location: the longest part of it that exists is resolved (symlinks such as macOS's /var ->
+/// /private/var), the rest is appended as spelled. A path that does not exist yet must not escape the comparison.
+function realish(path) {
+  let rest = "";
+  let head = resolve(path);
+  for (;;) {
+    try { return join(realpathSync(head), rest); } catch { /* not there: try the parent */ }
+    const parent = dirname(head);
+    if (parent === head) return resolve(path);
+    rest = rest ? join(head.slice(parent.length).replace(/^[\\/]+/, ""), rest) : head.slice(parent.length).replace(/^[\\/]+/, "");
+    head = parent;
+  }
+}
+
 /// Is `path` inside `prefix` (after resolving both)?
 export function inside(path, prefix) {
-  const norm = (p) => { let r; try { r = realpathSync(p); } catch { r = resolve(p); } return win ? r.toLowerCase() : r; };
-  const p = norm(path), root = norm(prefix);
+  const fold = (p) => (win ? p.toLowerCase() : p);
+  const p = fold(realish(path)), root = fold(realish(prefix));
   return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 

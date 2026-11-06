@@ -14,3 +14,5 @@ docs/plans/*/.gate-*
 
 # Playwright and axe-core for the e2e harness and its A11Y walk; installed with npm ci in tests/e2e, never committed.
 tests/e2e/node_modules
+__pycache__/
+*.pyc

@@ -16,6 +16,7 @@
 
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { helpers } from "./helpers.mjs";
 import { ROOT, Stack } from "./stack.mjs";
@@ -36,7 +37,7 @@ if (!SUITES.includes(args.suite)) throw new Error(`--suite must be one of ${SUIT
 const dir = join(ROOT, "tests/e2e/scenarios");
 const scenarios = [];
 for (const file of readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort()) {
-  const module = await import(join(dir, file));
+  const module = await import(pathToFileURL(join(dir, file)).href);
   scenarios.push({ file, ...module.meta, run: module.default });
 }
 // An --only ID that names no scenario (a renamed or misspelt one) must not shrink the run
