@@ -118,6 +118,11 @@ mutations = {
     "native build may adopt a system AWS-LC (env dropped)": sub('        env:\n          AWS_LC_SYS_USE_SYSTEM: "0"\n        run: cargo build', "        run: cargo build"),
     "native build requires a system AWS-LC": sub('AWS_LC_SYS_USE_SYSTEM: "0"', 'AWS_LC_SYS_USE_SYSTEM: "1"'),
     "native build with a Homebrew install step": sub("      - name: Build the native service\n", "      - name: Install openssl\n        run: brew install openssl@3\n      - name: Build the native service\n"),
+    "OpenSSL step removed": sub("      - name: Provide OpenSSL's libcrypto for the OCSP code\n        shell: bash\n        run: node tests/e2e/native/openssl-setup.mjs apply\n", ""),
+    "OpenSSL installed by an unpinned download": sub("        run: node tests/e2e/native/openssl-setup.mjs apply\n", "        run: curl -sSL https://example.invalid/openssl.sh | sh\n"),
+    "OpenSSL step after the build": sub("      - name: Provide OpenSSL's libcrypto for the OCSP code\n        shell: bash\n        run: node tests/e2e/native/openssl-setup.mjs apply\n", "").replace("      - name: Wait for the real server's handshake\n", "      - name: Provide OpenSSL's libcrypto for the OCSP code\n        shell: bash\n        run: node tests/e2e/native/openssl-setup.mjs apply\n      - name: Wait for the real server's handshake\n", 1),
+    "Playwright browser install dropped from linux-managed": sub("      - run: npx --prefix tests/e2e playwright install --with-deps chromium\n", ""),
+    "Playwright install without the system libraries": sub("playwright install --with-deps chromium", "playwright install chromium"),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 

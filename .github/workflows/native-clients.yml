@@ -105,6 +105,11 @@ jobs:
           "$CHECK_PYTHON" tests/e2e/native/run_tests.py
       - name: Verify exact client versions
         run: node tests/e2e/native/clients.mjs
+      # src/managed/enterprise_certificate.rs links OpenSSL's libcrypto by name (OCSP): Linux has the system library, macOS
+      # needs Homebrew's openssl@3 on the linker path, Windows an MSVC crypto.lib and its DLL on PATH (openssl-setup.mjs).
+      - name: Provide OpenSSL's libcrypto for the OCSP code
+        shell: bash
+        run: node tests/e2e/native/openssl-setup.mjs apply
       # aws-lc-sys (via rustls) auto-detects a system-installed AWS-LC through pkg-config and, if it finds one, links
       # `-lcrypto` from it instead of building its own copy; the macOS runner image has one that the linker cannot
       # use ("ld: library 'crypto' not found"). USE_SYSTEM=0 always builds the bundled source, as the Linux runner does.
@@ -151,6 +156,8 @@ jobs:
         with:
           persist-credentials: false
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      # The browser scenarios of the matrix (portal sign-up, SSO) drive Chromium, as in release.yml's e2e job.
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
       - run: node tests/e2e/native/run-ids.test.mjs
       - run: >
           node tests/e2e/harness/run.mjs
