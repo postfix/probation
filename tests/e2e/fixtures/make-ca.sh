@@ -8,6 +8,8 @@
 set -euo pipefail
 
 dir=$1
+# OPENSSL names the program explicitly (tests use a fake); by default whatever `openssl` is on PATH.
+openssl=${OPENSSL:-openssl}
 # Git for Windows rewrites an argument that starts with `/` (-subj /CN=...) into a Windows path before a native openssl sees it.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 names=(
@@ -21,17 +23,17 @@ mkdir -p "$dir/ca" "$dir/tls"
 log="$dir/openssl.log"
 : > "$log"
 trap 'status=$?; echo "make-ca.sh: a command failed (exit $status); openssl said:" >&2; cat "$log" >&2; exit $status' ERR
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 7 \
+"$openssl" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 7 \
   -subj /CN=probation-e2e-ca -addext basicConstraints=critical,CA:TRUE \
   -addext keyUsage=critical,keyCertSign -keyout "$dir/ca.key" -out "$dir/ca/ca.pem" 2>>"$log"
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=probation-e2e \
+"$openssl" req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=probation-e2e \
   -keyout "$dir/tls/key.pem" -out "$dir/tls.csr" 2>>"$log"
 {
   printf 'subjectAltName=IP:127.0.0.1'
   printf ',DNS:%s' "${names[@]}"
   printf '\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n'
 } >"$dir/tls.ext"
-openssl x509 -req -in "$dir/tls.csr" -CA "$dir/ca/ca.pem" -CAkey "$dir/ca.key" -set_serial "0x$(openssl rand -hex 8)" \
+"$openssl" x509 -req -in "$dir/tls.csr" -CA "$dir/ca/ca.pem" -CAkey "$dir/ca.key" -set_serial "0x$("$openssl" rand -hex 8)" \
   -days 7 -extfile "$dir/tls.ext" -out "$dir/tls/cert.pem" 2>>"$log"
 # The services run as their own users.
 chmod 0644 "$dir/tls/key.pem"

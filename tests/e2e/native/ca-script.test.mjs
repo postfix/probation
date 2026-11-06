@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BASH, posixPath } from "./stack.mjs";
 
@@ -27,7 +27,11 @@ exit 0
 `);
 chmodSync(join(bin, "openssl"), 0o755);
 const out = join(root, "out");
-const r = spawnSync(BASH, [posixPath(script), posixPath(out)], { encoding: "utf8", env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` } });
+// The fake is named explicitly (OPENSSL), not found through PATH: on Windows bash may prefer Git's own openssl (a plain
+// file without .exe loses to it, and PATH is converted between the two path spellings), and the real one would succeed.
+const r = spawnSync(BASH, [posixPath(script), posixPath(out)], { encoding: "utf8", env: { ...process.env, OPENSSL: posixPath(join(bin, "openssl")) } });
+// Proof that the fake ran at all: a test that passes without it proves nothing on any platform.
+assert.ok(existsSync(record) && readFileSync(record, "utf8").includes("ARGS: req"), `the fake openssl was never invoked (exit ${r.status}, stderr ${JSON.stringify(r.stderr)})`);
 assert.notEqual(r.status, 0, "a failing openssl fails the script");
 assert.match(r.stderr, /FAKE-OPENSSL: unable to sign the certificate/, `the failing command's own message reaches stderr: ${JSON.stringify(r.stderr)}`);
 assert.match(r.stderr, /make-ca\.sh/, "and the script says that it was make-ca.sh");
