@@ -1,0 +1,7 @@
+# Capability probe only: this does not claim same-key binding or guard acceptance.
+name: service-policy-admission-order-probe
+kind: ordered_obligation
+severity: high
+guard: {calls: {name: [require_live_service_scope]}}
+operation: {calls: {name: [load_policy_snapshot]}}
+relation: {must_dominate: true, allow_caller_paths: false}

@@ -1,0 +1,451 @@
+[
+  {
+    "source": "src/http/service_unpublish.rs",
+    "sourceSha256": "0c49a83b5d1e54edef99a5da501bf246156acb0f2c70907325a0cfac59143301",
+    "symbol": "consume_service_marker_then_send",
+    "specs": [
+      {
+        "path": "docs/plans/publishing-proxy/specs/service-unpublish-reference-before-send.yaml",
+        "sha256": "cbb99d749b5576acbadf5b54786d4cd552dd45410064e12107c93b6ecca5dabd"
+      },
+      {
+        "path": "docs/plans/publishing-proxy/specs/service-unpublish-marker-before-delete.yaml",
+        "sha256": "2951b7e029318e172cbd86f9b695aa27bfc5e75e9c862714f06c1886c8881a56"
+      }
+    ],
+    "cargoLock": {
+      "path": "Cargo.lock",
+      "sha256": "d4dae800c073cb0363b1d016d06efe55bd09d888caca15d1f24ed5d78cb9db58"
+    },
+    "packages": [
+      {
+        "name": "axum",
+        "version": "0.8.9",
+        "checksum": "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90",
+        "manifest": {
+          "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/Cargo.toml",
+          "sha256": "ed35dc0f840f27c8b953d9789fff678c0f5b2f10229c8f50d70a1a5857bdd83f"
+        }
+      },
+      {
+        "name": "axum-core",
+        "version": "0.5.6",
+        "checksum": "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1",
+        "manifest": {
+          "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/Cargo.toml",
+          "sha256": "c7c1b6246fc8c4c4ba2482d85d0d15cc4d5ab4eed320ecd0f9bd03d7c683b8c5"
+        }
+      },
+      {
+        "name": "http",
+        "version": "1.5.0",
+        "checksum": "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0",
+        "manifest": {
+          "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/Cargo.toml",
+          "sha256": "a949b1afc8b7fe334e9f6038b88d987e6a83b41b10cc852ad11dad1ead3c296d"
+        }
+      },
+      {
+        "name": "url",
+        "version": "2.5.8",
+        "checksum": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
+        "manifest": {
+          "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/url-2.5.8/Cargo.toml",
+          "sha256": "7003e5562b5ab8454b9d78376303151af79011f5dd684c1891e0f46bc9112016"
+        }
+      },
+      {
+        "name": "probation-policy",
+        "version": "0.2.2",
+        "checksum": null,
+        "manifest": {
+          "path": "crates/probation-policy/Cargo.toml",
+          "sha256": "55096d5f1759fbdc7d516f9f8689e38a40f7589d194601a2b5219908a284b8b4"
+        }
+      }
+    ],
+    "imports": [
+      {
+        "path": "axum::http::Method",
+        "declaration": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/method.rs",
+            "sha256": "15d9b60484ab412cf955c8cda3ce498ca9d0a2339494c1aed5134a7d2385b36c"
+          },
+          "name": "Method",
+          "kind": "struct",
+          "startByte": 1273,
+          "endByte": 1298
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/lib.rs",
+            "sha256": "6dde9a13818139d63476bfe1562f1956b5e5c34bf6df3fe595f502cac3dad87a"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/lib.rs",
+            "sha256": "2c085126666e668fce40f30e5bd6f890bf3f94c0911ac59d531b4f1fbfc780d8"
+          }
+        ]
+      },
+      {
+        "path": "axum::http::StatusCode",
+        "declaration": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/status.rs",
+            "sha256": "d01b4288900f9418325328f76f96cc2b1d73c008d1cad31bcd827153e46d4754"
+          },
+          "name": "StatusCode",
+          "kind": "struct",
+          "startByte": 1522,
+          "endByte": 1556
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/lib.rs",
+            "sha256": "6dde9a13818139d63476bfe1562f1956b5e5c34bf6df3fe595f502cac3dad87a"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/lib.rs",
+            "sha256": "2c085126666e668fce40f30e5bd6f890bf3f94c0911ac59d531b4f1fbfc780d8"
+          }
+        ]
+      },
+      {
+        "path": "axum::response::IntoResponse",
+        "declaration": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/response/into_response.rs",
+            "sha256": "31abd6b9c3a19167388be4d66dbe1f96ac7d4ff707292fc172f8fa33b1a4edcd"
+          },
+          "name": "IntoResponse",
+          "kind": "trait",
+          "startByte": 3038,
+          "endByte": 3147
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/lib.rs",
+            "sha256": "6dde9a13818139d63476bfe1562f1956b5e5c34bf6df3fe595f502cac3dad87a"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/response/mod.rs",
+            "sha256": "6042a997245196e826698577db883159a54c2f0f95240c9443d53a978629f97b"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/lib.rs",
+            "sha256": "45b6a88a33f61a5a82add60e6fe0a448609b6f78d599f814e9158540f7f215a3"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/response/mod.rs",
+            "sha256": "a785652ac0c19d311b2dcb67a8b9910d5e12c3b8b6fea8cffee0761a17b5f334"
+          }
+        ]
+      },
+      {
+        "path": "axum::response::Response",
+        "declaration": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/response/mod.rs",
+            "sha256": "a785652ac0c19d311b2dcb67a8b9910d5e12c3b8b6fea8cffee0761a17b5f334"
+          },
+          "name": "Response",
+          "kind": "type",
+          "startByte": 555,
+          "endByte": 603
+        },
+        "ultimate": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/response.rs",
+            "sha256": "5f139b9419d77dab44fbb471c349bd1e9ae6f53db87426352482b9122e31e484"
+          },
+          "name": "Response",
+          "kind": "struct",
+          "startByte": 4449,
+          "endByte": 4505
+        },
+        "reexports": [
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/lib.rs",
+            "sha256": "6dde9a13818139d63476bfe1562f1956b5e5c34bf6df3fe595f502cac3dad87a"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-0.8.9/src/response/mod.rs",
+            "sha256": "6042a997245196e826698577db883159a54c2f0f95240c9443d53a978629f97b"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/lib.rs",
+            "sha256": "45b6a88a33f61a5a82add60e6fe0a448609b6f78d599f814e9158540f7f215a3"
+          },
+          {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/http-1.5.0/src/lib.rs",
+            "sha256": "2c085126666e668fce40f30e5bd6f890bf3f94c0911ac59d531b4f1fbfc780d8"
+          }
+        ]
+      },
+      {
+        "path": "probation_policy::Ecosystem",
+        "declaration": {
+          "file": {
+            "path": "crates/probation-policy/src/lib.rs",
+            "sha256": "901d3430abee977c85175e80148933ca33f753e968ee130fb40fb7751f243629"
+          },
+          "name": "Ecosystem",
+          "kind": "enum",
+          "startByte": 1870,
+          "endByte": 1911
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "probation_policy::api::RegistryId",
+        "declaration": {
+          "file": {
+            "path": "crates/probation-policy/src/api.rs",
+            "sha256": "ebc8b868cabb5d6fc33b8d936ee0d7cb08a26da3bd1c3435c96345fec4abfa1b"
+          },
+          "name": "RegistryId",
+          "kind": "struct",
+          "startByte": 2504,
+          "endByte": 2535
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "crates/probation-policy/src/lib.rs",
+            "sha256": "901d3430abee977c85175e80148933ca33f753e968ee130fb40fb7751f243629"
+          }
+        ]
+      },
+      {
+        "path": "url::Url",
+        "declaration": {
+          "file": {
+            "path": "/home/john/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/url-2.5.8/src/lib.rs",
+            "sha256": "51f47a93654528f3b8cb92c94fc26ad25775860d84197fff0c3124a687f8c5e3"
+          },
+          "name": "Url",
+          "kind": "struct",
+          "startByte": 6290,
+          "endByte": 7237
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::http::error::ApiError",
+        "declaration": {
+          "file": {
+            "path": "src/http/error.rs",
+            "sha256": "7ff19fe9a76f5ed7f7a6c7d4ca49a9a9e19517bd7c6a85eaaf628558c2d05bbb"
+          },
+          "name": "ApiError",
+          "kind": "enum",
+          "startByte": 1380,
+          "endByte": 5146
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::store::action_leases::ActionLease",
+        "declaration": {
+          "file": {
+            "path": "src/store/action_leases.rs",
+            "sha256": "3954dee041bf31dd476a5394b41312794ac823a58ada9a20a5dedda8a2c9caa5"
+          },
+          "name": "ActionLease",
+          "kind": "struct",
+          "startByte": 287,
+          "endByte": 535
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::store::rows::ReferenceId",
+        "declaration": {
+          "file": {
+            "path": "src/artifacts/reference.rs",
+            "sha256": "f6bc43b678d553a99404e6a322312cfeb7de4a034831f2dcb2e9b2a477bc9fe3"
+          },
+          "name": "ReferenceId",
+          "kind": "struct",
+          "startByte": 1177,
+          "endByte": 1210
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "src/store/rows.rs",
+            "sha256": "b85f2267938aed3ee9a3e1b664380232bb4c16dd5b8f4209a039d86ef9f2aa78"
+          }
+        ]
+      },
+      {
+        "path": "crate::upstream::ActionRequest",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          },
+          "name": "ActionRequest",
+          "kind": "struct",
+          "startByte": 3108,
+          "endByte": 3396
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::upstream::ActionResponse",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          },
+          "name": "ActionResponse",
+          "kind": "struct",
+          "startByte": 3398,
+          "endByte": 3507
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::upstream::MetadataRequest",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          },
+          "name": "MetadataRequest",
+          "kind": "struct",
+          "startByte": 2411,
+          "endByte": 2836
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::upstream::MetadataResponse",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          },
+          "name": "MetadataResponse",
+          "kind": "enum",
+          "startByte": 3509,
+          "endByte": 3859
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "crate::upstream::OriginKind",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/origins.rs",
+            "sha256": "cbbdacdf0d6312b58c2138da515497536642bb1ba22136b929d446b30fb50c30"
+          },
+          "name": "OriginKind",
+          "kind": "enum",
+          "startByte": 2216,
+          "endByte": 2293
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          }
+        ]
+      },
+      {
+        "path": "crate::upstream::OriginSet",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/origins.rs",
+            "sha256": "cbbdacdf0d6312b58c2138da515497536642bb1ba22136b929d446b30fb50c30"
+          },
+          "name": "OriginSet",
+          "kind": "struct",
+          "startByte": 3377,
+          "endByte": 3539
+        },
+        "ultimate": null,
+        "reexports": [
+          {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          }
+        ]
+      },
+      {
+        "path": "crate::upstream::UpstreamError",
+        "declaration": {
+          "file": {
+            "path": "src/upstream/mod.rs",
+            "sha256": "29c397e732d5468e8ac70221357dcdaca7428c85cb2475d27a98fafbd2f5c71f"
+          },
+          "name": "UpstreamError",
+          "kind": "enum",
+          "startByte": 4556,
+          "endByte": 4979
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "super::registry_action::valid_revision",
+        "declaration": {
+          "file": {
+            "path": "src/http/registry_action.rs",
+            "sha256": "b2a03eec5a66e9135da3bcffc930e91dbc8365446c0aa179723ae283f34d4ebf"
+          },
+          "name": "valid_revision",
+          "kind": "fn",
+          "startByte": 12313,
+          "endByte": 12560
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "super::unpublish_reference::approve_deletion_scope",
+        "declaration": {
+          "file": {
+            "path": "src/http/unpublish_reference.rs",
+            "sha256": "f6c3fdf0cbfcbaea88cc207a1bdaab9a14f2b0bb5edb6ae04dedf8f066dd72ca"
+          },
+          "name": "approve_deletion_scope",
+          "kind": "fn",
+          "startByte": 5225,
+          "endByte": 6538
+        },
+        "ultimate": null,
+        "reexports": []
+      },
+      {
+        "path": "super::unpublish_reference::open_url",
+        "declaration": {
+          "file": {
+            "path": "src/http/unpublish_reference.rs",
+            "sha256": "f6c3fdf0cbfcbaea88cc207a1bdaab9a14f2b0bb5edb6ae04dedf8f066dd72ca"
+          },
+          "name": "open_url",
+          "kind": "fn",
+          "startByte": 3205,
+          "endByte": 3881
+        },
+        "ultimate": null,
+        "reexports": []
+      }
+    ]
+  }
+]

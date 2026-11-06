@@ -213,7 +213,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
     // server was built with connect-info, which happens only when the opt-in is on or
     // the firewall is managed; the port is deliberately dropped, because the peer
     // address is the whole of the consumer identity this product will ever record.
-    let peer = (app.config.log_consumer_identification || app.config.management.is_some())
+    let peer = (app.config.log_consumer_identification || app.config.management.is_some() || app.config.service_policy.is_some())
         .then(|| {
             request
                 .extensions()

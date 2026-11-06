@@ -2,46 +2,26 @@
 ## Verdict
 READY
 
-## Questions and findings
-None. All five clarification rows are resolved or correctly deferred (none open); the document
-stays in product language except the single pre-decided technical constraint (C5: Rust, no
-provider abstraction), which is correctly recorded as a `current-Gate decision` row deferred to
-Gate 2, sourced to backlog.md B2's 2026-09-25 decline. No blocking findings.
+## Overall assessment
+The nine-family amendment is clear enough to present for scope approval. RubyGems is required and first after the shared-service foundation; CPAN is omitted. The shared machine/cluster journey, common policy, caller admission and package-manager credential ownership are explicit. OSV coverage remains source-specific. No blocking finding or unresolved product question remains. This review does not establish runtime compatibility or approve implementation.
 
-## Checked dimensions
-- Subject completeness/freshness: `01-product.md` present, readable, and holds every required
-  Gate 1 section in the template order (Clarifications table, Problem, Success metric,
-  Non-goals, Announcement, Screens). Pass.
-- Clarification inventory: C1–C4 are `user clarification`, status `resolved`, each naming a
-  selected value/policy and a decision source of the permitted shape
-  `user answer, Gate 1 grilling Q<n>` (valid per protocol: the row itself is the deciding
-  section for a user answer). C5 is `current-Gate decision`, status `deferred`, target Gate 2,
-  sourced `user decision, backlog.md B2, 2026-09-25` — verified against
-  `docs/backlog.md` B2's text ("Decision, 2026-09-25: declined by the user. OSV is hardcoded in
-  Rust."), which matches verbatim in substance. No row is `open`. Pass.
-- Gate 1 product-language constraint: Problem, Success metric, Non-goals and Announcement stay
-  in operator/user-facing language (packages, requests, the firewall's blocking behavior); the
-  only technical commitment (Rust, no provider abstraction) lives solely in the C5 row targeted
-  at Gate 2, not asserted as fact in the prose sections. Pass.
-- Gate 1 shape: clear user problem (operator's firewall misses malicious packages OSV already
-  knows about), one real success metric tied to the decision log's blocked-request count with a
-  measurement method and a target, explicit non-goals (no CVE/severity scope, no provider
-  abstraction per B2), a genuine 4-sentence announcement in plain language, and technical
-  choices (C5) correctly deferred to Gate 2. Pass.
-- Evidence closure: independently walked `docs/backlog.md` B1 (the seed request, its "Open
-  questions for Gate 1" match C1–C4 one-for-one) and B2 (the declined provider-abstraction
-  proposal C5 defers against). No mockups exist or are needed ("No UI" is correct: this is a
-  backend service feature with no user interface). No external research artifact is cited or
-  needed at this product-language stage. `SPEC.md`/`README.md` have no existing OSV-related
-  content to reconcile against. Pass.
-- Red Team: not triggered, with the reason recorded inline ("Gate 1 has no plan to challenge"),
-  consistent with Red Team being conditional and Gate 1 carrying no architecture/threat surface
-  yet. Pass.
-- Gate-2-only dimensions (grounded fit, interfaces, flow, constraints resolution) and
-  Gate-3/4-only dimensions: not applicable at Gate 1.
+## Questions and findings
+None. The earlier OSV-G1-F1 remains closed: the Announcement and Non-goals distinguish a qualifying malicious match from enforce/diagnostic/off behavior, permitted exceptions and actual identity/feed coverage. No unconditional nine-ecosystem OSV promise has been introduced.
+
+Questions for the main agent to ask before readiness: None. The next user decision is scope approval after presentation.
+
+## What was checked
+
+- **Preparation and evidence:** the installed router's `check` returned no findings, and the final loop-history entry is `hand -> qa : start`. Fresh Gate 1 preparation returned PREPARED. The prior report and review metadata were read as historical context before preparation; their READY and hashes were not reused. All thirteen starting source paths were freshly tracked and read: this product; the Package Firewall MVP, management-server and publishing-proxy products; lead evidence `research-nora-dozor-reuse.md`, `research-public-ecosystems.md`, `repository-ecosystem-auth.md`, `local-client-policy-modes.md`, `local-client-platforms.md` and `research-native-ci.md`; management evidence `research-ecosystem-auth.md`; root `SPEC.md`; and `docs/backlog.md`. Workflow status was read for context; the helper rejects generated status as a review source, so it was excluded from the successful thirteen-file track. Current product text, rather than older status summaries, supplies decision authority.
+- **Completeness:** `01-product.md`, Release amendment authority and C1013/C1027, names npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan and Docker/OCI. RubyGems priority and CPAN exclusion are explicit in both this product and the lead Current release target. C1-C4 retain additive producer/OSV malicious-package checks, digest-independent package/version matching, no severity threshold and producer-only operation during an OSV outage. General CVE scanning and a provider framework remain excluded. C1001 and the lead Cross-plan product ownership section assign the dependent outcomes without deleting existing npm/Python publishing or management capabilities. Transport support is not treated as proof of OSV data or equivalent policy semantics; the saved Nora/Dozor assessment records npm-only Dozor matching and limits of reuse.
+- **User experience:** Current shared-service journey and acceptance gives a concrete operator journey: install one service for a whole machine or one logical cluster, configure its permitted policy key, admit native tools or approved nodes, and use one effective policy without a package-request Probation login. Every workload on an approved node is trusted; individual workload, namespace or person identity is not claimed. Registry credentials stay in native package-manager configuration. The lead journey also explains explicit standalone TOML operation. Its rules distinguish allowed downloads, held or blocked exact requests, empty eligible sets, missing/expired standalone blocklists and later policy changes. Exact versions, lockfiles and image requests are refused without substitution. OSV introduces no independent UI. Existing account, policy, key and registry screens remain owned by the management/publishing plans; changed setup text and certificate-control retirement must be shown during combined design. Historical certificate mockups are expressly superseded and do not preview this amendment. No new destructive account flow needs a new OSV mockup.
+- **Acceptance:** the current shared-service acceptance requires two admitted callers receiving the same policy without a Probation package login, refusal of an unapproved host/node, and service-wide application of policy change/refusal under the existing propagation/outage rules. The lead Success metric requires native allowed, blocked and waiting-period witnesses for eight package families plus Docker pulls, using harmless controlled artifacts, with zero refused artifact bytes reaching the client including warm-cache delivery. Decision logs and suite outcomes supply measurement. Linux/macOS/Windows native setup/runtime coverage, Linux policy-server integration and genuine node-runtime checks are required; builds, mocks and historical certificate tests cannot establish them. Each supported identity/feed capability must be explicit. The OSV Success metric separately measures OSV-only blocks through decision reasons, targeting greater than zero in the first week; that is an observed benefit target, not advance interoperability proof. Detailed native fixtures, protocol contracts and CI topology belong to C1003/C1018 design work.
+- **Constraints and risks:** management C8/C11/C16/C18/C45/C46/C81 preserve inheritance, permitted exceptions and the permission required to loosen OSV enforcement. C19/C20 preserve remembered policy during policy-server outages, no policy for unseen keys, and reachable-server updates/revocations within the configured interval, one minute by default; outage-delayed revocation remains an accepted limit. OSV C3 separately preserves intelligence-outage behavior. The amendment forbids silent fallback to weaker standalone TOML. C1015/C1024 and publishing C2/C4/C6/C34/C35 retain package-manager credential custody, exact selected-registry routing, upstream publishing authorization and the canonical npm token-packument metadata exception; that exception never grants artifact bytes or later write permission. Policy keys do not become upstream credentials. Existing personal accounts, tenant isolation, privacy/audit and WCAG 2.2 AA expectations remain. Lead ownership retains secret exclusion and opt-in consumer identity in decision delivery. C30 and the current scope explicitly state device-administrator bypass limits without host attestation. The platform and native-CI research distinguishes configured builds, ordinary native jobs and actual Docker execution; non-Linux real-Docker coverage remains unproved. Speed remains measured and reported; no old benchmark is treated as expanded-format performance proof.
+- **Clarity and clarification handling:** inventory IDs, classes, statuses, owners, targets, selected policies and recorded decision sources are present. C1013 is amended by the dated user answer in C1027. C1019-C1022 record Q8-Q11's machine/cluster placement, common policy, no package login and approved-node trust. C1024 records the user's correction preserving forwarding/publishing and rejecting a new public/private split. These choices are in the product, not only bookkeeping. C1003/C1018 retain their IDs as current-Gate decisions owned by Gate 1 and deferred to Gate 2 for representation, transport, migration and native-verification design. C5's fixed-language/no-provider constraint remains unchanged. The Announcement describes future effective-policy behavior and makes no polling/query or universal OSV-coverage promise. Earlier format/certificate narratives and research proposals are identified as historical where superseded; they do not create another active scope.
+- **Domain model:** the supplied expert account is the recorded user selections in C1-C4, C1006/C1008/C1009/C1015 and Q8-Q11/C1019-C1022, with the C1024 correction and C1027 priority/exclusion. Together they establish the operator, native caller, approved node, policy authority, registry authority and actual package-consumption journey. The current shared-service visual shows callers, service, policy key, one effective policy and requested registry. The lead Domain model and reviewed decision sources visual adds organisation/group policy, alternative managed/standalone authority, package-manager credentials and artifacts. Relationships distinguish policy retrieval from registry authorization, and common-service trust from workload identity. Recorded answers and corrections supply model feedback; another personal name or interview is unnecessary. Existing account and policy vocabulary is reused, with the changed placement and trust boundary explicitly modeled. Internal module boundaries and API signatures are for combined design.
 
 ## Limitations
-No grilling transcript file exists to independently re-verify the exact wording of Q1–Q5; per
-protocol a user answer's row is itself the deciding section, so this is not a gap, but it is
-recorded as a limit on independent corroboration beyond the row text and its consistency with
-backlog.md's seeded open questions.
+Gate 1 product review only. No builds, source implementation verification, native-client installs, live OSV queries, network/credential probes, load tests or accessibility execution ran. Saved research establishes inventory and documented limits, not expanded runtime support. Exact OSV identity/feed mappings, protocol behavior, migration, supported native-client versions, CI topology and non-Linux Docker execution remain design/delivery obligations under the recorded IDs. Historical neighboring portal mockups and completed slice proofs were not re-certified. No missing evidence prevents judging the selected product scope.
+
+## Next steps
+The main agent should verify the sealed report and present the current nine-family scope for user approval. Approval then permits combined design, carrying C1003/C1018 and the retained OSV, policy, privacy, credential and admission guarantees forward. READY permits presentation only.

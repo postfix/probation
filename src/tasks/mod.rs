@@ -36,7 +36,11 @@ pub fn spawn(
     watcher: blocklist_poller::Watcher,
     delivery: Vec<JoinHandle<()>>,
 ) -> Tasks {
-    let policy = if app.managed().is_some() {
+    let policy = if app.service_policy().is_some() {
+        let app = Arc::clone(&app);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { app.service_policy().expect("service mode").run(shutdown).await; })
+    } else if app.managed().is_some() {
         // A managed firewall ignores its local blocklist (C109).
         tokio::spawn(policy_sync::run(Arc::clone(&app), shutdown.clone(), drain))
     } else {

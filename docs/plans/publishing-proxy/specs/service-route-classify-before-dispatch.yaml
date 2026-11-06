@@ -1,0 +1,10 @@
+# Future source scope: src/http/service_registry.rs::respond.
+# Checks call order only; route completeness and selected-value flow need separate witnesses.
+name: service-route-classify-before-dispatch
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [classify_selected_registry]}}
+operation: {calls: {name: [dispatch_selected_registry]}}
+relation: {must_dominate: true}
+where: "caller_function == 'respond'"

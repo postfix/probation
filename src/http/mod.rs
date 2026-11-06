@@ -11,6 +11,8 @@ pub mod pypi_routes;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
+pub mod service_registry;
+pub(crate) mod service_unpublish;
 pub mod token_packument;
 pub mod unpublish_reference;
 
@@ -47,6 +49,15 @@ use crate::managed::{Principal, Refusal};
 /// `artifacts` is unaffected, and the same static-outranks-capture rule keeps it that
 /// way.
 pub fn router(app: Arc<App>) -> Router {
+    Router::new()
+        .fallback_service(package_router(Arc::clone(&app)))
+        .layer(middleware::from_fn_with_state(Arc::clone(&app), service_registry::respond))
+        .layer(middleware::map_response(no_store))
+        .layer(middleware::from_fn_with_state(Arc::clone(&app), logging::decide))
+        .layer(middleware::from_fn(bound_headers))
+}
+
+fn package_router(app: Arc<App>) -> Router {
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
@@ -115,14 +126,6 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .fallback(unknown_route)
         .method_not_allowed_fallback(unsupported_method)
-        .layer(middleware::map_response(no_store))
-        // Outermost, so the decision line describes the response that actually left —
-        // including a `404` or `405` the router produced without reaching a handler.
-        .layer(middleware::from_fn_with_state(
-            Arc::clone(&app),
-            logging::decide,
-        ))
-        .layer(middleware::from_fn(bound_headers))
         .with_state(app)
 }
 

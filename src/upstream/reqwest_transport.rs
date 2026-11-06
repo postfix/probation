@@ -38,6 +38,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 const ARTIFACT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const ARTIFACT_TOTAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// An action body above this is an upload: it gets the 15-minute lifetime, not the
+/// 30-second metadata deadline. reqwest's `read_timeout` also runs while the request body
+/// is still being sent, so it cannot serve as the write-idle limit here.
+// ponytail: size threshold and a lifetime only, no write-idle timer (reqwest has none); a
+// stalled upstream write holds its permit up to 15 minutes. Add a body-progress watchdog if that matters.
+const UPLOAD_BODY_BYTES: u64 = 1 << 20;
 
 /// reqwest's custom redirect policy does not carry the default loop protection, so
 /// the chain length is bounded here.
@@ -94,6 +100,10 @@ impl ReqwestTransport {
     }
 
     fn selected(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool) -> Result<(OriginSet, Client), UpstreamError> {
+        self.selected_within(origin, private_cidrs, artifact, follow_redirects, METADATA_TOTAL_TIMEOUT)
+    }
+
+    fn selected_within(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool, metadata_total: Duration) -> Result<(OriginSet, Client), UpstreamError> {
         let origins = match origin {
             Some(origin) => OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
                 .map_err(UpstreamError::RejectedUrl)?,
@@ -111,7 +121,7 @@ impl ReqwestTransport {
             builder = builder.read_timeout(ARTIFACT_READ_TIMEOUT).timeout(ARTIFACT_TOTAL_TIMEOUT)
                 .no_gzip().no_brotli().no_zstd();
         } else {
-            builder = builder.timeout(METADATA_TOTAL_TIMEOUT);
+            builder = builder.timeout(metadata_total);
         }
         let client = builder.build().map_err(|err| UpstreamError::Transport(err.to_string()))?;
         Ok((origins, client))
@@ -160,7 +170,8 @@ fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
 #[async_trait]
 impl Transport for ReqwestTransport {
     async fn send_action(&self, req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
-        let (origins, client) = self.selected(Some(&req.origin), &req.private_cidrs, false, false)?;
+        let total = if req.body_len > UPLOAD_BODY_BYTES { ARTIFACT_TOTAL_TIMEOUT } else { METADATA_TOTAL_TIMEOUT };
+        let (origins, client) = self.selected_within(Some(&req.origin), &req.private_cidrs, false, false, total)?;
         Self::admitted(&origins, &req.url)?;
         let mut request = client.request(req.method, req.url).header(header::ACCEPT, "application/json");
         if let Some(authorization) = req.authorization {

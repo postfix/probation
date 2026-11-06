@@ -1,0 +1,8 @@
+# Supplementary call dominance only; no accepted-result or atomicity claim.
+name: service-policy-managed-activation-order
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [validate_policy_snapshot]}}
+operation: {calls: {name: [publish_policy_snapshot]}}
+relation: {must_dominate: true, allow_caller_paths: false}

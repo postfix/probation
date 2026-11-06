@@ -1,0 +1,8 @@
+name: service-unpublish-marker-before-delete
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [consume_service_marker]}}
+operation: {calls: {name: [send_action]}}
+relation: {must_dominate: true}
+where: "caller_function == 'consume_service_marker_then_send'"

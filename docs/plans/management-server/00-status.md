@@ -1,9 +1,9 @@
 # Status: Probation management server and self-service portal
 
-- Gate 1 — Product: APPROVED 2026-10-20
-- Gate 2 — Architecture: APPROVED 2026-10-21
-- Gate 3 — Program Design: APPROVED 2026-10-23
-- Gate 4 — Slice plan: APPROVED 2026-10-23
+- Gate 1 — Product: APPROVED 2026-11-02
+- Gate 2 — Architecture: in progress
+- Gate 3 — Program Design: pending
+- Gate 4 — Slice plan: pending
 
 ## Factory settings
 
@@ -11,82 +11,84 @@
 
 ## Loop signal
 
-{"generation":15,"boundary":null,"reopened":false,"history":[]}
+{"generation":19,"boundary":{"kind":"gate","number":2},"reopened":false,"history":[{"from":"hand","reason":"rework","to":"hand"},{"from":"hand","reason":"start","to":"sf-research"},{"from":"sf-research","reason":"unknown","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"unknown","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"unknown","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"complete","to":"hand"},{"from":"hand","reason":"rework","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"unknown","to":"qa"},{"from":"qa","reason":"rework","to":"hand"},{"from":"hand","reason":"retry","to":"qa"}]}
 
 ## Gate 1 progress
 
 - [x] Create 00-status.md
-  Result: docs/plans/management-server/00-status.md created from the template.
+  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.
 - [x] Select the plan with router resume
-  Result: router resume returned no findings; position Gate 1.
+  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.
 - [x] Create the product clarification inventory
-  Result: 01-product.md `## Clarifications and decisions` created.
+  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.
 - [x] Resolve user decisions
-  Result: grilling Q1–Q31 recorded as C1–C33 in 01-product.md; 0 open; C2 deferred to Gate 2.
+  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.
+- [x] Gather ecosystem and authentication evidence
+  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.
 - [x] Review UI mockups with the user
-  Result: 9 mockups in mockups/ approved (C74); mockup review raised C34–C35 (deferred to Gate 2) and C36–C73 (resolved).
+  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.
 - [x] Complete 01-product.md
-  Result: 01-product.md — Problem, Success metric, Non-goals, Announcement, Screens written from C1–C74.
+  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.
 - [x] Obtain QA READY
-  Result: docs/plans/management-server/gate-1-qa.md — READY after five rounds (Q1–Q13 answered as C75–C94, F1–F5 fixed); gate-qa verify returned READY.
+  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/management-server/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.
 - [x] Present and record user approval
-  Result: approved by the user 2026-10-20; presentation docs/plans/management-server/show-me-gate-1.md.
+  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/management-server/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.
 
 ## Gate 2 progress
 
-- [x] Check whether existing architecture and evidence can be reused
+- [ ] Check whether existing architecture and evidence can be reused
   Result: no earlier architecture for this feature; repository evidence was missing, so it was gathered fresh.
-- [x] Create or update the architecture and carry deferred questions
+- [ ] Create or update the architecture and carry deferred questions
   Result: 02-architecture.md created; C2, C34, C35 and C86 imported under their original IDs.
-- [x] Gather repository evidence
+- [ ] Gather repository evidence
   Result: evidence/repository-structure.md (sf-repo-view): routes, policy evaluation, caches, config, Decision record, analyzers.
-- [x] Save findings and resolve architecture decisions
+- [ ] Save findings and resolve architecture decisions
   Result: Gate 2 grilling Q50–Q55 resolved C2, C34, C35, C86 and C95–C102; `grep -c '| open |' 02-architecture.md` = 0.
-- [x] Complete 02-architecture.md
+- [ ] Complete 02-architecture.md
   Result: all template sections written; router check has no findings; molecule-check PASS (3 flows, 16 required outcomes).
-- [x] Record architecture assumptions and review triggers
+- [ ] Record architecture assumptions and review triggers
   Result: assumptions in molecule-flow.json; review triggers in 02-architecture.md § Constraints (Decision record size, header-read analyzer, restart on settings push, C83 budget).
-- [x] Complete architecture section of the combined design
+- [ ] Complete architecture section of the combined design
   Result: 02-architecture.md complete after threat-model (B1–B3) and red-team (F1–F6) fixes; router check no findings.
-- [x] Carry contracts and obligations into program design
+- [ ] Carry contracts and obligations into program design
   Result: molecule-flow.json operations carried into 03 § Modules and interfaces; molecule-contracts.json has 12 contracts, each assigned to a slice.
 
 ## Gate 3 progress
 
-- [x] Create or update the design from its template
+- [ ] Create or update the design from its template
   Result: 03-program-design.md written from the template; C103–C116 recorded (C113–C116 from grilling Q56).
-- [x] Gather design evidence
+- [ ] Gather design evidence
   Result: evidence/repository-structure.md plus red-team source checks (config.rs REQUIRED_KEYS, health.rs ready, Dockerfile).
-- [x] Record effects on callers, dependencies, and planned checks
+- [ ] Record effects on callers, dependencies, and planned checks
   Result: 03 § Call stack and § Files; caches, download single flight and Decision record changes named with their checks.
-- [x] Define interfaces, behavior, invariants, and test cases
+- [ ] Define interfaces, behavior, invariants, and test cases
   Result: 03 § Modules and interfaces, § Program behavior, § Invariants & spec dispositions (12 KEEP), § Test plan.
-- [x] Validate analyzer specs or assign their authoring to slices
+- [ ] Validate analyzer specs or assign their authoring to slices
   Result: 12 .smtc/analyzers/managed-*.yaml specs authored (sf-spec-authoring), PENDING until source; T19 spec assigned to slice 2.
   Reopened 2026-10-22 (slice 2 delivery): the T19 spec cannot be built; this SMTC build ignores argument constraints in specs (sf-spec-authoring UNKNOWN, sf-smtc-doctor UNSUPPORTED). User chose C123: cargo test T-authorization-read-once plus the `smtc callers --callsites-matching AUTHORIZATION` query in every Recheck. 03 (C123, § Invariants, T19 threat row, § Security coverage, § Test plan, H5) and 04 (slice 2 files and acceptance, Recheck of slices 2–8) updated. Rework: fresh design QA (`--gate design`) and the user's design approval.
   Result (2026-10-22): no T19 spec; C123 checks (T-authorization-read-once, T-key-canary/T-key-canary-sync, C123 SMTC query) assigned to slices 2–3 and rechecked in 2–8; premise in evidence/smtc-argument-matching.md.
-- [x] Define security coverage and resolve required planning reviews
+- [ ] Define security coverage and resolve required planning reviews
   Reopened 2026-10-22: the T19 coverage row changed under C123; the guarantee is unchanged. Rework: Design QA checks the changed row.
   Result (2026-10-22): sf-threat-model MODELED (T19a–h, 03 § Threat model); sf-red-team NEEDS REVISION, 6 findings fixed (evidence/red-team.md § C123 re-review); C124 and C125 recorded; § Security coverage updated.
   Result: sf-threat-model T1–T30 with B1–B3 fixed; acceptances A1–A7 accepted by the user 2026-10-21 (C116); 03 § Security coverage.
-- [x] Complete contracts and flows for the combined design
+- [ ] Complete contracts and flows for the combined design
   Result: molecule-check PASS (3 flows); molecule-contracts.json 12 contracts.
-- [x] Carry guarantees and checks into delivery slices
+- [ ] Carry guarantees and checks into delivery slices
   Result: 04-slices.md lists each contract and test by slice.
 
 ## Gate 4 progress
 
-- [x] Write the slice plan
+- [ ] Write the slice plan
   Result: 04-slices.md, 8 slices (C108).
-- [x] Define slice behavior and dependencies
+- [ ] Define slice behavior and dependencies
   Result: each slice row names its behavior, dependencies and files.
-- [x] Define checks
+- [ ] Define checks
   Result: each slice witness fails before implementation (red-team F5 fixed).
   Reopened 2026-10-22: slice 2–8 Recheck lines changed from the T19 spec run to the C123 test plus SMTC query.
   Result (2026-10-22): slice 2 witness adds authorization_read_once and key_canary; slice 3 witness adds key_canary 2 passed; slice 4 adds T-edit-parent-chain; slice 7 T-blocklist-roundtrip covers `reason`.
-- [x] Validate prerequisites
+- [ ] Validate prerequisites
   Result: tools cargo, docker, npm, npx, bash; test-only fixtures named per slice.
-- [x] Complete required combined design reviews
+- [ ] Complete required combined design reviews
   Result: sf-threat-model and sf-red-team findings fixed in 02, 03, 04; user decisions Q56 recorded as C113–C116.
 - [ ] Obtain QA READY
   Reopened 2026-10-23: C126 (only the ahead firewall resets), C127 (taken org name revealed, accepted like A3) and C128 (removed members stay removed under SSO) were added to 03 as user decisions during delivery without design re-approval; the router refused slice 3 completion (SOURCE_CONTRACT_REQUIRED). Rework: fresh `--gate design` QA, then user approval.
@@ -142,7 +144,9 @@
 
 ## Notes for a fresh session
 
-- Scope is fully recorded in 01-product.md rows C1–C94; the chat added nothing beyond them.
+Current scope after C1027 is approved 2026-11-02: nine families (npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI). RubyGems is critical and first added after the shared-service foundation; CPAN is omitted. Q8-Q11 and package-manager credential ownership remain settled. Gate 1 approval and progress are recorded; earlier pending-scope/ten-family notes below are historical. Combined design remains unapproved. Lead FIX-16-A in package-firewall-mvp/02-architecture.md, 03-program-design.md and 04-slices.md assigns the discovered managed-authority release gap to Slice 16 before new adapters; evidence/artifact-flow-correctness.md records source facts and required tests, not an implemented fix.
+
+- Prior baseline scope is recorded in 01-product.md C1–C94. The 2026-11-02 expansion and local-client re-steer are C1001–C1013. Q2 and Q3 are resolved; C1013 / Q5 selects ten named families and C1015 / Q6 selects client-owned credentials; C1016 / Q7 selects Linux/macOS/Windows clients; C1017 keeps the policy server Linux-only. User CI follow-up is C1018. Fresh scope QA/presentation is next.
 - Gate 2 must import and resolve the deferred rows C2, C34, C35, C86 under their original IDs.
 - The user is not a native English speaker: keep questions short and concrete, with a scenario.
 - The user prefers batching small, conventional details into one numbered list with recommendations (C36).
@@ -150,3 +154,25 @@
 ## Source contract evidence
 
 Required for this plan.
+
+## Nora ecosystem expansion — 2026-11-02
+
+The user requests all ecosystems supported by Nora, borrowing Nora/Dozor code where practical, across Package Firewall MVP, management server/portal, OSV intelligence, decision logging and rated load. The user also requires checking package-manager and registry support for the existing SSL authentication and whether architecture must change. Scope Gate 1 is reopened; design Gates 2–4 await the revised scope. Earlier completed slice proofs remain historical evidence for their original npm/PyPI behavior, not evidence of expanded ecosystem or authentication coverage. No historical slice completion is invalidated by this additive request. The pending legacy completion presentation has not been accepted or acknowledged.
+
+Next: obtain fresh Scope QA READY, present the recorded ten-family/three-client-OS/Linux-server scope and record approval. Exact interfaces, native CI topology, Docker coverage and migrations are deferred to combined design under C1003/C1018.
+
+## Selected local-client direction — 2026-11-02
+
+C1006 resolves Q2 with a locally installed client and API-key authentication to the policy server, replacing the earlier certificate bridge proposal. C1008 explicitly retains TOML-configured standalone backend operation without the policy server. The completed publishing-proxy plan was reopened because it owns the superseded mandatory certificate contract; its prior five slice acceptances are historical and need fresh delivery against the new design. No product code was changed. Q3 / C1009 is resolved: local enforcement and direct registry downloads. C1013 / Q5 now selects the actual target formats after public-source research.
+
+## Public-source review — 2026-11-02
+
+Saved evidence/research-public-ecosystems.md under package-firewall-mvp: APT has Debian public archives, RPM has public distribution repositories, Terraform has a public registry and executable provider plugins. Sixteen Nora families have public sources; generic Raw storage has no defined ecosystem upstream. Proposed first target is thirteen developer dependency/container families, deferring APT/RPM and Hugging Face and omitting Raw; C1013 / Q5 remains unanswered. No format exclusion is approved solely by this status note. Q3 local enforcement is recorded in every affected product inventory.
+
+## Selected package/container release — 2026-11-02
+
+Q5/C1013 is resolved: npm, PyPI, Maven, Go modules, Cargo, NuGet, CPAN, RubyGems, Conan and Docker/OCI only. Earlier thirteen/sixteen/seventeen-family proposals are historical, not pending alternatives. Q6/C1015 is resolved: users and CI jobs own local registry credentials; policy API keys never become registry credentials and the policy server does not distribute shared organisation read secrets. Q7/C1016 is resolved for Linux/macOS/Windows clients; C1017 makes the policy server Linux-only; C1018 carries native GitHub Actions requirements into design. Preserve historical source/proofs; no product code was changed.
+
+## Scope ready for independent review — 2026-11-02
+
+All product choices in C1006/C1008/C1009/C1013/C1015/C1016/C1017 are recorded. C1003/C1018 defer technical implementation to combined design. The user requires native Windows/macOS GitHub Actions tests; Linux client/server checks and unproved non-Linux Docker integration are explicit. All six router inventories have no findings after legacy formatting normalization. Scope QA, presentation and approval remain required; no code or workflow is changed by these documents.

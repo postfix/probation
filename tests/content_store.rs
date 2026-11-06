@@ -10,8 +10,11 @@
 //!   key leaves the verified bytes there, and opening the key reads them back;
 //! * however a publication ends — published, reused, refused by the filesystem, or
 //!   abandoned — `tmp/` is empty and no reservation is held once it has.
+// Their Unix-only tests are cfg(unix); what only they use is then unused on Windows.
+#![cfg_attr(not(unix), allow(unused, dead_code))]
 
 use std::error::Error as _;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -36,6 +39,7 @@ fn temp_entries(store: &ContentStore) -> usize {
     std::fs::read_dir(store.temp_dir()).map_or(0, |entries| entries.count())
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("the mode is set");
 }
@@ -119,6 +123,7 @@ proptest! {
 
     /// `tmp/` is empty, and the budget whole, after every publication however it ends.
     #[test]
+    #[cfg(unix)]
     fn every_publication_outcome_leaves_tmp_empty(
         outcomes in prop::collection::vec(outcome(), 1..12),
     ) {
@@ -210,6 +215,7 @@ async fn an_unwritable_data_directory_refuses_downloads_with_the_path() {
 /// The probe writes into both directories, so a content directory that refuses new
 /// objects fails it even while `tmp/` is fine.
 #[tokio::test]
+#[cfg(unix)]
 async fn the_probe_fails_while_objects_refuses_writes() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = ContentStore::new(dir.path(), 1 << 20);
@@ -227,6 +233,7 @@ async fn the_probe_fails_while_objects_refuses_writes() {
 /// publication fails rather than renaming a short file into place.
 #[cfg(target_os = "linux")]
 #[tokio::test]
+#[cfg(unix)]
 async fn a_write_the_disk_refuses_fails_the_publication() {
     // A fresh store, whose first temporary name is linked to a device that refuses
     // every write with `ENOSPC`.
@@ -266,6 +273,7 @@ async fn a_write_the_disk_refuses_fails_the_publication() {
 /// An object whose size is right but which cannot be opened is not reused: it is
 /// replaced with the verified bytes.
 #[tokio::test]
+#[cfg(unix)]
 async fn an_unreadable_object_at_the_path_is_replaced() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = ContentStore::new(dir.path(), 1 << 20);
@@ -323,6 +331,7 @@ async fn a_file_held_twice_stays_pinned_until_both_let_go() {
 /// A file the filesystem will not let eviction remove is reported as still there,
 /// so its mapping is kept.
 #[tokio::test]
+#[cfg(unix)]
 async fn an_eviction_the_filesystem_refuses_keeps_the_file() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = ContentStore::new(dir.path(), 1 << 20);

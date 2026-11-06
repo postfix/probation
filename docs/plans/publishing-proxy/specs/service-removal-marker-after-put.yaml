@@ -1,0 +1,10 @@
+# Future source scope: src/http/service_unpublish.rs::record_successful_service_removal.
+# Checks that the verified successful removal path precedes durable marker commit; runtime witnesses prove revision/value binding and persistence.
+name: service-removal-marker-after-put
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [resolve_removed_revision_from_put_or_authenticated_get]}}
+operation: {calls: {name: [commit_service_removal_marker]}}
+relation: {must_dominate: true}
+where: "caller_function == 'record_successful_service_removal'"

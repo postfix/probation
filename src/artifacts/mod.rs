@@ -168,6 +168,7 @@ pub async fn serve_artifact_in(
         ));
     };
     record_would_block(app, principal, &policy, now, &row, &pinned).await;
+    let auth = auth.under_authority(principal.and_then(|principal| principal.authority.clone()));
 
     if method == Method::HEAD {
         // SPEC §9: HEAD runs every check, including a cold verification, and returns

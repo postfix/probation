@@ -9,6 +9,7 @@ pub mod keys;
 pub mod policy;
 pub mod portal;
 pub mod sync;
+pub mod service_policy;
 pub mod tenancy;
 
 use std::net::SocketAddr;
@@ -104,7 +105,6 @@ pub async fn serve(
     pool: PgPool,
     portal: Option<portal::PortalDeps>,
 ) -> std::io::Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
     if let Some(deps) = &portal {
         let secrets = accounts::SecretBox::new(deps.secret_key);
         // A wrong key would only show as failed sign-ins (ND-2).
@@ -120,8 +120,7 @@ pub async fn serve(
             }
         }
     }
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut stop_requests = StopRequests::install()?;
     let (stop, stopping) = tokio::sync::watch::channel(false);
     let retention = config.server.change_log_retention_days;
     let pruner = pool.clone();
@@ -167,14 +166,12 @@ pub async fn serve(
     };
     let signals = async move {
         tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
+            () = stop_requests.recv() => {}
         }
         tracing::info!("stopping: finishing the requests in flight");
         stop.send_replace(true);
         tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
+            () = stop_requests.recv() => {}
             () = tokio::time::sleep(DRAIN) => {}
         }
         tracing::warn!("stopping now: requests or jobs still running are dropped");
@@ -220,7 +217,8 @@ where
 pub fn build_router(state: Arc<sync::SyncState>) -> axum::Router {
     let automation = policy::router(state.pool().clone());
     let health = health(state.pool().clone());
-    sync::router(state).merge(automation).merge(health)
+    let service_policy = service_policy::router(state.pool().clone());
+    sync::router(state).merge(automation).merge(health).merge(service_policy)
 }
 
 /// `GET /health/live`: 200 while the process answers. `GET /health/ready`: 200 while the
@@ -432,6 +430,62 @@ mod tests {
         ] {
             let refused = load(bad).expect_err(bad);
             assert!(refused.contains("portal.firewall_url"), "{bad}: {refused}");
+        }
+    }
+}
+
+/// The stop requests a service manager sends: SIGTERM and SIGINT on Unix; on Windows the
+/// console control events (Ctrl+C, Ctrl+Break, close, shutdown), which have no SIGTERM.
+#[cfg(unix)]
+struct StopRequests {
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl StopRequests {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.terminate.recv() => {}
+            _ = self.interrupt.recv() => {}
+        }
+    }
+}
+
+#[cfg(windows)]
+struct StopRequests {
+    c: tokio::signal::windows::CtrlC,
+    brk: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+#[cfg(windows)]
+impl StopRequests {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::windows;
+        Ok(Self {
+            c: windows::ctrl_c()?,
+            brk: windows::ctrl_break()?,
+            close: windows::ctrl_close()?,
+            shutdown: windows::ctrl_shutdown()?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.c.recv() => {}
+            _ = self.brk.recv() => {}
+            _ = self.close.recv() => {}
+            _ = self.shutdown.recv() => {}
         }
     }
 }

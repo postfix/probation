@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Package Firewall MVP - Slice 10 result</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--mut:#57606a;--line:#d0d7de;--acc:#0b5cad;--warn:#8a5a00}
+@media (prefers-color-scheme:dark){:root{--bg:#10151a;--fg:#e6edf3;--mut:#9aa7b4;--line:#2d3640;--acc:#6cb2ff;--warn:#e0b04a}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif}
+main{max-width:46rem;margin:0 auto;padding:1.5rem 1rem 3rem}
+h1{font-size:1.4rem;margin:0 0 .25rem}
+h2{font-size:1.1rem;margin:1.8rem 0 .5rem;border-bottom:1px solid var(--line);padding-bottom:.2rem}
+.sub,.meta{color:var(--mut);font-size:.9rem}
+table{border-collapse:collapse;width:100%;font-size:.92rem;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:.35rem .5rem;text-align:left;vertical-align:top}
+th{background:rgba(127,127,127,.12)}
+.gap{border-left:4px solid var(--warn);padding:.1rem .8rem;margin:.8rem 0}
+a:focus,summary:focus,:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.q{margin-top:2rem;padding:.8rem 1rem;border:2px solid var(--acc);border-radius:6px;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>Slice 10 result: real installs, container, operations notes, benchmarks</h1>
+<p class="sub">Package Firewall MVP. Completed September 2026. Waiting for your decision on what comes next.</p>
+
+<h2>Delivered</h2>
+<p>The firewall now works for real. Before, we had tests against fake registries. Now the real <code>npm</code> and <code>pip</code> tools install packages through a running firewall, and the firewall ships as a container.</p>
+<ul>
+<li><strong>Real installs.</strong> npm 12.0.2 and npm 10.9.9, and pip 26.2.1 and pip 25.0.1, each install through a running instance. Pinned old and new versions mean the test does not drift as "latest" changes.</li>
+<li><strong>Container image.</strong> It builds, and its configuration check passes from inside the image. It also carries the certificate roots it needs to talk to the real registry over TLS (the secure connection).</li>
+<li><strong>Operations notes and README.</strong> <code>docs/operations.md</code> and <code>README.md</code> tell an operator how to run it, back it up, and what the limits are.</li>
+<li><strong>Benchmarks.</strong> Speed tests ran against the targets in SPEC section 12, and the numbers are recorded in <code>docs/operations.md</code>.</li>
+</ul>
+<p>The "before" and "after" for a caller: before, nobody had shown a real <code>npm install</code> or <code>pip install</code> working through the firewall. After, that is shown, and the speed targets are measured on the final code.</p>
+
+<h2>Proof</h2>
+<p class="gap"><strong>Evidence gap, stated plainly.</strong> No file <code>evidence/slice-10.md</code> exists. The proof below is the single proof line recorded in <code>00-status.md</code>. The same line says the main agent, the code review and the verification each re-ran the checks.</p>
+<table>
+<caption class="sub">Promise, then what was run, then what was observed (all as recorded in 00-status.md)</caption>
+<thead><tr><th>Promise</th><th>Check run</th><th>Recorded result</th></tr></thead>
+<tbody>
+<tr><td>Code is clean and tests pass</td><td><code>cargo clippy --all-targets -- -D warnings</code>; <code>cargo test</code></td><td>clippy exit 0. 276 passed, 0 failed, 15 ignored (debug build).</td></tr>
+<tr><td>Real npm installs work</td><td><code>--test e2e_npm -- --ignored</code></td><td>7 passed, including npm 12.0.2 on Node v24.19.0.</td></tr>
+<tr><td>Real pip installs work</td><td><code>--test e2e_pip -- --ignored</code></td><td>7 passed across pip 26.2.1 and pip 25.0.1.</td></tr>
+<tr><td>Container works</td><td>podman build; <code>check-config</code>; offline trust-store check</td><td>Build succeeded. Both checks exit 0.</td></tr>
+<tr><td>Container reaches the real registry securely</td><td>Live request from a running container to the production npm origin</td><td>200 ALLOWED, no TLS error.</td></tr>
+<tr><td>Speed targets met</td><td><code>cargo bench</code></td><td>Exit 0. All nine SPEC 12 verdicts MET, reported as ranges over five runs.</td></tr>
+</tbody>
+</table>
+<p>The benchmark took three rounds to make honest. Round 1 looked fine, but the review found the test measured the firewall warm and the comparison cold, which is unfair. Round 3 alternated the two in one loop and took more samples. It then gave a steady result of about 110 percent against the 85 percent floor. The record says this 110 percent is a constant, not noise. The firewall reads ahead of the client and the comparison does not, which favours the firewall. It is named in <code>docs/operations.md</code> and was left uncorrected on purpose.</p>
+<p>Reviews recorded: code-review SHIP, verification VERIFIED.</p>
+
+<h2>Limits</h2>
+<ul>
+<li>Test counts are from a debug build. The recorded status says the host was busy (about 200 percent CPU, swap exhausted) during benchmarks.</li>
+<li>The test suite has never been green in a release build. One timing test, <code>artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh</code>, fails there. It was already failing before this work and was deliberately not fixed.</li>
+<li>The repository has no <code>-D warnings</code> gate of its own. A warning-level regression compiles cleanly under plain <code>cargo clippy</code>. Both items are listed as known gaps in <code>docs/operations.md</code>.</li>
+<li>A firewall for registries cannot reach a package that is already installed. This is the boundary of the product, and the operations notes say so.</li>
+<li><strong>Not covered by this slice:</strong> the shared service (the common policy server), the other seven package families (Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI), and the native operating-system and cluster lanes. These belong to later slices.</li>
+</ul>
+
+<h2>Next</h2>
+<p>The next approved slice is 16, called FIX-16-A. It closes a gap on the existing npm and PyPI routes. If a policy or authority refusal is published before a download is released, zero bytes are sent. Today that rule is not enforced at release time. Slice 16 must pass before the shared-service work (slice 28) starts.</p>
+
+<h2>Recommendation</h2>
+<p>Continue to slice 16. Slice 10 is recorded as done and independently re-run, and its open gaps are written down. Slice 16 fixes a release-time refusal rule that later work depends on.</p>
+
+<p class="meta">Status: Slice 10 completed September 2026; continuation decision pending.<br>
+Sources: docs/plans/package-firewall-mvp/00-status.md (Slice 10 line and proof; notes dated 2026-09-19; Slice 16 line); 04-slices.md (rows 10 and 16); show-me-completion.md; show-me-slice-14-result.md. Not present: evidence/slice-10.md. Render: not inspected.</p>
+
+<p class="q">Type "next" to continue to slice 16, or re-steer?</p>
+</main>
+</body>
+</html>

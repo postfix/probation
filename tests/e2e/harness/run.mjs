@@ -39,9 +39,20 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort()) {
   const module = await import(join(dir, file));
   scenarios.push({ file, ...module.meta, run: module.default });
 }
+// An --only ID that names no scenario (a renamed or misspelt one) must not shrink the run
+// to nothing and pass: it fails here, naming the ID, before any stack is started.
+const unknown = (args.only ?? []).filter((id) => !scenarios.some((s) => s.id === id));
+if (unknown.length) {
+  console.error(`e2e: --only names no scenario: ${unknown.map((id) => JSON.stringify(id)).join(", ")}`);
+  process.exit(1);
+}
 const selected = scenarios
   .filter((s) => (args.only ? args.only.includes(s.id) : s.suites.includes(args.suite)))
   .sort((a, b) => (a.stack === "own") - (b.stack === "own"));
+if (selected.length === 0) {
+  console.error(`e2e: no scenario is selected (suite ${args.suite}${args.only ? `, --only ${args.only.join(", ")}` : ""})`);
+  process.exit(1);
+}
 if (args.list) {
   for (const s of selected) console.log(`${s.id}\t${s.suites.join(",")}\t${s.stack ?? "shared"}\t${s.title}`);
   process.exit(0);

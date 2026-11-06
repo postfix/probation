@@ -2094,6 +2094,7 @@ async fn t_settings_push_allowlist() {
     let elsewhere = tempfile::tempdir().expect("a directory");
     let outside = elsewhere.path().join("decisions.ndjson");
     std::fs::write(&outside, "").unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, data_dir.join("link.ndjson")).unwrap();
     for (path, what) in [
         ("lock", "the data-directory lock"),
@@ -2106,6 +2107,7 @@ async fn t_settings_push_allowlist() {
         ("managed-settings.prev.toml", "the previous overlay"),
         ("managed-settings.state", "the settings state"),
         (".tmpAbCdEf", "a file being written atomically"),
+        #[cfg(unix)]
         ("link.ndjson", "a symlink out of data_dir"),
     ] {
         let push = format!("log_file_path = \"{}\"\n", at(path));

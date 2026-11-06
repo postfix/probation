@@ -6,6 +6,7 @@
 //! a report or a log line.
 
 pub mod activity;
+pub mod service_policy;
 mod cache;
 pub mod certificates;
 pub mod enterprise_certificate;
@@ -49,6 +50,7 @@ use crate::policy::{Candidate, CompiledPolicy, Decision, DenyReason, Ecosystem, 
 /// Who a request runs as. Never holds the key or its hash.
 #[derive(Clone)]
 pub struct Principal {
+    pub(crate) authority: Option<service_policy::AuthorityReceipt>,
     /// The key's own place, the last of `chain`.
     pub place: PlaceRef,
     /// The server's id, for activity rows.
@@ -103,6 +105,9 @@ enum Failed {
 
 /// The managed half of `App`, present only when `[management]` is set.
 pub struct Managed {
+    #[cfg(test)]
+    admission_checkpoint: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    publication_gate: Arc<service_policy::PolicyPublicationGate>,
     cache: Arc<KeyCache>,
     budget: Budget,
     policies: Arc<Policies>,
@@ -151,6 +156,12 @@ const MAX_APPLY_ERROR_BYTES: usize = 2048;
 impl Managed {
     /// Certificate admission never consults the key cache: every request gets one
     /// current management answer and its policy layers from the same snapshot.
+    ///
+    /// A policy publication (every sync apply is one) that lands mid-admission voids
+    /// the answer, so it is asked again against the new generation, at most three
+    /// times, rather than reported as busy. The check and the rate charge happen under
+    /// one read of the publication gate, so a voided answer spends no token and no
+    /// publication can slip between them. A failed management call is not retried.
     pub async fn admit_certificate(
         &self,
         peer: &VerifiedPeer,
@@ -160,6 +171,43 @@ impl Managed {
         headers: &HeaderMap,
         charge_rate: bool,
     ) -> Result<Principal, Refusal> {
+        for _ in 0..3 {
+            let (principal, generation, client) = self
+                .admit_certificate_at(peer, registry, ecosystem, socket, headers)
+                .await?;
+            let admitted = self
+                .publication_gate
+                .read(|now| {
+                    if now != generation {
+                        return None;
+                    }
+                    Some(if charge_rate {
+                        self.admit(&principal, client)
+                    } else {
+                        self.admit_network(&principal, client)
+                    })
+                })
+                .map_err(|_| Refusal::Busy)?;
+            match admitted {
+                Some(admission) => return admission.map(|()| principal),
+                None => continue,
+            }
+        }
+        Err(Refusal::Busy)
+    }
+
+    /// One management answer, built into a principal stamped with the generation read
+    /// before the call. Not yet charged to the account's rate or checked against the
+    /// network lock.
+    async fn admit_certificate_at(
+        &self,
+        peer: &VerifiedPeer,
+        registry: RegistryId,
+        ecosystem: Ecosystem,
+        socket: IpAddr,
+        headers: &HeaderMap,
+    ) -> Result<(Principal, u64, IpAddr), Refusal> {
+        let generation = self.publication_gate.generation();
         let client = self
             .proxies
             .client(socket, headers)
@@ -172,7 +220,11 @@ impl Managed {
                 chain: peer.chain.iter().cloned().collect(),
             })
             .await
-            .map_err(|_| Refusal::Busy)?;
+            .map_err(|error| {
+                // The kind only: never the chain or any key material.
+                tracing::warn!(?error, "the certificate admission call failed; answering busy");
+                Refusal::Busy
+            })?;
         let CertificateAdmission::Granted {
             registry: granted_registry,
             target_url,
@@ -245,6 +297,7 @@ impl Managed {
         // shortcut: certificate activity has no key row; add a separate certificate
         // activity identity when the activity schema supports it.
         let principal = Principal {
+            authority: Some(service_policy::AuthorityReceipt { gate: Arc::clone(&self.publication_gate), generation }),
             place,
             key_id: KeyId(0),
             policy: Arc::new(policy),
@@ -259,12 +312,7 @@ impl Managed {
             registry_private_cidrs,
             deletion_scopes,
         };
-        if charge_rate {
-            self.admit(&principal, client)?;
-        } else {
-            self.admit_network(&principal, client)?;
-        }
-        Ok(principal)
+        Ok((principal, generation, client))
     }
     /// Loads `<data_dir>/managed-cache.json` when there is one, so a restart while the
     /// server is down keeps serving (C19, C115).
@@ -283,6 +331,7 @@ impl Managed {
                 .keeping_records_for(request_timeout * ASK_CALLS),
         );
         let policies = Arc::new(Policies::default());
+        let publication_gate = Arc::new(service_policy::PolicyPublicationGate::default());
         let network_lock = Arc::new(NetworkLock::default());
         let retired = Arc::new(AtomicBool::new(false));
         let snapshot = cache::read_snapshot(data_dir);
@@ -299,6 +348,7 @@ impl Managed {
                 cache.restore(
                     key.hash,
                     Principal {
+                        authority: None,
                         place: key.place,
                         key_id: key.key_id,
                         policy,
@@ -321,6 +371,8 @@ impl Managed {
         let activity = ActivityQueue::new(clock.now_utc_micros());
         activity.restore(data_dir);
         Managed {
+            #[cfg(test)]
+            admission_checkpoint: Mutex::new(None),
             budget: Budget::new(
                 config.lookup_budget_per_second.get(),
                 config.client_lookup_allowance_per_second.get(),
@@ -339,7 +391,9 @@ impl Managed {
                 Arc::clone(&network_lock),
                 Arc::clone(&retired),
                 cursor,
+                Arc::clone(&publication_gate),
             ),
+            publication_gate,
             cache,
             policies,
             network_lock,
@@ -426,10 +480,27 @@ impl Managed {
             .proxies
             .client(peer, headers)
             .ok_or(Refusal::Network(peer.to_canonical()))?;
-        let principal = match self.cache.fresh(&hash) {
-            Some(principal) => principal,
-            None => self.look_up(&hash, client).await?,
+        // Freshness and its authority generation are one protected observation.
+        let (observed_generation, fresh) = self.publication_gate.read(|generation| {
+            (generation, self.cache.fresh(&hash))
+        }).map_err(|_| Refusal::Busy)?;
+        #[cfg(test)]
+        if let Some(checkpoint) = lock(&self.admission_checkpoint).take() { checkpoint(); }
+        let (generation, mut principal) = if let Some(principal) = fresh {
+            (observed_generation, principal)
+        } else {
+            self.look_up(&hash, client).await?;
+            self.publication_gate.read(|generation| {
+            if self.retired.load(Ordering::Acquire) { return Err(Refusal::Unauthenticated); }
+            // C19: an unreadable/unreachable layer refresh keeps its last known
+            // policy, but a publication during lookup must not bless an old entry.
+            let current = self.cache.fresh(&hash).or_else(|| {
+                (generation == observed_generation).then(|| self.cache.stale(&hash)).flatten()
+            }).ok_or(Refusal::Busy)?;
+            Ok((generation, current))
+            }).map_err(|_| Refusal::Busy)??
         };
+        principal.authority = Some(service_policy::AuthorityReceipt { gate: Arc::clone(&self.publication_gate), generation });
         self.admit(&principal, client)?;
         Ok(principal)
     }
@@ -580,8 +651,8 @@ impl Managed {
                 rate_limit_source,
             ),
             KeyLookup::Unknown { .. } => {
-                self.cache
-                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch);
+                let _ = self.publication_gate.publish(|| self.cache
+                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch));
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
             KeyLookup::Revoked {
@@ -605,9 +676,8 @@ impl Managed {
                     chain,
                     suspended,
                 };
-                if !self
-                    .cache
-                    .refuse_current(*hash, None, Some(known.clone()), &read, epoch)
+                if !self.publication_gate.publish(|| self.cache
+                    .refuse_current(*hash, None, Some(known.clone()), &read, epoch)).unwrap_or(false)
                 {
                     // A `key` or `place` row since may have restored it: asked again.
                     return Err(Failed::Busy);
@@ -618,6 +688,7 @@ impl Managed {
         };
         let policy = self.policy_of(&chain, client).await?;
         let found = Principal {
+            authority: None,
             place: chain
                 .last()
                 .map(|link| link.place)
@@ -635,9 +706,8 @@ impl Managed {
             registry_private_cidrs: Vec::new(),
             deletion_scopes: Vec::new(),
         };
-        match self
-            .cache
-            .insert_current(*hash, found.clone(), &read, epoch)
+        match self.publication_gate.publish(|| self.cache
+            .insert_current(*hash, found.clone(), &read, epoch)).map_err(|_| Failed::Busy)?
         {
             Insert::Done => {}
             // Invalidated while its layers were fetched (H6), or the cache is full while
@@ -776,6 +846,7 @@ impl Managed {
     /// shared layer's edit that arrives with another key's lookup reaches every key now,
     /// not at its cache TTL; the next sync's `layer` row finds it current (E2E-013).
     fn store_layers(&self, answer: LayersResponse, epoch: u64) -> bool {
+        self.publication_gate.publish(|| {
         let floor = self.cache.floor();
         let mut replaced = Vec::new();
         let current = self.cache.in_epoch(epoch, || {
@@ -789,6 +860,7 @@ impl Managed {
                 .rebuild(&replaced, |chain| policies.compile_places(chain));
         }
         current
+        }).unwrap_or(false)
     }
 
     /// What a failed call to the server means for this firewall.
@@ -809,8 +881,10 @@ impl Managed {
                 // As a retired answer to a sync does: every later request is refused,
                 // and this answer is never cached as a key's (C72).
                 tracing::error!("the management server refused this firewall's token");
-                self.retired.store(true, Ordering::Release);
-                self.cache.clear();
+                let _ = self.publication_gate.publish(|| {
+                    self.retired.store(true, Ordering::Release);
+                    self.cache.clear();
+                });
                 Failed::Refused(Refusal::Unauthenticated)
             }
         }
@@ -910,9 +984,11 @@ impl Managed {
         *lock(&self.version_skew) = None;
         let stale = self.policies.stale();
         if !stale.is_empty() && self.fetch_layers(stale.clone(), None).await.is_ok() {
-            let policies = &self.policies;
-            self.cache
-                .rebuild(&stale, |chain| policies.compile_places(chain));
+            let _ = self.publication_gate.publish(|| {
+                let policies = &self.policies;
+                self.cache
+                    .rebuild(&stale, |chain| policies.compile_places(chain));
+            });
         }
         let used = self.cache.prune_idle();
         self.policies.retain(&used, self.cache.records_for());
@@ -1186,6 +1262,172 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority() {
+        use probation_policy::{Layer, LayerKind};
+        let dir = tempfile::tempdir().unwrap();
+        let config = ManagementConfig {
+            url: "http://127.0.0.1:1".parse().unwrap(),
+            token: crate::config::FirewallToken::new("test".into()),
+            token_file: "/test/token".into(),
+            key_cache_ttl_seconds: 300.try_into().unwrap(),
+            key_cache_max_entries: 64.try_into().unwrap(),
+            lookup_budget_per_second: 100.try_into().unwrap(),
+            client_lookup_allowance_per_second: 100.try_into().unwrap(),
+            request_timeout_seconds: 1.try_into().unwrap(),
+            sync_margin_seconds: 1.try_into().unwrap(),
+            trusted_proxies: vec![],
+        };
+        let managed = Arc::new(Managed::new(&config, Duration::from_secs(60), Arc::new(crate::clock::SystemClock), dir.path()));
+        let platform = PlaceRef { kind: LayerKind::Platform, id: 1 };
+        let place = PlaceRef { kind: LayerKind::Org, id: 10 };
+        let principal = Principal {
+            authority: None, place, key_id: KeyId(1),
+            policy: Arc::new(CompiledPolicy::managed(probation_policy::resolve(&[Layer::empty(LayerKind::Platform), Layer::empty(LayerKind::Org)]))),
+            account: place, rate_limit: None, rate_limit_source: LimitSource::Default,
+            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None,
+            registry_read_authorization: None, registry_trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![],
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer prb_01234567890123456789012345678901"));
+        let hash = key_hash(headers.get(AUTHORIZATION).unwrap()).unwrap();
+        assert!(managed.cache.insert(hash, principal));
+        let (reached, wait) = tokio::sync::oneshot::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        *lock(&managed.admission_checkpoint) = Some(Box::new(move || {
+            reached.send(()).unwrap();
+            paused.recv().unwrap();
+        }));
+        let request_managed = Arc::clone(&managed);
+        let request = tokio::spawn(async move { request_managed.authenticate(&headers, "127.0.0.1".parse().unwrap()).await });
+        wait.await.unwrap();
+        managed.publication_gate.publish(|| managed.cache.expire_places(&[place], 2)).unwrap();
+        resume.send(()).unwrap();
+        if let Ok(principal) = request.await.unwrap() {
+            assert_ne!(principal.authority.unwrap().generation, managed.publication_gate.generation(),
+                "a place-invalidated old principal must not acquire the new publication generation");
+        }
+    }
+
+    /// A fake management server for certificate admission: `publish_on` lists the
+    /// 1-based hits that publish a policy generation before answering, `grant`
+    /// chooses a Granted answer over `429`.
+    async fn certificate_fixture(
+        publish_on: &'static [usize],
+        grant: bool,
+        rate_limit: Option<u32>,
+    ) -> (Arc<Managed>, Arc<std::sync::atomic::AtomicUsize>, wiremock::MockServer, tempfile::TempDir) {
+        use probation_policy::api::{MemberCertificateId, PlaceLayer};
+        use probation_policy::{Layer, LayerKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let config = ManagementConfig {
+            url: server.uri().parse().unwrap(),
+            token: crate::config::FirewallToken::new("test".into()),
+            token_file: "/test/token".into(),
+            key_cache_ttl_seconds: 300.try_into().unwrap(),
+            key_cache_max_entries: 64.try_into().unwrap(),
+            lookup_budget_per_second: 100.try_into().unwrap(),
+            client_lookup_allowance_per_second: 100.try_into().unwrap(),
+            request_timeout_seconds: 5.try_into().unwrap(),
+            sync_margin_seconds: 1.try_into().unwrap(),
+            trusted_proxies: vec![],
+        };
+        let managed = Arc::new(Managed::new(&config, Duration::from_secs(60), Arc::new(crate::clock::SystemClock), dir.path()));
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let platform = PlaceRef { kind: LayerKind::Platform, id: 1 };
+        let place = PlaceRef { kind: LayerKind::Org, id: 10 };
+        let granted = serde_json::to_value(CertificateAdmission::Granted {
+            registry: RegistryId(4),
+            target_url: None,
+            read_authorization: None,
+            trusted: false,
+            registry_private_cidrs: vec![],
+            deletion_scopes: vec![],
+            enterprise_status: None,
+            org: OrgId(10),
+            member: MemberCertificateId("member".into()),
+            place,
+            layers: vec![
+                PlaceLayer { place: platform, layer: Layer::empty(LayerKind::Platform), revision: 1 },
+                PlaceLayer { place, layer: Layer::empty(LayerKind::Org), revision: 1 },
+            ],
+            rate_limit: rate_limit.map(|limit| limit.try_into().unwrap()),
+            rate_limit_source: LimitSource::Default,
+        })
+        .unwrap();
+        let gate = Arc::clone(&managed.publication_gate);
+        let seen = Arc::clone(&hits);
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sync/certificate"))
+            .respond_with(move |_: &wiremock::Request| {
+                let hit = seen.fetch_add(1, Ordering::SeqCst) + 1;
+                if publish_on.contains(&hit) {
+                    gate.publish(|| ()).unwrap();
+                }
+                if grant {
+                    ResponseTemplate::new(200).set_body_json(granted.clone())
+                } else {
+                    ResponseTemplate::new(429)
+                }
+            })
+            .mount(&server)
+            .await;
+        (managed, hits, server, dir)
+    }
+
+    async fn admit_one(managed: &Managed) -> Result<Principal, Refusal> {
+        let peer = VerifiedPeer { chain: Arc::from(vec![vec![1u8]]) };
+        managed
+            .admit_certificate(&peer, RegistryId(4), Ecosystem::Npm, "127.0.0.1".parse().unwrap(), &HeaderMap::new(), true)
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_publication_during_admission_is_asked_again_and_charged_once() {
+        let (managed, hits, _server, _dir) = certificate_fixture(&[1], true, Some(1)).await;
+        let principal = admit_one(&managed).await.expect("the second answer is current");
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "one voided answer, one current answer");
+        assert_eq!(
+            principal.authority.unwrap().generation,
+            managed.publication_gate.generation(),
+            "the admitted principal carries the generation it was checked against"
+        );
+        // One request consumed the account's single token exactly once.
+        assert!(matches!(admit_one(&managed).await, Err(Refusal::RateLimited)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_busy_management_server_is_not_asked_again_without_a_publication() {
+        let (managed, hits, _server, _dir) = certificate_fixture(&[], false, None).await;
+        assert!(matches!(admit_one(&managed).await, Err(Refusal::Busy)));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_busy_management_server_is_not_asked_again_even_when_a_publication_lands() {
+        let (managed, hits, _server, _dir) = certificate_fixture(&[1, 2, 3, 4], false, None).await;
+        assert!(matches!(admit_one(&managed).await, Err(Refusal::Busy)));
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "a failed call is not a superseded answer");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_publications_stop_the_retry_at_three_asks() {
+        let (managed, hits, _server, _dir) = certificate_fixture(&[1, 2, 3, 4], true, None).await;
+        assert!(matches!(admit_one(&managed).await, Err(Refusal::Busy)));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_third_ask_may_succeed() {
+        let (managed, hits, _server, _dir) = certificate_fixture(&[1, 2], true, None).await;
+        assert!(admit_one(&managed).await.is_ok());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn base64_decodes_what_rfc_4648_encodes() {

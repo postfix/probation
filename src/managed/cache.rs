@@ -1041,6 +1041,7 @@ mod tests {
             0,
         );
         Principal {
+            authority: None,
             place: PLATFORM,
             key_id: KeyId(1),
             policy: policies.compile(&[link(PLATFORM)]).expect("a policy"),

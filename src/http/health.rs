@@ -43,6 +43,9 @@ pub async fn ready(State(app): State<Arc<App>>) -> StatusCode {
             StatusCode::SERVICE_UNAVAILABLE
         };
     }
+    if let Some(policy) = app.service_policy() {
+        return if policy.snapshot().is_some() { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    }
     let now = app.clock.now_utc_micros();
     match app.blocklist() {
         Some(snapshot) if snapshot.is_valid_at(now) => StatusCode::OK,

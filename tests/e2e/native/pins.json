@@ -1,0 +1,13 @@
+{
+  "node": "24.22.1",
+  "npm": "11.21.1",
+  "python": "3.15.1",
+  "pip": "26.2.2",
+  "twine": "7.0.0",
+  "uv": "0.13.5",
+  "runners": [
+    { "runner": "ubuntu-24.04", "platform": "linux-x64" },
+    { "runner": "macos-26", "platform": "darwin-arm64" },
+    { "runner": "windows-2025", "platform": "win32-x64" }
+  ]
+}

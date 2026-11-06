@@ -1,0 +1,10 @@
+# Future source scope: src/http/service_registry.rs::respond.
+# Checks classifier-before-dispatch order only; exact route semantics and zero-I/O refusal require Slice 3 witnesses.
+name: npm-delete-routes-classify-before-dispatch
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [classify_direct_or_whole_package_delete]}}
+operation: {calls: {name: [dispatch_npm_delete_route]}}
+relation: {must_dominate: true}
+where: "caller_function == 'respond'"

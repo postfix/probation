@@ -107,7 +107,10 @@ function hang(req) {
 
 async function serve(req, res) {
   const host = (req.headers.host ?? "").replace(/:\d+$/, "");
-  const signedDelete = host === "registry-b.e2e.test" && req.url.startsWith("/extra/case/");
+  // Only the two signed-delete destinations the scenarios approve are redacted (host and path
+  // prefix each; the second only when it really carries the signed query), so the redaction cannot hide an unrelated request in the egress inventory.
+  const signedDelete = (host === "registry-b.e2e.test" && req.url.startsWith("/extra/case/"))
+    || (host === "registry.npmjs.org" && req.url.startsWith("/custom/case/") && req.url.includes("?sig="));
   const entry = { at: new Date().toISOString(), host, method: req.method,
     peer: req.socket.remoteAddress,
     path: signedDelete ? `${req.url.split("?")[0]}?<redacted>` : req.url,
@@ -116,9 +119,12 @@ async function serve(req, res) {
     contentEncoding: req.headers["content-encoding"] ?? "none",
     credential: req.headers.authorization === "Bearer e2e-owner" ? "developer-owner"
       : req.headers.authorization === "Bearer e2e-denied" ? "developer-denied"
+      : req.headers.authorization === "Basic ZTJlLW93bmVyOmUyZS1wYXNzd29yZA==" ? "developer-basic"
+      : req.headers.authorization?.startsWith("Bearer prb_") ? "policy-key"
       : req.headers.authorization ? "other" : "none" };
   log.push(entry);
   const body = await readBody(req);
+  entry.bodyBytes = body.length;
   const f = fault(host, req);
   entry.fault = f?.mode;
   if (f?.mode === "hang") return hang(req);
@@ -143,6 +149,11 @@ async function serve(req, res) {
   } else {
     const fake = hosts[host];
     answer = fake ? fake.handle(req, req.url, host, body) : { status: 404, body: `no fake for ${host}\n` };
+  }
+  if (f?.mode === "omit-revision" && answer.status >= 200 && answer.status < 300) {
+    const value = JSON.parse(answer.body);
+    delete value.rev;
+    answer.body = JSON.stringify(value);
   }
   let bytes = Buffer.from(answer.body ?? "");
   const headers = { ...answer.headers };

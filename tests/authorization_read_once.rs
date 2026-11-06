@@ -3,6 +3,8 @@
 //! certificate-protected registry reads use it for canonical token packuments,
 //! named whoami, authenticated actions and selected PyPI uploads. A saved read
 //! credential is sent to the selected upstream only for ordinary reads.
+//! Shared-service ordinary reads copy bounded package-manager credentials into
+//! the request-local selected-registry principal, never into policy identity.
 //!
 //! This SMTC build cannot select a Rust call by its argument, so no analyzer spec can
 //! hold the rule (C123). This is a token scan instead. Comments are stripped first;
@@ -37,7 +39,10 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
         "get(AUTHORIZATION)",
         1,
     ),
+    ("src/managed/mod.rs", "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority", "insert(AUTHORIZATION,HeaderValue::from_static(\"Bearerprb_01234567890123456789012345678901\"))", 1),
+    ("src/managed/mod.rs", "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority", "get(AUTHORIZATION)", 1),
     ("src/http/registry_routes.rs", "fn package", "contains_key(header::AUTHORIZATION)", 1),
+    ("src/http/registry_read.rs", "fn service_principal", "get(axum::http::header::AUTHORIZATION)", 1),
     ("src/http/registry_routes.rs", "fn named_read", "get(header::AUTHORIZATION)", 1),
     ("src/http/registry_routes.rs", "fn unsupported_artifact_delete", "get(header::AUTHORIZATION)", 1),
     ("src/http/token_packument.rs", "fn check_canonical_token_packument", "get(header::AUTHORIZATION)", 1),

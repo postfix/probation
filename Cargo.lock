@@ -3065,6 +3065,7 @@ dependencies = [
  "lru 0.18.4",
  "nodejs-semver",
  "pep440_rs",
+ "percent-encoding",
  "probation",
  "probation-policy",
  "proptest",

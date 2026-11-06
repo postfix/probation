@@ -1,0 +1,206 @@
+name: Native package clients
+
+# Release acceptance for npm/Python publishing (publishing-proxy Slice 5). The pinned real
+# clients run as ordinary processes on Linux, macOS and Windows runners, each with the natively
+# built `probation`, loopback Node fake registries and a runner-generated test CA, against the REAL
+# Linux policy server: the real-server job runs the real stack (policy server, portal, catalog with
+# both registries and their private-egress approvals) and exposes only the policy snapshot, with the
+# run's throwaway service key, through a cloudflared quick tunnel (a pinned, checksum-verified
+# release; no account, no named tunnel, no repository secret). The jobs meet through run artifacts
+# (tests/e2e/native/rendezvous.mjs), every wait bounded: `native-handshake` from the server job,
+# `native-done-<platform>` from each native job. The server job then checks that every native job
+# really reached it, and tears the tunnel down (always). The handshake artifact holds the tunnel URL
+# and the throwaway key; both are masked in logs and are useless once the job ends.
+# A missing or wrong client, a failed build or a failed assertion fails the job.
+# The linux-managed job runs the Docker harness (pinned client images, managed policy
+# server) for the Slice 1-4 scenarios.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-clients:
+    name: native ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: macos-26
+            platform: darwin-arm64
+          - runner: windows-2025
+            platform: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    env:
+      PIN_NODE: "24.22.1"
+      PIN_NPM: "11.21.1"
+      PIN_PYTHON: "3.15.1"
+      PIN_PIP: "26.2.2"
+      PIN_TWINE: "7.0.0"
+      PIN_UV: "0.13.5"
+      NATIVE_PLATFORM: ${{ matrix.platform }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PIN_PYTHON }}
+      # PyYAML ships no wheel for Python 3.15, so the workflow checker runs on a 3.13 that has one.
+      - name: Python for the workflow checker
+        id: checker_python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          update-environment: false
+      - name: Install the workflow checker's parser
+        shell: bash
+        env:
+          CHECK_PYTHON: ${{ steps.checker_python.outputs.python-path }}
+        run: '"$CHECK_PYTHON" -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/checker-requirements.txt'
+      - name: Install pinned clients
+        shell: bash
+        run: |
+          npm install --global "npm@$PIN_NPM"
+          python -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/ci-requirements.txt
+      - name: Verify this workflow's structure
+        shell: bash
+        env:
+          CHECK_PYTHON: ${{ steps.checker_python.outputs.python-path }}
+        run: '"$CHECK_PYTHON" tests/e2e/native/check_workflow.py'
+      - name: Install the harness dependencies
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - name: Run the native harness unit tests
+        shell: bash
+        env:
+          CHECK_PYTHON: ${{ steps.checker_python.outputs.python-path }}
+        run: |
+          export NATIVE_TEST_SCRATCH="$RUNNER_TEMP/native-tests"
+          mkdir -p "$NATIVE_TEST_SCRATCH"
+          "$CHECK_PYTHON" tests/e2e/native/run_tests.py
+      - name: Verify exact client versions
+        run: node tests/e2e/native/clients.mjs
+      - name: Build the native service
+        run: cargo build --locked --bin probation
+      # The fake PyPI answers as pypi.org:443 on loopback (the service admits no other PyPI
+      # file host); a Linux runner needs the low port opened to unprivileged processes.
+      - name: Allow the low loopback port
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0; fi
+      - name: Wait for the real server's handshake
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --out "$RUNNER_TEMP/handshake" --timeout-min 50
+      - name: Probe the tunnel as this job
+        shell: bash
+        run: node tests/e2e/native/rendezvous.mjs client-probe --label "$NATIVE_PLATFORM"
+      - name: Native npm and Python publishing
+        run: node tests/e2e/native/publishing.mjs
+      - name: Record this job's completion
+        if: always()
+        shell: bash
+        run: node tests/e2e/native/rendezvous.mjs done --label "$NATIVE_PLATFORM" --status "${{ job.status }}" --out "$RUNNER_TEMP/done"
+      - name: Upload the completion record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-done-${{ matrix.platform }}
+          path: ${{ runner.temp }}/done/done.json
+          retention-days: 1
+
+  # Managed policy-server integration on Linux: the pinned client images and the Probation
+  # server run under the Docker harness. Any Docker engine limitation of the runner shows
+  # here as a failure and is recorded separately from the native client results.
+  linux-managed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: node tests/e2e/native/run-ids.test.mjs
+      - run: >
+          node tests/e2e/harness/run.mjs
+          --only E2E-service-policy
+          --only E2E-publishing-npm-read
+          --only E2E-publishing-npm-actions
+          --only E2E-publishing-python-service
+          --only E2E-publishing-full-matrix
+          --only E2E-publishing-native-linux
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-linux-managed
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  # The real Linux policy server for the native jobs above. It starts the real stack, opens a quick
+  # tunnel to a filtering proxy that forwards ONLY the throwaway key's snapshot request, publishes
+  # the handshake, stays up until every native job has reported (or a deadline), checks that each
+  # of them reached it, and always tears the tunnel down. Hard job timeout; every wait bounded.
+  real-server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - name: Fetch cloudflared (pinned, checksum-verified)
+        run: node tests/e2e/native/cloudflared.mjs fetch "$RUNNER_TEMP/cloudflared"
+      - name: Start the real stack and its tunnel
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/remote"
+          export E2E_REMOTE_DIR="$RUNNER_TEMP/remote"
+          nohup node tests/e2e/harness/run.mjs --only E2E-publishing-native-remote > "$E2E_REMOTE_DIR/harness.log" 2>&1 &
+          echo $! > "$E2E_REMOTE_DIR/harness.pid"
+      - name: Wait for the tunnel and mask it
+        run: node tests/e2e/native/rendezvous.mjs server-wait-ready --dir "$RUNNER_TEMP/remote" --timeout-min 35
+      - name: Make sure a handshake exists
+        if: always()
+        run: node tests/e2e/native/rendezvous.mjs server-ensure-handshake --dir "$RUNNER_TEMP/remote"
+      - name: Publish the handshake
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-handshake
+          path: ${{ runner.temp }}/remote/handshake.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Wait for the native jobs
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tests/e2e/native/rendezvous.mjs server-wait-done --dir "$RUNNER_TEMP/remote" --expect linux-x64,darwin-arm64,win32-x64 --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --timeout-min 55
+      - name: Release the scenario and check what the native jobs did
+        if: always()
+        run: node tests/e2e/native/rendezvous.mjs server-release --dir "$RUNNER_TEMP/remote" --timeout-min 10
+      - name: Tear down the tunnel and the stack
+        if: always()
+        run: node tests/e2e/native/rendezvous.mjs server-teardown --dir "$RUNNER_TEMP/remote"
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-real-server-logs
+          path: ${{ runner.temp }}/remote/harness.log
+          retention-days: 3
+          if-no-files-found: ignore

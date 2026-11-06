@@ -1,50 +1,60 @@
 ## Delivered
 
-Slice 3 completes guarded npm reads on the selected `/registry/npm/<id>/` URL. A certificate-bearing client can install, view, search, fetch artifacts, use whoami/ping, and request Bulk or Quick audit through the selected registry. The legacy `/npm/123/1.0.0` and numeric tarball routes keep their earlier meaning; unknown selected routes refuse before upstream access.
+**Slice 3 is complete.** Yes—the remaining blockers were SF defects: Factory receiver/lexical checks and SMTC call-order checks. Repairs are installed; product code stayed frozen and approved guarantees unchanged.
+
+A developer can publish, deprecate, and remove npm content through the selected registry URL. Package-manager credentials go only to that selected registry. The scoped package request `@scope%2fexample`, which had returned 404, now resolves and returns 200 in the native npm check.
+
+The DELETE target determines the outcome. Removing a whole package leaves the authorization decision to the selected upstream. A direct canonical tarball removal is refused locally. Removing a version reference requires a valid lease for this service and an exact accepted-removal marker; the marker is consumed once before the request is sent. Invalid or already spent authority does not reach the upstream.
+
+The product's scoped-name correction was complete before final verification. The remaining failed checks came from SF's receiver attribution and SMTC's call-order analysis. Those tooling repairs passed their scoped safe and unsafe controls; the approved product guarantees did not change.
+
+The request path is:
 
 ```mermaid
-flowchart LR
-  A[Selected npm request] --> B[Current certificate, member, registry and group admission]
-  B -->|refused| X[No selected upstream call]
-  B --> C{Named read}
-  C -->|canonical packument GET with developer token| D[Selected upstream token check; request-local result]
-  D -->|accepted| E[Upstream metadata, even when group-hidden]
-  D -->|denied or redirect| F[Refusal]
-  C -->|ordinary metadata, search or artifact| G[Current group filtering]
-  C -->|Bulk or Quick audit| H[Visible versions and vetted advisory fields]
-  H -->|valid| I[Reduced safe advisories]
-  H -->|malformed, incomplete, oversized or timeout| F
-  C -->|unsupported upstream Bulk| J[Upstream error]
+flowchart TD
+  classify_direct_or_whole_package_delete[DELETE] -->|Whole package| forward_registry_action[Selected upstream authorizes or denies]
+  classify_direct_or_whole_package_delete -->|Canonical tarball| refusal[Refuse locally]
+  classify_direct_or_whole_package_delete -->|Version reference| consume_service_marker_then_send[Validate service lease and exact-removal marker]
+  consume_service_marker_then_send -->|Invalid| refusal
+  consume_service_marker_then_send -->|Consume atomically once| send_action[Send only to selected registry]
 ```
 
-| Changed route/operation | Delivered contract |
-|---|---|
-| `classify_registry_request`, `serve_package_read` | Named selected npm reads use the distinct URL. A canonical packument GET with a developer token can return upstream-authorized hidden metadata, including `npm view` without a write. Its result bypasses shared cache, persistence and in-flight reuse. Tokenless metadata and artifact GET/HEAD stay group-filtered. Credential-bearing redirects refuse. |
-| `src/http/audit_filter.rs::filter_audit_response` | Bulk and Quick results are rebuilt from canonical names, currently visible exact versions, validated severity, generic title and generated ID. Upstream title, URL and metadata are omitted. Invalid, incomplete and over-limit data fail rather than reporting clean. Work shares a 30-second deadline, at most 1,024 distinct visibility lookups and 16 concurrent lookups. Unsupported Bulk remains the selected upstream's error; direct Quick remains available. |
+Scoped-name fix; unchanged signature in `src/http/service_registry.rs`:
+
+```rust
+// Decode once; invalid names: NotFound.
+fn parse_uri_package(
+    raw: &str, // URI name.
+) -> Result<crate::npm::PackageName, ApiError> // Valid name/error.
+```
 
 ## Proof
 
-| Promise | Executed witness and result | Scope/limit |
+| Promise | Executed result | Limit |
 |---|---|---|
-| Token-private metadata cannot cross clients; ordinary reads remain filtered | Focused npm 11.21.1 E2E passed sequential, concurrent and restart token A/none/denied cases, hidden artifact refusal, two certificate providers, search, and no direct client upstream egress. A pre-fix same-origin redirect sent the token twice; the final route sent it once and returned 502. | Fake selected registries and isolated E2E networks. |
-| Audit reports visible facts without false clean | Pre-fix Bulk/Quick returned hidden names and title/URL/metadata; pre-fix mixed Quick returned 200 for a nonempty vulnerability. Both behavioral reds became green. The final focused E2E passed **1/1**, 0 failed, 0 skipped, including real npm 11 visible advisory detection, Bulk 404 transparency, direct Quick, malformed and 1,025-name refusal, M+1 input/output and 30-second timeout with permit release. | Added bound and admission controls had no separate pre-fix red. |
-| Read admission and structural order | Both audit POST routes returned 401 with no certificate, foreign organization certificate and revoked enterprise certificate, without selected upstream calls. `cargo check --workspace` and `router molecule-check` passed. All ten due source obligations and unsafe mutation controls passed; `audit-filter-before-render` was kept unchanged. | Source checks establish call order, while E2E and review establish selected values and bytes. Overall source verification is PENDING only for two absent Slice 4 action sources. |
-| Independent review | Code **SHIP**, security **CLEAR**, adversarial **PASS**, implementation verification **VERIFIED**. | SMTC Rust diagnostics and generic guard graph were incomplete; `cargo check` and route-level controls supplied the relevant checks. |
+| Scoped npm actions | Native npm PASS; prior `@scope%2fexample` 404 becomes 200 | Linux lane |
+| Runtime safety | Workspace 786 passed/0 failed/22 ignored; actual quotas separately PASS; fresh compiler + 8 HTTP tests PASS | Finite cases |
+| Guard ordering | Installed 9 source checks + 9 detecting controls PASS | Structural |
+| Tool repair | Factory full suite PASS; drift 299/0; four installed SMTC pairs PASS | Scoped |
+
+The native npm check exercises the corrected scoped request; the workspace and quota checks exercise runtime behavior. The nine installed source obligations and nine detecting controls check guard placement and their unsafe counterparts. These are scoped structural results, so the independent code, security, adversarial, and QA reviews still carry the broader acceptance decision: code **SHIP**, security **CLEAR**, adversarial **PASS**, QA **VERIFIED**.
 
 ## Limits
 
-This is the approved proxy-only audit behavior: npm 11 receives an error if its selected registry does not support Bulk; Probation does not fabricate a Quick fallback. A real organization issuer must still prove its committed-revocation freshness before activation. npm actions remain Slice 4 work.
+Partial writes can remain uncertain; failed sends spend markers. Assumptions: trusted storage/upstream responses.
 
 ## Next
 
-Slice 4 adds npm login, publishing and package/account administration on the same selected URL. Each write needs the selected upstream's own authorization.
+Slice 4: PyPI publishing and uv workflows; unstarted.
 
 ## Recommendation
 
-Continue to Slice 4: the focused read witness, due source checks and independent reviews passed, with the listed operational and analyzer limits visible.
+Continue: required guarantees verified.
 
-Status: Slice 3 complete; Slice 4 is the current delivery boundary.
+Status: Slices 1–3 complete; awaiting continuation.
 
-Sources: [Slice plan](04-slices.md#slice-3-interfaces), [Slice 3 evidence](evidence/slice-3.md), [red/green record](evidence/tdd-slice-3.md).
+Sources: [Current evidence](/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-3.md), [Final verification](/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-3-verification.md).
 
-Continue to slice 4, or re-steer?
+Provider evaluation matrix unrun; broader SMTC failures and missing historical RED remain. No whole-tool green claim.
+
+Type "next" to continue to slice 4, or re-steer?

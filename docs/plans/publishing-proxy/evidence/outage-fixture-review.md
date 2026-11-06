@@ -1,0 +1,9 @@
+# Independent outage-fixture recheck — 2026-11-03
+
+Verdict: **PASS**, bounded Manual test-design review; no findings. All30 round5 hashes matched before/after. Manifest SHA-256 `d2e8313f9c0e50283ce86820a895407208912a3dd9de518c29d100b6fe993a80`; scenario SHA-256 `d3b3c9662b2eec1c7d85ea41ec582d87985012951fef53b37252d6dd43d9e9f5`.
+
+Only `tests/e2e/scenarios/service-policy.mjs` differs from round4;29other files match. The old scenario snapshot matches round4 exactly, mode100644 preserved. Current scenario captures the server container, pauses it and positively requires successful inspection with State.Status=paused. It recreates the firewall while authority remains paused; finally attempts unpause even if an assertion fails. Remembered200 and central-deny403 assertions, earlier conflicting local/central rules, recovery, revocation and refusal-after-restart assertions and60s/30s timeouts remain unchanged. Harness compose throws on failure; firewall restart still force-recreates without dependencies. No weakening or product change was found.
+
+The reviewer inspected the old probe's address-collision evidence and current scenario/harness helpers via bounded successful SMTC reads/grep, session `sf-outage-fixture-review-2026-11-03`. An initial incorrect evidence path was corrected before use. No tests/builds were run by the reviewer; its PASS establishes test effectiveness, not runtime acceptance. Product re-audit and unchanged earlier adversarial gaps were outside this narrow scope.
+
+Separate coordinator runtime receipt arrived as the review finished: corrected E2E PASS1/0/0, exact current image IDs unchanged, server running→paused→running retained11.223.20.12 and10.77.0.5, and final30hashes matched. The independent implementation verifier checks those logs separately. Logs: `.scratch/prerequisite-checks/e2e-service-policy-round5.log`, `round-5-server-states.log`; JUnit `.scratch/service-policy-e2e-round5/out/junit.xml`.

@@ -81,6 +81,31 @@ pub struct RegistryDeletionScope {
     pub forward_bearer: bool,
 }
 
+/// Complete shared-service policy; descriptors deliberately contain no credentials.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ServicePolicySnapshot {
+    pub version: u32,
+    pub key_id: KeyId,
+    pub org: OrgId,
+    pub place_chain: Vec<ChainLink>,
+    pub layers: Vec<PlaceLayer>,
+    pub revision: u64,
+    pub account: PlaceRef,
+    pub rate_limit: Option<NonZeroU32>,
+    pub rate_limit_source: LimitSource,
+    pub registries: Vec<RegistryDescriptor>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RegistryDescriptor {
+    pub registry: RegistryId,
+    pub ecosystem: Ecosystem,
+    pub target_url: Option<String>,
+    pub trusted: bool,
+    pub registry_private_cidrs: Vec<String>,
+    pub deletion_scopes: Vec<RegistryDeletionScope>,
+}
+
 /// One package request's transport-owned TLS chain and selected URL registry.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CertificateAdmissionRequest {

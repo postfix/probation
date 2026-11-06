@@ -100,6 +100,8 @@ pub struct Config {
     /// Present only in managed mode: every key's policy comes from the management
     /// server. A broken section refuses to start rather than run standalone (T20).
     pub management: Option<ManagementConfig>,
+    pub service_policy: Option<ServicePolicyConfig>,
+    pub allowed_peer_cidrs: Vec<ipnet::IpNet>,
     /// The three upstream origins, each replacing SPEC §11's fixed one when set (C35):
     /// `https`, no credentials, query, fragment or path, and never a private address.
     pub npm_upstream_url: Option<Url>,
@@ -141,6 +143,15 @@ pub struct ManagementConfig {
     pub sync_margin_seconds: NonZeroU64,
     /// Peers whose `X-Forwarded-For` is believed (C113).
     pub trusted_proxies: Vec<Cidr>,
+}
+
+/// Shared-service authority. The secret has the same redacted representation as a sync token.
+#[derive(Clone, Debug)]
+pub struct ServicePolicyConfig {
+    pub server_url: Url,
+    pub service_key_file: PathBuf,
+    pub service_key: FirewallToken,
+    pub sync_interval_seconds: NonZeroU64,
 }
 
 /// The firewall's credential for the sync API. Its `Debug` prints nothing, because
@@ -296,6 +307,9 @@ struct RawConfig {
     tls_key_path: Option<PathBuf>,
     sync_interval_seconds: Option<u64>,
     management: Option<RawManagement>,
+    service_policy: Option<RawServicePolicy>,
+    #[serde(default)]
+    allowed_peer_cidrs: Vec<String>,
     npm_upstream_url: Option<String>,
     pypi_upstream_url: Option<String>,
     pypi_artifacts_url: Option<String>,
@@ -316,6 +330,14 @@ struct RawManagement {
     sync_margin_seconds: Option<u64>,
     #[serde(default)]
     trusted_proxies: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServicePolicy {
+    server_url: String,
+    service_key_file: PathBuf,
+    sync_interval_seconds: Option<u64>,
 }
 
 fn default_download_wait_seconds() -> u64 {
@@ -378,6 +400,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "tls_key_path",
     "sync_interval_seconds",
     "management",
+    "service_policy",
+    "allowed_peer_cidrs",
     "npm_upstream_url",
     "pypi_upstream_url",
     "pypi_artifacts_url",
@@ -453,7 +477,7 @@ impl RawConfig {
         }
         // `check_keys` let these two be absent only in managed mode.
         let blocklist_file = self.blocklist_file.unwrap_or_default();
-        if self.management.is_none() && !blocklist_file.is_absolute() {
+        if self.management.is_none() && self.service_policy.is_none() && !blocklist_file.is_absolute() {
             return Err(invalid(
                 "blocklist_file",
                 "must be an absolute path".to_owned(),
@@ -605,6 +629,21 @@ impl RawConfig {
             Some(value) => bounded_seconds("sync_interval_seconds", value)?,
             None => DEFAULT_SYNC_INTERVAL_SECONDS,
         };
+        if self.management.is_some() && self.service_policy.is_some() {
+            return Err(invalid("service_policy", "cannot be combined with management".to_owned()));
+        }
+        let service_policy = self.service_policy.map(RawServicePolicy::validate).transpose()?;
+        let allowed_peer_cidrs = self.allowed_peer_cidrs.iter().map(|text| {
+            let cidr = text.parse::<ipnet::IpNet>().map_err(|_| invalid("allowed_peer_cidrs", "must contain valid CIDRs".to_owned()))?;
+            if cidr.prefix_len() == 0 {
+                return Err(invalid("allowed_peer_cidrs", "must not allow the entire network".to_owned()));
+            }
+            Ok(cidr)
+        }).collect::<Result<Vec<_>, ConfigError>>()?;
+        if service_policy.is_some() && !listen.ip().to_canonical().is_loopback()
+            && (self.tls_cert_path.is_none() || self.tls_key_path.is_none() || allowed_peer_cidrs.is_empty()) {
+            return Err(invalid("service_policy", "a non-loopback listener requires TLS and allowed_peer_cidrs".to_owned()));
+        }
         let management = self
             .management
             .map(|raw| raw.validate(sync_interval_seconds))
@@ -685,6 +724,8 @@ impl RawConfig {
             tls_key_path: self.tls_key_path,
             sync_interval_seconds,
             management,
+            service_policy,
+            allowed_peer_cidrs,
             npm_upstream_url,
             pypi_upstream_url,
             pypi_artifacts_url,
@@ -726,6 +767,47 @@ fn upstream_origin(key: &'static str, text: Option<String>) -> Result<Option<Url
         ));
     }
     Ok(Some(url))
+}
+
+impl RawServicePolicy {
+    fn validate(self) -> Result<ServicePolicyConfig, ConfigError> {
+        use std::io::Read;
+        let server_url = Url::parse(&self.server_url)
+            .map_err(|_| invalid("service_policy.server_url", "must be a valid URL".to_owned()))?;
+        if server_url.scheme() != "https" || server_url.host().is_none() || has_userinfo(&server_url)
+            || server_url.query().is_some() || server_url.fragment().is_some() {
+            return Err(invalid("service_policy.server_url", "requires HTTPS without credentials, query or fragment".to_owned()));
+        }
+        if !self.service_key_file.is_absolute() {
+            return Err(invalid("service_policy.service_key_file", "must be an absolute path".to_owned()));
+        }
+        let file = std::fs::File::open(&self.service_key_file)
+            .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
+        let metadata = file.metadata().map_err(|_| invalid("service_policy.service_key_file", "cannot read permissions".to_owned()))?;
+        // Windows has no mode bits; the operator must restrict the key file's ACL to the
+        // service account. Only the regular-file check can be made there.
+        #[cfg(unix)]
+        let shared = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o077 != 0
+        };
+        #[cfg(not(unix))]
+        let shared = false;
+        if !metadata.is_file() || shared {
+            return Err(invalid("service_policy.service_key_file", "requires a private regular file".to_owned()));
+        }
+        let mut key = String::new();
+        file.take(1025).read_to_string(&mut key)
+            .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
+        let key = key.trim();
+        if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            return Err(invalid("service_policy.service_key_file", "requires a service API key".to_owned()));
+        }
+        Ok(ServicePolicyConfig {
+            server_url, service_key_file: self.service_key_file, service_key: FirewallToken::new(key.to_owned()),
+            sync_interval_seconds: bounded_seconds("service_policy.sync_interval_seconds", self.sync_interval_seconds.unwrap_or(60))?,
+        })
+    }
 }
 
 impl RawManagement {
@@ -872,7 +954,7 @@ fn check_keys(table: &toml::Table) -> Result<(), ConfigError> {
             return Err(ConfigError::UnknownKey(key.clone()));
         }
     }
-    let managed = table.contains_key("management");
+    let managed = table.contains_key("management") || table.contains_key("service_policy");
     for key in REQUIRED_KEYS {
         let optional = managed && STANDALONE_ONLY_KEYS.contains(key);
         if !optional && !table.contains_key(*key) {

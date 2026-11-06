@@ -1,0 +1,2690 @@
+{
+  "verdict": "PASS",
+  "evidence_tier": "Structural",
+  "synthesis": "All 60 applicable source/control pairs pass; eight unique current-source specs are independently resolved and rerun with their exact unsafe controls.",
+  "base": "8d9f5e35b6d92898f6c9c33b852df5a9b04e8d59",
+  "models": {
+    "publishing-proxy": "PASS",
+    "package-firewall-mvp": "PASS"
+  },
+  "publishing": {
+    "applicable_pass": 6,
+    "future_pending": 3,
+    "router_verdict": "PENDING",
+    "exit_code": 1
+  },
+  "prerequisite": {
+    "pass": 54,
+    "router_verdict": "PASS",
+    "exit_code": 0
+  },
+  "archives": [
+    "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp",
+    "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc"
+  ],
+  "verdicts": [
+    {
+      "index": 1,
+      "spec": "docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec_sha256": "5e55fc8cd2f8fa884adf70b15e3bad83c47a1af56aa7a97c5ac27f5e56570adf",
+      "source_sha256": "36976b20f321e3802c536680fbe5cc8b6978dde683a814122b57d0e4102341cd",
+      "repeated_checks": 1,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "dispatch_selected_registry",
+          "caller_function": "respond",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/unsafe/src/http/service_registry.rs",
+          "line": 57,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 16121690018647097640
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/unsafe/src/http/service_registry.rs",
+        "line": 57,
+        "severity": "high",
+        "summary": "Operation 'dispatch_selected_registry' lacks required guard"
+      }
+    },
+    {
+      "index": 2,
+      "spec": "docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml",
+      "source": "src/http/registry_action.rs",
+      "symbol": "forward_registry_action",
+      "spec_sha256": "45698f9938b62df52f4923abda14649bba1afc94af861616c7011b0a99ce9b5c",
+      "source_sha256": "b2a03eec5a66e9135da3bcffc930e91dbc8365446c0aa179723ae283f34d4ebf",
+      "repeated_checks": 1,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "send_action",
+          "caller_function": "forward_registry_action",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/unsafe/src/http/registry_action.rs",
+          "line": 127,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 6299743000127238821
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/unsafe/src/http/registry_action.rs",
+        "line": 127,
+        "severity": "high",
+        "summary": "Operation 'send_action' lacks required guard"
+      }
+    },
+    {
+      "index": 3,
+      "spec": "docs/plans/publishing-proxy/specs/canonical-token-packument.yaml",
+      "source": "src/http/token_packument.rs",
+      "symbol": "serve_token_packument",
+      "spec_sha256": "ddd5ac804643b2d52655eebf21ec1430f6816195d2dd403ad2150c63870200fb",
+      "source_sha256": "31176bfad7f228496bfb78060a679b8c0e7540be74f52a8a0e684406516c2ab2",
+      "repeated_checks": 1,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "send_selected_upstream_packument",
+          "caller_function": "serve_token_packument",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/unsafe/src/http/token_packument.rs",
+          "line": 43,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 6950639004342947802
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/unsafe/src/http/token_packument.rs",
+        "line": 43,
+        "severity": "high",
+        "summary": "Operation 'send_selected_upstream_packument' lacks required guard"
+      }
+    },
+    {
+      "index": 4,
+      "spec": "docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml",
+      "source": "src/http/audit_filter.rs",
+      "symbol": "filter_audit_response",
+      "spec_sha256": "0f711f3c225e269ffa23574186ceca127a84a48358524ba788e733394d6285b9",
+      "source_sha256": "24baaf46396302c127260447e909408841186cd7e02e9e6c0e82aa0fe65e697f",
+      "repeated_checks": 1,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "render_audit_response",
+          "caller_function": "filter_audit_response",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/unsafe/src/http/audit_filter.rs",
+          "line": 44,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 3851748289259566081
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/unsafe/src/http/audit_filter.rs",
+        "line": 44,
+        "severity": "high",
+        "summary": "Operation 'render_audit_response' lacks required guard"
+      }
+    },
+    {
+      "index": 5,
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec_sha256": "34477fd266179e7fa05fb4de333306a6f47a71a1daba5594475b63b661273487",
+      "source_sha256": "36976b20f321e3802c536680fbe5cc8b6978dde683a814122b57d0e4102341cd",
+      "repeated_checks": 19,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "release_verified_response",
+          "caller_function": "respond",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/unsafe/src/http/service_registry.rs",
+          "line": 62,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 803816036299365192
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/unsafe/src/http/service_registry.rs",
+        "line": 62,
+        "severity": "high",
+        "summary": "Operation 'release_verified_response' lacks required guard"
+      }
+    },
+    {
+      "index": 6,
+      "spec": "docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec_sha256": "8708559028a35ec74bed5a823ca3f69b61ccbc4f31433427676108ca6f1c68d6",
+      "source_sha256": "36976b20f321e3802c536680fbe5cc8b6978dde683a814122b57d0e4102341cd",
+      "repeated_checks": 1,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "dispatch_npm_delete_route",
+          "caller_function": "respond",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/unsafe/src/http/service_registry.rs",
+          "line": 52,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 15799385171090588119
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/unsafe/src/http/service_registry.rs",
+        "line": 52,
+        "severity": "high",
+        "summary": "Operation 'dispatch_npm_delete_route' lacks required guard"
+      }
+    },
+    {
+      "index": 7,
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "source": "crates/probation-server/src/service_policy.rs",
+      "symbol": "snapshot",
+      "spec_sha256": "6d71b7544a2727bbfc91021f2117f6354c240bb5a9bf21177f3d7bf16b696221",
+      "source_sha256": "e9ed159ffacf8874f965d411cf5f2f8d5770a69aeb71e5d644ca9ea58749ba40",
+      "repeated_checks": 18,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "load_policy_snapshot",
+          "caller_function": "snapshot",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/unsafe/crates/probation-server/src/service_policy.rs",
+          "line": 79,
+          "matched_argument": null,
+          "receiver_type": null,
+          "source_hash": 7607410330035221734
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/unsafe/crates/probation-server/src/service_policy.rs",
+        "line": 79,
+        "severity": "high",
+        "summary": "Operation 'load_policy_snapshot' lacks required guard"
+      }
+    },
+    {
+      "index": 8,
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "source": "src/managed/service_policy.rs",
+      "symbol": "ServicePolicy.activate",
+      "spec_sha256": "f5b3360a94552975a07a8fa6852d2b2f66638513af93743a56a9833bbbf9c260",
+      "source_sha256": "70e14ad19eecbdd42bb7d02fa5aa7a101036788f514c971cf820cf25a5385e6c",
+      "repeated_checks": 18,
+      "verdict": "PASS",
+      "evidence_tier": "Structural",
+      "production_findings": 0,
+      "control_findings": 1,
+      "expected_control_site": {
+        "evidence": {
+          "callee_qualified_name": "ServicePolicy.publish_policy_snapshot",
+          "caller_function": "ServicePolicy.activate",
+          "confidence": "structural",
+          "file_path": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/unsafe/src/managed/service_policy.rs",
+          "line": 282,
+          "matched_argument": null,
+          "receiver_type": "self",
+          "source_hash": 14895551845014459431
+        },
+        "file": "/home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/unsafe/src/managed/service_policy.rs",
+        "line": 282,
+        "severity": "high",
+        "summary": "Operation 'ServicePolicy.publish_policy_snapshot' lacks required guard"
+      }
+    }
+  ],
+  "subject_actual_hashes": {
+    "crates/probation-policy/src/api.rs": "ebc8b868cabb5d6fc33b8d936ee0d7cb08a26da3bd1c3435c96345fec4abfa1b",
+    "crates/probation-server/src/lib.rs": "98fe65dcba2076e71c5f0d3d934bef6a07882040d1aadd40d692a2df686ee5e0",
+    "crates/probation-server/src/service_policy.rs": "e9ed159ffacf8874f965d411cf5f2f8d5770a69aeb71e5d644ca9ea58749ba40",
+    "crates/probation-server/src/sync.rs": "93023704fed4eb545471113d42b16cbcc01b0a458879953fd6dd80fb3d72980f",
+    "crates/probation-server/tests/service_policy_api.rs": "604dc6049e13a550db26fe478e649301c3ec4634c8181c64b9297d3c2c6e3e14",
+    "src/artifacts/download.rs": "0a83537666bc24a171339f33ebc48e9ab4ad4e8ce6fb93290ccb6fbcaa96831e",
+    "src/artifacts/mod.rs": "f6b3438c21b927ec2cdeae4d328cfefc0d70a22df123c7a007fa319c4db1af88",
+    "src/artifacts/stream.rs": "547c2d659e59fc1d5a9c2c1db7871a0ca65158f89a0d645a179110d5b8898ef4",
+    "src/config.rs": "1e73f2a5dc9aee3cd889bdf6a046b135e05579e33fd9645a761bd3547ac26dc5",
+    "src/http/health.rs": "98237d906c7570ec9e4aab4a19790b49bd4cce2ddf07b69aebd4e3acde94ef61",
+    "src/http/logging.rs": "0c6348c05fa14481bcdb3be25782f956fa0f515c4443a4122dde0fa1c1c799b5",
+    "src/http/mod.rs": "eebdc3111981cfcd9fa594e26b4ffd695afe9414f59dea19580b1871fbc37a3a",
+    "src/http/registry_action.rs": "b2a03eec5a66e9135da3bcffc930e91dbc8365446c0aa179723ae283f34d4ebf",
+    "src/http/registry_read.rs": "83188bf11ce0d0a0f5258042f037ba1277d7b45568807438aa382e16f1ce3730",
+    "src/http/registry_routes.rs": "60e4a282d9b80a97b98722f2a18cc42c4cfd0c0e624d02386cda7673b35df4bd",
+    "src/http/service_registry.rs": "36976b20f321e3802c536680fbe5cc8b6978dde683a814122b57d0e4102341cd",
+    "src/lib.rs": "771445af3b01242cd824ce1b8b465647852325ec503fbaa1843e164bb7b65b5b",
+    "src/managed/cache.rs": "469b9426995da89e680470e7ab579b95c64b0996bb1d19567d91ad5920742bed",
+    "src/managed/mod.rs": "55f5228ef1b3c0c919ce422bbfd05857fc353f983cfe4c3201f8eb90208ce339",
+    "src/managed/service_policy.rs": "70e14ad19eecbdd42bb7d02fa5aa7a101036788f514c971cf820cf25a5385e6c",
+    "src/managed/sync.rs": "21ce3ea0473d060dad48add3f84ce49a37a8e01393c72d0ef0848278c9ad1214",
+    "src/npm/mod.rs": "c90efaf0d224ad611123da094f95ff5616978cc03cb97c93e99eb9e2e13023fc",
+    "src/pypi/mod.rs": "6375c3143fe6752d7541182cf391043bb6e93817708727becf389d77c44dc316",
+    "src/store/mod.rs": "2a45ecf3c49e35a08c3819126f72e92a9c1903d4a25f6d8076dbdef79b15811d",
+    "src/tasks/mod.rs": "9eba68b99a9385337d2df9638ba06e83f2ea0ec0f6202254603ee610ff3b6974",
+    "tests/authorization_read_once.rs": "b2b614c5c632a39579c339f8fbec5f4c79f98d83034ba87852189e8cfdbbd53f",
+    "tests/e2e/scenarios/service-policy.mjs": "f493905b93c4b1b9361080d827e2ea67c6fa79871364b8a81b9600500441b5d5",
+    "tests/managed_delivery_authority.rs": "32fee62349b140ebde66b371405c42bddb1dac761b32db6a1b7254dca0f5220b",
+    "tests/service_policy_cache.rs": "8e079d7918a5c45b284fef3a502c5bfd4725f36ffe50c6946417688b312e72f2",
+    "tests/shared_service.rs": "310063c4e82aac6c07bd90518367da3882ee20f6114d3bac39eb52052cf85449"
+  },
+  "subject_changes": [
+    "tests/authorization_read_once.rs"
+  ],
+  "hashes": {
+    "src/http/service_registry.rs": "36976b20f321e3802c536680fbe5cc8b6978dde683a814122b57d0e4102341cd",
+    "docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml": "5e55fc8cd2f8fa884adf70b15e3bad83c47a1af56aa7a97c5ac27f5e56570adf",
+    "src/http/registry_action.rs": "b2a03eec5a66e9135da3bcffc930e91dbc8365446c0aa179723ae283f34d4ebf",
+    "docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml": "45698f9938b62df52f4923abda14649bba1afc94af861616c7011b0a99ce9b5c",
+    "src/http/token_packument.rs": "31176bfad7f228496bfb78060a679b8c0e7540be74f52a8a0e684406516c2ab2",
+    "docs/plans/publishing-proxy/specs/canonical-token-packument.yaml": "ddd5ac804643b2d52655eebf21ec1430f6816195d2dd403ad2150c63870200fb",
+    "src/http/audit_filter.rs": "24baaf46396302c127260447e909408841186cd7e02e9e6c0e82aa0fe65e697f",
+    "docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml": "0f711f3c225e269ffa23574186ceca127a84a48358524ba788e733394d6285b9",
+    "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml": "34477fd266179e7fa05fb4de333306a6f47a71a1daba5594475b63b661273487",
+    "docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml": "8708559028a35ec74bed5a823ca3f69b61ccbc4f31433427676108ca6f1c68d6",
+    "crates/probation-server/src/service_policy.rs": "e9ed159ffacf8874f965d411cf5f2f8d5770a69aeb71e5d644ca9ea58749ba40",
+    "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml": "6d71b7544a2727bbfc91021f2117f6354c240bb5a9bf21177f3d7bf16b696221",
+    "src/managed/service_policy.rs": "70e14ad19eecbdd42bb7d02fa5aa7a101036788f514c971cf820cf25a5385e6c",
+    "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml": "f5b3360a94552975a07a8fa6852d2b2f66638513af93743a56a9833bbbf9c260",
+    "docs/plans/publishing-proxy/molecule-flow.json": "e9006e603bac571a975e6c585db71ebee1740da46f08bc65042c3bb6b76700d3",
+    "docs/plans/publishing-proxy/molecule-contracts.json": "7cb3bb8cc92af0e220b771dfc672592b8b7ce9d46a33c70b912df22bbdbbbd7b",
+    "docs/plans/package-firewall-mvp/molecule-flow.json": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51",
+    "docs/plans/package-firewall-mvp/molecule-contracts.json": "cc8faf1536a961777a6200e4789cc7892d891169065efa41a0d3affbc981b33e"
+  },
+  "SMTC receipt": [
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/production/.smtc/analyzers/service-route-classify-before-dispatch.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 64,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "0 findings before filter, 0 after",
+            "filtered": 0,
+            "matched": 0,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/1/production/.smtc/analyzers/service-route-classify-before-dispatch.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 42,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "1 findings before filter, 1 after",
+            "filtered": 1,
+            "matched": 1,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/1/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/1/source/docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml --format json --max-tokens 8192 --session-id sf-contract-30da9000-5d24-405b-8d69-89bcb5f9e7b6",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "classify-selected-registry production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/1"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/2/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/2/source/docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml --format json --max-tokens 8192 --session-id sf-contract-3872013e-8156-4ba6-97cd-e1c1cb4c0ee0",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "classify-selected-registry unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/2"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/production/.smtc/analyzers/publisher-auth-before-send.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 2,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 85,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "2 operation sites found",
+            "filtered": 2,
+            "matched": 2,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/2 operations unguarded",
+            "filtered": 1,
+            "matched": 2,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "1 findings before filter, 0 after",
+            "filtered": 0,
+            "matched": 1,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/2/production/.smtc/analyzers/publisher-auth-before-send.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 2,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 106,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "2 operation sites found",
+            "filtered": 2,
+            "matched": 2,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "2/2 operations unguarded",
+            "filtered": 2,
+            "matched": 2,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "2 findings before filter, 1 after",
+            "filtered": 1,
+            "matched": 2,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/3/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/3/source/docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml --format json --max-tokens 8192 --session-id sf-contract-2674f0db-e5bf-4592-8001-a07c98e9f1c9",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "upstream-publisher-auth-before-send production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/3"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/4/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/4/source/docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml --format json --max-tokens 8192 --session-id sf-contract-49a72521-a5be-43c1-b3a7-313707c512e1",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "upstream-publisher-auth-before-send unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/4"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/production/.smtc/analyzers/canonical-token-packument.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 77,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "0 findings before filter, 0 after",
+            "filtered": 0,
+            "matched": 0,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/3/production/.smtc/analyzers/canonical-token-packument.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 51,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "1 findings before filter, 1 after",
+            "filtered": 1,
+            "matched": 1,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/5/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/5/source/docs/plans/publishing-proxy/specs/canonical-token-packument.yaml --format json --max-tokens 8192 --session-id sf-contract-675f457a-6a0c-4d6b-a6f8-37a91789ae5c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "canonical-token-packument production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/5"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/6/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/6/source/docs/plans/publishing-proxy/specs/canonical-token-packument.yaml --format json --max-tokens 8192 --session-id sf-contract-0b6d6274-fb08-4006-ae54-9955f97acd22",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "canonical-token-packument unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/6"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/production/.smtc/analyzers/audit-filter-before-render.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 47,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "0 findings before filter, 0 after",
+            "filtered": 0,
+            "matched": 0,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/4/production/.smtc/analyzers/audit-filter-before-render.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 43,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "1 findings before filter, 1 after",
+            "filtered": 1,
+            "matched": 1,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/7/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/7/source/docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml --format json --max-tokens 8192 --session-id sf-contract-960c2c8e-31aa-4084-8ac9-f871c13c3b64",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "audit-filter-before-render production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/7"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/8/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/8/source/docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml --format json --max-tokens 8192 --session-id sf-contract-dcc8fece-cbb3-43b8-b547-4b7ef6c256be",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "audit-filter-before-render unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/8"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/production/.smtc/analyzers/registry-release-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 52,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "2 guard sites found",
+            "filtered": 2,
+            "matched": 2,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/5/production/.smtc/analyzers/registry-release-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 56,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/9/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/9/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-f28988f6-21c6-4e16-b579-27fcddb0db29",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "current-policy-before-service-response production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/9"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/10/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/10/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-62d017a2-48b3-4af3-bfed-688b85097d5f",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "current-policy-before-service-response unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/10"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/5/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/5/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-179ee849-dd0c-4ce1-88a7-70fbe7c76038",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/5"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/6/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/6/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-3633808b-884f-468f-9674-f2c6937471fe",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/6"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/11/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/11/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-2a67e663-f081-4f8d-99b0-8f01d9f1d61d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/11"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/12/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/12/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e6aa1b09-aa8b-49a4-a64a-68f40a4588f3",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/12"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/17/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/17/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5178f765-c40a-440f-be69-e2c9966249c9",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/17"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/18/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/18/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-dfcea297-6b23-4b07-bd36-d2b2480ef7d9",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/18"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/23/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/23/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e7953f04-dd93-48d6-a03f-3cc50b4d6922",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/23"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/24/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/24/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-85d1ae84-5a29-4a45-a343-389b81c810ef",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/24"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/29/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/29/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-a0310154-a946-49ea-a687-a58e17b4d918",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/29"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/30/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/30/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-d44bdbdc-dba1-436c-9657-51e6308a33ca",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/30"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/35/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/35/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-8840585f-c300-4675-9d85-026b007db3b1",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/35"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/36/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/36/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-bd25d39e-581d-4218-b2df-f23069c0403c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/36"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/41/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/41/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-270ebfd9-faee-4060-b6bf-923237802076",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/41"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/42/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/42/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b7adb770-41ef-42e2-bcbe-25c98348ae9d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/42"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/47/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/47/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-ea390a3e-d24b-47e7-99bf-91149c932c90",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/47"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/48/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/48/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-96779830-86cf-4906-8772-8b18f8b04249",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/48"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/53/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/53/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e2f8b9b8-2472-40e4-b6de-85915065a672",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/53"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/54/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/54/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-38b29722-7c95-4a33-a98f-bca6356d89cb",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/54"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/59/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/59/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-57fcf1de-9786-46bf-8ce8-4a5d5b69e837",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/59"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/60/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/60/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-523919d4-7389-43dc-82e3-4f22a0f4940b",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/60"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/65/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/65/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-333b4000-d8a2-4e58-89ee-f1154141db5d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/65"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/66/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/66/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-066af5e9-d80f-43c7-b78f-0b5f2b59e9fa",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/66"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/71/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/71/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-2ed3e602-b86b-4b43-b751-dc7a5e1a4d76",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/71"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/72/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/72/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-2efd4f5a-66f3-4d56-a384-388e58b3025a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/72"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/77/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/77/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-dd951945-1acb-4729-96e9-f28c6fa7fb1d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/77"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/78/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/78/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-36b24557-5736-4554-94bb-3e4805d949e4",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/78"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/83/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/83/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5d2f94d5-1fe8-4eaa-9a72-d188bf42bf5e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/83"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/84/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/84/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-de0aaf3b-e869-4c25-9b07-5025f3eb45b4",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/84"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/89/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/89/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-3559e839-b56d-4a12-91dc-55fca307c6b0",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/89"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/90/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/90/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-12f11531-1ae6-4715-9a71-db652cb2991e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/90"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/95/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/95/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b9ff9866-643b-4c97-a1cd-9c5b8381be09",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/95"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/96/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/96/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-d7b9e375-df0d-4fad-bfe7-2efb5cc19fa5",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/96"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/101/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/101/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-ff149c0a-0127-45e7-a3f4-0e5fff4f9cd0",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/101"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/102/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/102/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5e98d685-7fc5-4ed8-8b24-236ef974af2a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/102"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/107/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/107/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-ae84d8a5-f261-4a59-a15d-052cd942822e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-respond-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/107"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/108/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/108/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b25ca94e-8748-4887-97bf-ad90d1f6efd7",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-respond-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/108"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/production/.smtc/analyzers/npm-delete-routes-classify-before-dispatch.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 68,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "0 findings before filter, 0 after",
+            "filtered": 0,
+            "matched": 0,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/6/production/.smtc/analyzers/npm-delete-routes-classify-before-dispatch.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 56,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          },
+          {
+            "detail": "1 findings before filter, 1 after",
+            "filtered": 1,
+            "matched": 1,
+            "name": "where_filter",
+            "primitive": "expr_eval"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/11/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/11/source/docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml --format json --max-tokens 8192 --session-id sf-contract-e9d9c210-b780-4ada-a733-656e0962ab10",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "classify-npm-delete-routes production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/11"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/12/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/12/source/docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml --format json --max-tokens 8192 --session-id sf-contract-254c33dc-e3c5-45c8-b9fe-e1ffefc2be61",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "classify-npm-delete-routes unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-O1FiQp/12"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/production/.smtc/analyzers/server-snapshot-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 40,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/7/production/.smtc/analyzers/server-snapshot-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 38,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0 guard sites found",
+            "filtered": 0,
+            "matched": 0,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/1/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/1/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-9a161e18-bfc7-4287-87f9-523354b34510",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/1"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/2/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/2/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-dfb66cbf-67eb-4441-9d9e-40b14d1bd8de",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/2"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/7/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/7/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-7c31f35b-d5d6-4eb4-8313-c8daac35b47f",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/7"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/8/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/8/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-4b200b8a-b60f-4afd-a4d2-3965075bd960",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/8"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/13/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/13/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-54c41440-1831-4f92-8bd9-a781097b677a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/13"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/14/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/14/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-dab610be-96b2-4a34-9f4e-cd491d9782fe",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/14"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/19/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/19/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-fa2d2b95-78d3-43f8-9b0c-fb4e69702a41",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/19"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/20/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/20/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-12b94416-c51d-4bef-b900-c2b48cc20492",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/20"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/25/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/25/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-66dde5f1-5dd5-4931-8e32-f86b4dc8d458",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/25"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/26/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/26/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b0a99b4f-8ae6-4dc9-8b84-ab1d71df1d06",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/26"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/31/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/31/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-7a677836-7c08-4bb0-b029-c3524bbe1816",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/31"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/32/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/32/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-4f5132a5-dc1d-4075-a1b8-8d3040016f96",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/32"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/37/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/37/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-4e0f5080-ae1d-4184-8b3d-32db91b6b42e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/37"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/38/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/38/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-91d11371-9345-4af1-aba5-c0f28684dd59",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/38"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/43/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/43/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-ec8f1581-d89f-43e1-b3d3-bb64c81ecc2c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/43"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/44/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/44/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-7f34c7c8-64ac-40df-971a-6f33ecae0cc5",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/44"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/49/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/49/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-cc96c9b5-beb0-4d46-b830-5d0ff3892b9b",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/49"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/50/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/50/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-fb3c89ed-7240-4b32-a9ac-735fae500b68",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/50"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/55/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/55/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-42791d24-cc27-49a3-8b27-5d5791a73820",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/55"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/56/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/56/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-f752a2d4-df78-45f7-b25a-839bc3fd946f",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/56"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/61/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/61/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b2e4b5ed-3088-41f1-ade1-dac74501e043",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/61"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/62/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/62/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-238a4c2d-06ac-4164-9470-706bf4318bf8",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/62"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/67/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/67/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-f60d6932-80c4-4ae3-b954-56667b54acd1",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/67"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/68/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/68/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-0b496278-fa0b-449c-b8c6-c383edc69a2c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/68"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/73/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/73/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-55ce5ad7-5c17-4417-99d2-227c78a8557d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/73"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/74/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/74/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-cafe3886-232c-43fa-8131-9e1552344632",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/74"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/79/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/79/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-c03a8ddb-e7b1-46bd-a334-355ada0302fb",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/79"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/80/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/80/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e634f9da-b0cc-41f4-a53d-9daa6aa2b629",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/80"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/85/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/85/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-dc060e1f-16d6-49d0-98af-11691b80dfed",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/85"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/86/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/86/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-3819f651-5c8f-4730-89fc-e50866229d97",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/86"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/91/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/91/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-ce3d37b4-cf78-4121-9b1f-be2ad01bbfcc",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/91"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/92/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/92/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-7f3aa968-48ad-4678-832f-ec0c8561423e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/92"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/97/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/97/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5f4ae499-9e88-4d96-91ca-06228996948f",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/97"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/98/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/98/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5396e896-b02d-4e99-bc6a-db1fa52eec5a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/98"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/103/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/103/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-18405558-21af-4e6f-ad06-deeb87a871e8",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-snapshot-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/103"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/104/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/104/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml --format json --max-tokens 8192 --session-id sf-contract-6605d4ba-0777-43af-953f-cdc8b59145f9",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-snapshot-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/104"
+    },
+    {
+      "operation": "spec list",
+      "argv": "smtc spec list --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/production --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "one resolved spec",
+      "fidelity": "inventory",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "Exact current spec path resolved."
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/production --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/production/.smtc/analyzers/managed-activation-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "production: 0 finding(s)",
+      "trace": {
+        "duration_ms": 125,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "2 guard sites found",
+            "filtered": 2,
+            "matched": 2,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "0/1 operations unguarded",
+            "filtered": 0,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/unsafe --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/source-final/specs/8/production/.smtc/analyzers/managed-activation-order.yaml --format json --max-tokens 2048 --session-id sf-prerequisite-source-final-2026-11-03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "operation_sites": 1,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "unsafe: 1 finding(s)",
+      "trace": {
+        "duration_ms": 324,
+        "pipeline_preset": "Protocol",
+        "steps": [
+          {
+            "detail": "1 operation sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_operations",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1 guard sites found",
+            "filtered": 1,
+            "matched": 1,
+            "name": "find_guards",
+            "primitive": "find_call_sites_bulk"
+          },
+          {
+            "detail": "1/1 operations unguarded",
+            "filtered": 1,
+            "matched": 1,
+            "name": "dominance_check",
+            "primitive": "cfg_dominance"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/3/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/3/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-53fd7789-4fec-45a1-a0ba-2ed2c174130b",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/3"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/4/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/4/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b681976b-0634-4e8c-b1b6-424b0a47da7b",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/4"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/9/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/9/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-76547322-4019-439e-bf66-efee27c33a4c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/9"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/10/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/10/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-167b203a-5435-4f19-8740-99b416129af5",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "npm-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/10"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/15/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/15/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-4c212ab8-71a0-4d52-a009-f951cfad050c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/15"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/16/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/16/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-1423c12f-1f8f-4ddf-b838-34ebae874964",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/16"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/21/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/21/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-635c6679-f6e0-4494-890d-8baff7464d7c",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/21"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/22/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/22/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-0e481cc7-8fba-450d-b028-d315c81c3325",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "pypi-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/22"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/27/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/27/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-00a002ea-20f6-4f9c-ae8a-9091439f9d27",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/27"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/28/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/28/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-18a26dc4-8a59-4101-8b6a-892a0fdf1e03",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/28"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/33/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/33/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-78d315e6-005d-4a1b-8b1e-2a7f3e5bddb5",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/33"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/34/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/34/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e77c200d-f421-4ee7-91e3-7fac30e8969e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "maven-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/34"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/39/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/39/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-bcf92601-f104-4dcd-ae17-7459253989ef",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/39"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/40/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/40/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e6400dd4-8874-431e-87bf-50f99ff26bb8",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/40"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/45/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/45/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-d5abc2ea-d924-4f87-ae4c-cfb730f7e8e6",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/45"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/46/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/46/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-bb7e85d4-80e2-48e5-bcaf-195b73ca11aa",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "cargo-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/46"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/51/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/51/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-cf588830-b8d8-4879-9db7-fed1f90ed09d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/51"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/52/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/52/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-f48551b9-7dcd-491e-a89e-e8841834b61a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/52"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/57/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/57/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-270d9b1c-27b8-47a6-a522-bea7f941751e",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/57"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/58/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/58/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-c4e2a449-6797-4540-98a7-85a0f23437cb",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "go-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/58"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/63/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/63/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-851c3e7c-f2ca-49f2-9b9c-e8fe78bfed76",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/63"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/64/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/64/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e4b57783-47f4-4689-9412-73f5a970a6b6",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/64"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/69/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/69/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-855202c0-3631-4cfc-a70b-7447bab62488",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/69"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/70/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/70/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-3725d381-9091-459e-8ae5-cd452117246a",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "nuget-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/70"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/75/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/75/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-c07db105-489e-400f-87e9-abb2f102b0ce",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/75"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/76/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/76/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-e722a28e-8920-4714-a9e6-824a5e4db2ac",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/76"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/81/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/81/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-5b57af0e-adce-431d-9ed2-7f6dff2a325d",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/81"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/82/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/82/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-f3e56544-10b3-417e-a861-958fd41490f7",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "rubygems-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/82"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/87/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/87/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-7590ebc5-6800-45df-a2e6-83ad379f8418",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/87"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/88/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/88/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-31b18910-a3b9-41ba-9b75-739679287018",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/88"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/93/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/93/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-9939f0a0-7f90-425e-a887-a1e426bc25eb",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/93"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/94/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/94/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-fc26c1fc-e3cd-4c8b-86f4-7d5c217bd876",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "conan-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/94"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/99/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/99/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-b398b514-00c9-4a20-a06b-a1e0e320b3a1",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-activate_known-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/99"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/100/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/100/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-bc0d87f0-fa70-4457-b873-860727039993",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-known-activate_known-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/100"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/105/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/105/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-015c496a-1e5b-4b50-93b6-f87efd5d21ae",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "Protocol CFG dominance trace; no separate fidelity field",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-activate_cold-order production: 0 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/105"
+    },
+    {
+      "operation": "router spec run",
+      "argv": "smtc spec run --root /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/106/source --spec-file /home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/106/source/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml --format json --max-tokens 8192 --session-id sf-contract-3ecfe392-6eec-4165-9f48-5b82f75a21c5",
+      "status": "run",
+      "outer_status": true,
+      "inner_status": "complete non-vacuous trace",
+      "fidelity": "structural",
+      "functions_analyzed": null,
+      "truncation": false,
+      "refs": [],
+      "interpretation": "oci-cold-activate_cold-order unsafe: 1 finding(s)",
+      "evidence": "/home/john/go/src/github.com/postfix/probation/.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/run-obTWSc/106"
+    }
+  ],
+  "limitations": [
+    "Structural call-order checks only; contract/spec meaning remains a reviewed premise.",
+    "54 prerequisite checks repeat three common-seam rules and do not establish nine ecosystem implementations.",
+    "No builds or runtime tests run; npm/PyPI runtime coverage is separate.",
+    "Publishing unpublish work remains legitimately pending for Slice 3.",
+    "Initial nested router IPC refusal is retained in blocked-receipt.json; parent supplied prior health diagnosis and host IPC retry succeeded.",
+    "Functions analyzed is not reported by spec-run; non-vacuity is established by matched operation sites and firing controls."
+  ]
+}

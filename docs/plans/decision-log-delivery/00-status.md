@@ -1,9 +1,9 @@
 # Status: Decision log delivery
 
-- Gate 1 — Product: APPROVED 2026-09-22
-- Gate 2 — Architecture: APPROVED 2026-09-22
-- Gate 3 — Program Design: APPROVED 2026-09-22
-- Gate 4 — Slice plan: APPROVED 2026-09-22
+- Gate 1 — Product: APPROVED 2026-11-02
+- Gate 2 — Architecture: in progress
+- Gate 3 — Program Design: pending
+- Gate 4 — Slice plan: pending
 
 ## Factory settings
 
@@ -11,7 +11,28 @@
 
 ## Loop signal
 
-{"generation":24,"boundary":null,"reopened":false,"history":[]}
+{"generation":28,"boundary":{"kind":"gate","number":2},"reopened":false,"history":[{"from":"hand","reason":"rework","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"complete","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"complete","to":"hand"},{"from":"hand","reason":"start","to":"qa"},{"from":"qa","reason":"unknown","to":"hand"},{"from":"hand","reason":"retry","to":"qa"},{"from":"qa","reason":"complete","to":"hand"},{"from":"hand","reason":"rework","to":"hand"},{"from":"hand","reason":"start","to":"qa"}]}
+
+## Gate 1 progress
+
+- [x] Create 00-status.md
+  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.
+- [x] Select the plan with router resume
+  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.
+- [x] Create the product clarification inventory
+  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.
+- [x] Resolve user decisions
+  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.
+- [x] Gather ecosystem and authentication evidence
+  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.
+- [x] Review UI mockups with the user
+  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.
+- [x] Complete 01-product.md
+  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.
+- [x] Obtain QA READY
+  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/decision-log-delivery/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.
+- [x] Present and record user approval
+  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/decision-log-delivery/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.
 
 ## Slices
 
@@ -26,6 +47,8 @@
 
 ## Notes for a fresh session
 
+Current scope after C1027 is approved 2026-11-02: nine families (npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI). RubyGems is critical and first added after the shared-service foundation; CPAN is omitted. Q8-Q11 and package-manager credential ownership remain settled. Gate 1 approval and progress are recorded; earlier pending-scope/ten-family notes below are historical. Combined design remains unapproved. Lead FIX-16-A in package-firewall-mvp/02-architecture.md, 03-program-design.md and 04-slices.md assigns the discovered managed-authority release gap to Slice 16 before new adapters; evidence/artifact-flow-correctness.md records source facts and required tests, not an implemented fix.
+
 - GATE 1 REOPENED on 2026-09-22, after slice 3 completed. Slice 3's own row is proven (evidence/slice-3.md), but final `sf-verification` failed the feature on two Gate 1 promises no later gate designed: (1) P-WHEN — file and SIEM records carry no time of decision, while 01-product.md promises records say "what was served and when" and SIEM queries return consumers "with timestamps" (only the stdout line has a formatter timestamp); (2) P-C2-OPTIN — C2's operator-selectable refuse-rather-than-serve-unlogged setting was never designed nor deferred. User decision (Gate 1 grilling Q1, 2026-09-22): DEFER the refuse setting and record the deferral in Gate 1. The timestamp promise stands and returns through Gates 2-4 as a new slice 4. Slices 1-3 stay checked; the change invalidates none of them.
 - GATES 3 AND 4 REOPENED A THIRD TIME on 2026-09-22, during slice 3 Engineering. The approved TP-19 witness (3 records, `drain(.., Duration::ZERO)`, lines + drops == 3) is not discriminating: tokio's timer fires only at the next millisecond tick, so `timeout(Duration::ZERO)` does not fire on the first poll and all three records are written in about 200µs. The test passed 300/300 runs against the pre-fix code. The implementer's controlled experiment (10,000 records) showed the fix itself works: pre-fix 8 written + 0 dropped, post-fix 10 written + 9,991 dropped = 10,001. Gate 3's Drain paragraph and TP-19 row state a false mechanism and need a new witness form (C46); Gate 4 step 6 follows. Slice 3 product code is otherwise complete, with the other five witness steps passing; product writes are paused until Gate 4 is re-approved. Also: the stale bullet below saying slice 3 `Exact files` gains `src/delivery/siem.rs` was corrected at Gate 4 C44 — `.no_proxy()` lives in `delivery::build`, `src/delivery/mod.rs`.
 - GATE 3 REOPENED AGAIN on 2026-09-22. The slice 2 proof line left two items for a user decision, and nobody asked. Asked now: (1) the file sink's drain deadline loses queued records without counting them. Fix it in slice 3 (Gate 3 C42, witness TP-19). (2) The SIEM client obeys proxy environment variables, unlike the upstream client. Add `.no_proxy()` (Gate 3 C43). Gate 3 needs re-approval, then Gate 4 must assign both to slice 3 (whose `Exact files` gains `src/delivery/siem.rs`). Gate 4 must also correct the `.mode` API attribution for `Writer::open` (tokio's own `.mode`, not `OpenOptionsExt`, as Gate 3 C27 states).
@@ -38,3 +61,25 @@
 - WHAT ALREADY EXISTS in the shipped MVP, which this plan extends rather than invents: `src/main.rs:58-63` initialises `tracing_subscriber::fmt().json()` writing to STDOUT ONLY, and `src/http/logging.rs` emits exactly one decision event per request carrying request_id, method, ecosystem, package, version, status, result, reason, blocklist_revision, cache, duration_micros and bytes, plus a periodic counter summary. There is no file sink, no network sink and no logging configuration of any kind — confirmed by search across `src/` and `config.sample.toml`.
 - THE ONE PRODUCT DECISION THAT IS NOT AN IMPLEMENTATION DETAIL, and it must be settled at Gate 1 rather than discovered later: `src/http/logging.rs:14` states as a deliberate design rule that "Nothing a client sends reaches a log line" — no source address, no user agent, nothing client-supplied. The consequence is that the firewall can report a blocked package WAS served at a given time, but not TO WHOM. If the purpose of shipping these logs to a SIEM is incident clean-up — finding which machines took a package before it was blocked — that rule has to be reversed deliberately, with its privacy cost stated. If the purpose is audit and alerting only, the rule stands as is.
 - The MVP's own recorded limitation that bears on this work: a registry firewall cannot reach a package already installed on a machine. Blocking stops further fetches, including CI runs, container builds, fresh checkouts and cache misses; it does not reach installed copies. Logs are the only route from "we blocked it" to "here is who needs cleaning up", which is why the client-identity question above is load-bearing rather than cosmetic.
+
+## Nora ecosystem expansion — 2026-11-02
+
+The user requests all ecosystems supported by Nora, borrowing Nora/Dozor code where practical, across Package Firewall MVP, management server/portal, OSV intelligence, decision logging and rated load. The user also requires checking package-manager and registry support for the existing SSL authentication and whether architecture must change. Scope Gate 1 is reopened; design Gates 2–4 await the revised scope. Earlier completed slice proofs remain historical evidence for their original npm/PyPI behavior, not evidence of expanded ecosystem or authentication coverage. No historical slice completion is invalidated by this additive request. The pending legacy completion presentation has not been accepted or acknowledged.
+
+Next: obtain fresh Scope QA READY, present the recorded ten-family/three-client-OS/Linux-server scope and record approval. Exact interfaces, native CI topology, Docker coverage and migrations are deferred to combined design under C1003/C1018.
+
+## Selected local-client direction — 2026-11-02
+
+C1006 resolves Q2 with a locally installed client and API-key authentication to the policy server, replacing the earlier certificate bridge proposal. C1008 explicitly retains TOML-configured standalone backend operation without the policy server. The completed publishing-proxy plan was reopened because it owns the superseded mandatory certificate contract; its prior five slice acceptances are historical and need fresh delivery against the new design. No product code was changed. Q3 / C1009 is resolved: local enforcement and direct registry downloads. C1013 / Q5 now selects the actual target formats after public-source research.
+
+## Public-source review — 2026-11-02
+
+Saved evidence/research-public-ecosystems.md under package-firewall-mvp: APT has Debian public archives, RPM has public distribution repositories, Terraform has a public registry and executable provider plugins. Sixteen Nora families have public sources; generic Raw storage has no defined ecosystem upstream. Proposed first target is thirteen developer dependency/container families, deferring APT/RPM and Hugging Face and omitting Raw; C1013 / Q5 remains unanswered. No format exclusion is approved solely by this status note. Q3 local enforcement is recorded in every affected product inventory.
+
+## Selected package/container release — 2026-11-02
+
+Q5/C1013 is resolved: npm, PyPI, Maven, Go modules, Cargo, NuGet, CPAN, RubyGems, Conan and Docker/OCI only. Earlier thirteen/sixteen/seventeen-family proposals are historical, not pending alternatives. Q6/C1015 is resolved: users and CI jobs own local registry credentials; policy API keys never become registry credentials and the policy server does not distribute shared organisation read secrets. Q7/C1016 is resolved for Linux/macOS/Windows clients; C1017 makes the policy server Linux-only; C1018 carries native GitHub Actions requirements into design. Preserve historical source/proofs; no product code was changed.
+
+## Scope ready for independent review — 2026-11-02
+
+All product choices in C1006/C1008/C1009/C1013/C1015/C1016/C1017 are recorded. C1003/C1018 defer technical implementation to combined design. The user requires native Windows/macOS GitHub Actions tests; Linux client/server checks and unproved non-Linux Docker integration are explicit. All six router inventories have no findings after legacy formatting normalization. Scope QA, presentation and approval remain required; no code or workflow is changed by these documents.

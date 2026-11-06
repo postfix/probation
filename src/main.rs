@@ -11,6 +11,7 @@ use probation::clock::{Clock, SystemClock};
 use probation::config::Config;
 use probation::policy::blocklist;
 use probation::upstream::{OriginSet, ReqwestTransport};
+#[cfg(unix)]
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
@@ -205,11 +206,13 @@ const RESTART_FOR_SETTINGS: u8 = 75;
 /// runtime's `stop` both do — so it must reach the same graceful path as `SIGINT`.
 /// Its default disposition kills the process outright, which would leave every
 /// queued decision record undelivered and skip the shutdown summary.
+#[cfg(unix)]
 struct ShutdownSignals {
     interrupt: Signal,
     terminate: Signal,
 }
 
+#[cfg(unix)]
 impl ShutdownSignals {
     fn install() -> std::io::Result<ShutdownSignals> {
         Ok(ShutdownSignals {
@@ -223,6 +226,38 @@ impl ShutdownSignals {
         tokio::select! {
             _ = self.interrupt.recv() => "SIGINT",
             _ = self.terminate.recv() => "SIGTERM",
+        }
+    }
+}
+
+/// Windows has no SIGTERM: Ctrl+C, Ctrl+Break, console close and logoff/shutdown are the
+/// console control events, and each takes the same graceful path.
+#[cfg(windows)]
+struct ShutdownSignals {
+    c: tokio::signal::windows::CtrlC,
+    brk: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+#[cfg(windows)]
+impl ShutdownSignals {
+    fn install() -> std::io::Result<ShutdownSignals> {
+        use tokio::signal::windows;
+        Ok(ShutdownSignals {
+            c: windows::ctrl_c()?,
+            brk: windows::ctrl_break()?,
+            close: windows::ctrl_close()?,
+            shutdown: windows::ctrl_shutdown()?,
+        })
+    }
+
+    async fn received(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.c.recv() => "CTRL_C",
+            _ = self.brk.recv() => "CTRL_BREAK",
+            _ = self.close.recv() => "CTRL_CLOSE",
+            _ = self.shutdown.recv() => "CTRL_SHUTDOWN",
         }
     }
 }

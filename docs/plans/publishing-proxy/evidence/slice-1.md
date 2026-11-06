@@ -1,67 +1,57 @@
-# Slice 1 evidence — Probation certificate setup and npm install
+# Slice 1 — shared-service npm/PyPI reads
 
-## Delivered caller outcome
+The certificate-era Slice1 evidence formerly at this path is preserved byte-for-byte in `slice-1-certificate-history.md` (SHA-256 `bef51d38c06f969e26497fb39316c801321fa6dd3ed4ba41afaadcbae9072227`). This document records the approved local-service re-steer.
 
-A signed-in member receives an own-account certificate bundle and installs an allowed npm package through the certificate firewall. The selected E2E also refuses a missing, foreign, revoked or disabled certificate, a removed member, wrong routes, management outage and changed group policy before returning a held response. Self-service-off stops new bundles while existing certificate reads continue. The single configured registry remains the approved temporary limit for Slice 1.
+Status: required runtime/source checks and specialist reviews passed; independent implementation verification VERIFIED. Ready for the router completion step.
 
-## Direct checks
+## Scope and authority
 
-| Check | Observed result | Limit |
-|---|---|---|
-| `test -f tests/e2e/scenarios/publishing-certificate-npm.mjs && node tests/e2e/harness/run.mjs --only E2E-publishing-certificate-npm` | Final selected run: 1 passed, 0 failed, 0 not run; exit 0. | Pinned npm, fake SSO and issuer, local TLS gateway and fake origin. |
-| `cargo check --workspace` | Passed after the request-path fix. | Type check. |
-| `cargo test --workspace --offline --quiet` | Passed after the request-path fix; ordinary ignored tests stayed ignored. | Includes repository tests; timing-only ignored tests are outside this witness. |
-| `cargo fmt --all -- --check`; `node --check` on changed E2E files; `git diff --check` | Passed. | Formatting and syntax only. |
-| `router molecule-check --plan-root docs/plans/publishing-proxy` | PASS for the twelve declared finite flows. | Model contracts and assumptions are premises, not source proof. |
-| `router molecule-verify --plan-root docs/plans/publishing-proxy --slice 1` | Seven due Slice 1 source checks and unsafe controls PASS with Structural fidelity; five absent sources assigned to Slices 2–4 PENDING. Evidence: `/home/john/.local/state/software-factory/contract-evidence/run-Rf9eId`. | Exact member/registry SQL values and runtime response behavior need independent review and E2E. |
+The user approved the publishing design on2026-11-02. `resume-approval-scope.md` records the recovered approval and its explicit import of the lead-owned shared-service foundation/FIX-16-A. This delivery implements and verifies that bounded prerequisite plus publishing Slice1's credential/registry assertions. It does not approve the lead's broader nine-family draft or claim those adapters/native deployments are delivered. The lead's own status remains distinct.
 
-The original request-path code charged two active-request permits and two rate units for a read. A new E2E check failed with one permit before the fix and passed afterward. The revised path keeps one permit and rate charge while rechecking live certificate, network lock and policy before bytes. A security review found that certificate network checks used the socket peer behind a trusted proxy; the fix applies the existing trusted-proxy client resolution while keeping TLS identity tied to the socket handshake. The E2E checks trusted forwarded client refusal and rejects untrusted spoofed forwarding.
+Caller outcome: npm and pip use one managed service policy without a package-request Probation login; selected registry and package-manager credentials retain their separate upstream authority. Explicit standalone mode remains separate. Managed refusal persists across restart; allowed remembered policy survives a normal outage without switching modes. Final artifact handoff applies current authority to exact verified bytes, while already accepted streams can finish.
 
-The [TDD record](tdd-slice-1.md) includes the original pre-implementation 404, one-permit red/green, the temporary final-recheck bypass that returned an unsafe HTTP 200 during a held read, and the unrelated-503 control rejected by the exact `POLICY_UNAVAILABLE` assertion. The final E2E pass followed restoration of production source byte for byte.
+Current subject: base `8d9f5e35b6d92898f6c9c33b852df5a9b04e8d59`; `slice-1-subject.json` records30 source/test hashes, manifest SHA-256 `d2e8313f9c0e50283ce86820a895407208912a3dd9de518c29d100b6fe993a80`. All product bytes equal independently reviewed round2; afterward only two reviewed Authorization inventory entries and the E2E outage fixture changed. Scanner logic and negative controls are unchanged. The scenario-only correction does not invalidate the final Rust suite/compiler or encoded source obligations.
 
-## Reviews
+## Required outcomes and evidence
 
-| Review | Verdict | Deciding result |
-|---|---|---|
-| Code | SHIP | Double-charge defect closed; final test requires exact policy error, and bounded fake hold releases on cleanup. |
-| Security | CLEAR for implemented Slice 1 path | Portal SSO/CSRF and private-key handling, TLS peer, trusted client address, current member/registry query and read recheck inspected; no finding. The generic SMTC guard analyzer is unsupported on this Rust workspace and was not used as clean evidence. |
-| Adversarial | PASS | In-flight policy negative control and final E2E close the stale-success gap. Parseable invalid-leaf variants remain proposed tests; enterprise status belongs to Slice 2. |
-| Implementation verification | VERIFIED | Independent source and E2E reruns confirmed own-account bundle, exact member/registry SQL predicates, one permit/rate unit, trusted client address, held-response refusal and seven due source controls. |
+| Outcome | Deciding controls |
+|---|---|
+| Service key selects only its live organization/group and registry descriptors | Live HTTP/Postgres API tests, with foreign organization created before response; wrong-kind/revoked/suspended scope controls |
+| Validated policy persists with exact server/key/mode/registry binding | Cache binding, malformed snapshot, rotation and backup controls; durable checking intent precedes requests; actual storage-failure-during401 regression |
+| Explicit standalone and remembered managed outage remain distinct | Expanded E2E uses conflicting standalone and central policy, then central denial through outage/restart; existing unchanged C19 controls retained |
+| Credentials authorize only their selected registry and cannot reuse another caller's metadata | npm/PyPI request-local metadata; two-token/anonymous warm-content denial; disk/memory/restart controls; destination spies record metadata and artifacts, including absent PyPI files-host credential |
+| Selected/legacy reads retain exact registry, package and artifact identity | Shared HTTP selected/legacy cold/warm matrix, raw scoped npm GET/HEAD, wrong registry/refusal, unsupported-write zero-I/O |
+| Current authority governs final bytes | Real-service prepared-response20-case npm/PyPI cold/warm GET/HEAD/range matrix with cross-thread publication before/after handoff, accepted stream completion and subsequent denial; managed regression matrix and deterministic admission-generation race |
 
-## Temporary material
+`prerequisite-slice-16.md` and `tdd-prerequisite-slice-16.md` retain engineering detail and exact commands/logs. Four review-discovered defects have real behavioral RED then GREEN: refusal recovery after unwritable storage, stale principal/new generation, scoped npm alias routing, and extra-origin artifact credential forwarding.
 
-The project scan found only the committed TLS fixture under `tests/fixtures/tls/` and disposable E2E keys/tokens under `target/e2e/`. After final verification, `target/e2e/` was removed. A repeat key/certificate/config path scan found only the committed TLS fixture. No generated key, bundle or npm config appears as a worktree change.
+Additional positive/acceptance controls were added after initial code. Their missing chronological RED is an acknowledged process deviation (`prerequisite-review-round-1.md`), not a fabricated test-first claim. Current effectiveness is independently reviewed; later checks do not rewrite history.
 
-## Selected URL namespace revalidation (2026-10-27)
+## Checks
 
-The selected npm base, setup bundle and rendered artifact links now use `/registry/npm/<id>/`. Selected read, ping, search and audit route registrations use that base; legacy `/npm/...` no longer treats a numeric first segment as a registry ID. This revalidation changes the Slice 1 route witness only; audit response filtering and actions remain for later slices.
+- Focused four defect regressions: PASS. Shared real-service final-handoff20-case acceptance: PASS within1 test. Unchanged C19 controls: PASS. API nonvacuity correction: PASS.
+- Final Authorization inventory: `cargo test --test authorization_read_once`,4passed/0failed/0ignored, `.scratch/prerequisite-checks/review-inventory-green-4.log`.
+- Final `cargo test --workspace`: PASS, exit0,782passed/0failed/21ignored across53summaries; `.scratch/prerequisite-checks/workspace-review-final-4.log`. Ignored19real-client tests,1resource-limit child and1timing measurement remain explicit; current native npm/pip E2E is checked separately. Earlier round2 attempt stopped223passed/3inventory failures/1ignored; it is historical, not the final result.
+- Final `cargo check --workspace`: PASS, `.scratch/prerequisite-checks/workspace-review-final-check-4.log`.
+- Final E2E: round5 PASS, exit0,1passed/0failed/0notrun; JUnit1test/0failures/0skipped,50.236seconds after15-second setup. Logs `.scratch/prerequisite-checks/e2e-service-policy-round5.log`, `round-5-server-states.log`, `round-5-manifest-before.json`, `round-5-manifest-after.json`; JUnit `.scratch/service-policy-e2e-round5/out/junit.xml`. Actual running→paused→running retained11.223.20.12 and10.77.0.5; exact image IDs and all30hashes matched before/after; own project containers were cleaned.
+- The preceding rebuilt-image attempt FAILED after setup159seconds/runtime101.4seconds at server recovery (`Expected HTTP/, RTSP/ or ICE/`), before final revocation/restart assertions. Log `.scratch/prerequisite-checks/e2e-service-policy-final.log`. A separate current-image probe proved a fixture address collision: stopping server released its fixed.12; recreated dynamic firewall acquired.12; recreated server remained CREATED/noIP; gateway's fixed HTTP upstream reached the firewall's TLS listener. Five lifecycle snapshots in `.scratch/service-policy-recovery-probe/out` and `review-recovery-probe.log` establish this cause. Own stacks were cleaned; product hashes unchanged. Scenario now pauses/asserts paused/unpauses server in finally, preserving its address while retaining all policy-outage/restart/recovery/revocation assertions and timeouts. Node syntax and fresh narrow `outage-fixture-review.md` both PASS.
+- Replacement command: `node tests/e2e/harness/run.mjs --only E2E-service-policy --skip-build`. Reuse is limited to the exact images already rebuilt from unchanged product: firewall `38e5ff3a9d140209d8324485543ad80170924a93b109dc28d9e802ae9ea5c685`, server `fe7f9258137f8309e7db8cfa4d7c8f7dd4ba349cf4cc2671359d29be90f77ad1`; `.scratch/prerequisite-checks/recovery-image-context.json` records image/config bindings. This is not substitution of archived/pre-implementation images. Earlier round1 E2E1/0 remains historical.
+- Both molecule models PASS. Publishing:3checks due at Slice1 and3additional existing-source checks PASS with unsafe controls;3absent Slice3 checks legitimately PENDING; archive `run-O1FiQp`. Lead prerequisite Slice16:54checks PASS with unsafe controls; archive `run-obTWSc`. Independent verification clarified this bySlice distinction;6PASS is not6due-at-Slice1.
+- All8 unique applicable specs independently rerun:0production findings and1expected finding per unsafe control.60pair grouping/120archive bindings verified. Retained reports: `slice-1-source-report.json`, `slice-1-source-hashes.json`; detailed immutable source/control archives under `.scratch/state/software-factory/contract-evidence/repo-cc718bf594b6832a/`, both protected with `.keep`.
 
-| Check | Observed result | Evidence scope |
-|---|---|---|
-| `test -f tests/e2e/scenarios/publishing-certificate-npm.mjs && node tests/e2e/harness/run.mjs --only E2E-publishing-certificate-npm` | RED on unchanged product source at `setup bundle selects the distinct npm registry namespace`: 0 passed, 1 failed, 0 not run, exit 1. GREEN after change: 1 passed, 0 failed, 0 not run, exit 0. | Signed-in bundle and real npm install, `/npm/123/1.0.0`, its legacy tarball, selected `/registry/npm/<id>/123`, and the existing certificate, group, outage, and refusal controls. [TDD record](tdd-slice-1.md). |
-| `TMPDIR="$PWD/.scratch/tmp" cargo check --workspace` | PASS, exit 0. | Workspace type check. |
-| `cargo test --workspace --offline --quiet` | Sandbox attempt stopped with local socket bind `PermissionDenied` (154 passed, 1 ignored before failure). Elevated attempt passed earlier groups, then 34 `probation-server --test accounts` tests failed at `tests/common/mod.rs:108` with Postgres `PoolTimedOut`; exit 101. | Full Rust suite remains incomplete because its test Postgres was unavailable; no route assertion failure was reported. |
-| `node --check tests/e2e/scenarios/publishing-certificate-npm.mjs`; `git diff --check` on touched tracked source | PASS. | Syntax and whitespace only. `cargo fmt --all -- --check` fails across pre-existing concurrent unformatted source; no broad formatting rewrite was made. |
-| Pinned `router molecule-check --plan-root docs/plans/publishing-proxy` | PASS, exit 0, no findings. | Declared finite model only. |
-| Pinned `router molecule-verify --plan-root docs/plans/publishing-proxy --slice 1` | Overall PENDING, exit 1: all seven due Slice 1 structural obligations PASS; three future-source checks PENDING (one Slice 3, two Slice 4). Raw evidence: `/home/john/.local/state/software-factory/contract-evidence/run-6mnD3o`. | Structural source and mutation controls; exact URL values and runtime behavior are established by E2E, not by this check. |
+These are structural ordering checks on shared seams, not proof of every value/concurrency behavior or implementation of nine ecosystems. Runtime controls and source reviews carry those distinct claims.
 
-The first E2E attempt required Podman runtime access outside the sandbox; after escalation it reached the behavioral red and later green. The first source-verify attempt could not write the tool's evidence directory outside the workspace; the elevated rerun produced the result above. The broader npm-read E2E still has old selected URL literals and belongs to Slice 3 revalidation.
+## Reviews and limits
 
-### Scoped selected version review fix
+- Security: bounded CLEAR; `prerequisite-security-round-2.md` preserves findings, resolutions and the reviewer's clarification that incomplete global analyses do not alone block a bounded review. Global formal taint/guard proof remains UNKNOWN; doctor-established unavailable exact IFDS and incomplete inventories are explicit limits.
+- Code: SHIP. All four product defects resolved in `prerequisite-code-review-round-2.md`; its sole inventory blocker is closed by the4/0 scanner result and fresh independent `prerequisite-code-review-inventory.md`. The reviewer proved all29 other subject files and scanner logic unchanged.
+- Adversarial: PASS; `prerequisite-adversarial-final.md` independently closes all four prior test-effectiveness gaps; `outage-fixture-review.md` independently checks the sole later scenario change on round5. Separate current-image runtime acceptance also passes.
+- Independent implementation verification: VERIFIED; `slice-1-verification.md` records current source/requirement correspondence, independently inspected final runtime logs and fresh model/source checks. No blocking finding remains.
 
-Code and adversarial review identified a selected scoped-version route error: Axum decoded `@e2e%2Fscoped` to `@e2e/scoped`, then the version handler appended `/1.0.0` as though the path named an unencoded scope/package pair. The focused E2E red returned HTTP 400 `INVALID_INPUT` on `GET /registry/npm/<id>/@e2e%2Fscoped/1.0.0`. The handler now treats a leading `@` as an unencoded scope only when that decoded segment contains no slash, matching the legacy parser rule.
+Native macOS/Windows, later audit/publishing/unpublish operations and broader ecosystem deployment remain assigned to their approved later slices. No commit, push or deployment is claimed.
 
-After the fix, the focused E2E passed 1/1 with zero failures and zero not run. It checked the exact scoped name/version, a selected-registry artifact link and readable tarball, and a group-blocked scoped version returning 403. `cargo check --workspace`, E2E JavaScript syntax, and scoped `git diff --check` passed. The pinned `molecule-check` passed. The pinned `molecule-verify --slice 1` returned overall PENDING because the same three future Slice 3/4 sources remain absent; all seven due Slice 1 structural checks passed with raw evidence at `/home/john/.local/state/software-factory/contract-evidence/run-IjXC7d`. These checks establish declared model consistency and structural source order; the E2E establishes the URL/value behavior. The full Rust suite was not rerun after this one-condition fix because the prior run in this revalidation could not reach a complete result without test Postgres.
+## Execution resource limits
 
-### Final certificate-route matrix and reviews
+After the user reported CPU load, task builds were restricted to cores0–1, nice19,2Cargo jobs and2test threads. E2E builds run sequentially through `.scratch/prerequisite-checks/podman-compose-lowcpu`. A disposable container witness confirmed inherited CPU affinity and priority. Rootless cgroup quota setup was unavailable, so no quota enforcement is claimed. Heavy work/cache/logs use disk-backed repository `.scratch`, not `/tmp`.
 
-The selected package, encoded scoped version, and selected artifact routes each returned HTTP 401 with a missing, foreign, or revoked certificate. Each three-request group left the fake upstream request count unchanged. The final focused E2E command, `test -f tests/e2e/scenarios/publishing-certificate-npm.mjs && TMPDIR="$PWD/.scratch/tmp" node tests/e2e/harness/run.mjs --only E2E-publishing-certificate-npm`, passed independently twice after that matrix was added: 1 passed, 0 failed, 0 not run in each run. The second run was made by implementation QA. JavaScript syntax and scoped diff checks passed. The matrix was a test-only addition with no behavioral red; product source and the TDD record did not change after the scoped-version fix.
-
-| Review | Final verdict | Deciding result |
-|---|---|---|
-| Code | SHIP | Fresh review checked the scoped-version fix, selected URL propagation, and legacy numeric paths; no remaining defect. |
-| Security | CLEAR for the Slice 1 certificate-route gap | Fresh bounded review inspected admission and the nine-request refusal/zero-upstream matrix. The broad SMTC missing-guards analysis remains Stub/Lossy and supplies no clean proof. |
-| Adversarial | PASS | Fresh review confirmed the encoded scoped-version defect was closed and found no further selected/legacy URL boundary defect. |
-| Implementation verification | VERIFIED | Independent E2E, `cargo check --workspace`, model check, seven due source obligations and mutation controls, URL wiring, and evidence correspondence passed. Raw source evidence: `/home/john/.local/state/software-factory/contract-evidence/run-UUEjEX`. |
-
-The final source verifier remains overall PENDING solely for the three absent Slice 3/4 sources. SMTC compile verification was incomplete (`lsp_not_quiescent`); `cargo check --workspace` passed. The broad Rust suite remains incomplete because its test Postgres timed out during the earlier revalidation attempt.
+The workflow tracker reported repeated witness-to-fix transitions. Each was diagnosed with a concrete failure: independent product defects, followed by inventory registration and its whitespace-normalized key. No failed result is relabeled PASS and no required test was removed.

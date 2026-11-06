@@ -1,0 +1,1053 @@
+{
+  "version": 1,
+  "plan": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy",
+  "gate": 4,
+  "target": "design",
+  "id": "1ace8394-af44-41a3-a877-034a78e51a3c",
+  "phase": "sealed",
+  "subject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/01-product.md",
+      "sha256": "39ed1758b6e83d4effb0205474f71b107cbeb66ded55bee93693c4c424d8fa46"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/02-architecture.md",
+      "sha256": "02fb235c77e11aa293c73479d5b78827e93393c4a715502159004e4ef9d95ff1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/03-program-design.md",
+      "sha256": "6eaae247008563edadac6b1c4fcfa33b3ff8ce7f05f1c83f960d012d67823407"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/04-slices.md",
+      "sha256": "5cb76b2b123c3eec4fad49b8bb15aaba871668a14b78e50c035dda770acccb44"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/molecule-flow.json",
+      "sha256": "e9006e603bac571a975e6c585db71ebee1740da46f08bc65042c3bb6b76700d3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "bb1d5c5a5c7009ecbfb936e6c5a1c30a99efc0e16fffaf72dd4cb4b0baf7b50e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "9f0ecfea83e59550de2dd5b3916175af27d20e00897a62b14e74791ba93b89f5"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-contracts.json",
+      "sha256": "39ca56d547c5065f86105bb875604df32c019e30ff7433d22b3629e0377a1ea3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "sha256": "c87920c0d5e59fae45b73f545a54d89c8a6efde7855e3f464f011a6c7b425115"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/molecule-contracts.json",
+      "sha256": "7cb3bb8cc92af0e220b771dfc672592b8b7ce9d46a33c70b912df22bbdbbbd7b"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml",
+      "sha256": "0f711f3c225e269ffa23574186ceca127a84a48358524ba788e733394d6285b9"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/canonical-token-packument.yaml",
+      "sha256": "ddd5ac804643b2d52655eebf21ec1430f6816195d2dd403ad2150c63870200fb"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml",
+      "sha256": "8708559028a35ec74bed5a823ca3f69b61ccbc4f31433427676108ca6f1c68d6"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml",
+      "sha256": "45698f9938b62df52f4923abda14649bba1afc94af861616c7011b0a99ce9b5c"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-removal-marker-after-put.yaml",
+      "sha256": "9b10f579ee58592213bf5e4a84983d480851c3f1065ffbf156d7dc23e96ba3c1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml",
+      "sha256": "5e55fc8cd2f8fa884adf70b15e3bad83c47a1af56aa7a97c5ac27f5e56570adf"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-unpublish-marker-before-delete.yaml",
+      "sha256": "2951b7e029318e172cbd86f9b695aa27bfc5e75e9c862714f06c1886c8881a56"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-unpublish-reference-before-send.yaml",
+      "sha256": "cbb99d749b5576acbadf5b54786d4cd552dd45410064e12107c93b6ecca5dabd"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/audit_filter.rs",
+      "sha256": "24baaf46396302c127260447e909408841186cd7e02e9e6c0e82aa0fe65e697f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/registry_action.rs",
+      "sha256": "cfbf9f9773b316b8ce6787da2e98b1e39c1524ead30c3562af868effff9cc462"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/token_packument.rs",
+      "sha256": "31176bfad7f228496bfb78060a679b8c0e7540be74f52a8a0e684406516c2ab2"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/client-certificate-support.md",
+      "sha256": "f25bf91598f62730022c13b640f3bb29271bdd722a99458e69e066cd9a2ad723"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/client-operation-matrix.md",
+      "sha256": "abd351ca829e6033ff375247617be712c8d64f0db65ac062e46a0aee76071cbc"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/client-shape-probe.md",
+      "sha256": "4e641b29735e44a285e55bd7e5247e4636be6bdc5ff1db0c811746165c319ca6"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/host-url-leakage.md",
+      "sha256": "7110c507e305e230eea3fe85f83af3bbb78485d7fc7b59b7df7ca3e573948029"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/local-client-repository-map.md",
+      "sha256": "12ea9902dee5524c636862b8419a9134628f0cbb4a2706d680a1ddf6c09abddd"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/npm-audit-fallback.md",
+      "sha256": "7355d2ad14affe57e98f2178faed3dbd2ced0ce8bcf4618d9d72133c68b5a8dd"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/npm-lockfile-probe.md",
+      "sha256": "a6536790ceacef8af4fe232cf016a389cda1267199257fc2c700b871871173ba"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/npm-two-route-probe.md",
+      "sha256": "af748edd0799e27472ed524f4df4181dc04ab7d9ad03138e055968c651551c85"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/npm-write-route-inventory.md",
+      "sha256": "48214c7f73871d872a5b2eeff664a82397ff87db3437f7d5f906064e650b6652"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes-current.md",
+      "sha256": "d6a08332c81acb20967e8908c623c37e491b5028b48e0851add5cc818db6d731"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes-final.md",
+      "sha256": "2c9fb85581534fe382ea4c50e017c5245fcbbe7916d0f280c5b33ce072b48be7"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes-post-contract.md",
+      "sha256": "e6ce94157232dbff13560c872d82045c6eeaf6de745ffe0ede83545d1b2c7c88"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes-signoff.md",
+      "sha256": "5cef12bfb6f89ab39eb3eb9df568d5b1ed8b7b507b93bdf777a7c34d4bd32656"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes-verified.md",
+      "sha256": "62860292f9f07e72fb72c526880203db42571d6b7f1c80ae75a4b78909076fa7"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-active-delete-routes.md",
+      "sha256": "cf118b7821c8699315cd0ff1b9ea2220a209011cd917c38bc4b4f710e116a617"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-direct-delete.md",
+      "sha256": "7640bde9b85b40ee43ed392f4b2b9947f64b71780ea116f1f2e375d676c0631f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-final-unpublish.md",
+      "sha256": "7db2c7dc62bfca121e5b565f09ca886490d949b27fb03f27edd9f600d94c799e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-get-credentials-final.md",
+      "sha256": "8cdc082d9d6764631a075e452b83aa086c8fd4a1d57847b9e7c86b382bc6550c"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-local-service.md",
+      "sha256": "7fa34cce11218e9a5913111efd41002a73e0eff395ed64bcd9c93842d9a3e49b"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-marker-provenance-current.md",
+      "sha256": "f393cbea1b9ae2acaba6e70279e26a037e61573b922985feeb450e65b0b3bfc2"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-marker-provenance-final.md",
+      "sha256": "b25117ce1acd84817098aa7aa9b3788a0590748cd67a8df3e3cfaab93ab49438"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-npm-route-final.md",
+      "sha256": "3e5c9ecde6fb404e39dabbdaefda12a2a3fe62abebecbbeb6e2186ca273b9c01"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-rebind-slice4.md",
+      "sha256": "226519eceae4577d38f3c2a6ca8586bc2303f5e216885ceadbcf35a7450436b2"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-selected-origin-only-final.md",
+      "sha256": "08e8c456da9eb08486c7160a9025a35802f7250bc711d93ea62c9d67d3ce7f87"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-unverifiable-partial-final.md",
+      "sha256": "975b7686433772edb092d5aca78bd0adfc580885a3e7c707c42cfaed050594ba"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team-whole-delete-final.md",
+      "sha256": "0b5a8a966a99d3b21e202f3999774713fe2b5bba2365298f8ee8a6aa991cc2ac"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/red-team.md",
+      "sha256": "398d8d1ad941bd14abb352a6b0d5bbf196f6c9769795a3bbe56916516d4fe7f3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/repository-structure.md",
+      "sha256": "92c45a422e12a37bc84bf9205344bbb51daef30b3da60d49ed43495ae5f1cbd3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-1.md",
+      "sha256": "44daaeec3fc556ffb80ee0e1a29887261b55005f5132483ee3be3645288b2727"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-2.md",
+      "sha256": "72ebac3416e1e784ef9970e234e991cadb0c0339580036bedbec8a29e3cd883e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-3.md",
+      "sha256": "8c768747dac07b96e00e4822d9fcd474afbfafbee1c8fea4e3195a606452aa44"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-4.md",
+      "sha256": "017388a05572400b39858c221c7056452edf80255c315d26cfd04f724879838f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-5.md",
+      "sha256": "1f0a5727e3a26c39793ecaf6f05e0352c67976958dd13c48a71f547ed94f6810"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-6.md",
+      "sha256": "ee8036293c4ad33c92e1f503aa4be410dac0eaf73788447c6e2c287f2c1b6e88"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-7.md",
+      "sha256": "a516ad2dfa49661c918d13bd53b023bdfdcf4626ed2a8762bb7aa4922aca240c"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/research-8-nora.md",
+      "sha256": "b732cb6bcd38147ab1dc9b945f8a135ebc32696700a835dbea88853e4322e767"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/resteer-local-client-baseline.md",
+      "sha256": "bb678442becad4ab92dced7e31b0c746cf555d7983a57b9ca9ce613bf0788c0e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-1.md",
+      "sha256": "bef51d38c06f969e26497fb39316c801321fa6dd3ed4ba41afaadcbae9072227"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-2.md",
+      "sha256": "c9090ed3e2f4c168463cabecb3c5a55fb6b528df7e8ebb1376ffbf72d019c029"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-3.md",
+      "sha256": "65e42eec204fac138173cb576e6aefde17e0f1d55dc669236dee4cca373189a9"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-4.md",
+      "sha256": "0b0f65c08629413e662ab24854c9e9e6d9cb9eafab6989695cc52e4d4d67b742"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/slice-5.md",
+      "sha256": "f3aa3a871372f078c02680a6e7338173613fa0f7cf06e6ac93efd7e4f65fc7b1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/smtc-rust-same-value.md",
+      "sha256": "efa2d11bc60baacb755612ff297a18371fdbbbfcff67159ee357841de3391936"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/socket-style-auth-resteer.md",
+      "sha256": "36ae2ddf50c0acbb18b60084cb589b7eee969fc6e888531ce6735ccb7493bf1e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/source-contract-rebind-slice2.md",
+      "sha256": "6870a42aea4528f08dbaf449f4d40a380f678cac5c206ebe95ec65e63c9be490"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/source-contract-rebind-slice4.md",
+      "sha256": "caff5ad270fa29c07065568e1c65dd0bae0690e8dfc65bb7eed2a6c63e9b325b"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/source-contract-rebind.md",
+      "sha256": "0dd1762eb197aac1930361e7ac2228d4921161a6dfc889d632c49f759f7d635a"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/source-spec-feasibility.md",
+      "sha256": "b62726ce273362d67374c96783d6a384ccafe09f6679fa1a674e7c14cfd2c003"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/tdd-slice-1.md",
+      "sha256": "a7683701e6b41886f29b58e324b88b1ddaf53c7e7721b7537301845497ad20ee"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/tdd-slice-2.md",
+      "sha256": "4dd18aedaa3726c075909764d2e29c6c8a3d79b1f36317cacaf5e3265e0feed0"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/tdd-slice-3.md",
+      "sha256": "98a24d5dba6c9ac0bfb893d972323c89e14ab766079c67bdc4e2854973877caf"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/tdd-slice-4.md",
+      "sha256": "fbc4e2fa3572a5a70bff9b1e3bde38071507268200b37cae076e3bda5e122eb6"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/tdd-slice-5.md",
+      "sha256": "0502a439f2ec837cce4978620f99024bd608b4ae72a354fbbeede4469204bcfc"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-active-delete-routes.md",
+      "sha256": "78fa58ff8acc85a8d1de6c2a619b0f19c45073c0ec789011cd745f00712f8784"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-direct-delete.md",
+      "sha256": "c51c7e08ba1307d6946effceea4d117a8facf6708163b96d486b739f73cd7d2b"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-final-unpublish.md",
+      "sha256": "c7c2633f8f19f77b63dd6421bf13feefb2aa6af50add8f35a58467024bdf34f9"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-get-fallback-credentials.md",
+      "sha256": "70d6cb3dadcbd0d211c8b8d7e90009876eea65a6c7a79453d84c692a8d358374"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-local-service.md",
+      "sha256": "23042fb1d5b5f8538e75cac498f4f5eea3039cec6e96117ac8c50973cb68dbd3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-marker-provenance.md",
+      "sha256": "4015806b66143bbce2edc419980f7385372df0a7bbcf9454fee802e9b699df2c"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-npm-route-final.md",
+      "sha256": "b9d880d2815005a5473af90d426bc6fca19880ee16a9c252d20637d770e0d5e0"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-rebind-slice4.md",
+      "sha256": "6ca532cbac97ab2dcee4c7b870a30f69b41fd9265aed261d39a8726061ab7385"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-selected-origin-only.md",
+      "sha256": "ce81e6d4a5f117698bd0ca8f7a9ae9336e90936c8c308891b9dbd6a401993672"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-unverifiable-revision.md",
+      "sha256": "70f6823f826277295f5aa6200cc084dd3adddd103cac536f370624c1656c53eb"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-whole-delete-final.md",
+      "sha256": "4d0bf74fd93b4c5ff895087f8e3e9ee87ba408480fd88e7eb0ae6a11b166f39a"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model-whole-delete.md",
+      "sha256": "19869bb5a7a81de2444a7cc3f9133e50c0975097e8e8eb15748c3edef1b68c63"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/threat-model.md",
+      "sha256": "387913f3fc36df4634d1e5d58fcd3bbe6be88c93ec595a998c4dda9ca8f153c3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/uv-lockfile-host.md",
+      "sha256": "b3c62b7fefc76bae9421dfcf0dea08eed9bbc5d282ff171c46342fd78ff01502"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/evidence/vendor-comparison.md",
+      "sha256": "4de01839c2566d563989c2ad61e504bfff624b864774b3096f065fd6ec7fec14"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/01-product.md",
+      "sha256": "609f0355a9ec3390e28f3c315d10e6e7980e3dfdc13f53815f382bfe368dca1f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/artifact-flow-correctness.md",
+      "sha256": "62bfc2a05606ca271ff398ec137f0c1c439f470b31acfa88a5ebd0a96cc3531f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-service-policy-api.md",
+      "sha256": "1ad895f9601ad8d5945a8ad16cb9ce6973b495aeaa2134b38a83404b51e133bc"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/local-client-policy-modes.md",
+      "sha256": "7bbbeb770c2a12da685731389dae1387d2c195d8c3c15918e053d3a28f954661"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/research-public-ecosystems.md",
+      "sha256": "92058a3156961974737d80fbf75d8d384538b2f41038308c0b9615e9f7d5676c"
+    }
+  ],
+  "rounds": 0,
+  "pre": {
+    "findings": [],
+    "inFlight": [
+      {
+        "sinceEvent": 34,
+        "stage": "hand"
+      },
+      {
+        "sinceEvent": 35,
+        "stage": "qa"
+      }
+    ],
+    "status": {
+      "checkpoint": null,
+      "gateProgress": {
+        "1": "## Gate 1 progress\n\n- [x] Create 00-status.md\n  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.\n- [x] Select the plan with router resume\n  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.\n- [x] Create the product clarification inventory\n  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.\n- [x] Resolve user decisions\n  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.\n- [x] Gather ecosystem and authentication evidence\n  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.\n- [x] Review UI mockups with the user\n  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.\n- [x] Complete 01-product.md\n  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.\n- [x] Obtain QA READY\n  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/publishing-proxy/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.\n- [x] Present and record user approval\n  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/publishing-proxy/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.",
+        "2": "## Gate 2 progress\n\n- [x] Check whether existing architecture and evidence can be reused\n  Result: The approved 01-product.md amendment supersedes certificate-based package admission and shared package-data behavior. Reuse the lead package-firewall-mvp architecture for shared-service policy and direct upstream fetches; this plan retains npm/PyPI operations, registry selection, publishing and upstream authorization.\n- [x] Create or update the architecture and carry deferred questions\n  Result: Active local-service design is recorded in 02-architecture.md. It carries C1003/C1018 into the combined design and imports C1019-C1024 without reopening settled choices.\n- [x] Gather repository evidence\n  Result: evidence/local-client-repository-map.md maps npm/PyPI TLS client admission separately from upstream registry authorization. SMTC coverage is partial; it describes the delivered baseline and makes no claim that the replacement path exists.\n- [x] Save findings and resolve architecture decisions\n  Result: C1019-C1024 are reused: one common service policy, no package-request login, local/approved-node access and upstream registry credentials remain separate. D42 records the proposed service-scoped lease because this path has no member identity; D41 safety remains.\n- [x] Complete 02-architecture.md\n  Result: Active boundaries, selected registry paths, managed policy API-key authentication in the HTTP Authorization header, separate package-manager credentials for selected-upstream authorization, failure behavior, D42 service-scoped reference proposal and C1018 verification obligations are recorded. Certificate-era architecture is explicitly historical.\n- [x] Record architecture assumptions and review triggers\n  Result: 02-architecture.md records local/approved-node access, no per-user identity, no managed-to-standalone fallback, C19/C20 outage behavior and fresh threat/Red Team review triggers. Prior certificate reviews are historical.\n- [x] Complete architecture section of the combined design\n  Result: Active molecule-flow.json covers managed/standalone policy source, selected npm/PyPI requests, local/upstream denial, current-policy release, request-local token-packument, and service-scoped unpublish. router molecule-check PASS.\n- [x] Carry contracts and obligations into program design\n  Result: Active molecule-contracts.json binds six modeled operations with seven source obligations. Existing action, token-packument and audit controls PASS; four planned service-source obligations are absent and assigned to future slices. molecule-check PASS; evidence/source-contract-rebind.md records fresh run-Z0bKeh and the exact-value/runtime limits. Gate QA preparation must classify future sources as PENDING.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: Reconcile architecture Flow 3 login credential wording with approved N06 legacy Basic login, then repeat combined design reviews and approval. The product outcome is unchanged.",
+        "3": "## Gate 3 progress\n\n- [x] Create or update the design from its template\n  Result: 03-program-design.md records the active local-service caller flow: the firewall identifies/authenticates to the policy server with its API key in the HTTP Authorization header; package-manager credentials separately authorize requests to the selected registry. It also records managed/standalone policy, npm/PyPI contracts and the historical certificate baseline.\n- [x] Gather design evidence\n  Result: evidence/local-client-repository-map.md separates existing npm/PyPI TLS admission from upstream credential forwarding; lead evidence supplies shared-service source contracts. SMTC map completeness limits are recorded.\n- [x] Record effects on callers, dependencies, and planned checks\n  Result: Active caller-owner table and the lead Slice 16/25 dependencies are documented in 03-program-design.md and 04-slices.md. Existing npm/PyPI actions remain owned here; service foundation is lead-owned.\n- [x] Define interfaces, behavior, invariants, and test cases\n  Result: 03-program-design.md defines the local service response and service-scoped unpublish seams, exact package-manager credential role, upstream allow/deny, token-packument/audit rules and caller scenarios; runtime proofs are assigned to active slices.\n- [x] Validate analyzer specs or assign their authoring to slices\n  Result: Existing action, token-packument and audit source controls PASS at evidence/source-contract-rebind.md run-Z0bKeh. Four service-route/unpublish controls target absent future Slice 1/3 sources; narrow call-order specs exist and do not claim value binding or atomicity.\n- [x] Define security coverage and resolve required planning reviews\n  Result: Active security coverage distinguishes the policy API key in the HTTP Authorization header from package-manager credentials sent to the selected registry. Fresh evidence/threat-model-local-service.md returned MODELED and evidence/red-team-local-service.md returned SOUND after closing response-handoff and service-scoped marker findings. Future source/runtime proofs remain assigned to slices.\n- [x] Complete contracts and flows for the combined design\n  Result: Active six-flow molecule-flow.json and seven source obligations are linked to active slices; molecule-check PASS. Fresh run-Z0bKeh confirms the three existing source controls PASS; four obligations remain on absent future route/unpublish modules assigned to later slices, as recorded in evidence/source-contract-rebind.md.\n- [x] Carry guarantees and checks into delivery slices\n  Result: 04-slices.md assigns current-policy/read, safe-audit/token-packument, npm publishing/unpublish, PyPI upload and native release witnesses to Slices 1–5, with the lead Slice 16/25 dependencies and security reviews explicit.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: Slice 4 production checks pass, but eight approved unsafe mutation controls cannot apply their illustrative exact source statements. Rebind those controls to the meaningful frozen source shape without changing D40/D41 guarantees; rerun combined design QA and approval. Slice 3 proof remains valid.\n\nRework: Fresh Slice 4 security review found the direct canonical tarball DELETE route can bypass the accepted-removal marker. Add that entry point to security coverage and require local refusal before outbound I/O. Independent adversarial review found a leased retained version can submit a changed ordinary upstream URL; specify exact leased URL preservation without rejecting valid unleased upstream URLs. Recheck the design and obtain combined approval before implementation resumes.\n\nRework result: The direct canonical DELETE and leased-URL design is explicit in 03-program-design.md, 04-slices.md and molecule-flow.json. Fresh threat review MODELED and Red Team SOUND are in evidence/threat-model-direct-delete.md and evidence/red-team-direct-delete.md. Router molecule-check PASS and molecule-verify --slice 4 PASS for existing structural obligations at run-ArzeXw; the two new exact-value/route controls remain Slice 4 runtime and security-review work.",
+        "4": "## Gate 4 progress\n\n- [x] Write the slice plan\n  Result: 04-slices.md now assigns local-service reads, npm audits/token-packuments, npm publishing/unpublish, PyPI publishing, and native release acceptance to active Slices 1–5. The earlier certificate-based delivery record is historical.\n- [x] Define slice behavior and dependencies\n  Result: Active Slices 1–5 depend on lead package-firewall-mvp Slices 16/25 where they consume the shared service/current-authority and native lifecycle, and preserve this plan’s npm/PyPI ownership.\n- [x] Define checks\n  Result: 04-slices.md names allow/deny, credential separation, selected-upstream, safe audit, token-packument isolation, D41/D42 service-scoped marker/destination and native GitHub Actions witnesses. These are future executable witnesses, not current test results.\n- [x] Validate prerequisites\n  Result: Reuse lead Slice 16 shared-service and Slice 25 native lifecycle prerequisites, plus its Linux/macOS/Windows client and Linux policy-server requirements. Runtime and non-Linux Docker evidence remain future acceptance, not current proof.\n- [x] Complete required combined design reviews\n  Result: evidence/threat-model-selected-origin-only.md returned MODELED and evidence/red-team-selected-origin-only-final.md returned SOUND against the current design. They cover the policy API key/header split, selected-registry-only credentials, extra-origin refusal, all three DELETE routes, marker/GET fallback, uncertain partial-write recovery, and service-scoped quotas. Runtime/source guarantees remain pending.\n- [ ] Obtain QA READY\n  Result: Fresh design QA returned REVISE (DQA-F2): active invariant rows lacked disposition prefixes. Every active row in 03-program-design.md now starts with an allowed disposition; current model remains PASS and six future source obligations remain PENDING. Fresh QA is pending.\n- [ ] Present and record user approval\n  Result: Combined design is reopened and unapproved. Present and record approval only after fresh READY QA.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: The same eight Slice 4 control strings need exact source rebinding; existing planned outcomes and Slice 3 completion are preserved.\n\nRework: Extend the Slice 4 witness to reject direct canonical tarball DELETE before upstream and changed tarball URLs for leased retained versions. Prior Slice 4 source and client results predate these controls.\n\nRework result: Slice 4 now requires changed leased-URL refusal with valid unleased URL compatibility and direct canonical tarball DELETE refusal with zero outbound calls. Threat review MODELED and Red Team SOUND; finite model PASS, existing structural controls PASS. Combined QA and user approval remain due.\n\nRework: Fresh Slice 4 security review found the upstream-authorized whole-package revision DELETE is a separate public route absent from the Threat model inventory. Add its authorization boundary and a direct allow/deny witness, repeat design reviews and combined approval, then finish Slice 4. No marker bypass was established."
+      },
+      "gates": [
+        {
+          "approved": "2026-11-02"
+        },
+        "in progress",
+        "pending",
+        "pending"
+      ],
+      "hasCheckpoint": false,
+      "loop": {
+        "boundary": {
+          "kind": "gate",
+          "number": 2
+        },
+        "generation": 39,
+        "history": [
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          }
+        ],
+        "presentedSlice": 5,
+        "reopened": false
+      },
+      "notes": "Current scope after C1027 is approved 2026-11-02: nine families (npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI). RubyGems is critical and first added after the shared-service foundation; CPAN is omitted. Q8-Q11 and package-manager credential ownership remain settled. Gate 1 approval and progress are recorded; earlier pending-scope/ten-family notes below are historical. Combined design remains unapproved. Lead FIX-16-A in package-firewall-mvp/02-architecture.md, 03-program-design.md and 04-slices.md assigns the discovered managed-authority release gap to Slice 16 before new adapters; evidence/artifact-flow-correctness.md records source facts and required tests, not an implemented fix.\n\nReopened Gate 1 on 2026-10-27 after the user chose a distinct selected-registry URL and reduced, policy-safe audit advisories and requested investigation of proxy fallback. Pinned npm 11 sends only names and versions to bulk audit while quick audit needs a full dependency tree, so a general proxy translation cannot faithfully recover the missing input. C38 is resolved: Probation only proxies the selected registry; npm 11 reports an upstream bulk failure, and direct quick clients retain guarded access. No advisory server or fabricated fallback is added. Slices 1–2 passed historically but their selected-URL witnesses must rerun under the new path. Slice 3's nonempty audit control remains red until revised design approval and implementation. See `evidence/slice-3.md`.\nOn 2026-10-28, Slice 4 QA found that version unpublish fails for an otherwise capable selected upstream with a noncanonical tarball URL. Preserve Gate 1; reopen Gate 2 and the combined design for a safe URL reference, then reverify affected Slice 3 and Slice 4. The exact source controls for package policy and action origin also need rebinding to current signatures. See `evidence/slice-4.md` and `evidence/research-8-nora.md`.\n\nOn 2026-10-28, Slice 4 code and pinned npm action E2E passed the canonical, noncanonical and approved extra-origin restart paths, but all eight new defect controls were UNKNOWN because exact `from` text in molecule-contracts.json predates implementation. Reopen Gate 3 for control rebinding only; preserve the approved D40/D41 behavior. See evidence/slice-4.md and contract-evidence run-cfTjHy.\n\nOn 2026-10-30, all five slices are complete and the Slice 5 presentation was accepted. The final pinned client matrix passed 19/19 runners and 123/123 row-mode cases, including 10,000 distinct certificate-backed admissions per provider. The private-PyPI upload approval-withdrawal regression passed; cargo check, finite model and 21/21 source controls passed. Fresh code, security, adversarial and implementation reviews returned SHIP, CLEAR, PASS and VERIFIED. Post-completion verification on the corrected source passed the full Rust workspace suite (762 passed, 0 failed, 21 ignored) and a fresh containerized OpenSSL issuer transition (1 passed, 0 failed). The portal still requires each actual organization issuer to prove a fresh good-to-revoked transition before activation. See `evidence/slice-5.md` and `show-me-slice-5.md`.",
+      "settings": {
+        "presentation": "auto"
+      },
+      "sha256": "0cebcbe8920fdbc9ddbc3eb0dec3de1fc03c7ae96d369039a74c3a139fd216ea",
+      "slices": [
+        {
+          "done": false,
+          "number": 1,
+          "title": "Local npm/PyPI reads through the shared service"
+        },
+        {
+          "done": false,
+          "number": 2,
+          "title": "Safe npm audit and token-packument behavior"
+        },
+        {
+          "done": false,
+          "number": 3,
+          "title": "npm publishing and service-scoped version unpublish"
+        },
+        {
+          "done": false,
+          "number": 4,
+          "title": "PyPI publishing and uv workflows"
+        },
+        {
+          "done": false,
+          "number": 5,
+          "title": "Native package-client release acceptance"
+        }
+      ],
+      "title": "Transparent package publishing"
+    }
+  },
+  "statusIdentity": "9b633a465f358afce058d8538e44887242d940fe0cdbe0519636bc0ca8d243c4",
+  "modelSubject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/molecule-flow.json",
+      "sha256": "e9006e603bac571a975e6c585db71ebee1740da46f08bc65042c3bb6b76700d3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/01-product.md",
+      "sha256": "39ed1758b6e83d4effb0205474f71b107cbeb66ded55bee93693c4c424d8fa46"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/02-architecture.md",
+      "sha256": "02fb235c77e11aa293c73479d5b78827e93393c4a715502159004e4ef9d95ff1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/03-program-design.md",
+      "sha256": "6eaae247008563edadac6b1c4fcfa33b3ff8ce7f05f1c83f960d012d67823407"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/04-slices.md",
+      "sha256": "5cb76b2b123c3eec4fad49b8bb15aaba871668a14b78e50c035dda770acccb44"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "bb1d5c5a5c7009ecbfb936e6c5a1c30a99efc0e16fffaf72dd4cb4b0baf7b50e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "9f0ecfea83e59550de2dd5b3916175af27d20e00897a62b14e74791ba93b89f5"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-contracts.json",
+      "sha256": "39ca56d547c5065f86105bb875604df32c019e30ff7433d22b3629e0377a1ea3"
+    }
+  ],
+  "sourceSubject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "bb1d5c5a5c7009ecbfb936e6c5a1c30a99efc0e16fffaf72dd4cb4b0baf7b50e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "9f0ecfea83e59550de2dd5b3916175af27d20e00897a62b14e74791ba93b89f5"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-contracts.json",
+      "sha256": "39ca56d547c5065f86105bb875604df32c019e30ff7433d22b3629e0377a1ea3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "sha256": "c87920c0d5e59fae45b73f545a54d89c8a6efde7855e3f464f011a6c7b425115"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/01-product.md",
+      "sha256": "39ed1758b6e83d4effb0205474f71b107cbeb66ded55bee93693c4c424d8fa46"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/02-architecture.md",
+      "sha256": "02fb235c77e11aa293c73479d5b78827e93393c4a715502159004e4ef9d95ff1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/03-program-design.md",
+      "sha256": "6eaae247008563edadac6b1c4fcfa33b3ff8ce7f05f1c83f960d012d67823407"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/04-slices.md",
+      "sha256": "5cb76b2b123c3eec4fad49b8bb15aaba871668a14b78e50c035dda770acccb44"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/molecule-contracts.json",
+      "sha256": "7cb3bb8cc92af0e220b771dfc672592b8b7ce9d46a33c70b912df22bbdbbbd7b"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/molecule-flow.json",
+      "sha256": "e9006e603bac571a975e6c585db71ebee1740da46f08bc65042c3bb6b76700d3"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml",
+      "sha256": "0f711f3c225e269ffa23574186ceca127a84a48358524ba788e733394d6285b9"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/canonical-token-packument.yaml",
+      "sha256": "ddd5ac804643b2d52655eebf21ec1430f6816195d2dd403ad2150c63870200fb"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml",
+      "sha256": "8708559028a35ec74bed5a823ca3f69b61ccbc4f31433427676108ca6f1c68d6"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml",
+      "sha256": "45698f9938b62df52f4923abda14649bba1afc94af861616c7011b0a99ce9b5c"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-removal-marker-after-put.yaml",
+      "sha256": "9b10f579ee58592213bf5e4a84983d480851c3f1065ffbf156d7dc23e96ba3c1"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml",
+      "sha256": "5e55fc8cd2f8fa884adf70b15e3bad83c47a1af56aa7a97c5ac27f5e56570adf"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-unpublish-marker-before-delete.yaml",
+      "sha256": "2951b7e029318e172cbd86f9b695aa27bfc5e75e9c862714f06c1886c8881a56"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/specs/service-unpublish-reference-before-send.yaml",
+      "sha256": "cbb99d749b5576acbadf5b54786d4cd552dd45410064e12107c93b6ecca5dabd"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/audit_filter.rs",
+      "sha256": "24baaf46396302c127260447e909408841186cd7e02e9e6c0e82aa0fe65e697f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/registry_action.rs",
+      "sha256": "cfbf9f9773b316b8ce6787da2e98b1e39c1524ead30c3562af868effff9cc462"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/http/token_packument.rs",
+      "sha256": "31176bfad7f228496bfb78060a679b8c0e7540be74f52a8a0e684406516c2ab2"
+    }
+  ],
+  "missingSources": [
+    "/home/john/go/src/github.com/postfix/probation/src/http/service_registry.rs",
+    "/home/john/go/src/github.com/postfix/probation/src/http/service_unpublish.rs"
+  ],
+  "post": {
+    "findings": [],
+    "inFlight": [
+      {
+        "sinceEvent": 34,
+        "stage": "hand"
+      },
+      {
+        "sinceEvent": 35,
+        "stage": "qa"
+      }
+    ],
+    "status": {
+      "checkpoint": null,
+      "gateProgress": {
+        "1": "## Gate 1 progress\n\n- [x] Create 00-status.md\n  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.\n- [x] Select the plan with router resume\n  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.\n- [x] Create the product clarification inventory\n  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.\n- [x] Resolve user decisions\n  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.\n- [x] Gather ecosystem and authentication evidence\n  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.\n- [x] Review UI mockups with the user\n  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.\n- [x] Complete 01-product.md\n  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.\n- [x] Obtain QA READY\n  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/publishing-proxy/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.\n- [x] Present and record user approval\n  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/publishing-proxy/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.",
+        "2": "## Gate 2 progress\n\n- [x] Check whether existing architecture and evidence can be reused\n  Result: The approved 01-product.md amendment supersedes certificate-based package admission and shared package-data behavior. Reuse the lead package-firewall-mvp architecture for shared-service policy and direct upstream fetches; this plan retains npm/PyPI operations, registry selection, publishing and upstream authorization.\n- [x] Create or update the architecture and carry deferred questions\n  Result: Active local-service design is recorded in 02-architecture.md. It carries C1003/C1018 into the combined design and imports C1019-C1024 without reopening settled choices.\n- [x] Gather repository evidence\n  Result: evidence/local-client-repository-map.md maps npm/PyPI TLS client admission separately from upstream registry authorization. SMTC coverage is partial; it describes the delivered baseline and makes no claim that the replacement path exists.\n- [x] Save findings and resolve architecture decisions\n  Result: C1019-C1024 are reused: one common service policy, no package-request login, local/approved-node access and upstream registry credentials remain separate. D42 records the proposed service-scoped lease because this path has no member identity; D41 safety remains.\n- [x] Complete 02-architecture.md\n  Result: Active boundaries, selected registry paths, managed policy API-key authentication in the HTTP Authorization header, separate package-manager credentials for selected-upstream authorization, failure behavior, D42 service-scoped reference proposal and C1018 verification obligations are recorded. Certificate-era architecture is explicitly historical.\n- [x] Record architecture assumptions and review triggers\n  Result: 02-architecture.md records local/approved-node access, no per-user identity, no managed-to-standalone fallback, C19/C20 outage behavior and fresh threat/Red Team review triggers. Prior certificate reviews are historical.\n- [x] Complete architecture section of the combined design\n  Result: Active molecule-flow.json covers managed/standalone policy source, selected npm/PyPI requests, local/upstream denial, current-policy release, request-local token-packument, and service-scoped unpublish. router molecule-check PASS.\n- [x] Carry contracts and obligations into program design\n  Result: Active molecule-contracts.json binds six modeled operations with seven source obligations. Existing action, token-packument and audit controls PASS; four planned service-source obligations are absent and assigned to future slices. molecule-check PASS; evidence/source-contract-rebind.md records fresh run-Z0bKeh and the exact-value/runtime limits. Gate QA preparation must classify future sources as PENDING.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: Reconcile architecture Flow 3 login credential wording with approved N06 legacy Basic login, then repeat combined design reviews and approval. The product outcome is unchanged.",
+        "3": "## Gate 3 progress\n\n- [x] Create or update the design from its template\n  Result: 03-program-design.md records the active local-service caller flow: the firewall identifies/authenticates to the policy server with its API key in the HTTP Authorization header; package-manager credentials separately authorize requests to the selected registry. It also records managed/standalone policy, npm/PyPI contracts and the historical certificate baseline.\n- [x] Gather design evidence\n  Result: evidence/local-client-repository-map.md separates existing npm/PyPI TLS admission from upstream credential forwarding; lead evidence supplies shared-service source contracts. SMTC map completeness limits are recorded.\n- [x] Record effects on callers, dependencies, and planned checks\n  Result: Active caller-owner table and the lead Slice 16/25 dependencies are documented in 03-program-design.md and 04-slices.md. Existing npm/PyPI actions remain owned here; service foundation is lead-owned.\n- [x] Define interfaces, behavior, invariants, and test cases\n  Result: 03-program-design.md defines the local service response and service-scoped unpublish seams, exact package-manager credential role, upstream allow/deny, token-packument/audit rules and caller scenarios; runtime proofs are assigned to active slices.\n- [x] Validate analyzer specs or assign their authoring to slices\n  Result: Existing action, token-packument and audit source controls PASS at evidence/source-contract-rebind.md run-Z0bKeh. Four service-route/unpublish controls target absent future Slice 1/3 sources; narrow call-order specs exist and do not claim value binding or atomicity.\n- [x] Define security coverage and resolve required planning reviews\n  Result: Active security coverage distinguishes the policy API key in the HTTP Authorization header from package-manager credentials sent to the selected registry. Fresh evidence/threat-model-local-service.md returned MODELED and evidence/red-team-local-service.md returned SOUND after closing response-handoff and service-scoped marker findings. Future source/runtime proofs remain assigned to slices.\n- [x] Complete contracts and flows for the combined design\n  Result: Active six-flow molecule-flow.json and seven source obligations are linked to active slices; molecule-check PASS. Fresh run-Z0bKeh confirms the three existing source controls PASS; four obligations remain on absent future route/unpublish modules assigned to later slices, as recorded in evidence/source-contract-rebind.md.\n- [x] Carry guarantees and checks into delivery slices\n  Result: 04-slices.md assigns current-policy/read, safe-audit/token-packument, npm publishing/unpublish, PyPI upload and native release witnesses to Slices 1–5, with the lead Slice 16/25 dependencies and security reviews explicit.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: Slice 4 production checks pass, but eight approved unsafe mutation controls cannot apply their illustrative exact source statements. Rebind those controls to the meaningful frozen source shape without changing D40/D41 guarantees; rerun combined design QA and approval. Slice 3 proof remains valid.\n\nRework: Fresh Slice 4 security review found the direct canonical tarball DELETE route can bypass the accepted-removal marker. Add that entry point to security coverage and require local refusal before outbound I/O. Independent adversarial review found a leased retained version can submit a changed ordinary upstream URL; specify exact leased URL preservation without rejecting valid unleased upstream URLs. Recheck the design and obtain combined approval before implementation resumes.\n\nRework result: The direct canonical DELETE and leased-URL design is explicit in 03-program-design.md, 04-slices.md and molecule-flow.json. Fresh threat review MODELED and Red Team SOUND are in evidence/threat-model-direct-delete.md and evidence/red-team-direct-delete.md. Router molecule-check PASS and molecule-verify --slice 4 PASS for existing structural obligations at run-ArzeXw; the two new exact-value/route controls remain Slice 4 runtime and security-review work.",
+        "4": "## Gate 4 progress\n\n- [x] Write the slice plan\n  Result: 04-slices.md now assigns local-service reads, npm audits/token-packuments, npm publishing/unpublish, PyPI publishing, and native release acceptance to active Slices 1–5. The earlier certificate-based delivery record is historical.\n- [x] Define slice behavior and dependencies\n  Result: Active Slices 1–5 depend on lead package-firewall-mvp Slices 16/25 where they consume the shared service/current-authority and native lifecycle, and preserve this plan’s npm/PyPI ownership.\n- [x] Define checks\n  Result: 04-slices.md names allow/deny, credential separation, selected-upstream, safe audit, token-packument isolation, D41/D42 service-scoped marker/destination and native GitHub Actions witnesses. These are future executable witnesses, not current test results.\n- [x] Validate prerequisites\n  Result: Reuse lead Slice 16 shared-service and Slice 25 native lifecycle prerequisites, plus its Linux/macOS/Windows client and Linux policy-server requirements. Runtime and non-Linux Docker evidence remain future acceptance, not current proof.\n- [x] Complete required combined design reviews\n  Result: evidence/threat-model-selected-origin-only.md returned MODELED and evidence/red-team-selected-origin-only-final.md returned SOUND against the current design. They cover the policy API key/header split, selected-registry-only credentials, extra-origin refusal, all three DELETE routes, marker/GET fallback, uncertain partial-write recovery, and service-scoped quotas. Runtime/source guarantees remain pending.\n- [ ] Obtain QA READY\n  Result: Fresh design QA returned REVISE (DQA-F2): active invariant rows lacked disposition prefixes. Every active row in 03-program-design.md now starts with an allowed disposition; current model remains PASS and six future source obligations remain PENDING. Fresh QA is pending.\n- [ ] Present and record user approval\n  Result: Combined design is reopened and unapproved. Present and record approval only after fresh READY QA.\n\nRework: Preserve the approved product promise; design a safe reference for npm version-unpublish after the token packument version is removed, rebind exact source controls, then repeat combined design QA and approval. Prior results above are historical.\n\nRework: The same eight Slice 4 control strings need exact source rebinding; existing planned outcomes and Slice 3 completion are preserved.\n\nRework: Extend the Slice 4 witness to reject direct canonical tarball DELETE before upstream and changed tarball URLs for leased retained versions. Prior Slice 4 source and client results predate these controls.\n\nRework result: Slice 4 now requires changed leased-URL refusal with valid unleased URL compatibility and direct canonical tarball DELETE refusal with zero outbound calls. Threat review MODELED and Red Team SOUND; finite model PASS, existing structural controls PASS. Combined QA and user approval remain due.\n\nRework: Fresh Slice 4 security review found the upstream-authorized whole-package revision DELETE is a separate public route absent from the Threat model inventory. Add its authorization boundary and a direct allow/deny witness, repeat design reviews and combined approval, then finish Slice 4. No marker bypass was established."
+      },
+      "gates": [
+        {
+          "approved": "2026-11-02"
+        },
+        "in progress",
+        "pending",
+        "pending"
+      ],
+      "hasCheckpoint": false,
+      "loop": {
+        "boundary": {
+          "kind": "gate",
+          "number": 2
+        },
+        "generation": 39,
+        "history": [
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          }
+        ],
+        "presentedSlice": 5,
+        "reopened": false
+      },
+      "notes": "Current scope after C1027 is approved 2026-11-02: nine families (npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI). RubyGems is critical and first added after the shared-service foundation; CPAN is omitted. Q8-Q11 and package-manager credential ownership remain settled. Gate 1 approval and progress are recorded; earlier pending-scope/ten-family notes below are historical. Combined design remains unapproved. Lead FIX-16-A in package-firewall-mvp/02-architecture.md, 03-program-design.md and 04-slices.md assigns the discovered managed-authority release gap to Slice 16 before new adapters; evidence/artifact-flow-correctness.md records source facts and required tests, not an implemented fix.\n\nReopened Gate 1 on 2026-10-27 after the user chose a distinct selected-registry URL and reduced, policy-safe audit advisories and requested investigation of proxy fallback. Pinned npm 11 sends only names and versions to bulk audit while quick audit needs a full dependency tree, so a general proxy translation cannot faithfully recover the missing input. C38 is resolved: Probation only proxies the selected registry; npm 11 reports an upstream bulk failure, and direct quick clients retain guarded access. No advisory server or fabricated fallback is added. Slices 1–2 passed historically but their selected-URL witnesses must rerun under the new path. Slice 3's nonempty audit control remains red until revised design approval and implementation. See `evidence/slice-3.md`.\nOn 2026-10-28, Slice 4 QA found that version unpublish fails for an otherwise capable selected upstream with a noncanonical tarball URL. Preserve Gate 1; reopen Gate 2 and the combined design for a safe URL reference, then reverify affected Slice 3 and Slice 4. The exact source controls for package policy and action origin also need rebinding to current signatures. See `evidence/slice-4.md` and `evidence/research-8-nora.md`.\n\nOn 2026-10-28, Slice 4 code and pinned npm action E2E passed the canonical, noncanonical and approved extra-origin restart paths, but all eight new defect controls were UNKNOWN because exact `from` text in molecule-contracts.json predates implementation. Reopen Gate 3 for control rebinding only; preserve the approved D40/D41 behavior. See evidence/slice-4.md and contract-evidence run-cfTjHy.\n\nOn 2026-10-30, all five slices are complete and the Slice 5 presentation was accepted. The final pinned client matrix passed 19/19 runners and 123/123 row-mode cases, including 10,000 distinct certificate-backed admissions per provider. The private-PyPI upload approval-withdrawal regression passed; cargo check, finite model and 21/21 source controls passed. Fresh code, security, adversarial and implementation reviews returned SHIP, CLEAR, PASS and VERIFIED. Post-completion verification on the corrected source passed the full Rust workspace suite (762 passed, 0 failed, 21 ignored) and a fresh containerized OpenSSL issuer transition (1 passed, 0 failed). The portal still requires each actual organization issuer to prove a fresh good-to-revoked transition before activation. See `evidence/slice-5.md` and `show-me-slice-5.md`.",
+      "settings": {
+        "presentation": "auto"
+      },
+      "sha256": "0cebcbe8920fdbc9ddbc3eb0dec3de1fc03c7ae96d369039a74c3a139fd216ea",
+      "slices": [
+        {
+          "done": false,
+          "number": 1,
+          "title": "Local npm/PyPI reads through the shared service"
+        },
+        {
+          "done": false,
+          "number": 2,
+          "title": "Safe npm audit and token-packument behavior"
+        },
+        {
+          "done": false,
+          "number": 3,
+          "title": "npm publishing and service-scoped version unpublish"
+        },
+        {
+          "done": false,
+          "number": 4,
+          "title": "PyPI publishing and uv workflows"
+        },
+        {
+          "done": false,
+          "number": 5,
+          "title": "Native package-client release acceptance"
+        }
+      ],
+      "title": "Transparent package publishing"
+    }
+  },
+  "verdict": "READY",
+  "report": {
+    "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/gate-4-qa.md",
+    "sha256": "fec9d805035595beaab43a1c3f0b72363921cd791b473b275dd8af75c00e8970",
+    "dev": "64769",
+    "ino": "93616290",
+    "ctimeNs": "1793653279184032325"
+  },
+  "presentation": {
+    "reviewId": "1ace8394-af44-41a3-a877-034a78e51a3c",
+    "reportSha256": "fec9d805035595beaab43a1c3f0b72363921cd791b473b275dd8af75c00e8970",
+    "file": {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/publishing-proxy/show-me-design.md",
+      "sha256": "e4265a36ce915fb749a1f0f79923daab0b87b66a8031b0c189e87f54c4190d2f",
+      "dev": "64769",
+      "ino": "93616288",
+      "ctimeNs": "1793653409569588814"
+    }
+  }
+}

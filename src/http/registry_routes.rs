@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::Extension;
 use axum::body::{Body, to_bytes};
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{OriginalUri, Path, RawQuery, State};
 use axum::http::{HeaderMap, Method, header};
 use axum::response::{IntoResponse, Response};
 use probation_policy::api::RegistryId;
@@ -25,6 +25,7 @@ use crate::upstream::{NamedReadRequest, OriginKind, OriginSet, UpstreamError};
 
 pub async fn package(
     State(app): State<Arc<App>>,
+    OriginalUri(original_uri): OriginalUri,
     peer: Option<Extension<VerifiedPeer>>,
     method: Method,
     RawQuery(query): RawQuery,
@@ -38,7 +39,11 @@ pub async fn package(
     let (permit, principal) = registry_read::admit(&app, peer.clone(), registry, &headers).await?;
     let name = npm_routes::parse_name(&package)?;
     let representation = npm_routes::negotiate(&headers);
-    let rendered = if headers.contains_key(header::AUTHORIZATION) {
+    let rendered = if headers.contains_key(header::AUTHORIZATION)
+        && (app.service_policy().is_none()
+            || (original_uri.path().starts_with("/registry/npm/")
+                && principal.registry_read_authorization.as_deref().is_some_and(|value| value.starts_with("Bearer "))))
+    {
         token_packument::serve_token_packument(
             &app,
             &principal,
@@ -387,7 +392,11 @@ pub async fn unsupported_artifact_delete(
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
         .filter(|value| value.starts_with("Bearer ") && value.len() > 7).ok_or(ApiError::Unauthenticated)?.to_owned();
     let (permit, principal) = registry_read::admit(&app, peer.clone(), registry, &headers).await?;
-    let response = unpublish_reference::send_unpublish_delete(&app, &principal, registry.0, id, &filename, &revision, authorization).await?;
+    let response = if app.service_policy().is_some() {
+        super::service_unpublish::consume_service_marker_then_send(&app, registry.0, id, None, &filename, &revision, authorization).await?
+    } else {
+        unpublish_reference::send_unpublish_delete(&app, &principal, registry.0, id, &filename, &revision, authorization).await?
+    };
     let current = registry_read::recheck(&app, peer, registry, &headers).await?;
     if current.registry_origin != principal.registry_origin || current.deletion_scopes != principal.deletion_scopes {
         return Err(ApiError::PolicyUnavailable);

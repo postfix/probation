@@ -251,6 +251,7 @@ enum StoreCommand {
     CommitProjectRefresh {
         registry_id: u64,
         refresh: Box<ProjectRefresh>,
+        persist_metadata: bool,
         reply: oneshot::Sender<StoreResult<CommittedProject>>,
     },
     GetReference {
@@ -414,8 +415,19 @@ impl StoreHandle {
         refresh: ProjectRefresh,
     ) -> StoreResult<CommittedProject> {
         let refresh = Box::new(refresh);
-        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, reply })
+        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata: true, reply })
             .await
+    }
+
+    /// Persist reference identity, first-seen times and pins without retaining a
+    /// credential-scoped metadata response for another request or mode.
+    pub(crate) async fn commit_request_references_in(
+        &self,
+        registry_id: u64,
+        refresh: ProjectRefresh,
+    ) -> StoreResult<CommittedProject> {
+        let refresh = Box::new(refresh);
+        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata: false, reply }).await
     }
 
     pub async fn get_reference(&self, id: ReferenceId) -> StoreResult<Option<ReferenceRow>> {
@@ -809,8 +821,8 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = get_project(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::CommitProjectRefresh { registry_id, refresh, reply } => {
-            let result = commit_project_refresh(connection, registry_id, &refresh).await;
+        StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata, reply } => {
+            let result = commit_project_refresh(connection, registry_id, &refresh, persist_metadata).await;
             answer(healthy, WRITE, reply, result);
         }
         StoreCommand::GetReference { id, reply } => {
@@ -1058,9 +1070,10 @@ async fn commit_project_refresh(
     connection: &mut Connection,
     registry_id: u64,
     refresh: &ProjectRefresh,
+    persist_metadata: bool,
 ) -> StoreResult<CommittedProject> {
     let transaction = connection.transaction().await?;
-    let result = refresh_in(&transaction, registry_id, refresh).await;
+    let result = refresh_in(&transaction, registry_id, refresh, persist_metadata).await;
     settle(transaction, result).await
 }
 
@@ -1068,6 +1081,7 @@ async fn refresh_in(
     transaction: &Transaction<'_>,
     registry_id: u64,
     refresh: &ProjectRefresh,
+    persist_metadata: bool,
 ) -> StoreResult<CommittedProject> {
     let (generation, digest_generation) = {
         let mut rows = transaction
@@ -1091,7 +1105,7 @@ async fn refresh_in(
     // Read back from an `INTEGER` column and never incremented here, so it fits.
     let digest_generation_column = digest_generation.cast_signed();
 
-    transaction
+    if persist_metadata { transaction
         .execute(
             REPLACE_PROJECT,
             (
@@ -1107,7 +1121,7 @@ async fn refresh_in(
                 digest_generation_column,
             ),
         )
-        .await?;
+        .await?; }
 
     let mut committed_first_seen = HashMap::new();
     for upsert in &refresh.references {

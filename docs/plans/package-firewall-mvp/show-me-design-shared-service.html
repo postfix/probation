@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design approval: shared enforcement service (Package Firewall MVP)</title>
+<style>
+:root{--bg:#fff;--fg:#1b1f24;--mut:#57606a;--line:#d0d7de;--card:#f6f8fa;--acc:#0b5cad;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--fg:#e6edf3;--mut:#9aa7b4;--line:#2d3640;--card:#171d24;--acc:#6cb2ff;--ok:#56d364;--warn:#e3b341;--bad:#ff7b72}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px 20px 48px}
+h1{font-size:1.5rem;margin:.4em 0}
+h2{font-size:1.25rem;margin:1.8em 0 .4em;border-bottom:1px solid var(--line);padding-bottom:.2em}
+h3{font-size:1.05rem;margin:1.3em 0 .3em}
+p,li{overflow-wrap:anywhere}
+a{color:var(--acc)}
+a:focus,summary:focus,button:focus,[tabindex]:focus{outline:3px solid var(--acc);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0}
+.note{border-left:4px solid var(--warn)}
+table{border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top;font-size:.9rem;overflow-wrap:anywhere}
+th{background:var(--card)}
+pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:8px 0}
+code{font:.88em ui-monospace,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:10px;padding:0 8px;font-size:.8rem;color:var(--mut)}
+.pend{color:var(--warn)}.plan{color:var(--mut)}
+svg{width:100%;height:auto;max-width:100%;display:block}
+svg text{fill:var(--fg);font:12px system-ui,sans-serif}
+svg .box{fill:var(--card);stroke:var(--acc);stroke-width:1.5}
+svg .bad{fill:var(--card);stroke:var(--bad);stroke-width:1.5}
+svg .good{fill:var(--card);stroke:var(--ok);stroke-width:1.5}
+svg .edge{stroke:var(--mut);stroke-width:1.5;fill:none}
+svg .arrow{fill:var(--mut)}
+.q{font-size:1.15rem;font-weight:600;margin-top:1.5em;padding:12px 14px;border:2px solid var(--acc);border-radius:8px}
+</style>
+</head>
+<body>
+<main>
+<h1>Package Firewall MVP: combined design approval</h1>
+<p>Topic: one shared enforcing service, nine package families, and the FIX-16-A current-authority release. This page is a digest of 02-architecture.md, 03-program-design.md and 04-slices.md. Nothing here is implemented or run yet.</p>
+
+<h2>What problem do we have?</h2>
+<p><strong>Today:</strong> the firewall is built for one user at a time and two package families (npm and PyPI). Teams want one service for a whole machine or a whole cluster, with one shared policy, and protection for nine families.</p>
+<p><strong>A real defect, FIX-16-A:</strong> on the older managed route, the final "is this download still allowed?" check uses the policy as it was when the request arrived. If the policy server publishes a ban or refuses the service key while the request is still preparing, the file can still be sent. This applies to cached ("warm") files too. The source reading is in evidence/artifact-flow-correctness.md.</p>
+<p><strong>Consequence:</strong> a package that should be blocked could be delivered after the block was published. The new shared service would inherit the same gap unless it is fixed first.</p>
+
+<h2>How will we solve it?</h2>
+
+<h3>1. Purpose and what the caller gets</h3>
+<ul>
+<li>One enforcing service per machine, or one per cluster (C1019).</li>
+<li>One policy for everyone who uses it. The policy is chosen by one organisation service key held by the service (C1020).</li>
+<li>No Probation login on package requests. Access is limited by host and network controls: loopback on a machine, approved nodes in a cluster (C1021, C1022).</li>
+<li>Package-manager credentials stay where they are. The firewall stores no registry credentials. There is no public/private mode (C1015, C1024).</li>
+<li>Either the exact verified artifact arrives, or it is refused with zero artifact bytes.</li>
+</ul>
+
+<h3>2. Behaviour flow, including the FIX-16-A release gate</h3>
+<p>The gate is a short synchronous lock in managed policy state. Publishing a policy, a refusal or a new config takes the write side and raises a generation number. The final check takes the read side, confirms the exact file, registry, config generation and OSV generation (the vulnerability-feed version, C1029) are still current, and hands the response over while still holding the lock. No waiting and no input/output happens inside it. A publication ordered before the final check governs the request, cold or warm. A publication after handoff does not cut a stream that was already accepted.</p>
+
+<svg viewBox="0 0 900 400" role="img" aria-labelledby="flow-t flow-d">
+<title id="flow-t">Request and publication flow around the publication gate</title>
+<desc id="flow-d">Policy snapshot is fetched and activated, which takes the gate write side and raises the generation. A request is prepared asynchronously after reading the OSV generation. Then authorize_current_policy takes the read side. If the policy refuses, the request gets zero artifact bytes. If the generation changed, the request is prepared again, at most two preparations, then 503. If current, release_verified_response sends the exact bytes while holding the gate. A publication after handoff does not cut the accepted stream.</desc>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path class="arrow" d="M0,0 L8,4 L0,8z"/></marker></defs>
+<rect class="box" x="10" y="20" width="170" height="54" rx="6"/><text x="20" y="42">Policy server</text><text x="20" y="60">snapshot (service key)</text>
+<rect class="box" x="230" y="20" width="200" height="54" rx="6"/><text x="240" y="42">activate (write side)</text><text x="240" y="60">publish + generation +1</text>
+<line class="edge" x1="180" y1="47" x2="228" y2="47" marker-end="url(#a)"/>
+<rect class="box" x="10" y="150" width="170" height="54" rx="6"/><text x="20" y="172">Request via respond</text><text x="20" y="190">registry + native request</text>
+<rect class="box" x="230" y="150" width="200" height="54" rx="6"/><text x="240" y="172">Prepare (async)</text><text x="240" y="190">OSV generation read first</text>
+<line class="edge" x1="180" y1="177" x2="228" y2="177" marker-end="url(#a)"/>
+<rect class="box" x="490" y="150" width="200" height="54" rx="6"/><text x="500" y="172">authorize_current_policy</text><text x="500" y="190">read side, no await, no I/O</text>
+<line class="edge" x1="430" y1="177" x2="488" y2="177" marker-end="url(#a)"/>
+<line class="edge" x1="330" y1="74" x2="560" y2="148" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<text x="400" y="100">publication before this point governs</text>
+<rect class="good" x="740" y="150" width="150" height="54" rx="6"/><text x="750" y="172">release_verified_response</text><text x="750" y="190">exact bytes, gate held</text>
+<line class="edge" x1="690" y1="177" x2="738" y2="177" marker-end="url(#a)"/>
+<text x="695" y="168">current</text>
+<rect class="bad" x="490" y="290" width="200" height="54" rx="6"/><text x="500" y="312">Refuse: zero artifact bytes</text><text x="500" y="330">policy, authority or OSV deny</text>
+<line class="edge" x1="590" y1="204" x2="590" y2="288" marker-end="url(#a)"/>
+<text x="598" y="250">refusal</text>
+<rect class="bad" x="230" y="290" width="200" height="54" rx="6"/><text x="240" y="312">Generation changed</text><text x="240" y="330">prepare again, max 2, then 503</text>
+<path class="edge" d="M520,204 L520,250 L330,250 L330,288" marker-end="url(#a)"/>
+<text x="340" y="244">stale generation</text>
+<rect class="box" x="740" y="290" width="150" height="54" rx="6"/><text x="750" y="312">Publication after</text><text x="750" y="330">handoff: stream stays</text>
+<line class="edge" x1="815" y1="204" x2="815" y2="288" marker-end="url(#a)"/>
+</svg>
+<p>Reading the diagram in words: a snapshot is activated under the write side. A request prepares, then the gate checks it. Outcomes: exact bytes, refusal with zero bytes, or re-preparation (two tries at most, then 503). A later publication affects the next request, not the accepted stream. Source: 03-program-design.md "FIX-16-A" and its OSV generation contract.</p>
+
+<h3>3. Interfaces with attached contracts</h3>
+<p>These are proposed Rust declarations copied from 03-program-design.md, not installed APIs. All are <strong>proposed</strong>. The gate methods are named in the document without full signatures, so they appear in the contract table below, not as invented code.</p>
+<pre>// crates/probation-server/src/service_policy.rs   (proposed, slice 28)
+// Snapshot route handler: GET /api/v1/policy/snapshot, read-only.
+// Effects: one read transaction binds key standing, policy chain and registries.
+// Errors: PolicyApiError (401 bad or wrong-kind key, 403 suspended, 429 budget, 503 storage).
+pub async fn snapshot(/* existing request/server dependencies */) // no caller org or place selector accepted
+    -&gt; Result&lt;ServicePolicySnapshot, PolicyApiError&gt;;
+
+// What the policy server returns for the service key's one organisation.
+// It holds no upstream credentials. The enforcer validates it fully before use.
+pub struct ServicePolicySnapshot {
+    pub version: u32,                          // wire version; an unsupported version is a validation failure
+    pub key_id: KeyId,                         // the service key this policy belongs to
+    pub org: OrgId,                            // organisation derived server-side from the key
+    pub place_chain: Vec&lt;ChainLink&gt;,          // inheritance chain for the key's group or organisation
+    pub layers: Vec&lt;PlaceLayer&gt;,              // policy layers; must correspond to the chain
+    pub revision: u64,                         // policy revision number
+    pub account: PlaceRef,                     // place the policy is attached to
+    pub rate_limit: Option&lt;std::num::NonZeroU32&gt;, // None means no rate limit is set
+    pub rate_limit_source: LimitSource,        // where the limit came from
+    pub registries: Vec&lt;RegistryDescriptor&gt;,   // every registry the organisation owns
+}
+
+// One registry the enforcer may reach. Carries no upstream credentials.
+pub struct RegistryDescriptor {
+    pub registry: RegistryId,                  // registry identity used in policy keys
+    pub ecosystem: Ecosystem,                  // package family
+    pub target_url: Option&lt;String&gt;,            // upstream address; can only narrow what the local denylist allows
+    pub trusted: bool,                         // trust flag from the descriptor
+    pub registry_private_cidrs: Vec&lt;String&gt;,   // can only narrow, never widen, the denylist (D5)
+    pub deletion_scopes: Vec&lt;RegistryDeletionScope&gt;, // which deletions this registry permits
+}
+
+// src/managed/service_policy.rs   (proposed, slice 28)
+// Validates a full reply, then activates it once, atomically.
+// Effects: publishes policy and bumps generation; persists a refusal before acting on it.
+// Errors: ServicePolicyError. Never changes mode on an outage.
+async fn activate(&amp;self, /* received reply + configured service identity */) // crate-private; ordering anchored at activation_order in src/managed/order_guards.rs
+    -&gt; Result&lt;(), ServicePolicyError&gt;;
+
+// src/http/service_registry.rs   (proposed, slice 28)
+// Owns the whole response lifetime: registry binding, dispatch, verified preparation,
+// current-policy recheck, then release. Errors map to ApiError (refusal gives zero artifact bytes).
+pub async fn respond(/* App + selected registry + native request */)
+    -&gt; Result&lt;axum::response::Response, ApiError&gt;;</pre>
+
+<table>
+<thead><tr><th>Operation / route</th><th>Contract</th><th>Evidence / status / limits</th></tr></thead>
+<tbody>
+<tr><td>GET /api/v1/policy/snapshot</td><td>Service-kind key only. Organisation derived on the server. Full snapshot each time (no revision-only 304). A registry removed or foreign degrades that registry only; there is no 404 row.</td><td class="plan">Planned: test snapshot_route_rejects_user_kind_revoked_and_foreign_keys_with_no_policy_body. Source check snapshot_order <span class="pend">PENDING</span> until crates/probation-server/src/order_guards.rs exists.</td></tr>
+<tr><td>activate</td><td>Binds server identity, key hash, mode and registry set. Explicit refusal means 401 or 403 over HTTPS from the bound server, is saved before acted on, and clears only by a key change or the operator reset command (D3). Validation failure keeps the last good snapshot and never creates or clears a refusal. A late reply from an older config cannot activate.</td><td class="plan">Planned: activation_rejects_invalid_snapshot_before_publish; service_policy_cache tests. Source check activation_order <span class="pend">PENDING</span> until src/managed/order_guards.rs exists.</td></tr>
+<tr><td>PolicyPublicationGate (publish, authorize_current_policy, release_verified_response)</td><td>std RwLock. Publish takes the write side. authorize_current_policy takes the read side and checks the exact reference, registry, config generation and OSV generation. The response is not cloneable and keeps the guard. A poisoned gate refuses everything and readiness shows it. Never held across an await. No nested acquisition.</td><td class="plan">Planned: slice 16 matrix in tests/managed_delivery_authority.rs, including a cross-thread publication at the gate. Source check respond_order <span class="pend">PENDING</span> until src/managed/publication_gate.rs exists. No concurrency proof is claimed.</td></tr>
+<tr><td>respond (every common route, GET, HEAD, range)</td><td>The gate runs before any byte is written. HEAD and range follow the same checks. Metadata and render caches key on registry plus policy generation. Two preparations at most, then 503.</td><td class="plan">Planned: respond_calls_guard_before_release_on_every_route. That the async code calls the guards in order is a runtime and review obligation, not a source-check claim.</td></tr>
+<tr><td>Order guards: snapshot_order, activation_order, respond_order</td><td>Small synchronous functions so the source checker can lower the async operations.</td><td class="pend">PENDING: the three guard files do not exist yet (rows 16 and 28).</td></tr>
+<tr><td>Credential-bearing read seam (src/http/credential_read.rs)</td><td>A read that carries caller credentials is request-scoped. Its bytes go through a temporary file removed at the end of the response. It never writes or is served from the shared content, metadata or snapshot caches, and its refusals are not cached across scopes. First-seen and digest pins keep identity only. C1028, option A.</td><td class="plan">Planned: credential_bearing_read_never_enters_shared_caches in row 28, then again in each of rows 17 to 21, 23 and 24.</td></tr>
+<tr><td>OSV generation (C1029)</td><td>OsvClient owns a counter, written only by the batcher. It rises when a stored answer turns allow into deny (entry absent, expired or false, now true). It is read before OSV evaluation starts and again inside the gate. A rise sends the request back for re-evaluation (two tries, then 503). Test seam: AppDeps::osv_base_url.</td><td class="plan">Planned: osv_generation_change_refuses_before_release; osv_verdict_flip_between_evaluation_and_final_boundary_refuses.</td></tr>
+<tr><td>Listener and route classes</td><td>Peer CIDR checked on the real TCP peer, forwarded headers ignored, IPv4-mapped normalised, prefix floor /8 (IPv4) and /32 (IPv6), Host checked. Class R: GET and HEAD admitted by peer allowlist. Class W: publish and unpublish need the caller's own upstream credential, else 401 with no upstream call. Class X: settings and action routes are not registered (404).</td><td class="plan">Planned: listener_admission, upstream_write_without_credential_is_refused, route_inventory_equals_classified_table.</td></tr>
+</tbody>
+</table>
+
+<h2>How will we confirm it is solved?</h2>
+<p>Each row is scenario, expected result, check. Every check below is <strong>planned</strong>. None has been run. Observed results will come from the delivering slice.</p>
+<table>
+<thead><tr><th>Scenario</th><th>Expected result</th><th>Check (planned)</th></tr></thead>
+<tbody>
+<tr><td>Cold request; deny published during the upstream download</td><td>Refusal, zero artifact bytes</td><td>managed_cold_policy_change_refuses_before_release</td></tr>
+<tr><td>Warm request; deny published while it prepares</td><td>Refusal, zero bytes, no second fetch</td><td>managed_warm_policy_change_refuses_before_release</td></tr>
+<tr><td>Explicit key or authority refusal, cold and warm</td><td>Both refuse</td><td>managed_authority_refusal_refuses_before_release</td></tr>
+<tr><td>Wrong file, registry or old generation at release</td><td>Refusal or re-evaluation</td><td>current_release_binding_rejects_wrong_artifact_or_generation</td></tr>
+<tr><td>Nothing changed</td><td>Exact expected bytes</td><td>managed_unchanged_policy_delivers_exact_bytes</td></tr>
+<tr><td>Deny published after handoff</td><td>Accepted stream completes; next request refuses</td><td>policy_publication_after_authorization_keeps_accepted_stream</td></tr>
+<tr><td>OSV verdict flips before the final boundary</td><td>Refusal; a second flip gives 503; control delivers</td><td>osv_verdict_flip_between_evaluation_and_final_boundary_refuses</td></tr>
+<tr><td>Publication on another thread at the gate; poisoned gate; pending writer</td><td>Refusal; all routes refuse closed; no deadlock</td><td>final_boundary_barrier_drives_cross_thread_publication; poisoned_gate_refuses_all_routes_and_readiness; pending_writer_does_not_deadlock_read_or_handoff</td></tr>
+<tr><td>Bytes fetched under credential A, then a caller with none</td><td>No shared cache entry from A; own upstream request or refusal</td><td>credential_bearing_read_never_enters_shared_caches (row 28, then each family row)</td></tr>
+<tr><td>Cluster node pull, denied or service down, origin healthy</td><td>Zero direct runtime-to-origin requests</td><td>E2E-service-cluster-probe (row 29), E2E-service-cluster (row 26)</td></tr>
+</tbody>
+</table>
+<p>Fail-first rule: each new test runs in a scratch worktree on disk at the baseline commit, with the prototype's production changes absent. It must fail on an assertion, not on a compile error. A test that passes there is rewritten. Run commands: <code>cargo test --test managed_delivery_authority</code> (row 16) and the row 28 list in 04-slices.md.</p>
+
+<h3>Security coverage: threats and decisions to controls and owning rows</h3>
+<p>Threat model: evidence/threat-model-shared-service-r2.md, verdict MODELED, manual design review, no source analysis. An installed detector is not counted as coverage.</p>
+<table>
+<thead><tr><th>Threat / decision</th><th>Control</th><th>Owning row</th><th>Evidence / gap</th></tr></thead>
+<tbody>
+<tr><td>T1 listener admission</td><td>Real-peer CIDR check, prefix floor, IPv4-mapped normalisation, Host check, route classes R/W/X</td><td>28 (cluster NAT part: 26, D1)</td><td class="plan">listener_admission tests planned. Cluster gap until row 26.</td></tr>
+<tr><td>T2 policy API, key, descriptors</td><td>Service-kind key only, server-derived organisation, separate policy transport, local outbound denylist (D5)</td><td>28</td><td class="plan">service_policy_api tests planned</td></tr>
+<tr><td>T3 remembered policy and refusal</td><td>Bound envelope, refusal saved first, generation fencing, refusal only from the authenticated bound server (D3)</td><td>28</td><td class="plan">service_policy_cache tests planned</td></tr>
+<tr><td>T4 FIX-16-A gate</td><td>PolicyPublicationGate; exact reference, registry, authority and OSV generation binding (C1029)</td><td>16 (common route: 28)</td><td class="plan">managed_delivery_authority matrix planned</td></tr>
+<tr><td>T5 shared cache vs caller credentials</td><td>No caching of credential-bearing reads (C1028, D2)</td><td>28</td><td class="plan">Test planned</td></tr>
+<tr><td>T6 identity, age, migration tag</td><td>Per-family canonical identity with registry in the key; explicit refusal of an unknown tag</td><td>17-24</td><td class="plan">Per-family fixtures, reopen and old-binary-refuses tests planned</td></tr>
+<tr><td>T7 origins, redirects, parsers, fail-open</td><td>Declared origin sets, hop-by-hop redirect checks, bounded typed parsers, refuse unfilterable metadata</td><td>17-24</td><td class="plan">Origin traces and hostile corpora planned</td></tr>
+<tr><td>T8 cluster routing, no fallback, node trust</td><td>Explicit containerd server, egress allowlist, preloaded bootstrap image, one store owner</td><td>29 (probe), 26</td><td class="pend">Gap: routing is a documented candidate until row 29 and 26 (C1023)</td></tr>
+<tr><td>D1 peer mechanism</td><td>externalTrafficPolicy Local or equivalent</td><td>26</td><td class="plan">Unapproved-node pod and external NodePort refused (planned)</td></tr>
+<tr><td>D2, D4</td><td>C1028 and C1029 as above</td><td>28, 16</td><td class="plan">As above</td></tr>
+<tr><td>D3, D5</td><td>Refusal semantics; outbound denylist</td><td>28</td><td class="plan">As above</td></tr>
+<tr><td>Four omitted threats: resource exhaustion; log injection; key-file permissions and log leakage; accepted residuals (C30, C23)</td><td>Bounded semaphores, secret-excluded sinks, service-owned permissions, documented limits</td><td>25, 27</td><td class="plan">Checks planned in rows 25 and 27. Residuals are accepted limits, not findings.</td></tr>
+</tbody>
+</table>
+
+<h3>Decisions you already made (not reopened here)</h3>
+<ul>
+<li><strong>C1028</strong> (2026-11-04): no shared caching of credential-bearing reads. Option A.</li>
+<li><strong>C1029</strong> (2026-11-04): the OSV generation is part of the release check.</li>
+<li>C1019 to C1022: machine and cluster service, one policy by organisation key, no downstream login, approved-node trust. C1024: credentials and publishing unchanged. C1027: nine families, CPAN omitted, RubyGems first.</li>
+</ul>
+
+<h3>Slice order</h3>
+<table>
+<thead><tr><th>Order</th><th>Slice</th><th>Outcome</th><th>Depends on</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>16 FIX-16-A</td><td>Current managed authority before any cached or downloaded artifact is released (legacy and selected npm/PyPI routes)</td><td>15 (delivered)</td></tr>
+<tr><td>2</td><td>28 Shared service</td><td>Snapshot API, activation, durable refusal, peer admission, login-free common route, credential seam. Common-route FIX-16-A cases must pass before row 17 starts.</td><td>16</td></tr>
+<tr><td>3</td><td>29 Early spike</td><td>Windows/macOS smoke on the delivered npm/PyPI service; containerd routing probe. May reopen the design if the result invalidates it. A missing native runner fails; it never skips.</td><td>28</td></tr>
+<tr><td>4</td><td>17 RubyGems</td><td>Critical first added family, with shared nine-family identities</td><td>28</td></tr>
+<tr><td>5</td><td>18 to 24 other families</td><td>18 Cargo, 19 Go, 20 NuGet, 21 Maven, 23 Conan, 24 OCI (row 22 retired with CPAN)</td><td>17</td></tr>
+<tr><td>6</td><td>25 Native lifecycle</td><td>Linux, macOS, Windows service lifecycle and native package-tool runs</td><td>28, 29, 18, 19, 20, 21, 23, 24</td></tr>
+<tr><td>7</td><td>26 Cluster</td><td>One cluster endpoint, approved-node trust, no upstream fallback</td><td>24, 25, 29</td></tr>
+<tr><td>8</td><td>27 Acceptance</td><td>Cross-plan portal, intelligence, decision and native-release acceptance</td><td>17 to 21, 23 to 26</td></tr>
+</tbody>
+</table>
+<p>Every row needs fresh code review and independent verification. Rows 16, 28, 29, 17 to 24 and 26 also need security and adversarial review.</p>
+
+<h2>Recommendation</h2>
+<p>Approve the design. Fix FIX-16-A first because it is an existing defect and the shared service would otherwise inherit it. The design is complete enough to build: Design QA is READY, the threat model is MODELED with no blocking finding, and no choice is left to Engineering. The limits below stay visible and are not hidden by approval.</p>
+
+<h2>Limits</h2>
+<div class="card note">
+<ul>
+<li><strong>Existing prototype code.</strong> Uncommitted prototype code for rows 16 and 28 was written on 2026-11-03, before this design was approved. Its author and review status are unrecorded. It is treated as an unreviewed draft to verify and complete. Nothing is deleted. Each new test runs fail-first against a baseline worktree on disk. Rows 16 and 28 review each diff, and a hunk that no row outcome needs is reset or deferred with a reason. You may overrule this default.</li>
+<li><strong>Source order checks are PENDING.</strong> They cannot run until the guard files exist: src/managed/publication_gate.rs (row 16), src/managed/order_guards.rs and crates/probation-server/src/order_guards.rs (row 28). Even then they prove only call order, not same-file, atomicity or concurrency. Those rest on the runtime tests.</li>
+<li><strong>Cluster routing is unverified.</strong> The containerd routing is a documented candidate, not runtime-verified (C1023). Row 29 probes it early. Cached images may not reach the service, so no revocation after a pull is claimed.</li>
+<li><strong>Execution mode.</strong> Protocol rows 17 to 24 run under version 1 serial execution. The parallel version 2 coordinator is not requested. Choose it only if you want it.</li>
+<li><strong>No proof yet.</strong> No builds or tests were run for this design. Native OS and cluster behaviour is design-level until rows 25, 26 and 29.</li>
+<li><strong>Model view.</strong> The flow model is version 1, so the generated domain view is unsupported (UnsupportedVersion). This page is grounded in the documents, not in a generated correspondence.</li>
+<li>Accepted limits: delayed revocation under C19/C20, cached images, the local administrator (C30).</li>
+<li>Render: not inspected. No tool here renders this page.</li>
+</ul>
+</div>
+
+<p class="tag">Status: Design QA READY (gate-4-qa.md); threat model MODELED; source checks PENDING; approval target: design. READY does not grant approval.</p>
+<p>Sources: 01-product.md; 02-architecture.md (Current shared-service direction, FIX-16-A, Concrete deployment); 03-program-design.md (Active revision, Owners and interface contracts, FIX-16-A, Protocol and origin contracts, Configuration, Security coverage); 04-slices.md (Active delivery proposal); molecule-flow.json; molecule-contracts.json; gate-4-qa.md; evidence/threat-model-shared-service-r2.md; evidence/artifact-flow-correctness.md.</p>
+
+<p class="q" tabindex="0">Approve the design, or what should change?</p>
+</main>
+</body>
+</html>

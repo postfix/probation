@@ -74,7 +74,10 @@ function sdist(name, version, backend) {
 }
 
 export class Pypi {
-  constructor() {
+  /// `origin`: serve files and uploads from this one origin (a native run on a loopback
+  /// port) instead of the public pypi.org / files.pythonhosted.org names.
+  constructor(origin = null) {
+    this.origin = origin;
     this.reset();
   }
 
@@ -91,7 +94,7 @@ export class Pypi {
   /// builds with no build requirement (default: flit_core, which the fakes do not serve).
   /// `untimed: true` lists no upload time (`upload-time: null`), so a firewall falls
   /// back to when it first saw the file.
-  publish({ name, version, uploadedAt, ageSeconds, untimed = false, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend, origin = FILES }) {
+  publish({ name, version, uploadedAt, ageSeconds, untimed = false, kinds = ["wheel", "sdist"], requiresPython = null, yanked = false, backend, origin = this.origin ?? FILES }) {
     const at = untimed ? null : (uploadedAt ?? new Date(Date.now() - (ageSeconds ?? 0) * 1000).toISOString());
     const key = normalize(name);
     let project = this.projects.get(key);
@@ -151,7 +154,7 @@ export class Pypi {
 
   handle(req, path, host, body) {
     if (req.method === "POST" && path === "/") return this.upload(req, body);
-    if (path.startsWith("/packages/") && (host === "files.pythonhosted.org" || host === "pypi.org")) {
+    if (path.startsWith("/packages/") && (this.origin || host === "files.pythonhosted.org" || host === "pypi.org")) {
       for (const project of this.projects.values()) {
         const file = project.files.find((f) => new URL(f.url).pathname === path);
         if (file) return { status: 200, headers: { "content-type": "application/octet-stream" }, body: file.bytes };
@@ -168,7 +171,7 @@ export class Pypi {
   upload(req, body) {
     const credentials = req.headers.authorization?.startsWith("Basic ")
       ? Buffer.from(req.headers.authorization.slice(6), "base64").toString("utf8").split(":") : [];
-    if (credentials[1] !== "e2e-owner") return { status: 403, body: "Forbidden" };
+    if (credentials[1] !== "e2e-owner" && req.headers.authorization !== "Bearer e2e-owner") return { status: 403, body: "Forbidden" };
     const boundary = req.headers["content-type"]?.match(/^multipart\/form-data; boundary=(.+)$/)?.[1];
     if (!boundary) return { status: 400, body: "missing multipart boundary" };
     const raw = body.toString("latin1");
@@ -193,7 +196,7 @@ export class Pypi {
     project.files = project.files.filter((f) => f.filename !== uploaded.filename);
     project.files.push({ filename: uploaded.filename, version, bytes: uploaded.bytes, sha256: hash,
       uploaded: new Date(Date.now() - 400 * DAY).toISOString(), requiresPython: null, yanked: false,
-      url: `https://pypi.org/packages/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4)}/${uploaded.filename}` });
+      url: `${this.origin ?? "https://pypi.org"}/packages/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash.slice(4)}/${uploaded.filename}` });
     return { status: 200, body: "uploaded" };
   }
 

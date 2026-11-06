@@ -8,9 +8,12 @@
 //! The order is read off the publication itself, and each synchronisation is then
 //! made to fail: a publication that skipped one would report success where
 //! `file_sync_order_holds` requires it to fail.
+// Their Unix-only tests are cfg(unix); what only they use is then unused on Windows.
+#![cfg_attr(not(unix), allow(unused, dead_code))]
 
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -139,6 +142,7 @@ async fn start(data_dir: &Path, config: Config) -> Harness {
     }
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     let mut permissions = std::fs::metadata(path)
         .expect("the directory exists")
@@ -155,6 +159,7 @@ fn set_mode(path: &Path, mode: u32) {
 /// the database mapping, which does not exist when the publication did not finish —
 /// so the commit is downstream of the file being durable, not beside it.
 #[tokio::test]
+#[cfg(unix)]
 async fn file_sync_order_holds() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = ContentStore::new(dir.path(), 1 << 30);
@@ -258,10 +263,12 @@ async fn assert_publication_fails_when_the_file_cannot_be_synchronised() {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 async fn assert_publication_fails_when_the_file_cannot_be_synchronised() {}
 
 /// A fan-out directory that can be written and searched but not read: the rename
 /// into it succeeds, and opening it to synchronise the new entry does not.
+#[cfg(unix)]
 async fn assert_publication_fails_when_the_directory_cannot_be_synchronised() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = ContentStore::new(dir.path(), 1 << 30);
@@ -445,6 +452,7 @@ async fn a_cached_object_of_the_wrong_size_is_removed_with_its_mapping() {
 /// it cannot store bytes. It must refuse — not serve them unverified, and not stop
 /// enforcing anything else.
 #[tokio::test]
+#[cfg(unix)]
 async fn disk_full_is_a_503_not_a_policy_relaxation() {
     let data = tempfile::tempdir().expect("a temporary data directory");
     let blocklist_dir = tempfile::tempdir().expect("a temporary directory");

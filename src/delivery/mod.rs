@@ -16,7 +16,6 @@ mod file;
 mod siem;
 
 use std::net::IpAddr;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -505,18 +504,27 @@ const LOG_FILE_REJECTED: &str = "log_file_path cannot be opened for append, and 
 /// `log_file_path` can be told apart from working delivery, and the open that creates
 /// the file `0o600`. It reads no length — `file::run` restores its own tally.
 ///
+/// Creates new files `0o600` on Unix. Windows has no mode bits: a new file takes the
+/// directory's inherited ACL, which the operator must restrict.
+pub(crate) fn owner_only(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600)
+    }
+    #[cfg(not(unix))]
+    options
+}
+
 /// Fatal only while `consumer_identification` is on, because that is when an
 /// unopenable file means peer addresses kept for nothing. With it off, a logging typo
 /// is not worth an outage: one error, and the sink retries per record as before.
 ///
 /// `std::fs` rather than `tokio::fs`: this runs once, before anything is served.
 fn probe(path: &Path, consumer_identification: bool) -> Result<(), StartupError> {
-    let Err(err) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-    else {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    let Err(err) = owner_only(&mut options).open(path) else {
         return Ok(());
     };
     if consumer_identification {

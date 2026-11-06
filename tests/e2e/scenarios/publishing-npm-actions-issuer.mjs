@@ -1,4 +1,4 @@
-import npmActions from "./publishing-npm-actions.mjs";
+import { historicalNpmActions as npmActions } from "./publishing-npm-actions.mjs";
 
 export const meta = {
   id: "E2E-publishing-npm-actions-issuer",

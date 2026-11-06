@@ -641,6 +641,7 @@ async fn tp16_unopenable_log_path_fails_startup() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[cfg(unix)]
 async fn tp17_log_file_mode_is_0600() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1304,6 +1305,7 @@ async fn siem_url_path_and_query_never_reach_stdout() {
 /// A credential that is not even UTF-8 is refused at startup like any other unusable
 /// one, rather than sent as nothing.
 #[tokio::test]
+#[cfg(unix)]
 async fn a_non_utf8_credential_refuses_to_start() {
     use std::os::unix::ffi::OsStrExt;
 

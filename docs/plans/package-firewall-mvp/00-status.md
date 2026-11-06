@@ -1,9 +1,9 @@
 # Status: Package Firewall MVP
 
-- Gate 1 — Product: APPROVED 2026-09-17
-- Gate 2 — Architecture: APPROVED 2026-09-17
-- Gate 3 — Program Design: APPROVED 2026-09-19
-- Gate 4 — Slice plan: APPROVED 2026-09-19
+- Gate 1 — Product: APPROVED 2026-11-02
+- Gate 2 — Architecture: APPROVED 2026-11-04
+- Gate 3 — Program Design: APPROVED 2026-11-04
+- Gate 4 — Slice plan: APPROVED 2026-11-04
 
 ## Factory settings
 
@@ -11,7 +11,47 @@
 
 ## Loop signal
 
-{"generation":30,"boundary":null,"reopened":false,"history":[]}
+{"generation":36,"boundary":{"kind":"presentation","number":10},"reopened":false,"history":[],"presentedSlice":10}
+
+## Gate 1 progress
+
+- [x] Create 00-status.md
+  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.
+- [x] Select the plan with router resume
+  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.
+- [x] Create the product clarification inventory
+  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.
+- [x] Resolve user decisions
+  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.
+- [x] Gather ecosystem and authentication evidence
+  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.
+- [x] Review UI mockups with the user
+  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.
+- [x] Complete 01-product.md
+  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.
+- [x] Obtain QA READY
+  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/package-firewall-mvp/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.
+- [x] Present and record user approval
+  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/package-firewall-mvp/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.
+
+## Gate 2 progress
+
+- [x] Check whether existing architecture and evidence can be reused
+  Result: 02-architecture.md contains the delivered npm/PyPI baseline. Approved C1003/C1018 require revised local-client, policy API, platform and CI contracts; evidence/local-client-policy-modes.md and evidence/research-native-ci.md supply bounded reusable facts.
+- [x] Create or update the architecture and carry deferred questions
+  Result: C1003/C1018 retained under their original IDs; C1019 records Q8: machine-wide service plus a shared service per orchestration cluster; C1020 records Q9: one policy per service, selected by an organisation service key. C1021 records Q10: host/cluster-restricted access, no extra package-request login. C1022 records Q11: trust approved cluster nodes; Kubernetes controls deployment and image credentials. C1024 preserves existing registry handling without a public/private split. C1015 explicitly keeps registry credentials in package-manager configuration, never firewall configuration. Existing architecture prose is historical baseline until revised combined design is approved.
+- [x] Gather repository evidence
+  Result: sf-repo-view PARTIAL reports saved in evidence/design-local-client-grounding.md and evidence/design-service-policy-api.md. sf-research report saved in evidence/research-cluster-image-routing.md: documented explicit-server candidate; public routing/no-fallback/node connectivity require a pinned-runtime probe. The report does not select any new credential architecture; preserve existing package-manager credentials and publishing forwarding under C1015/C1024. The separate private-auth investigation was stopped at the user correction. No runtime proof is claimed.
+- [x] Save findings and resolve architecture decisions
+  Result: FIX-16-A is row 16 alone with a synchronous publication gate, exact reference/registry/authority/config/OSV generation binding (C1029) and named matrix tests; shared-service row 28 owns the snapshot API, activation, durable refusal, peer admission and D2/D3/D5 (C1028 resolved by the user 2026-11-04); row 29 is the early native/cluster spike. Existing uncommitted prototype code is recorded as unreviewed work to verify, not delivered. The user, asked how to treat it, said they did not know the code; the main agent applied the non-destructive default (prototype to review, nothing deleted) and showed the user what it is; the user may overrule.
+- [x] Complete 02-architecture.md
+  Result: 02-architecture.md carries C1003, C1018-C1029, the responsibility split, scoped policy retrieval, deployment/failure cases, and cites threat-model-shared-service-r2.md; historical npm/PyPI details stay labelled baseline. Runtime routing remains a documented candidate until rows 29/26.
+- [x] Record architecture assumptions and review triggers
+  Result: Threat Model r2 MODELED (evidence/threat-model-shared-service-r2.md); Red Team NEEDS REVISION answered (rows 16/28/29/26/17, snapshot registry model, await placement, tests). Fresh Design QA required after these revisions.
+- [x] Complete architecture section of the combined design
+  Result: Architecture, deployment, platform and protocol sections are complete in 02/03 with explicit pending runtime evidence; no implementation or runtime proof is claimed.
+- [x] Carry contracts and obligations into program design
+  Result: 03-program-design.md carries the contracts, security coverage table (T1-T8, D1-D5), invariants dispositions and named tests; molecule-contracts.json re-anchored to synchronous order guards with bySlice 16/28; molecule-check PASS.
 
 ## Slices
 
@@ -46,7 +86,13 @@
 - [x] Slice 10 — delivery: real npm and pip installs, container image, operations README, benchmarks
   - proof: cargo clippy --all-targets -- -D warnings; cargo test; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored; cargo bench; docker build; docker run check-config; offline trust-store check; live TLS request from the running container -> clippy exit 0; cargo test 276 passed / 0 failed / 15 ignored DEBUG; e2e_npm ok 7 passed including npm_12_installs_without_allow_remote under real npm 12.0.2 on Node v24.19.0; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1; cargo bench exit 0, all nine SPEC 12 verdicts MET; podman build succeeded; check-config exit 0 from inside the image; offline trust-store check exit 0; a live request from a running container to the production npm origin returned 200 ALLOWED with no TLS error. Witness re-executed independently by the main agent, sf-code-review and sf-verification. THE BENCHMARK ACCEPTANCE TOOK THREE ROUNDS TO MAKE HONEST. Round 1 reported nine METs, but sf-code-review read the INSTRUMENT not its output and found benches/artifact_throughput.rs measured the firewall warm and the baseline COLD, biasing the ratio SPEC 12 requires under identical conditions. Round 2 made warmup symmetric and did NOT settle it: main-agent runs gave 145.7/148.8/120.6, 121.5/123.1/56.3 and 232.9/242.6/252.4 percent, a 4.5x swing WITH A BREACH of the 85 percent floor. Round 3 used PAIRED INTERLEAVED SAMPLING, baseline and firewall alternating in one loop so drift lands on both sides, and raised SAMPLES 150 to 1,000 per side. That settled it: 15 implementer shape-runs across loadavg 1.67-8.38 in 108.9-112.7 percent, plus 6 main-agent shape-runs in 108.8-114.7 percent. MAIN AGENT DIAGNOSIS FALSIFIED: the main agent blamed the 56 percent breach on its own subagents loading the host. The implementer disproved it, the band held across a 5x load range, so the cause was the instrument charging load drift to the firewall. THE RESIDUAL 110 PERCENT IS A CONSTANT, NOT NOISE, disclosed rather than corrected: src/artifacts/stream.rs::file_body reads chunk n+1 through a depth-1 channel while the client consumes chunk n, while the bench baseline reads only when polled - different pipelining, favouring the firewall, visible as baseline total p95 about 47 ms against about 5.4 ms. The implementer deliberately did NOT rewrite the baseline, because changing the instrument until it yields a liked number is the failure mode, with no reviewer left in the round. Named by file in docs/operations.md. ADDITIONAL TTFB is the load-bearing evidence: positive in all 21 shape-runs, +0.020 to +0.163 ms, 2-3 percent of the 5 ms budget. FOUR PRE-CHANGE BREACHES BECAME MET, the acceptance for slice 13: additional TTFB +6.232 ms at 1,000 versions and +37.903 ms at 5,000, and throughput 44.9 and 11.1 percent, all now inside the bands above. Unchanged and MET: warm metadata 120,178-144,006/s and p95 0.085-0.119 ms; policy denial p95 1.187-1.376 ms; blocklist replacement 4.96-5.03 s. The table records RANGES over five runs. SPEC 13: sf-verification walked all 14 rows and mapped each to a named passing test it re-ran itself; all MET. TWO OBLIGATIONS REMAIN OPEN, now in docs/operations.md as known gaps: no -D warnings gate in the repository, so a warning-level regression compiles clean under plain cargo clippy; and the suite has never been green in release, where --no-fail-fast gives 275 passed / 1 failed on artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh, whose 500 ms margin optimized code drains in 160-200 ms. Pre-existing, deliberately not fixed. docs/operations.md states in one line that the blocklist is supplied by the operator, who is accountable for its contents and provenance. The earlier Accountable owners subsection was REMOVED on the user's correction that a registry firewall cannot reach an already-installed package, the boundary of the product category rather than a risk awaiting a signature, replaced by a scope statement of what a block does and does not reach. LIMITATIONS: counts are DEBUG; the host carried unrelated user applications at about 200 percent CPU with swap exhausted throughout, which paired sampling tolerated.; reviews: code-review=SHIP, verification=VERIFIED
 
-## Notes for a fresh session
+- [ ] Slice 16 — FIX-16-A current managed authority before cached/downloaded artifact release on legacy and selected npm/PyPI routes; required before row 28
+- [ ] Slice 28 — shared service policy API, enforcer activation, durable refusal, listener peer admission and login-free common route; required before new adapters
+- [ ] Slice 29 — early native-driver and containerd routing spike
+
+## Historical notes before approval 2026-11-04
+
+Current scope after C1027 is approved 2026-11-02: nine families (npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI). RubyGems is critical and first added after the shared-service foundation; CPAN is omitted. Q8-Q11 and package-manager credential ownership remain settled. Gate 1 approval and progress are recorded; earlier pending-scope/ten-family notes below are historical. Combined design remains unapproved. Lead FIX-16-A in package-firewall-mvp/02-architecture.md, 03-program-design.md and 04-slices.md assigns the discovered managed-authority release gap to Slice 16 before new adapters; evidence/artifact-flow-correctness.md records source facts and required tests, not an implemented fix.
 
 - GATE 3 REOPENED 2026-09-19, and Gate 4 with it. Cause: npm 12.0.2, the current upstream stable, refuses every install through this firewall. `allow-remote` defaults to `none` as of npm 12 (`@npmcli/config/lib/definitions/definitions.js:247-256`), and the exemption for registry tarballs at `arborist/lib/arborist/reify.js:988-1004` requires BOTH `resolvedURL.origin === registry.origin` AND `registryPath === '/' || resolvedURL.pathname.startsWith(registryPath)`. This firewall serves metadata under `/npm/` and artifacts under `/artifacts/`, so the origin matches and the path prefix does not, and every rewritten `dist.tarball` is classed as a remote dependency and refused with `npm error code EALLOWREMOTE`. Those two path roots are fixed by SPEC 6 and SPEC 9, so this is a design decision and not an implementation defect, and it affects every deployment rather than the test layout. Decisive control: the same tests pass against npm 12.0.2 with `--allow-remote=all`, which also rules out the other candidate cause, npm 12 warning that it does not support this machine's Node v20.19.6 - that mismatch is recorded as a caveat, not as the explanation. The `allow-remote=all` workaround was rejected as the answer because it disables npm 12's supply-chain control for every tarball dependency in a project, which is self-defeating in a supply-chain firewall. DECISION 2026-09-19: serve artifacts under the registry path prefix so npm 12 accepts them natively. Gate 3 is reopened to make that routing change; Gate 4 follows because slice rows and the e2e tests name the current paths.
 - The finding came from slice 10's previous-client work, which also corrected a factual error in the plan: what `04-slices.md` calls the current npm and pip pair, npm 11.16.0 and pip 25.1.1, is what this machine has installed, not what is current upstream. Current upstream is npm 12.0.2 and pip 26.2.1. pip 26.2.1 passes all three exercised behaviours unchanged, so this is npm-only on the evidence gathered so far.
@@ -82,3 +128,38 @@
 - SLICE 14'S FILE LIST IS AN `sf-impact` TRACE, NOT GATE 3'S LIST, and the difference is large: Gate 3 claimed the integration tests "follow automatically" through `common::artifact_path`, which is true of exactly two call sites. SEVEN test files carry forced edits — four hardcode the `/artifacts/` literal and FIVE parse the reference id positionally with `split('/').nth(2)`, which silently returns the wrong segment rather than failing once a route segment is prepended. `tests/persistence_content.rs` is in neither Gate 3's list nor any literal-string search. Gate 3's `src/pypi/render.rs:241` is a false positive (a placeholder URL in an HTML-escaping test) and `README.md` was dropped after a search found nothing to edit. Line citations from the trace were all one low and were settled against the literal file text; that recheck found an eighth forced edit nobody had listed, the doc comment at `src/artifacts/mod.rs:58` which spells the old route.
 - RED TEAM PASS 4 (2026-09-19) returned NEEDS REVISION with two MAJORs, both resolved before presentation. The one that changes the build: the two cross-root 404 tests would have PASSED TODAY for the wrong reason, because neither ecosystem-rooted route exists yet and both paths already 404 through the router's unknown-route fallback — a status-code-only assertion could never distinguish a working ecosystem check from a missing route. Each test now asserts the 404, the row-derived logged ecosystem, and refusal by the artifact handler rather than the fallback. The second: `docs/operations.md:519-554` is a whole subsection telling operators to set `allow-remote=all` and pin to npm 11, all false after this slice, and no witness in this plan checks prose.
 - AUTHORING TRAP, cost two rounds of router findings on 2026-09-19 and will recur: the `Test prerequisites` column may backtick ONLY programs that resolve on PATH — an environment variable, a filename or a symbol in backticks there is reported as an unresolvable witness tool. Separately, an escaped pipe inside a table cell (writing GET\|HEAD) shifts every parsed column in that row, so the checker reads the wrong cell entirely; write the words out instead. `router check` reports both and is clean as of this write.
+
+## Nora ecosystem expansion — 2026-11-02
+
+The user requests all ecosystems supported by Nora, borrowing Nora/Dozor code where practical, across Package Firewall MVP, management server/portal, OSV intelligence, decision logging and rated load. The user also requires checking package-manager and registry support for the existing SSL authentication and whether architecture must change. Scope Gate 1 is reopened; design Gates 2–4 await the revised scope. Earlier completed slice proofs remain historical evidence for their original npm/PyPI behavior, not evidence of expanded ecosystem or authentication coverage. No historical slice completion is invalidated by this additive request. The pending legacy completion presentation has not been accepted or acknowledged.
+
+Next: obtain fresh Scope QA READY, present the recorded ten-family/three-client-OS/Linux-server scope and record approval. Exact interfaces, native CI topology, Docker coverage and migrations are deferred to combined design under C1003/C1018.
+
+## Selected local-client direction — 2026-11-02
+
+C1006 resolves Q2 with a locally installed client and API-key authentication to the policy server, replacing the earlier certificate bridge proposal. C1008 explicitly retains TOML-configured standalone backend operation without the policy server. The completed publishing-proxy plan was reopened because it owns the superseded mandatory certificate contract; its prior five slice acceptances are historical and need fresh delivery against the new design. No product code was changed. Q3 / C1009 is resolved: local enforcement and direct registry downloads. C1013 / Q5 now selects the actual target formats after public-source research.
+
+## Public-source review — 2026-11-02
+
+Saved evidence/research-public-ecosystems.md under package-firewall-mvp: APT has Debian public archives, RPM has public distribution repositories, Terraform has a public registry and executable provider plugins. Sixteen Nora families have public sources; generic Raw storage has no defined ecosystem upstream. Proposed first target is thirteen developer dependency/container families, deferring APT/RPM and Hugging Face and omitting Raw; C1013 / Q5 remains unanswered. No format exclusion is approved solely by this status note. Q3 local enforcement is recorded in every affected product inventory.
+
+## Selected package/container release — 2026-11-02
+
+Q5/C1013 is resolved: npm, PyPI, Maven, Go modules, Cargo, NuGet, CPAN, RubyGems, Conan and Docker/OCI only. Earlier thirteen/sixteen/seventeen-family proposals are historical, not pending alternatives. Q6/C1015 is resolved: users and CI jobs own local registry credentials; policy API keys never become registry credentials and the policy server does not distribute shared organisation read secrets. Q7/C1016 is resolved for Linux/macOS/Windows clients; C1017 makes the policy server Linux-only; C1018 carries native GitHub Actions requirements into design. Preserve historical source/proofs; no product code was changed.
+
+## Scope ready for independent review — 2026-11-02
+
+All product choices in C1006/C1008/C1009/C1013/C1015/C1016/C1017 are recorded. C1003/C1018 defer technical implementation to combined design. The user requires native Windows/macOS GitHub Actions tests; Linux client/server checks and unproved non-Linux Docker integration are explicit. All six router inventories have no findings after legacy formatting normalization. Scope QA, presentation and approval remain required; no code or workflow is changed by these documents.
+
+## Source contract evidence
+
+Required for this plan.
+
+## Gate 4 progress
+
+- [x] Present and record user approval
+  Result: APPROVED 2026-11-04; recorded by the canonical approval transition.
+
+## Notes for a fresh session
+
+Design approved 2026-11-04. Use router resume position for the current step. See the Gate documents and evidence for decisions and verification limits.

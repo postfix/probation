@@ -74,6 +74,7 @@ export class Npm {
       versions[r.version] = abbreviated
         ? { name, version: r.version, dependencies: r.dependencies, dist: r.dist }
         : { name, version: r.version, dependencies: r.dependencies, main: "index.js", _id: `${name}@${r.version}`, dist: r.dist };
+      if (r.deprecated) versions[r.version].deprecated = r.deprecated;
       if (name.startsWith("search-bounded-")) versions[r.version].description = "d".repeat(700);
     }
     if (abbreviated) return { name, modified, "dist-tags": entry.tags, versions };
@@ -251,6 +252,9 @@ export class Npm {
           if (document.versions) {
             for (const [version, record] of Object.entries(document.versions)) {
               const listed = entry.versions.get(version);
+              if (listed && Object.hasOwn(record ?? {}, "deprecated")) {
+                if (record.deprecated) listed.deprecated = record.deprecated; else delete listed.deprecated;
+              }
               if (listed && record?.dist?.tarball !== listed.dist.tarball) {
                 return { status: 400, body: '{"error":"revision changed advertised tarball"}' };
               }
@@ -268,6 +272,16 @@ export class Npm {
           return { status: 201, headers: { "content-type": "application/json" }, body: JSON.stringify({ ok: true, id: name, rev: "2" }) };
         }
         const existing = this.packages.get(name);
+        // `npm deprecate` PUTs the packument with `deprecated` set on the versions it names.
+        const deprecations = Object.entries(document.versions ?? {})
+          .filter(([version, record]) => existing?.versions.has(version) && Object.hasOwn(record ?? {}, "deprecated"));
+        if (deprecations.length) {
+          for (const [version, record] of deprecations) {
+            const stored = existing.versions.get(version);
+            if (record.deprecated) stored.deprecated = record.deprecated; else delete stored.deprecated;
+          }
+          return json({ ok: true, id: name, rev: "2" }, 201);
+        }
         if (existing && document.users) {
           existing.users = document.users;
           return json({ ok: true, id: name, rev: "2" }, 201);

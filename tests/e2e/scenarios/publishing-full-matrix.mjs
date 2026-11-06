@@ -4,12 +4,13 @@
 import certificateNpm from "./publishing-certificate-npm.mjs";
 import certificateScale from "./publishing-certificate-scale.mjs";
 import enterpriseRegistry from "./publishing-enterprise-registry.mjs";
-import npmActions from "./publishing-npm-actions.mjs";
+import { historicalNpmActions as npmActions } from "./publishing-npm-actions.mjs";
 import npmActionsIssuer from "./publishing-npm-actions-issuer.mjs";
-import npmRead from "./publishing-npm-read.mjs";
+import { historicalNpmRead as npmRead } from "./publishing-npm-read.mjs";
 import npmReadIssuer from "./publishing-npm-read-issuer.mjs";
 import privateRead from "./publishing-private-read.mjs";
 import python from "./publishing-python.mjs";
+import pythonService from "./publishing-python-service.mjs";
 import pythonIssuer from "./publishing-python-issuer.mjs";
 import ssoPython from "./publishing-sso-python.mjs";
 import uv from "./publishing-uv.mjs";
@@ -40,6 +41,7 @@ const runners = [
   ["npm-read-disabled", (h) => npmRead(h, { selfServiceDisabled: true }), "probation-disabled"],
   ["private-read", privateRead, "probation-enabled"],
   ["python", python, "probation-enabled"],
+  ["python-service", pythonService, "probation-enabled"],
   ["uv", uv, "probation-enabled"],
   ["python-disabled", (h) => python(h, { selfServiceDisabled: true }), "probation-disabled"],
   ["uv-disabled", (h) => uv(h, { selfServiceDisabled: true }), "probation-disabled"],
@@ -414,8 +416,10 @@ export default async function fullMatrix(h) {
     const originalClient = runH.client;
     const runAsserted = new Set();
     const runCommanded = new Set();
+    let runExpects = 0;
     runH.expect = (condition, message) => {
       originalExpect(condition, message);
+      runExpects += 1;
       for (const [index, witness] of witnesses.entries()) {
         if (witness[2] === scenario && witness[3].test(String(message))) runAsserted.add(index);
       }
@@ -429,6 +433,8 @@ export default async function fullMatrix(h) {
     };
     try {
       await run(runH);
+      // A runner that asserted nothing would pass silently, whatever it was meant to prove.
+      if (runExpects === 0) throw new Error(`${scenario} made no assertions`);
       for (const peer of currentFirewallPeers(runH.stack)) peers.add(peer);
       await assertEgress(runH, peers, scenario);
       for (const index of runAsserted) asserted.add(index);

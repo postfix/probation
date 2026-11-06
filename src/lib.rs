@@ -169,6 +169,7 @@ pub struct App {
     osv: osv::OsvClient,
     /// Present only when `[management]` is set: each request's key names its policy.
     managed: Option<Managed>,
+    service_policy: Option<managed::service_policy::ServicePolicy>,
     /// Whether each upstream answered this sync period, for the managed report (C69).
     /// Recorded in standalone too, where nothing reads it.
     pub(crate) upstreams: Arc<UpstreamHealth>,
@@ -207,6 +208,10 @@ impl App {
     /// Managed mode's key cache and server client, when `[management]` is set.
     pub fn managed(&self) -> Option<&Managed> {
         self.managed.as_ref()
+    }
+
+    pub fn service_policy(&self) -> Option<&managed::service_policy::ServicePolicy> {
+        self.service_policy.as_ref()
     }
 
     /// Makes `snapshot` the one in force for every request that loads it from here
@@ -329,6 +334,9 @@ impl App {
                 &deps.config.data_dir,
             )
         });
+        let service_policy = deps.config.service_policy.as_ref().map(|config|
+            managed::service_policy::ServicePolicy::load_with_clock(config, &deps.config.data_dir, Arc::clone(&deps.clock)));
+        if let Some(policy) = &service_policy { let _ = policy.sync_once().await; }
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
             // injected. Ahead of `config`, which the next field moves.
@@ -348,13 +356,14 @@ impl App {
             delivery,
             osv,
             managed,
+            service_policy,
             upstreams,
         });
 
         // A managed firewall ignores its local blocklist (C109): nothing is restored or
         // read, and the poller does not run.
         let mut watcher = Watcher::new();
-        if app.managed.is_none() {
+        if app.managed.is_none() && app.service_policy.is_none() {
             restore_blocklist(&app).await;
             // One pass before the listener accepts anything, so an instance with a valid
             // blocklist file is ready on its first request rather than one poll interval
@@ -408,7 +417,7 @@ impl App {
                 // operator has asked for it to be recorded, or managed mode counts
                 // lookups against it.
                 let connect_info =
-                    app.config.log_consumer_identification || app.config.management.is_some();
+                    app.config.log_consumer_identification || app.config.management.is_some() || app.config.service_policy.is_some();
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {

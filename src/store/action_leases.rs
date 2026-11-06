@@ -128,6 +128,50 @@ mod tests {
     use super::*;
     use crate::store::startup;
 
+    #[tokio::test]
+    #[ignore = "explicit production-cap witness: seeds one million disk rows; run with --ignored"]
+    async fn production_service_registry_global_quota_plus_one_preserves_every_row() {
+        use sha2::{Digest, Sha256};
+        async fn state(connection: &Connection) -> (u64, Vec<u8>) {
+            let mut rows = connection.query("SELECT registry_id, member_id, reference_id, package, version, filename, sealed_url, expires_at_micros, accepted_revision, consumed FROM npm_unpublish_leases ORDER BY registry_id, member_id, reference_id", ()).await.unwrap();
+            let mut digest = Sha256::new();
+            let mut count = 0;
+            while let Some(row) = rows.next().await.unwrap() {
+                for column in 0..10 {
+                    let value = format!("{:?}", row.get_value(column).unwrap());
+                    digest.update((value.len() as u64).to_be_bytes());
+                    digest.update(value.as_bytes());
+                }
+                count += 1;
+            }
+            (count, digest.finalize().to_vec())
+        }
+        // Use real production limits with disk-seeded rows, not a million encrypted preflights.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".scratch/slice3/quota");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = tempfile::tempdir_in(root).unwrap();
+        let opened = startup::open_and_recover(dir.path()).await.unwrap();
+        let mut connection = opened.connection.unwrap();
+        for (limit, seed_registry, seed_owner) in [(20_000u64, 3i64, 0i64), (100_000, 3, 1), (1_000_000, 9, 1)] {
+            let tx = connection.transaction().await.unwrap();
+            tx.execute("DELETE FROM npm_unpublish_leases", ()).await.unwrap();
+            tx.execute("INSERT INTO npm_unpublish_leases VALUES (?1, ?2, randomblob(32), 'seed', '1', 'seed.tgz', x'01', 1000, NULL, 0)", (seed_registry, seed_owner)).await.unwrap();
+            let mut count = 1;
+            while count < limit {
+                let batch = count.min(limit - count);
+                tx.execute("INSERT INTO npm_unpublish_leases SELECT registry_id, member_id, randomblob(32), package, version, filename, sealed_url, expires_at_micros, accepted_revision, consumed FROM npm_unpublish_leases LIMIT ?1", (batch as i64,)).await.unwrap();
+                count += batch;
+            }
+            tx.commit().await.unwrap();
+            let before = state(&connection).await;
+            assert_eq!(before.0, limit, "fixture seeds the literal production threshold");
+            let candidate = distinct_lease(3, 0, 77);
+            assert!(matches!(commit(&mut connection, 3, 0, &candidate.package, &[candidate.clone()], 0).await, Err(StoreError::Busy)), "{limit}+1 must refuse through production quota code");
+            assert_eq!(state(&connection).await, before, "{limit}+1 changes no stored row");
+            assert!(get(&mut connection, 3, 0, candidate.reference_id, 0).await.unwrap().is_none(), "no dead action reference is committed");
+        }
+    }
+
     fn lease(registry_id: u64, member_id: u32, byte: u8) -> ActionLease {
         ActionLease { registry_id, member_id, reference_id: ReferenceId::from_bytes([byte; 32]),
             package: "quota-test".into(), version: format!("{byte}.0.0"), filename: format!("quota-test-{byte}.tgz"),

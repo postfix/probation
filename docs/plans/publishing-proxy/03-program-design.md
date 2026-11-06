@@ -1,6 +1,131 @@
 # Program Design: Transparent package publishing
 
-## Clarifications and decisions
+## Active program design — local client path (2026-11-02)
+
+The tables and interfaces below this section are the previously approved certificate-based implementation record. They are historical where they conflict with the active design here; their old checks are not evidence that the new path works.
+
+### Purpose and end-to-end caller scenario
+
+A developer configures npm or a Python package tool to use the installed Probation service and keeps the selected private/public registry credentials in that package manager. In managed mode, the service sends its organization API key in the HTTP `Authorization: Bearer <service-api-key>` header to `GET /api/v1/policy/snapshot`; in standalone mode it loads the explicitly configured TOML policy. If allowed, it sends the operation directly to the selected upstream with the relevant package-manager credential. The upstream authorizes reads, publishing and management writes. The service key never reaches the package tool or upstream. Registry credentials never identify a local caller or fetch policy.
+
+```mermaid
+sequenceDiagram
+  participant Tool as npm / pip / Twine / uv
+  participant FW as Local Probation service
+  participant PS as Optional policy server
+  participant Up as Selected registry
+  Tool->>FW: Named operation + package-manager registry credential
+  FW->>PS: Policy snapshot request + organization service key (managed only)
+  PS-->>FW: One effective service policy
+  FW->>FW: Apply local policy and route/credential guards
+  FW->>Up: Allowed operation + only its upstream credential
+  Up-->>FW: Authorized response or upstream denial
+  FW-->>Tool: Filtered response or refusal
+```
+
+### Caller and molecule contracts
+
+| Owner | Public behavior | Required contract and witness |
+|---|---|---|
+| Local service configuration / lifecycle | Explicit managed or standalone TOML mode; validate before serving; no managed-to-standalone fallback. | Invalid or incomplete config refuses startup; outage behavior follows management C19/C20. Native start/config checks in lead Slice 25. |
+| Managed policy client | Organization service key retrieves one effective policy for the shared service. It is not attached to package requests or upstream requests. | Wrong/disabled key refuses new policy; remembered central policy follows C19/C20 only; verify by service-policy API/cache checks in lead Slice 16. |
+| npm/PyPI route classifier | Admit only known named operations for the selected registry. Preserve legacy paths and numeric npm package/version behavior from C36/D38. | Unknown/alternate routes refuse before upstream I/O; no fallback to another registry. |
+| Read and artifact path | Apply common policy and protocol-specific package/version rules; preserve safe audit disclosure, selected-origin checks, verified-byte delivery and current-authority recheck. | Existing registry isolation and exact artifact identity remain; use FIX-16-A's cold/warm current-policy delivery matrix before accepting new adapter paths. |
+| npm token-packument path | A canonical packument GET with a valid upstream developer token may return selected-upstream metadata even without a later write; the response is request-local and never shared/persisted. This exception does not grant artifact bytes or write permission. | Distinguish token present/absent and upstream allow/deny; sequential, concurrent and restart controls prove no metadata reuse. The firewall's local policy still applies as required by C35's amended local-instance boundary. |
+| Publishing and account actions | Local policy permits the attempt; route-specific package-manager credentials are forwarded only to the selected upstream. The upstream remains the write authority. | npm Basic bootstrap and Bearer actions plus PyPI Basic/Bearer upload retain upstream allow/deny behavior; policy key is never forwarded. |
+| npm whole-package revision DELETE | Treat `DELETE /<package>/-rev/<revision>` as a named package action. Send the developer's package-manager credential only to the selected registry; that upstream decides allow or deny. It does not use a version-tarball marker. | Selected-registry allow and deny cases preserve the upstream result; no extra-origin request. Slice 3. |
+| npm direct canonical tarball DELETE | Refuse locally before outbound I/O, including when the request carries a valid developer credential. Version removal must use the advertised reference route. | Sentinel witness proves zero outbound calls. Slice 3. |
+| npm version unpublish | Preserve selected-origin D41 path scopes, exact advertised URL, sealed query, redirect refusal, current scope recheck, revision-removal marker, and one-use marker before DELETE. Any extra-origin tarball URL refuses before advertising a local action URL; package-manager credentials never go to extra origins. Bind references to the local service/registry/package/version/filename, not an individual member, because C1021 selects shared-service callers without package-request identities. | A successful upstream-authorized revision PUT must remove the exact leased version; use its resulting revision or an immediate authenticated selected-upstream GET confirming absence, then commit the marker. Denied, unchanged or unverified PUTs create no marker. Cover GET fallback, marker persistence failure, and 20,000 per-service, 100,000 per-registry and 1,000,000 global quota+1 refusal. Slice 3. |
+| Native workflow | Existing npm/PyPI operations run through native local service clients on Linux/macOS/Windows. Policy server integration runs on Linux. | C1018: native GitHub Actions execution is required; container/cross-compile checks do not establish OS support. |
+
+### Proposed declarations and deciding calls
+
+The common managed snapshot and policy activation declarations are owned by the lead plan. This plan's new common response path reuses those outputs and existing protocol handlers; its npm/PyPI credential forwarding remains in the named action/read functions, never in a global upstream client default.
+
+```rust
+// src/http/service_registry.rs — shared service entry for the selected registry URL.
+// Current managed authority and local policy govern the exact prepared response.
+pub async fn respond(/* app, selected registry, named package request */)
+    -> Result<Response, ApiError>;
+
+// src/http/service_unpublish.rs — the two durable checks and DELETE stay in one
+// caller so no request can send between reference validation and marker consume.
+pub async fn consume_service_marker_then_send(/* registry, opaque reference,
+    package-manager bearer, revision */) -> Result<Response, ApiError>;
+```
+
+`respond` first classifies the selected registry and npm DELETE route, then dispatches the named operation. The direct canonical tarball DELETE branch refuses locally; whole-package revision DELETE reaches the selected-upstream action path; version-reference DELETE enters the separately guarded service-reference/marker path. `classify_direct_or_whole_package_delete` must dominate `dispatch_npm_delete_route`; the planned source control checks this order only, while Slice 3 proves route outcomes and zero-I/O refusal. Complete all asynchronous preparation before final response authorization. `PolicyPublicationGate::authorize_current_policy` then acquires the same short-lived gate used by policy/authority activation, checks the current generation and exact prepared reference/content plus immutable registry, and returns a guarded authorization. `release_verified_response` consumes that guard while handing off the exact response. A changed generation requires re-evaluation under the new policy or refusal. Both calls are synchronous and perform no I/O. Activation uses the same gate, so publication ordered before final authorization governs the response; publication ordered after accepted handoff does not retroactively cancel the stream. This contract applies to cold and warm responses. The lead Slice 16 owns the shared implementation; its cross-thread publication cases are required witnesses. The local module does not require a client certificate or interpret package-manager authorization as caller identity.
+
+After an upstream-authorized revision PUT, `record_successful_service_removal` verifies that the exact leased version was removed and obtains the resulting revision from the PUT response. If that response omits the revision, immediately make an authenticated GET to the selected upstream and confirm the version is absent; send the package-manager developer credential only to that selected registry, never the policy API key. Then durably commit a service/registry/reference/revision-bound marker before reporting success. A denied or unchanged PUT, a response/GET that cannot confirm the exact removal, or a local verification failure creates no marker. If an accepted PUT omits the resulting revision and the immediate GET is unavailable or inconsistent, return an uncertain partial-write result and require recovery. A durable marker commit failure after confirmed removal has the same result. Keep D40's 24-hour lifetime and 2 KiB URL limit with at most 20,000 live leases per service, 100,000 per registry and 1,000,000 globally; the former per-member cap is keyed to the service store. Batch/quota failure refuses before advertising a new URL. The route-specific source spec checks verification-before-commit order only; exact version/revision binding, authenticated GET credential routing, persistence, quota atomicity and failure recovery remain Slice 3 runtime/source review obligations.
+
+Within `consume_service_marker_then_send`, resolve the opaque reference in the local service's durable store namespace and check immutable registry/package/version/filename, exact advertised destination and current D41 approval, and require that the destination origin is the selected registry. Require the committed marker with its resulting revision and atomically consume it in one durable state transition before outbound I/O; concurrent attempts must have at most one winner. The planned deciding statements are `let reference = check_service_reference(&app, registry, reference, package, filename).await?;` followed by `let marker = consume_service_marker(&app, registry, &reference, revision).await?;` and then the outbound `send_action`. Missing, changed, expired, replayed, unapproved or extra-origin references refuse before outbound I/O. Upstream denial remains denial after the one-use marker is consumed. The package-manager credential is sent only to the selected registry; the earlier D41 extra-origin bearer option is superseded by C1015/C1024. The policy API key is never an input to this function.
+
+The two new SMTC specs check only that the reference check and marker-consumption calls dominate the outbound action. Exact value binding, transactional atomicity, one-use behavior, and credential destination are outside that analyzer property; the slice's sentinel tests, restart/concurrency cases, and independent security/code review must prove them. These limits do not weaken the caller contract.
+
+### Credential and identity invariants
+
+- The old TLS client certificate authenticated the firewall client; package-manager registry credentials authorized the upstream. They were independent inputs. The active local service removes certificate-based package-request identity but retains upstream authorization.
+- The organization policy API key identifies/authenticates the service to the policy server through the HTTP `Authorization` header for the policy snapshot request. Never copy it into a package-manager config, an HTTP request to a registry, redirect, log or error.
+- Credentials configured in package managers stay in those managers and are forwarded only to the exact selected upstream request that requires them. A credential present on a request cannot bypass policy, change registry selection, or permit an unclassified route.
+- A shared service has no individual member identity for package requests. Do not infer one from a username, registry token, source address or package name.
+
+### Compatibility and migration
+
+The new local path supersedes certificate/provider setup, OCSP, per-member package admission and firewall-configured shared read credentials. Keep their implementation and old proofs labeled historical until the approved delivery changes them. Preserve the existing npm/PyPI operation set, selected registry identity, upstream credential forwarding, safe audit behavior, token-packument boundary, artifact integrity and registry isolation. Migration must not silently overwrite local package-manager credentials or switch managed users to weaker standalone policy.
+
+Detailed source owners and the limits of current source evidence are in [local-client-repository-map.md](evidence/local-client-repository-map.md). The reusable shared policy lifecycle and current-authority delivery design belong to [package-firewall-mvp/03-program-design.md](../package-firewall-mvp/03-program-design.md); this plan owns npm/PyPI publishing semantics and their caller-level regression matrix.
+
+### Flow model and source obligations
+
+[molecule-flow.json](molecule-flow.json) declares the managed-policy input boundary, selected npm/PyPI read, upstream-authorized npm action, request-local token-packument, safe audit, and three distinct npm DELETE paths. Whole-package revision DELETE and direct canonical tarball DELETE have their own route flow; service-scoped version-reference DELETE is modeled from the selected upstream revision PUT through exact-removal verification, durable marker commit, and guarded marker consume. Denied and unchanged PUTs retain the unmarked-reference fact; marker-commit failure is an uncertain partial write. Managed/standalone policy acquisition and the current-authority shared-service handoff are modeled in the lead plan and linked as reviewed sources here. [molecule-contracts.json](molecule-contracts.json) binds each local operation to its source seam, selected SMTC call-order check and unsafe mutation. Existing npm action, token-packument and audit source checks PASS. The planned service route and unpublish obligations target absent future source and remain PENDING during design. [Source-contract evidence](evidence/source-contract-rebind.md) records the earlier run and its limits.
+
+### Security coverage
+
+| Threat or required guarantee | Selected evidence/check | Remaining proof and owner |
+|---|---|---|
+| Policy key confused with registry credentials or leaked upstream | Distinct typed ports in the finite flow; lead policy snapshot/API contract and service response source obligations; package-manager authorization source check for npm actions. | Runtime request traces must show `Authorization: Bearer <service-api-key>` only to `/api/v1/policy/snapshot`, and package-manager credentials only to the selected registry. Lead Slice 16 and this plan's Slices 1, 3 and 4. |
+| Local policy bypass or upstream denial treated as success | Local allow precedes named operation in the flow; existing publisher-auth source check PASS. | Native npm/PyPI allow, policy-deny, upstream-deny and outage cases. Lead Slice 16 and this plan's Slices 1, 3 and 4. |
+| Token-private packument exposed through cache or coalescing | `canonical-token-packument` source control PASS; model requires request-local result and upstream token authorization. | Two-client sequential/concurrent/restart cache and in-flight witnesses. Slice 2. |
+| Audit reveals hidden packages or arbitrary upstream advisory text | `audit-filter-before-render` source control PASS; modeled safe, malformed, over-limit and unsupported outcomes. | Byte-level filtering, bounded work, npm bulk/quick compatibility and refusal witnesses. Slice 2. |
+| Unpublish reference or marker permits wrong-origin, cross-registry, changed-version, concurrent or replayed DELETE | Future ordered-call specs require reference check, successful-removal verification before marker commit, and marker consumption before send; finite flow models PUT-response revision and immediate authenticated-GET fallback. | Exact service-store/registry/package/version/filename/destination binding; durable revision marker; transactional one-use concurrency; both revision acquisition paths; per-service 20,000, per-registry 100,000 and global 1,000,000 quota+1 refusal; credential, path-prefix, DNS/peer and restart witnesses. Slice 3. The SMTC specs do not claim these semantic properties. |
+| DELETE route confusion changes authorization or bypasses version marker | Active route model distinguishes whole-package revision DELETE, direct canonical tarball DELETE and version-reference DELETE. | Slice 3 proves selected-upstream allow/deny for whole-package deletion with no marker, local zero-I/O refusal for direct tarball deletion, and marker-gated reference deletion with service binding and one-winner concurrency. |
+| Shared service crosses organization/registry or releases stale bytes after policy change | Lead registry identity and FIX-16-A obligations; shared publication gate orders policy activation with final response authorization/handoff. | Lead Slice 16 source/runtime checks cover current authority and cold/warm responses, generation changes and cross-thread publication; service deployment controls and cross-registry restart checks remain required. |
+| Shared listener exposed beyond selected trust boundary | C1019–C1022 and lead deployment proposal; no per-user or per-workload identity claim. | Native local/cluster reachability, rejected unpermitted host/node, TLS/transport and no-fallback checks. Lead Slices 25–26. |
+
+Review trigger: untrusted package-manager requests and upstream data, registry credentials, organization policy key, multi-tenant registry state, shared listeners and external origins all remain security-sensitive. The earlier certificate/OCSP threat model and Red Team are invalid for the new path; fresh `sf-threat-model`, `sf-red-team`, and combined design QA are required before presentation.
+
+## Invariants & spec dispositions
+
+- deferred to slice 1: Firewall identity at the policy server — the service API key goes only in HTTP `Authorization` to `GET /api/v1/policy/snapshot`; package-manager credentials never fetch policy or choose a group. Source absent; lead Slice 16 owns the policy client.
+- existing check: Registry authorization remains upstream-owned — `evidence/source-contract-rebind.md`: upstream-publisher-auth-before-send (run-Z0bKeh). Exact destination and upstream allow/deny behavior remain slice 3/4 caller witnesses.
+- deferred to slice 1: Selected-registry classification precedes protocol dispatch; source absent (`src/http/service_registry.rs` is lead-owned).
+- deferred to slice 1: Current policy and authority govern the exact prepared cold or warm response at the shared publication gate; source absent. The shared implementation and cross-thread witnesses are lead Slice 16.
+- existing check: Canonical token-packument authorization precedes upstream send — `evidence/source-contract-rebind.md`: canonical-token-packument (run-Z0bKeh). Request-local cache isolation and no persistence remain slice 2 runtime checks.
+- existing check: Audit filtering precedes rendering — `evidence/source-contract-rebind.md`: audit-filter-before-render (run-Z0bKeh). Exact client-visible bytes, malformed/over-limit behavior and unsupported-bulk handling remain slice 2 runtime checks.
+- deferred to slice 3: A successful upstream-authorized revision PUT that removes the exact leased version is verified before committing a durable marker bound to the local service, registry, reference and resulting revision; denied, unchanged or unverified PUTs create no marker. Source absent (`src/http/service_unpublish.rs`); route-specific spec checks order only.
+- deferred to slice 3: If the accepted PUT response omits the resulting revision, an immediate authenticated selected-upstream GET must confirm the leased version is absent before marker commit. Source absent; both PUT-response and GET-fallback paths, including unavailable/inconsistent GET partial-write recovery, require direct witnesses.
+- deferred to slice 3: Lease limits are 20,000 per service store, 100,000 per registry and 1,000,000 globally; batch/quota failure advertises no new reference. Source absent; cap+1 and unchanged-store assertions are required.
+- deferred to slice 3: npm version-unpublish references bind the local service store, immutable registry, package, version, filename and exact currently approved destination; DELETE requires the matching revision marker and atomically consumes it once. Source absent (`src/http/service_unpublish.rs`).
+- deferred to slice 3: Whole-package revision DELETE is a selected-registry action authorized by the upstream and does not use the version marker; source absent.
+- deferred to slice 3: Direct canonical tarball DELETE is refused locally before outbound I/O; source absent.
+- deferred to slice 3: Version-reference DELETE requires a committed revision marker, exact service/registry/package/version/filename/destination binding, and atomic one-use consumption before send; source absent.
+- UNKNOWN: Listener reachability, managed/standalone no-fallback, protected local secrets and native runner coverage remain unproved; native and deployment witnesses are planned for after lead Slice 25 and this plan's Slice 5. The service trusts only the selected local/approved-node boundary and does not assert per-user identity.
+
+## Repository evidence
+
+The existing npm/PyPI entry points in `src/http/registry_routes.rs` and `src/http/pypi_routes.rs` currently use transport-owned `VerifiedPeer` certificate admission. `src/http/registry_action.rs` and `src/http/pypi_routes.rs` separately forward validated package-manager Basic/Bearer credentials to upstream actions. The focused [local client repository map](evidence/local-client-repository-map.md) records those paths and the upstream read credential path; its SMTC entry-point discovery covered only 5 of 23 paths, so it is partial and describes the delivered certificate baseline rather than the replacement service.
+
+The proposed common request and unpublish owners are future files, `src/http/service_registry.rs` and `src/http/service_unpublish.rs`. The fresh [source-contract rebind](evidence/source-contract-rebind.md) run-Z0bKeh passes the three existing action, token-packument and audit controls; the six new-path obligations remain pending on absent future sources in slices 1 and 3. The ordered checks prove call order only, not exact values, route completeness, durable marker provenance, cache isolation or atomicity.
+
+The lead [FIX-16-A artifact-flow evidence](../package-firewall-mvp/evidence/artifact-flow-correctness.md) and [service API design evidence](../package-firewall-mvp/evidence/design-service-policy-api.md) ground current-authority publication and scoped policy retrieval. The active [threat model](evidence/threat-model-get-fallback-credentials.md) and independent Red Team review cover marker provenance, revision GET fallback (including unverifiable-revision recovery), service-scoped lease limits and all three DELETE routes; their current receipts are recorded in Gate 4 progress. Older certificate/member-bound reports are historical. Future source, native runtime, deployment and concurrency witnesses remain unproved.
+
+## Historical program design — certificate-based implementation
+
+Every section below this heading, including its member-bound unpublish, certificate principal, tests and source evidence, records the delivered 2026-10-30 design. It is retained as history only; active caller contracts, service-scoped references and current-policy handoff are defined in the active section above and in the linked 02/04 documents.
+
+### Clarifications and decisions
+
+The following clarification rows describe the historical certificate design. Their product promises remain only where the active design above and `01-product.md` retain them; certificate preconditions and member-bound identity do not.
 
 | ID | Class | Status | Owning Gate | Target Gate | Question or disposition | Selected value or policy | Decision source |
 |---|---|---|---|---|---|---|---|
@@ -26,7 +151,7 @@
 | D41 | user clarification | resolved | Gate 2 | none | Additional deletion origins | Registry administrator approves exact HTTPS origin and segment-boundary path-prefix scopes, including noncanonical selected paths, and explicitly chooses whether bearer forwarding to an extra origin is allowed; default off. Query-bearing URLs are sealed at rest and redacted. External DELETE requires an upstream-authorized preceding revision PUT for the same member/reference. | 02-architecture.md D41; user answer 2026-10-28 |
 | D39 | current-Gate decision | resolved | Gate 2 | none | Audit disclosure | Audit output is rebuilt from canonical package names, group-visible versions, validated severity, generic title and generated ID. Malformed or over-limit input/result refuses rather than claiming a clean audit. | 02-architecture.md D39 |
 
-## Files
+### Files
 
 The paths assign slice ownership; no product-code write is authorized before design approval.
 
@@ -42,7 +167,7 @@ The paths assign slice ownership; no product-code write is authorized before des
 | `src/npm/`, `src/pypi/`, `src/artifacts/`, `src/store/registry_state.rs`, other `src/store/`, `src/upstream/` | Selected-registry policy, scoped persistence/links and safe outbound transport; `apply_registry_state` checks immutable registry identity before persisted project, cache or artifact-state use. |
 | `tests/e2e/` and affected unit tests | Real client, TLS, SSO, revocation, routing, state and secret witnesses. |
 
-## Program behavior
+### Program behavior
 
 A company administrator selects a certificate provider, configures at least one upstream registry and manages users/groups. A developer chooses one organization registry URL and installs the user-specific client certificate locally. For an npm install, TLS supplies peer evidence, admission verifies the selected organization's root, live status and active membership, then reads current group policy and selected registry. The read classifier serves filtered metadata and artifact bytes through the chosen upstream, except that a token-bearing canonical npm packument GET may return upstream metadata hidden by group policy; its artifact download stays filtered. A publish to the same URL repeats certificate admission; named action classification forwards the developer's upstream token only to that registry, preserving upstream acceptance or denial. A signed-in user may download a Probation-issued setup bundle when self-service is enabled. Revoking the certificate or disabling the user denies the next read and action.
 
@@ -63,7 +188,7 @@ For npm packument revision PUT, require identity content encoding and at most M 
 | Signed-in member obtains only own bundle; switch blocks new issuance | `issue_setup_bundle` | X09-X11 with fake SSO, cross-account and 10,000 clients. |
 | No private key/token in project files or wrong upstream | setup and outbound transport | N16/P05/U01, X04/X06, logs and network trace. |
 
-## Modules and interfaces
+### Modules and interfaces
 
 These declarations state caller contracts, not a commitment to private algorithms. The member/registry binding stays private so handlers cannot construct a different principal after admission.
 
@@ -103,7 +228,7 @@ The approved organization-issued settings screen has editable identity-field and
 
 Resource bounds retain `Config.max_artifact_bytes` (A), `Config.max_metadata_bytes` (M), 30-second write-idle and 15-minute lifetime. Upload body B = 2A + M uses checked arithmetic, backpressure and preflight content length; chunked B+1 aborts without a completed write. Audit input and output each stay within M; upstream fetches, filtered packument lookups and rendering share one 30-second total deadline with at most 1,024 distinct advisory-package visibility lookups total and 16 concurrent lookups. Exceeding any bound returns an error, never an empty clean audit. Headers cap at 64 KiB, redirects at five hops, and login start/poll at 120 requests per minute per admitted member/registry. Current network/rate controls also apply. Valid npm/Twine uploads under B must pass.
 
-## Call stack
+### Call stack
 
 | Caller → operation | Value/state passed | Accepted result and failure |
 |---|---|---|
@@ -113,11 +238,11 @@ Resource bounds retain `Config.max_artifact_bytes` (A), `Config.max_metadata_byt
 | action route → `forward_registry_action` | same principal and developer credential if needed | Selected upstream acceptance/refusal; shared read credential absent. |
 | signed-in portal → `issue_setup_bundle`/`revoke_certificate` → next request | session/member and current certificate status | Own no-store bundle or targeted revocation; next request refuses revoked/disabled identity. |
 
-## Molecule model
+### Molecule model
 
 The revised [molecule-flow.json](molecule-flow.json) covers certificate admission, selected registry read/action, token-private packument metadata, named login, unknown routes, issuance, cross-account refusal, revocation, member disablement and registry collision/remove-readd, and `serve_audit_read` success/refusal; `router molecule-check` reports PASS across sixteen flows, including a required refusal for a changed URL on a leased version. [molecule-contracts.json](molecule-contracts.json) binds twenty-one selected source checks and defect controls to delivering slices; all current structural checks and unsafe controls PASS, while direct canonical DELETE refusal and exact leased URL equality still require Slice 4 runtime and source-review witnesses. Finite model PASS is a consistency check on declared contracts, not evidence that TLS, Rust source or real clients implement them. Exact certificate/member value routing needs wrong-value runtime controls and independent source review because the installed Rust analyzer cannot prove it.
 
-## Test plan
+### Test plan
 
 The [release matrix v5](evidence/client-operation-matrix.md) is the acceptance denominator. Each new scenario first fails behaviorally against pre-change product source, then passes after implementation. Pin npm 11.21.1, pip 26.2.2, Twine 7.0.0 and uv 0.13.5; record real client commands, request paths, statuses, generated-file scans and isolated client-egress logs. Probe each operation's real request shape before implementing its route. Missing/skip rows fail release acceptance.
 
@@ -142,7 +267,7 @@ X09–X11 have these explicit outcomes in every certificate mode; a refused bund
 
 The table's commands are runtime witnesses planned for their slices. The twenty-one selected source obligations in [molecule-contracts.json](molecule-contracts.json) encode guard-before-operation order under their named function scope; each names an unsafe mutation and expected missing-guard finding. All twenty-one currently implemented checks and their controls PASS on source, including the eight D40/D41 Slice 4 checks in evidence `run-heI8bF`. Exact identity, active-member/registry SQL predicates, token, cache, status, reference URL and egress values require runtime assertions and independent source review. The installed SMTC Rust backend could not establish the member/registry bind on a fluent SQL chain, so no source check claims that value property.
 
-## Invariants & spec dispositions
+### Invariants & spec dispositions
 
 - deferred to slice 1: TLS peer evidence precedes package admission; current certificate status, active member, group and same-organization registry are checked before grant. Source order controls, runtime wrong-peer/member/registry tests and independent SQL review establish the required behavior; source order alone does not establish exact values.
 - deferred to slice 2: Enterprise status is issuer-authorized, nonce-bound to the presented issuer+serial and read-after-write fresh; `live-status-before-grant` is only an order check, with wrong-issuer/serial/nonce/replay, outage and real-issuer controls for the stronger claim.
@@ -154,13 +279,13 @@ The table's commands are runtime witnesses planned for their slices. The twenty-
 - deferred to slice 4: Publisher authorization, selected-origin transport and login bootstrap remain disjoint; wrong-secret, wrong-origin, private-peer/DNS and forged `doneUrl` controls are required. Slice 2 also exercises private registry and OCSP responder peer vetting.
 - UNKNOWN: Exact validated peer/member/registry value passed through async Rust calls remains unproved until runtime evidence. The existing SMTC Rust analyzer cannot prove this same-value property; structural order PASS must not be called same-value proof.
 
-## Threat model
+### Threat model
 
 Security-relevant changes include TLS peer identity, certificate issuance and private keys, organization trust roots, live issuer status, membership/group admission, read/write route isolation, token-private packument caching, audit-response disclosure, outbound credentials and persisted registry state. The canonical tarball DELETE URL is a distinct public entry point: generic action forwarding would bypass the accepted-removal marker, so classification must refuse it before upstream I/O. A revision PUT may also replace a leased version’s local tarball link with an attacker-selected ordinary URL; the lease’s exact original URL must govern the outgoing body. The earlier [threat model](evidence/threat-model.md) and [Red Team report](evidence/red-team.md) predate the direct canonical DELETE entry-point finding. The fresh [direct-route threat review](evidence/threat-model-direct-delete.md) returned MODELED for that route and the changed leased-URL case; the [independent Red Team](evidence/red-team-direct-delete.md) returned SOUND, and combined QA remains due before approval; exact revision and one-use behavior remain Slice 4 checks. Slice 3 must still prove its runtime behavior and receive fresh implementation security review.
 
 The selected npm write surface also includes package PUT, package revision PUT and whole-package revision DELETE, plus the classified login, logout, package-settings, dist-tag, owner, access, organization/team, profile, token, star, stage and trust operations named by [N05–N23](evidence/client-operation-matrix.md) under `/-/`. That matrix is the denominator for the Slice 4 route review, including named reads adjacent to mutations. The whole-package `DELETE /registry/npm/<id>/<package>/-rev/<revision>` is a separate upstream-authorized action: it may remove a whole package, carries the developer bearer only to the selected registry, and does not use the version-tarball removal marker. The version-tarball marker applies only to the member-bound artifact-reference DELETE; the direct canonical tarball DELETE remains locally refused. Unknown catchall mutations and PATCH refuse locally. Slice 4 must exercise permitted and upstream-denied whole-package revision DELETE, verifying the selected destination and no extra-origin request, and review each N05–N23 route for selected destination, developer credential or tokenless bootstrap, upstream allow/deny and local refusal as applicable before claiming write-route coverage.
 
-## Security coverage
+### Security coverage
 
 | Threat/application guarantee | Selected check | Evidence and gap |
 |---|---|---|
@@ -178,14 +303,14 @@ The selected npm write surface also includes package PUT, package revision PUT a
 | Whole-package revision DELETE or another classified write reaches the wrong upstream or gains local authorization | Slice 4 pinned action E2E exercises permitted and upstream-denied whole-package revision DELETE through the selected URL; route inventory source review checks every N05–N23 operation in the [client matrix](evidence/client-operation-matrix.md), including profile, star, trust and logout, plus unknown catchall and PATCH refusal | The package revision DELETE is upstream-authorized and has no version-tarball marker. Selected-origin and publisher-guard structural controls cover call order, while exact route, bearer destination, allow/deny behavior and complete dispatch require runtime and source review. |
 | Changed tarball URL for a leased retained version reaches upstream PUT | Pinned action E2E changes an upstream URL on both a retained leased version and a same-origin variant, asserts refusal before PUT; ordinary unleased upstream URL passes; fresh source review checks lease lookup | Existing link-restore spec establishes ordering, not exact URL equality. Runtime comparisons and source review decide the value guarantee. |
 
-## Least confident decisions
+### Least confident decisions
 
 1. The selected organization issuer must expose committed-revocation status to every request; a real issuer integration witness is required before claiming organization-issued support.
 2. npm publish/deprecate preflight uses a canonical packument GET on the one URL. With a developer token, the selected upstream may return group-hidden metadata; the later write needs separate upstream authorization and artifacts stay filtered. Before Slice 1 implementation, pinned-client probes must establish the exact request/credential shape, including an upstream that denies the shared read credential but accepts the developer token and a hidden-package deprecate case; a contradiction reopens design.
 3. Client-specific mTLS configuration across npm, pip, Twine and uv is documented but must be proved with pinned clients, generated-file scans and full-path network traces.
 4. Reducing advisories must preserve detection for visible installed versions in npm 11 while removing attacker-controlled fields. The selected E2E must use a nonempty advisory and observe the npm client result, not only an HTTP 200 or empty response.
 
-## Repository evidence
+### Repository evidence
 
 [Repository structure](evidence/repository-structure.md) shows existing npm/PyPI/artifact handlers call Authorization-key `Managed::authenticate`; package-route callers must instead obtain the transport-owned certificate principal, while portal session and unrelated management-key callers retain their current entry paths. The key cache's stale-success fallback cannot serve certificate admission; current membership/group resolution and policy-layer lookup remain the reusable dependency. The process-wide `OriginSet` is a temporary Slice 1 npm source, then Slice 2 registry lookup supplies the selected origin to reads, actions and outbound peer checks. Existing `ProjectKey`, `RenderKey`, in-flight refresh, artifact-reference and link-rendering callers must carry immutable registry ID; migration invalidates ambiguous old rows while preserving compatible data across restart. Token-bearing canonical packument reads must also bypass the shared metadata cache and in-flight caller path entirely. Portal and sync callers gain provider/trust, registry and Users status operations without changing the approved SSO session and role checks. Slices 1–3 contain these caller migrations; Slice 4 adds actions through the same registry and principal. These are planned changes grounded in the linked source map, not implemented behavior.
 

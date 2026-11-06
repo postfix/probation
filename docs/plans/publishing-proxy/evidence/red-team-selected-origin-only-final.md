@@ -1,0 +1,14 @@
+Review kind: red-team
+Verdict: SOUND
+Review: independent
+Subject: architecture docs/plans/publishing-proxy/02-architecture.md=02fb235c77e11aa293c73479d5b78827e93393c4a715502159004e4ef9d95ff1; product docs/plans/publishing-proxy/01-product.md=39ed1758b6e83d4effb0205474f71b107cbeb66ded55bee93693c4c424d8fa46; design docs/plans/publishing-proxy/03-program-design.md=bae6f6fc9bd33fbf79ceb608146e2b5d6a0f84b6dc65c92773d8095cab2cd337; slices docs/plans/publishing-proxy/04-slices.md=5cb76b2b123c3eec4fad49b8bb15aaba871668a14b78e50c035dda770acccb44; molecule-flow docs/plans/publishing-proxy/molecule-flow.json=e9006e603bac571a975e6c585db71ebee1740da46f08bc65042c3bb6b76700d3; molecule-contracts docs/plans/publishing-proxy/molecule-contracts.json=7cb3bb8cc92af0e220b771dfc672592b8b7ce9d46a33c70b912df22bbdbbbd7b; threat model docs/plans/publishing-proxy/evidence/threat-model-selected-origin-only.md=ce81e6d4a5f117698bd0ca8f7a9ae9336e90936c8c308891b9dbd6a401993672; upstream product docs/plans/package-firewall-mvp/01-product.md=609f0355a9ec3390e28f3c31510e6e7980e3dfdc13f53815f382bfe368dca1f
+Bottom line: Active D42 and the post-re-steer Slice 3 contract consistently confine the policy API key to snapshot Authorization and package-manager credentials to the selected registry. Extra-origin lease and forged-reference refusals are explicit before local URL advertisement or outbound I/O; no plan-level blocker found.
+Findings: none.
+Checked clean: Coverage, Dependencies, Risk order, Foundations, Verifiability, Sizing, Hard bar, Security.
+Threat model: MODELED (supplied)
+Limitations: This is plan-level evidence only. Slice 3 witnesses are planned acceptance checks, not implemented or passing tests; no source or runtime behavior was reviewed.
+
+SMTC receipt:
+- `file read` and `file grep` on the absolute repository root, session `sf-redteam-selected-origin-2026-11-02`: `run`, outer `ok: true`, no inner refusal, current snapshot generation 56; bounded reads and decisive searches were complete. Broader exploratory searches/reads were truncated and their refs exceeded 4,096 estimated tokens, so they were not opened; narrower reads/greps supplied the deciding evidence.
+- Deciding evidence: `02-architecture.md:37` D42 explicitly supersedes D41 extra-origin bearer forwarding; `02-architecture.md` active proposal refuses an extra-origin tarball before local action URL/DELETE. `04-slices.md:1-15` is the active post-re-steer five-row plan and Slice 3 specifies the three distinct DELETE outcomes, both extra-origin refusals, selected-origin authenticated GET fallback, marker behavior, and quota+1 checks. `molecule-flow.json:5,9` separates credential destinations and states both refusal properties. Threat model states the same and records the remaining runtime proof limits.
+- Grade: Manual (selected plan text; no implementation certificate or runtime proof).

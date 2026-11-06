@@ -4,9 +4,166 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { activateIssuerFor, installIssuerLeaf, issueIssuerLeafFor } from "../harness/issuer-setup.mjs";
 
-export const meta = { id: "E2E-publishing-npm-actions", title: "npm selected-registry actions", suites: ["release"] };
+export const meta = { id: "E2E-publishing-npm-actions", title: "local-service npm publishing and unpublish", suites: ["release"], stack: "own" };
 
-export default async function npmActions(h, { selfServiceDisabled = false, organizationIssued = false } = {}) {
+export default async function serviceNpmActions(h) {
+  const admin = await h.signUp({ kind: "org" });
+  await h.enableTotp(admin);
+  const org = await orgId(admin.portal);
+  const issued = await admin.portal.submit("/keys", "/keys/service", { name: "npm-action-service", attach: "org" });
+  h.expect(issued.status === 200, "service policy key issued");
+  const key = h.between(issued.body, '<code id="new-key">', "</code>");
+  const id = h.stack.sql(`SELECT id FROM registries WHERE org_id = ${Number(org)} AND ecosystem = 'npm' AND removed_at IS NULL`);
+  h.stack.exec("firewall-standalone", ["sh", "-c", "umask 077; cat > /var/lib/probation/service.key; chmod 600 /var/lib/probation/service.key"], { input: `${key}\n`, check: true });
+  const configPath = join(h.stack.work, "firewall-standalone.toml");
+  writeFileSync(configPath, `allowed_peer_cidrs = ["${h.stack.net}.10/32"]\n${readFileSync(configPath, "utf8")}\n[service_policy]\nserver_url = "https://sync.e2e.test"\nservice_key_file = "/var/lib/probation/service.key"\nsync_interval_seconds = 1\n`);
+  h.restart("firewall-standalone");
+  await h.stack.firewallReady("fw-standalone");
+  const base = `https://fw-standalone.e2e.test/registry/npm/${id}/`;
+  h.stack.exec("client-npm", ["sh", "-c", "cat > /root/.npmrc"], { input: `registry=${base}\ncafile=/e2e/ca/ca.pem\n//fw-standalone.e2e.test/registry/npm/${id}/:_authToken=e2e-owner\n`, check: true });
+  const name = h.unique("service-publish");
+  const published = h.client("client-npm", `npm publish --ignore-scripts --registry=${base}`, {
+    files: { "package.json": JSON.stringify({ name, version: "1.0.0" }), "index.js": "module.exports = 1;\n" },
+  });
+  h.expect(published.status === 0, `local-service npm publish succeeds: ${published.stderr}`);
+  const script = `import https from "node:https"; import {readFileSync} from "node:fs";
+const body=process.argv[4]?Buffer.from(process.argv[4],"base64"):undefined;
+const run=()=>new Promise((resolve,reject)=>{const req=https.request(process.argv[2],{method:process.argv[3],ca:readFileSync("/e2e/ca/ca.pem"),headers:{...(process.argv[5]==="none"?{}:{authorization:process.argv[5]}),"content-type":"application/json"}},res=>{let body="";res.on("data",x=>body+=x);res.on("end",()=>resolve({status:res.statusCode,body}));});req.on("error",reject);req.end(body);});
+console.log(JSON.stringify(process.argv[6]==="race"?await Promise.all([run(),run()]):await run()));`;
+  const probe = (method, target, body, authorization = "Bearer e2e-owner", race = "") => {
+    const result = h.client("client-npm", `node service-action.mjs '${target.startsWith("https:") ? target : base + target}' ${method} '${body === undefined ? "" : Buffer.from(typeof body === "string" ? body : JSON.stringify(body)).toString("base64")}' '${authorization}' '${race}'`, { files: { "service-action.mjs": script } });
+    h.expect(result.status === 0, `service action probe completes: ${result.stderr}`);
+    return JSON.parse(result.stdout.trim());
+  };
+  const requests = () => h.fakes.requests("registry.npmjs.org");
+  const version = h.stack.exec("client-npm", ["npm", "--version"]);
+  h.expect(version.stdout.trim() === "11.21.1", "pinned npm client");
+  h.expect(probe("PUT", "-/user/org.couchdb.user:e2e-owner", { name: "e2e-owner", password: "e2e-password" }, "Basic ZTJlLW93bmVyOmUyZS1wYXNzd29yZA==").status === 201, "Basic bootstrap reaches selected registry");
+  h.expect(probe("PUT", "-/user/org.couchdb.user:e2e-owner", { name: "e2e-owner", password: "wrong" }, "Basic ZTJlLW93bmVyOmUyZS1wYXNzd29yZA==").status === 403, "upstream denies invalid Basic bootstrap");
+  h.expect(probe("POST", "-/v1/login", {}).status === 200, "named web login bootstrap");
+  for (const command of [`dist-tag add ${name}@1.0.0 stable`, `dist-tag rm ${name} stable`, "whoami", "profile get --json", `star ${name}`, `unstar ${name}`]) {
+    const result = h.client("client-npm", `npm ${command} --registry=${base}`);
+    h.expect(result.status === 0, `named action ${command}: ${result.stderr}`);
+  }
+  h.expect(probe("GET", "-/npm/v1/user", undefined, "Bearer e2e-denied").status === 403, "upstream denies Bearer account action");
+  h.expect(probe("POST", `-/package/${name}/trust`, {}).status === 404, "upstream trust unsupported remains unsupported");
+  h.expect(probe("DELETE", "-/user/token/example").status === 200, "named logout reaches selected registry");
+  const hiddenName = h.unique("service-hidden");
+  await h.fakes.publishNpm({ name: hiddenName, version: "1.0.0", ageSeconds: 400 * 86_400 });
+  await h.editPolicy(admin.portal, { action: "add_block", ecosystem: "npm", name: hiddenName, what: "package" });
+  await h.waitFor("hidden policy active", async () => probe("GET", hiddenName, undefined, "none").status === 403, { timeout: 10_000 });
+  const deprecated = h.client("client-npm", `npm deprecate ${hiddenName}@1.0.0 retired --registry=${base}`);
+  h.expect(deprecated.status === 0, `upstream owner can deprecate policy-hidden metadata: ${deprecated.stderr}`);
+  const hiddenDoc = JSON.parse(probe("GET", hiddenName).body);
+  h.expect(probe("GET", hiddenDoc.versions["1.0.0"].dist.tarball).status !== 200, "management token grants no hidden artifact bytes");
+  for (const [token, status] of [["e2e-owner", 200], ["e2e-denied", 403]]) {
+    const whole = h.unique("service-whole");
+    await h.fakes.publishNpm({ name: whole, version: "1.0.0", ageSeconds: 400 * 86_400 });
+    h.expect(probe("DELETE", `${whole}/-rev/1`, undefined, `Bearer ${token}`).status === status, "whole-package DELETE preserves selected-upstream allow/deny without marker");
+    h.expect((await requests()).filter(row => row.method === "DELETE" && row.path === `/${whole}/-rev/1`).length === 1, "whole DELETE has one selected destination");
+  }
+  const noIo = (await requests()).length;
+  for (const [method, path] of [["DELETE", `${name}/-/${name}-1.0.0.tgz`], ["DELETE", `${name}/-/${name}-1.0.0.tgz/-rev/1`], ["DELETE", `artifacts/${"ab".repeat(32)}/forged.tgz/-rev/2`], ["DELETE", "artifacts/not-a-reference/forged.tgz/-rev/2"], ["POST", "unknown"], ["PATCH", name], ["GET", "-/unknown"]]) {
+    h.expect(probe(method, path).status >= 400, `malformed, direct or unknown route refuses: ${path}`);
+  }
+  h.expect((await requests()).length === noIo, "direct canonical, forged and malformed actions make zero outbound calls");
+  const prepare = async (prefix, tarballUrl) => {
+    const packageName = h.unique(prefix);
+    await h.fakes.publishNpm({ name: packageName, version: "1.0.0", ageSeconds: 400 * 86_400, ...(tarballUrl ? { tarballUrl: tarballUrl(packageName) } : {}) });
+    await h.fakes.publishNpm({ name: packageName, version: "2.0.0", ageSeconds: 400 * 86_400 });
+    const listing = probe("GET", `${packageName}?write=true`);
+    h.expect(listing.status === 200, `write preflight ${packageName}: ${listing.status} ${listing.body}`);
+    const doc = JSON.parse(listing.body);
+    return { packageName, doc, reference: doc.versions["1.0.0"].dist.tarball };
+  };
+  for (const mode of ["response", "fallback", "unavailable", "inconsistent", "denied", "unchanged", "malformed"]) {
+    const { packageName, doc, reference } = await prepare(`service-${mode}`);
+    h.expect(reference.startsWith(`${base}artifacts/`), "preflight advertises only local service reference");
+    const retained = structuredClone(doc);
+    if (mode !== "unchanged") delete doc.versions["1.0.0"];
+    const faults = [];
+    if (["fallback", "unavailable", "inconsistent"].includes(mode)) faults.push({ host: "registry.npmjs.org", path: `/${packageName}/-rev/1`, method: "PUT", mode: "omit-revision", times: 1 });
+    if (mode === "unavailable") faults.push({ host: "registry.npmjs.org", path: `/${packageName}`, method: "GET", mode: "status", status: 503, times: 1 });
+    if (mode === "inconsistent") faults.push({ host: "registry.npmjs.org", path: `/${packageName}`, method: "GET", mode: "json", body: retained, times: 1 });
+    await h.fakes.faults(faults);
+    const put = probe("PUT", `${packageName}/-rev/1`, mode === "malformed" ? "{" : doc, mode === "denied" ? "Bearer e2e-denied" : "Bearer e2e-owner");
+    await h.fakes.faults([]);
+    const expected = ["unavailable", "inconsistent"].includes(mode) ? 503 : mode === "denied" ? 403 : mode === "malformed" ? 400 : 201;
+    h.expect(put.status === expected && (expected !== 503 || put.body.includes("PARTIAL_WRITE_UNCERTAIN")), `${mode} PUT outcome: ${put.status} ${put.body}`);
+    const beforeDelete = (await requests()).length;
+    h.expect(probe("DELETE", `${reference}/-rev/wrong`).status === 404, "wrong revision refuses before outbound");
+    const success = ["response", "fallback"].includes(mode);
+    if (success) { h.restart("firewall-standalone"); await h.stack.firewallReady("fw-standalone"); }
+    h.expect(probe("DELETE", `${reference}/-rev/wrong`).status === 404, "wrong revision also refuses after restart");
+    const raced = probe("DELETE", `${reference}/-rev/2`, undefined, "Bearer e2e-owner", "race");
+    h.expect(JSON.stringify(raced.map(row => row.status).sort()) === JSON.stringify(success ? [200, 404] : [404, 404]), `${mode} has at most one durable winner: ${JSON.stringify(raced)}`);
+    h.expect(probe("DELETE", `${reference}/-rev/2`).status === 404, "replay refuses");
+    if (success) {
+      h.restart("firewall-standalone"); await h.stack.firewallReady("fw-standalone");
+      h.expect(probe("DELETE", `${reference}/-rev/2`).status === 404, "consumed marker remains consumed after restart");
+    }
+    h.expect((await requests()).length === beforeDelete + Number(success), `${mode}: exact outbound DELETE count`);
+    if (success) h.expect((await requests()).some(row => row.method === "DELETE" && row.path === `/${packageName}/-/${packageName}-1.0.0.tgz/-rev/2` && row.credential === "developer-owner"), "exact selected tarball destination and developer credential");
+    if (["fallback", "unavailable", "inconsistent"].includes(mode)) {
+      const trace = (await requests()).filter(row => row.path.startsWith(`/${packageName}`));
+      const at = trace.findIndex(row => row.method === "PUT");
+      h.expect(trace[at + 1]?.method === "GET" && trace[at + 1]?.path === `/${packageName}` && trace[at + 1]?.credential === "developer-owner", "fallback immediately authenticates only to selected registry");
+    }
+  }
+  const native = await prepare("service-native-unpublish");
+  const unpublish = h.client("client-npm", `npm unpublish ${native.packageName}@1.0.0 --force --registry=${base}`);
+  h.expect(unpublish.status === 0, `native npm version unpublish: ${unpublish.stderr}`);
+  const scoped = `@e2e/${h.unique("service-scoped")}`;
+  const scopedPublish = h.client("client-npm", `npm publish --ignore-scripts --access=public --registry=${base}`, {
+    dir: `/work/${h.unique("scoped-publish")}`, files: { "package.json": JSON.stringify({ name: scoped, version: "1.0.0" }) },
+  });
+  h.expect(scopedPublish.status === 0, `native scoped publish: ${scopedPublish.stderr}`);
+  await h.fakes.publishNpm({ name: scoped, version: "2.0.0", ageSeconds: 400 * 86_400 });
+  for (const command of [`deprecate ${scoped}@1.0.0 retired`, `unpublish ${scoped}@1.0.0 --force`, `unpublish ${scoped} --force`]) {
+    const result = h.client("client-npm", `npm ${command} --registry=${base}`);
+    h.expect(result.status === 0, `native scoped action ${command}: ${result.stderr}`);
+  }
+  const deniedDelete = await prepare("service-denied-delete");
+  delete deniedDelete.doc.versions["1.0.0"];
+  h.expect(probe("PUT", `${deniedDelete.packageName}/-rev/1`, deniedDelete.doc).status === 201, "accepted removal before separately authorized DELETE");
+  const beforeDeniedDelete = (await requests()).length;
+  h.expect(probe("DELETE", `${deniedDelete.reference}/-rev/2`, undefined, "Bearer e2e-denied").status === 403, "upstream-denied version DELETE remains denied");
+  h.expect(probe("DELETE", `${deniedDelete.reference}/-rev/2`).status === 404 && (await requests()).length === beforeDeniedDelete + 1, "upstream denial consumes marker and cannot be retried with another credential");
+  const redirected = await prepare("service-delete-redirect");
+  delete redirected.doc.versions["1.0.0"];
+  h.expect(probe("PUT", `${redirected.packageName}/-rev/1`, redirected.doc).status === 201, "redirect fixture removal accepted");
+  const beforeRedirect = (await h.fakes.requests("registry-b.e2e.test")).length;
+  await h.fakes.faults([{ host: "registry.npmjs.org", path: `/${redirected.packageName}/-/`, method: "DELETE", mode: "redirect", location: "https://registry-b.e2e.test/extra/case/forged.tgz", times: 1 }]);
+  h.expect(probe("DELETE", `${redirected.reference}/-rev/2`).status === 502, "credential-bearing DELETE redirect refuses");
+  await h.fakes.faults([]);
+  h.expect(probe("DELETE", `${redirected.reference}/-rev/2`).status === 404 && (await h.fakes.requests("registry-b.e2e.test")).length === beforeRedirect, "redirect target receives no credential and consumed marker cannot replay");
+  const selectedScope = await admin.portal.get(`/org/${org}/registries`);
+  h.expect((await admin.portal.post(`/org/${org}/registries/${id}/delete-scope`, { csrf: hidden(selectedScope.body, "csrf"), origin: "https://registry.npmjs.org", path_prefix: "/custom/case" })).status === 303, "approve selected-origin noncanonical path scope");
+  const custom = h.unique("service-custom");
+  await h.fakes.publishNpm({ name: custom, version: "1.0.0", ageSeconds: 400 * 86_400, tarballUrl: `https://registry.npmjs.org/custom/case/${custom}-1.0.0.tgz?sig=d41-signed-secret` });
+  await h.fakes.publishNpm({ name: custom, version: "2.0.0", ageSeconds: 400 * 86_400 });
+  let customListing;
+  await h.waitFor("selected deletion scope active", async () => (customListing = probe("GET", `${custom}?write=true`)).status === 200, { timeout: 10_000 });
+  h.expect(!customListing.body.includes("d41-signed-secret") && !customListing.body.includes("?sig="), "signed upstream query remains sealed behind opaque local URL");
+  const customDoc = JSON.parse(customListing.body);
+  const customReference = customDoc.versions["1.0.0"].dist.tarball;
+  delete customDoc.versions["1.0.0"];
+  h.expect(probe("PUT", `${custom}/-rev/1`, customDoc).status === 201, "custom selected-origin removal accepted");
+  h.restart("firewall-standalone"); await h.stack.firewallReady("fw-standalone");
+  h.expect(probe("DELETE", `${customReference}/-rev/2`).status === 200, "selected custom reference and sealed query survive restart");
+  h.expect((await requests()).some(row => row.method === "DELETE" && row.path === `/custom/case/${custom}-1.0.0.tgz/-rev/2?<redacted>` && row.signedQueryValid && row.credential === "developer-owner"), "exact selected custom destination preserves sealed query and developer credential");
+  const scopePage = await admin.portal.get(`/org/${org}/registries`);
+  h.expect((await admin.portal.post(`/org/${org}/registries/${id}/delete-scope`, { csrf: hidden(scopePage.body, "csrf"), origin: "https://registry-b.e2e.test", path_prefix: "/extra/case", forward_bearer: "on" })).status === 303, "historical extra-origin scope exists");
+  const foreign = h.unique("service-extra-origin");
+  await h.fakes.publishNpm({ name: foreign, version: "1.0.0", ageSeconds: 400 * 86_400, tarballUrl: `https://registry-b.e2e.test/extra/case/${foreign}-1.0.0.tgz?sig=d41-signed-secret` });
+  const beforeForeign = (await h.fakes.requests("registry-b.e2e.test")).length;
+  const extra = probe("GET", `${foreign}?write=true`);
+  h.expect(extra.status >= 400 && !extra.body.includes(`${base}artifacts/`), "extra origin refuses before advertising an action reference even with old bearer approval");
+  h.expect((await h.fakes.requests("registry-b.e2e.test")).length === beforeForeign, "extra origin receives zero calls or credentials");
+  h.expect((await requests()).every(row => ["none", "developer-owner", "developer-denied", "developer-basic"].includes(row.credential)), "policy API key never reaches selected registry; only request-local package-manager credentials");
+}
+
+export async function historicalNpmActions(h, { selfServiceDisabled = false, organizationIssued = false } = {}) {
   h.expect(!(selfServiceDisabled && organizationIssued), "npm actions matrix uses one certificate mode at a time");
   const admin = await h.signUp({ kind: "org" });
   await h.enableTotp(admin);

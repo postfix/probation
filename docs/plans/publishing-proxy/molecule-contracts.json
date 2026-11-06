@@ -2,196 +2,40 @@
   "version": 1,
   "contracts": [
     {
-      "id": "classify-before-dispatch",
+      "id": "classify-selected-registry",
       "operation": "classify_registry_request",
-      "flow": "unknown-route",
-      "claim": "Selected registry ID validation precedes npm package read dispatch; route-table completeness and denial require client and wrong-route controls.",
-      "source": "src/http/registry_routes.rs",
-      "symbol": "package",
-      "spec": "docs/plans/publishing-proxy/specs/classify-before-dispatch.yaml",
+      "flow": "npm-pypi-selected-operation",
+      "claim": "In the planned local-service route, selected registry classification dominates protocol dispatch. The spec proves call order only; route completeness and exact registry/value binding require runtime and source review.",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec": "docs/plans/publishing-proxy/specs/service-route-classify-before-dispatch.yaml",
       "bySlice": 1,
       "controls": [
         {
-          "id": "missing-classification",
+          "id": "dispatch-without-selected-route",
           "mutations": [
             {
-              "source": "src/http/registry_routes.rs",
-              "from": "Path((registry, package)): Path<(String, String)>,\n) -> Result<Response, ApiError> {\n    let registry = registry_read::registry_id(&registry)?;",
-              "to": "Path((registry, package)): Path<(String, String)>,\n) -> Result<Response, ApiError> {\n    let registry = registry_read::unchecked_registry_id(&registry)?;"
+              "source": "src/http/service_registry.rs",
+              "from": "let selected = classify_selected_registry(&request, &policy)?;",
+              "to": "let selected = unchecked_selected_registry(&request, &policy)?;"
             }
           ],
           "expect": {
-            "file": "src/http/registry_routes.rs",
-            "summaryIncludes": "Operation 'serve_registry' lacks required guard"
+            "file": "src/http/service_registry.rs",
+            "summaryIncludes": "Operation 'dispatch_selected_registry' lacks required guard"
           }
         }
       ]
     },
     {
-      "id": "tls-peer-before-admit",
-      "operation": "admit_certificate",
-      "flow": "install",
-      "claim": "The package admission path requires a verified-peer option before certificate admission; TLS provenance, HTTP header forgery and same-peer routing require runtime controls.",
-      "source": "src/http/registry_read.rs",
-      "symbol": "admit",
-      "spec": "docs/plans/publishing-proxy/specs/tls-peer-before-admit.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "header-peer-bypass",
-          "mutations": [
-            {
-              "source": "src/http/registry_read.rs",
-              "from": "let peer = peer.ok_or_else(|| ApiError::Unauthenticated)?;",
-              "to": "let peer = peer.unwrap();"
-            }
-          ],
-          "expect": {
-            "file": "src/http/registry_read.rs",
-            "summaryIncludes": "Operation 'Managed.admit_certificate' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "current-certificate-before-grant",
-      "operation": "admit_certificate",
-      "flow": "install",
-      "claim": "A per-request management certificate lookup precedes policy resolution for a registry principal; exact chain, serial, revocation and fail-closed behavior require runtime controls.",
-      "source": "src/managed/mod.rs",
-      "symbol": "Managed.admit_certificate",
-      "spec": "docs/plans/publishing-proxy/specs/current-certificate-before-grant.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "stale-certificate-lookup",
-          "mutations": [
-            {
-              "source": "src/managed/mod.rs",
-              "from": ".certificate(CertificateAdmissionRequest {",
-              "to": ".cached_certificate(CertificateAdmissionRequest {"
-            }
-          ],
-          "expect": {
-            "file": "src/managed/mod.rs",
-            "summaryIncludes": "Operation 'resolve' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "live-status-before-grant",
-      "operation": "admit_certificate",
-      "flow": "install",
-      "claim": "A live status check precedes organization-issued grant. Issuer-authorized signature, exact issuer+serial, fresh nonce, committed-revocation visibility and fail-closed outage need wrong-value and real-issuer runtime controls.",
-      "source": "src/managed/enterprise_certificate.rs",
-      "symbol": "resolve_enterprise_certificate",
-      "spec": "docs/plans/publishing-proxy/specs/live-status-before-grant.yaml",
-      "bySlice": 2,
-      "controls": [
-        {
-          "id": "cached-good-status",
-          "mutations": [
-            {
-              "source": "src/managed/enterprise_certificate.rs",
-              "from": "let status = check_live_issuer_status(peer).await?;",
-              "to": "let status = cached_issuer_status(peer).await?;"
-            }
-          ],
-          "expect": {
-            "file": "src/managed/enterprise_certificate.rs",
-            "summaryIncludes": "Operation 'grant_enterprise_certificate' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "policy-before-package-send",
-      "operation": "serve_package_read",
-      "flow": "install",
-      "claim": "Package resolution precedes npm metadata rendering; exact policy decisions, artifact bytes, current group and all-route coverage require runtime controls.",
-      "source": "src/npm/mod.rs",
-      "symbol": "serve_with_url",
-      "spec": "docs/plans/publishing-proxy/specs/package-policy-before-send.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "unchecked-package-read",
-          "mutations": [
-            {
-              "source": "src/npm/mod.rs",
-              "from": "let resolved = resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal.and_then(|p| p.registry_origin.as_ref()), principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice()), principal.and_then(|p| p.registry_read_authorization.as_deref())).await?;",
-              "to": "let resolved = unchecked_resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal.and_then(|p| p.registry_origin.as_ref()), principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice()), principal.and_then(|p| p.registry_read_authorization.as_deref())).await?;"
-            }
-          ],
-          "expect": {
-            "file": "src/npm/mod.rs",
-            "summaryIncludes": "Operation 'render' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "canonical-token-packument",
-      "operation": "serve_token_packument",
-      "flow": "token-packument-hidden",
-      "claim": "The named canonical-token packument guard precedes the selected-upstream packument send in serve_token_packument. Exact route, token, upstream, denial, alternate-read and no shared cache/in-flight result behavior require N02/N03/N08/N10/N11/X07 and Slice 3 two-client sequential/concurrent/restart runtime controls plus source review.",
-      "source": "src/http/token_packument.rs",
-      "symbol": "serve_token_packument",
-      "spec": "docs/plans/publishing-proxy/specs/canonical-token-packument.yaml",
-      "bySlice": 3,
-      "controls": [
-        {
-          "id": "packument-without-canonical-token-guard",
-          "mutations": [
-            {
-              "source": "src/http/token_packument.rs",
-              "from": "let route = check_canonical_token_packument(&request)?;",
-              "to": "let route = unchecked_token_packument(&request)?;"
-            }
-          ],
-          "expect": {
-            "file": "src/http/token_packument.rs",
-            "summaryIncludes": "Operation 'send_selected_upstream_packument' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "origin-before-action-send",
+      "id": "upstream-publisher-auth-before-send",
       "operation": "forward_registry_action",
-      "flow": "publish",
-      "claim": "Selected-origin admission precedes outbound action send. Public/private DNS and connected-peer vetting, per-organization host/port/CIDR, TLS name and credential confinement need runtime sentinels.",
-      "source": "src/http/registry_action.rs",
-      "symbol": "forward_registry_action",
-      "spec": "docs/plans/publishing-proxy/specs/action-origin-before-send.yaml",
-      "bySlice": 4,
-      "controls": [
-        {
-          "id": "unchecked-action-origin",
-          "mutations": [
-            {
-              "source": "src/http/registry_action.rs",
-              "from": "let (origin, url) = admit_selected_origin(app, principal, &request)?;",
-              "to": "let (origin, url) = unchecked_action_origin(app, principal, &request)?;"
-            }
-          ],
-          "expect": {
-            "file": "src/http/registry_action.rs",
-            "summaryIncludes": "Operation 'send_action' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "publisher-auth-before-send",
-      "operation": "forward_registry_action",
-      "flow": "publish",
-      "claim": "Named tokenless login or developer credential admission precedes outbound action send; route specificity and upstream denial require runtime controls.",
+      "flow": "npm-publishing-action",
+      "claim": "Route-validated package-manager Basic/Bearer authorization is admitted before the named upstream action. This does not authenticate a firewall caller or grant policy.",
       "source": "src/http/registry_action.rs",
       "symbol": "forward_registry_action",
       "spec": "docs/plans/publishing-proxy/specs/publisher-auth-before-send.yaml",
-      "bySlice": 4,
+      "bySlice": 3,
       "controls": [
         {
           "id": "publisher-token-bypass",
@@ -210,118 +54,40 @@
       ]
     },
     {
-      "id": "certificate-revoke-before-success",
-      "operation": "revoke_certificate",
-      "flow": "revocation",
-      "claim": "The selected certificate UPDATE executes before the success redirect; transaction commit, next-request refusal and exact member/serial binding require integration controls.",
-      "source": "crates/probation-server/src/portal/users.rs",
-      "symbol": "revoke_certificate",
-      "spec": "docs/plans/publishing-proxy/specs/certificate-revoke-before-success.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "revoke-without-mark",
-          "mutations": [
-            {
-              "source": "crates/probation-server/src/portal/users.rs",
-              "from": ").bind(id).bind(org).execute(&mut *tx).await { return unavailable(err) }",
-              "to": ").bind(id).bind(org).skip_revoke(&mut *tx).await { return unavailable(err) }"
-            }
-          ],
-          "expect": {
-            "file": "crates/probation-server/src/portal/users.rs",
-            "summaryIncludes": "Operation 'redirect' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "self-service-before-bundle",
-      "operation": "issue_setup_bundle",
-      "flow": "setup-bundle",
-      "claim": "Current member lookup precedes setup-bundle rendering; session ownership, enabled self-service and private-key handling require SSO/runtime controls.",
-      "source": "crates/probation-server/src/portal/certificates.rs",
-      "symbol": "issue",
-      "spec": "docs/plans/publishing-proxy/specs/self-service-before-bundle.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "bundle-without-auth",
-          "mutations": [
-            {
-              "source": "crates/probation-server/src/portal/certificates.rs",
-              "from": ".fetch_optional(&mut *tx)\n    .await?;",
-              "to": ".fetch_unchecked(&mut *tx)\n    .await?;"
-            }
-          ],
-          "expect": {
-            "file": "crates/probation-server/src/portal/certificates.rs",
-            "summaryIncludes": "Operation 'render_bundle' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "registry-identity-before-state-use",
-      "operation": "apply_registry_state",
-      "flow": "registry-remove-readd",
-      "claim": "Selected immutable registry identity is checked before persisted project, cache and artifact state use. Exact distinct replacement IDs, keys/reference values, migration, persistence and restart need Slice 2 source review and X01/X03 runtime controls.",
-      "source": "src/store/registry_state.rs",
-      "symbol": "apply_registry_state",
-      "spec": "docs/plans/publishing-proxy/specs/registry-identity-before-state-use.yaml",
+      "id": "canonical-token-packument",
+      "operation": "serve_token_packument",
+      "flow": "token-packument-hidden",
+      "claim": "Only the canonical token-packument operation may return selected-upstream metadata; request-local cache and client outcomes remain runtime requirements.",
+      "source": "src/http/token_packument.rs",
+      "symbol": "serve_token_packument",
+      "spec": "docs/plans/publishing-proxy/specs/canonical-token-packument.yaml",
       "bySlice": 2,
       "controls": [
         {
-          "id": "unchecked-registry-state",
+          "id": "packument-without-canonical-token-guard",
           "mutations": [
             {
-              "source": "src/store/registry_state.rs",
-              "from": "let identity = check_selected_registry_identity(registry, package, reference)?;",
-              "to": "let identity = unchecked_registry_identity(registry, package, reference)?;"
+              "source": "src/http/token_packument.rs",
+              "from": "let route = check_canonical_token_packument(&request)?;",
+              "to": "let route = unchecked_token_packument(&request)?;"
             }
           ],
           "expect": {
-            "file": "src/store/registry_state.rs",
-            "summaryIncludes": "Operation 'use_registry_persisted_state' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "member-disable-before-commit",
-      "operation": "disable_member",
-      "flow": "member-disable",
-      "claim": "The selected member disable UPDATE auto-commits before the success redirect; refusal of every certificate on the next request needs current-membership and multi-cert runtime controls.",
-      "source": "crates/probation-server/src/portal/users.rs",
-      "symbol": "disable_member",
-      "spec": "docs/plans/publishing-proxy/specs/member-disable-before-commit.yaml",
-      "bySlice": 1,
-      "controls": [
-        {
-          "id": "disable-without-mark",
-          "mutations": [
-            {
-              "source": "crates/probation-server/src/portal/users.rs",
-              "from": ").bind(id).bind(org).execute(&portal.pool).await;",
-              "to": ").bind(id).bind(org).skip_disable(&portal.pool).await;"
-            }
-          ],
-          "expect": {
-            "file": "crates/probation-server/src/portal/users.rs",
-            "summaryIncludes": "Operation 'redirect' lacks required guard"
+            "file": "src/http/token_packument.rs",
+            "summaryIncludes": "Operation 'send_selected_upstream_packument' lacks required guard"
           }
         }
       ]
     },
     {
       "id": "audit-filter-before-render",
-      "operation": "serve_audit_read",
+      "operation": "filter_audit_response",
       "flow": "audit-policy-safe",
-      "claim": "The planned audit filter calls visible_advisories before render_audit_response in filter_audit_response. This proves order only; exact filtered value use, byte safety, error semantics and bounded work require Slice 3 tests and security source review.",
+      "claim": "Validated visible advisory data is used before response rendering; malformed/over-limit behavior and native-client compatibility remain runtime requirements.",
       "source": "src/http/audit_filter.rs",
       "symbol": "filter_audit_response",
       "spec": "docs/plans/publishing-proxy/specs/audit-filter-before-render.yaml",
-      "bySlice": 3,
+      "bySlice": 2,
       "controls": [
         {
           "id": "unfiltered-audit-render",
@@ -340,209 +106,131 @@
       ]
     },
     {
-      "id": "unpublish-reference-before-send",
-      "operation": "resolve_unpublish_reference",
-      "flow": "version-unpublish-reference",
-      "claim": "The planned reference resolver checks selected registry and member identity before returning an advertised destination. Exact URL, filename, origin, persistence and wrong-registry/member refusal require N11 runtime and source review.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "send_unpublish_delete",
-      "spec": "docs/plans/publishing-proxy/specs/unpublish-reference-before-send.yaml",
-      "bySlice": 4,
+      "id": "current-policy-before-service-response",
+      "operation": "serve_package_read",
+      "flow": "npm-pypi-selected-operation",
+      "claim": "Supplementary ordered-call check only: current policy authorization precedes verified response release. Exact prepared-result/registry/generation binding, cold/warm denial and concurrency are owned by lead Slice 16 runtime tests and review.",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 1,
       "controls": [
         {
-          "id": "unbound-unpublish-reference",
+          "id": "missing-required-guard",
           "mutations": [
             {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let reference = check_registry_reference(app, principal, registry, id, filename).await?;",
-              "to": "let reference = unchecked_registry_reference(app, principal, registry, id, filename).await?;"
+              "source": "src/http/service_registry.rs",
+              "from": "authorize_current_policy(&publication_gate, &prepared)?",
+              "to": "unchecked_authorization_for_control(&publication_gate, &prepared)?"
             }
           ],
           "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'admit_stored_destination' lacks required guard"
+            "file": "src/http/service_registry.rs",
+            "summaryIncludes": "lacks required guard"
           }
         }
       ]
     },
     {
-      "id": "unpublish-origin-before-delete",
-      "operation": "send_unpublish_delete",
-      "flow": "version-unpublish-reference",
-      "claim": "The planned sender rechecks the stored URL against current exact HTTPS origin and segment-boundary path approval before DELETE. Runtime checks establish exact URL, DNS/peer and bearer mode.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "send_unpublish_delete",
-      "spec": "docs/plans/publishing-proxy/specs/unpublish-origin-before-delete.yaml",
-      "bySlice": 4,
+      "id": "service-reference-before-delete",
+      "operation": "consume_service_marker_then_send",
+      "flow": "service-scoped-version-unpublish",
+      "claim": "The local service-store reference must bind the immutable registry/package/version/filename and exact currently approved advertised destination before DELETE. This analyzer checks call order only; value binding and exact destination are runtime/source-review obligations.",
+      "source": "src/http/service_unpublish.rs",
+      "symbol": "consume_service_marker_then_send",
+      "spec": "docs/plans/publishing-proxy/specs/service-unpublish-reference-before-send.yaml",
+      "bySlice": 3,
       "controls": [
         {
-          "id": "unsafe-unpublish-destination",
+          "id": "skip-required-guard",
           "mutations": [
             {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let url = admit_stored_destination(app, &reference, revision)?;",
-              "to": "let url = unchecked_stored_destination(app, &reference, revision)?;"
+              "source": "src/http/service_unpublish.rs",
+              "from": "let reference = check_service_reference(&app, registry, reference, package, filename).await?;",
+              "to": "let reference = unchecked_service_reference(&app, registry, reference, package, filename).await?;"
             }
           ],
           "expect": {
-            "file": "src/http/unpublish_reference.rs",
+            "file": "src/http/service_unpublish.rs",
             "summaryIncludes": "Operation 'send_action' lacks required guard"
           }
         }
       ]
     },
     {
-      "id": "revision-links-before-action",
-      "operation": "restore_revision_packument",
-      "flow": "revision-put-link-restore",
-      "claim": "The planned revision PUT helper validates and restores local tarball links from current member-bound leases before yielding outgoing JSON. Exact unchanged fields and no proxy URL require N10/N11 runtime comparison and security review.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "forward_revision_put",
-      "spec": "docs/plans/publishing-proxy/specs/revision-links-before-action.yaml",
-      "bySlice": 4,
+      "id": "service-marker-before-delete",
+      "operation": "consume_service_marker_then_send",
+      "flow": "service-scoped-version-unpublish",
+      "claim": "The accepted-removal marker, bound to the service-store reference and resulting revision, must be atomically consumed before outbound DELETE. This analyzer checks call order only; transaction atomicity, revision binding, concurrent one-winner behavior, replay refusal and credential destination are runtime/source-review obligations.",
+      "source": "src/http/service_unpublish.rs",
+      "symbol": "consume_service_marker_then_send",
+      "spec": "docs/plans/publishing-proxy/specs/service-unpublish-marker-before-delete.yaml",
+      "bySlice": 3,
       "controls": [
         {
-          "id": "unrestored-revision-links",
+          "id": "skip-required-guard",
           "mutations": [
             {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let outgoing = restore_revision_links(app, principal, registry, package, &original).await?;",
-              "to": "let outgoing = unchecked_revision_links(app, principal, registry, package, &original).await?;"
+              "source": "src/http/service_unpublish.rs",
+              "from": "let marker = consume_service_marker(&app, registry, &reference, revision).await?;",
+              "to": "let marker = unchecked_service_marker(&app, registry, &reference, revision).await?;"
             }
           ],
           "expect": {
-            "file": "src/http/unpublish_reference.rs",
+            "file": "src/http/service_unpublish.rs",
             "summaryIncludes": "Operation 'send_action' lacks required guard"
           }
         }
       ]
     },
     {
-      "id": "restored-revision-before-send",
-      "operation": "send_restored_revision",
-      "flow": "revision-put-link-restore",
-      "claim": "The planned revision PUT path sends only after link restoration; origin and credential confinement remain covered by selected-origin controls and runtime witnesses.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "forward_revision_put",
-      "spec": "docs/plans/publishing-proxy/specs/revision-links-before-action.yaml",
-      "bySlice": 4,
+      "id": "classify-npm-delete-routes",
+      "operation": "classify_direct_or_whole_package_delete",
+      "flow": "npm-direct-and-whole-package-delete",
+      "claim": "Classify whole-package revision DELETE as a selected-upstream action and direct canonical tarball DELETE as a local refusal before dispatch. The separate version-reference route is covered by the guarded service-unpublish flow. Source check is planned; complete route semantics and zero-I/O behavior require Slice 3 runtime witnesses.",
+      "source": "src/http/service_registry.rs",
+      "symbol": "respond",
+      "spec": "docs/plans/publishing-proxy/specs/npm-delete-routes-classify-before-dispatch.yaml",
+      "bySlice": 1,
       "controls": [
         {
-          "id": "send-unrestored-revision",
+          "id": "classify-delete-route-before-dispatch",
           "mutations": [
             {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let outgoing = restore_revision_links(app, principal, registry, package, &original).await?;",
-              "to": "let outgoing = unchecked_revision_links(app, principal, registry, package, &original).await?;"
+              "source": "src/http/service_registry.rs",
+              "from": "let route = classify_direct_or_whole_package_delete(&request)?;",
+              "to": "let route = unchecked_npm_delete_route(&request)?;"
             }
           ],
           "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'send_action' lacks required guard"
+            "file": "src/http/service_registry.rs",
+            "summaryIncludes": "Operation 'dispatch_npm_delete_route' lacks required guard"
           }
         }
       ]
     },
     {
-      "id": "unpublish-scope-before-send",
-      "operation": "authorize_deletion_destination",
-      "flow": "version-unpublish-reference",
-      "claim": "Current registry-specific origin/path approval and its explicit bearer mode precede DELETE. A changed or removed approval refuses.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "send_unpublish_delete",
-      "spec": "docs/plans/publishing-proxy/specs/unpublish-scope-before-send.yaml",
-      "bySlice": 4,
+      "id": "service-removal-marker-after-put",
+      "operation": "record_successful_service_removal",
+      "flow": "service-scoped-version-unpublish",
+      "claim": "A durable service-scoped revision marker is committed only after the selected upstream accepted the revision PUT and the exact leased version removal is confirmed, using the PUT response revision or an immediate authenticated selected-upstream GET when omitted. The ordered spec checks resolver-before-commit call order only; exact revision/value binding, GET behavior, durability and failure recovery require Slice 3 runtime/source review.",
+      "source": "src/http/service_unpublish.rs",
+      "symbol": "record_successful_service_removal",
+      "spec": "docs/plans/publishing-proxy/specs/service-removal-marker-after-put.yaml",
+      "bySlice": 3,
       "controls": [
         {
-          "id": "unapproved-deletion-scope",
+          "id": "commit-without-confirmed-removal",
           "mutations": [
             {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let (origin, bearer) = approve_deletion_scope(app, principal, &reference, &advertised)?;",
-              "to": "let (origin, bearer) = unchecked_approve_deletion_scope(app, principal, &reference, &advertised)?;"
+              "source": "src/http/service_unpublish.rs",
+              "from": "let revision = resolve_removed_revision_from_put_or_authenticated_get(&response, &reference).await?;",
+              "to": "let revision = unchecked_removal_revision(&response, &reference).await?;"
             }
           ],
           "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'send_action' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "unpublish-marker-before-send",
-      "operation": "check_revision_put_marker",
-      "flow": "version-unpublish-reference",
-      "claim": "A durable accepted revision PUT removal marker bound to this member/reference and the exact DELETE revision precedes every version DELETE; runtime tests prove one-use consumption and uncertain partial-write behavior.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "send_unpublish_delete",
-      "spec": "docs/plans/publishing-proxy/specs/unpublish-marker-before-send.yaml",
-      "bySlice": 4,
-      "controls": [
-        {
-          "id": "missing-removal-marker",
-          "mutations": [
-            {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let marker = check_removal_marker(app, &reference, revision);",
-              "to": "let marker = unchecked_check_removal_marker(app, &reference, revision);"
-            }
-          ],
-          "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'send_action' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "accepted-removal-before-marker",
-      "operation": "classify_accepted_revision_removal",
-      "flow": "revision-put-link-restore",
-      "claim": "Only an accepted selected-upstream PUT that actually removed the leased version and yielded a resulting revision through response or authenticated refetch can lead to marker commit; denied/unchanged PUTs cannot.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "forward_revision_put",
-      "spec": "docs/plans/publishing-proxy/specs/accepted-removal-before-marker.yaml",
-      "bySlice": 4,
-      "controls": [
-        {
-          "id": "skip-accepted-removal-before-marker",
-          "mutations": [
-            {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let removal = classify_accepted_removal(&result, &outgoing)?;",
-              "to": "let removal = unchecked_classify_accepted_removal(&result, &outgoing)?;"
-            }
-          ],
-          "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'commit_removal_marker' lacks required guard"
-          }
-        }
-      ]
-    },
-    {
-      "id": "marker-commit-before-success",
-      "operation": "commit_revision_removal_marker",
-      "flow": "revision-put-link-restore",
-      "claim": "Durably commit the member/reference/resulting-revision marker before returning successful revision PUT; verification or commit failure reports uncertain partial write.",
-      "source": "src/http/unpublish_reference.rs",
-      "symbol": "forward_revision_put",
-      "spec": "docs/plans/publishing-proxy/specs/marker-commit-before-success.yaml",
-      "bySlice": 4,
-      "controls": [
-        {
-          "id": "skip-marker-commit-before-success",
-          "mutations": [
-            {
-              "source": "src/http/unpublish_reference.rs",
-              "from": "let marker = commit_removal_marker(app, principal, registry, removal);",
-              "to": "let marker = unchecked_commit_removal_marker(app, principal, registry, removal);"
-            }
-          ],
-          "expect": {
-            "file": "src/http/unpublish_reference.rs",
-            "summaryIncludes": "Operation 'return_put_success' lacks required guard"
+            "file": "src/http/service_unpublish.rs",
+            "summaryIncludes": "Operation 'commit_service_removal_marker' lacks required guard"
           }
         }
       ]

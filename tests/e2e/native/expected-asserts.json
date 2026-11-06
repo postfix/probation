@@ -1,0 +1,15 @@
+{
+  "assertions.test.mjs": 51,
+  "clients.test.mjs": 28,
+  "cloudflared.test.mjs": 15,
+  "dockerfile.test.mjs": 5,
+  "linux-exec.test.mjs": 3,
+  "pf.test.mjs": 15,
+  "rendezvous-cli.test.mjs": 23,
+  "rendezvous.test.mjs": 19,
+  "run-ids.test.mjs": 6,
+  "scope.test.mjs": 3,
+  "snapshot-proxy.test.mjs": 12,
+  "spawn-args.test.mjs": 13,
+  "stack.test.mjs": 19
+}

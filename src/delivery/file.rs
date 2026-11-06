@@ -5,7 +5,6 @@
 //! this task happens to be on, which is the request path's thread too.
 
 use std::num::NonZeroU64;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +84,7 @@ struct Writer {
     written: u64,
     /// Whether the group- or world-accessible warning has been given, so a file that
     /// is reopened after every I/O error is reported once rather than per record.
+    #[cfg(unix)]
     warned: bool,
     /// Whether the rollover rename is failing, so a rename that fails for every record
     /// — a bind-mounted single file, an unwritable directory — is reported once per run
@@ -99,6 +99,7 @@ impl Writer {
             max_bytes: max_bytes.get(),
             file: None,
             written: 0,
+            #[cfg(unix)]
             warned: false,
             rollover_failing: false,
         }
@@ -173,17 +174,20 @@ impl Writer {
         }
         // Owner-only, because once consumer identification is on every line carries a
         // peer address. It applies only when this open creates the file.
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        match OpenOptions::from(super::owner_only(&mut options).clone())
             .open(&self.path)
             .await
         {
             Ok(file) => {
                 self.written = match file.metadata().await {
                     Ok(metadata) => {
-                        self.warn_if_shared(metadata.permissions().mode());
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            self.warn_if_shared(metadata.permissions().mode());
+                        }
                         metadata.len()
                     }
                     Err(_) => 0,
@@ -206,6 +210,7 @@ impl Writer {
     /// Says once that a file this process did not create is readable or writable by
     /// someone other than its owner. The mode is left alone — `0640` with a group may be
     /// deliberate — but it is no longer silent.
+    #[cfg(unix)]
     fn warn_if_shared(&mut self, mode: u32) {
         if self.warned || mode & 0o077 == 0 {
             return;
@@ -420,6 +425,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const PARTIAL_WRITE_PATH: &str = "PROBATION_PARTIAL_WRITE_PATH";
 
     /// Finding 2: a write that fails partway — the disk filling up mid-record — leaves
@@ -427,6 +433,7 @@ mod tests {
     /// fragment. `RLIMIT_FSIZE` is the one unprivileged way to make a regular file
     /// accept part of a write and refuse the rest, and it is per process, so the
     /// append runs in a child test binary under `prlimit`.
+    #[cfg(unix)]
     #[test]
     fn a_failed_write_leaves_no_torn_fragment() {
         const LIMIT: usize = 1024;
@@ -474,6 +481,7 @@ mod tests {
     }
 
     /// The child half of `a_failed_write_leaves_no_torn_fragment`.
+    #[cfg(unix)]
     #[tokio::test]
     #[ignore = "run under prlimit by a_failed_write_leaves_no_torn_fragment"]
     async fn partial_write_child() {

@@ -20,6 +20,7 @@ use crate::config::{FirewallToken, ManagementConfig};
 const MAX_ANSWER_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct KeySync {
+    publication_gate: Arc<super::service_policy::PolicyPublicationGate>,
     http: reqwest::Client,
     changes_url: Url,
     token: FirewallToken,
@@ -72,6 +73,7 @@ impl KeySync {
         network_lock: Arc<NetworkLock>,
         retired: Arc<AtomicBool>,
         cursor: u64,
+        publication_gate: Arc<super::service_policy::PolicyPublicationGate>,
     ) -> KeySync {
         let mut base = config.url.clone();
         if !base.path().ends_with('/') {
@@ -79,6 +81,7 @@ impl KeySync {
             base.set_path(&path);
         }
         KeySync {
+            publication_gate,
             // No redirects and no proxy from the environment: the token and the activity
             // rows are for this URL only.
             http: reqwest::Client::builder()
@@ -110,7 +113,16 @@ impl KeySync {
             Err(_) => return Err(Unreachable),
         };
         self.mark_reachable();
-        match answer {
+        if matches!(answer, Answer::Rejected) { return Ok(Synced::BatchRejected); }
+        let changed = match &answer {
+            Answer::Changes(delta) => delta.revision != self.cursor()
+                || delta.network_lock.is_some() || !delta.changed_layers.is_empty()
+                || !delta.changed_limits.is_empty() || !delta.changed_keys.is_empty()
+                || !delta.changed_places.is_empty(),
+            Answer::Reset(_) | Answer::Retired => true,
+            Answer::Rejected => false,
+        };
+        let apply = || match answer {
             Answer::Changes(delta) => self.apply_changes(&delta),
             Answer::Reset(full) => {
                 self.reset_cursor(full.revision);
@@ -120,8 +132,13 @@ impl KeySync {
                 self.offer(full.settings);
             }
             Answer::Retired => self.stop_serving(),
-            Answer::Rejected => return Ok(Synced::BatchRejected),
-        }
+            Answer::Rejected => {},
+        };
+        if changed {
+            self.publication_gate.publish(apply).map_err(|_| Unreadable)?
+        } else {
+            apply()
+        };
         Ok(Synced::Applied)
     }
 

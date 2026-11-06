@@ -13,10 +13,9 @@
 //! * [`ArtifactResponse`]'s body field is private and there is no other constructor.
 //!
 //! A path that skipped the final check therefore has no witness to hand over and
-//! does not compile. What this cannot prove is that the snapshot the witness was
-//! minted from was the newest one at that instant — SPEC §9's lock-free revocation
-//! boundary makes that inherently a race, which is why the witness carries the
-//! revision it was granted under.
+//! does not compile. Managed responses also carry the local authority generation:
+//! the publication gate verifies it and remains held through response creation.
+//! Publication after that handoff does not cancel an accepted stream.
 
 use std::io::{self, SeekFrom};
 use std::time::Duration;
@@ -40,6 +39,7 @@ const CHUNK_BYTES: usize = 64 * 1024;
 /// Proof that the final policy check ran and returned `Allow`.
 pub struct Authorized {
     blocklist_revision: Option<u64>,
+    authority: Option<crate::managed::service_policy::AuthorityReceipt>,
     /// Private, and the reason this type cannot be constructed anywhere else.
     _private: (),
 }
@@ -53,6 +53,7 @@ impl Authorized {
         match decision {
             Decision::Allow => Some(Authorized {
                 blocklist_revision,
+                authority: None,
                 _private: (),
             }),
             Decision::Unavailable | Decision::Deny(_) | Decision::Hold { .. } => None,
@@ -63,6 +64,11 @@ impl Authorized {
     /// which policy allowed the bytes that went out.
     pub fn blocklist_revision(&self) -> Option<u64> {
         self.blocklist_revision
+    }
+
+    pub(crate) fn under_authority(mut self, authority: Option<crate::managed::service_policy::AuthorityReceipt>) -> Self {
+        self.authority = authority;
+        self
     }
 }
 
@@ -151,6 +157,7 @@ pub fn parse_range(header: Option<&str>, total: u64) -> RangeRequest {
 
 /// A response built from a witness. There is no other way to build one with a body.
 pub struct ArtifactResponse {
+    authority: Option<crate::managed::service_policy::AuthorityReceipt>,
     status: StatusCode,
     total_length: u64,
     range: Option<ByteRange>,
@@ -176,6 +183,7 @@ impl ArtifactResponse {
             "authorized an artifact response"
         );
         ArtifactResponse {
+            authority: auth.authority,
             status: if range.is_some() {
                 StatusCode::PARTIAL_CONTENT
             } else {
@@ -198,6 +206,7 @@ impl ArtifactResponse {
             "authorized an artifact HEAD response"
         );
         ArtifactResponse {
+            authority: auth.authority,
             status: StatusCode::OK,
             total_length,
             range: None,
@@ -216,6 +225,7 @@ impl ArtifactResponse {
             "authorized an artifact response, then found the requested range unsatisfiable"
         );
         ArtifactResponse {
+            authority: auth.authority,
             status: StatusCode::RANGE_NOT_SATISFIABLE,
             total_length,
             range: None,
@@ -238,7 +248,17 @@ impl ArtifactResponse {
 }
 
 impl IntoResponse for ArtifactResponse {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
+        if let Some(authority) = self.authority.take() {
+            use crate::managed::service_policy::{PreparedResponse, release_verified_response};
+            let gate = std::sync::Arc::clone(&authority.gate);
+            let prepared = PreparedResponse::artifact(authority, self);
+            return match gate.authorize_current_policy(&prepared) {
+                Ok(authorized) => release_verified_response(authorized)
+                    .unwrap_or_else(|_| crate::http::error::ApiError::PolicyUnavailable.into_response()),
+                Err(_) => crate::http::error::ApiError::PolicyUnavailable.into_response(),
+            };
+        }
         let unsatisfiable = self.status == StatusCode::RANGE_NOT_SATISFIABLE;
         // `HEAD` reports the length of the entity it would have sent; a `416` has no
         // entity at all, and says so with `bytes */total`.

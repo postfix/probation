@@ -1,0 +1,4535 @@
+{
+  "version": 1,
+  "assumptions": [
+    "Operation contracts are design premises, not implementation proofs. Same-key authority, accepted results, exact bytes and concurrency require the named runtime tests and independent review.",
+    "Known/cold flows are two environment classes of the same activate API, selected by validated persistent-cache binding, not by a package caller. Source correspondence must check that classification.",
+    "Each respond operation owns preparation through final current-policy load and response handoff, including internal await windows. Its atomic model outcome does not model network streaming or prove concurrent implementation; runtime forced-interleaving checks remain mandatory.",
+    "Host/approved-node admission and no-fallback routing are deployment obligations; no network inference follows from an HTTP-only model.",
+    "Family flow instances represent shared composition; canonicalization, native discovery and protocol-specific behavior require each adapter witness. No model PASS implies absent source or native runtime support."
+  ],
+  "sources": [
+    "docs/plans/package-firewall-mvp/01-product.md",
+    "docs/plans/package-firewall-mvp/02-architecture.md",
+    "docs/plans/package-firewall-mvp/03-program-design.md",
+    "docs/plans/package-firewall-mvp/04-slices.md",
+    "docs/plans/package-firewall-mvp/evidence/design-protocol-contracts.md",
+    "docs/plans/package-firewall-mvp/evidence/design-service-policy-api.md"
+  ],
+  "predicates": [
+    {
+      "id": "granted",
+      "types": [
+        "Reply"
+      ]
+    },
+    {
+      "id": "refused",
+      "types": [
+        "Reply"
+      ]
+    },
+    {
+      "id": "unavailable",
+      "types": [
+        "Reply"
+      ]
+    },
+    {
+      "id": "scoped",
+      "types": [
+        "Reply",
+        "Binding"
+      ]
+    },
+    {
+      "id": "cache_known",
+      "types": [
+        "Binding"
+      ],
+      "dependsOn": [
+        "remembered"
+      ]
+    },
+    {
+      "id": "cache_missing",
+      "types": [
+        "Binding"
+      ],
+      "dependsOn": [
+        "remembered"
+      ]
+    },
+    {
+      "id": "context_bound",
+      "types": [
+        "Context",
+        "Binding"
+      ],
+      "dependsOn": [
+        "active"
+      ]
+    },
+    {
+      "id": "no_delivery",
+      "types": [
+        "Request"
+      ]
+    },
+    {
+      "id": "delivered_exact",
+      "types": [
+        "Request",
+        "Body"
+      ]
+    },
+    {
+      "id": "registry_admitted",
+      "types": [
+        "Request",
+        "Binding"
+      ]
+    }
+  ],
+  "states": [
+    {
+      "id": "server_policy",
+      "kind": "state"
+    },
+    {
+      "id": "active",
+      "kind": "state"
+    },
+    {
+      "id": "remembered",
+      "kind": "state"
+    },
+    {
+      "id": "artifact_store",
+      "kind": "state"
+    }
+  ],
+  "molecules": [
+    {
+      "id": "policy_server",
+      "owns": [
+        "server_policy"
+      ]
+    },
+    {
+      "id": "enforcer",
+      "owns": [
+        "active",
+        "remembered",
+        "artifact_store"
+      ]
+    }
+  ],
+  "operations": [
+    {
+      "id": "snapshot",
+      "molecule": "policy_server",
+      "inputs": {
+        "binding": "Binding"
+      },
+      "outputs": {
+        "reply": "Reply"
+      },
+      "requires": [],
+      "outcomes": [
+        {
+          "id": "granted",
+          "produces": [
+            "reply"
+          ],
+          "establishes": [
+            {
+              "predicate": "granted",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "refused",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "unavailable",
+              "arguments": [
+                "reply"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "server_policy"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "malformed",
+          "produces": [
+            "reply"
+          ],
+          "establishes": [
+            {
+              "predicate": "granted",
+              "arguments": [
+                "reply"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "refused",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "unavailable",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "server_policy"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "refused",
+          "produces": [
+            "reply"
+          ],
+          "establishes": [
+            {
+              "predicate": "refused",
+              "arguments": [
+                "reply"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "granted",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "unavailable",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "server_policy"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "unavailable",
+          "produces": [
+            "reply"
+          ],
+          "establishes": [
+            {
+              "predicate": "unavailable",
+              "arguments": [
+                "reply"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "granted",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "refused",
+              "arguments": [
+                "reply"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "server_policy"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "activate_known",
+      "molecule": "enforcer",
+      "inputs": {
+        "reply": "Reply",
+        "binding": "Binding"
+      },
+      "outputs": {
+        "context": "Context"
+      },
+      "requires": [
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "active",
+          "produces": [
+            "context"
+          ],
+          "establishes": [
+            {
+              "predicate": "context_bound",
+              "arguments": [
+                "context",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active",
+              "remembered"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "granted",
+                "arguments": [
+                  "reply"
+                ]
+              },
+              {
+                "predicate": "scoped",
+                "arguments": [
+                  "reply",
+                  "binding"
+                ]
+              }
+            ],
+            "none": []
+          }
+        },
+        {
+          "id": "invalid",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "granted",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "scoped",
+                "arguments": [
+                  "reply",
+                  "binding"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "refused",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active",
+              "remembered"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "refused",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": []
+          }
+        },
+        {
+          "id": "cached",
+          "produces": [
+            "context"
+          ],
+          "establishes": [
+            {
+              "predicate": "context_bound",
+              "arguments": [
+                "context",
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "unavailable",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "activate_cold",
+      "molecule": "enforcer",
+      "inputs": {
+        "reply": "Reply",
+        "binding": "Binding"
+      },
+      "outputs": {
+        "context": "Context"
+      },
+      "requires": [
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "active",
+          "produces": [
+            "context"
+          ],
+          "establishes": [
+            {
+              "predicate": "context_bound",
+              "arguments": [
+                "context",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active",
+              "remembered"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "granted",
+                "arguments": [
+                  "reply"
+                ]
+              },
+              {
+                "predicate": "scoped",
+                "arguments": [
+                  "reply",
+                  "binding"
+                ]
+              }
+            ],
+            "none": []
+          }
+        },
+        {
+          "id": "invalid",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "granted",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": [
+              {
+                "predicate": "scoped",
+                "arguments": [
+                  "reply",
+                  "binding"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "refused",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active",
+              "remembered"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "refused",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": []
+          }
+        },
+        {
+          "id": "cold",
+          "produces": [],
+          "establishes": [],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "remembered"
+            ],
+            "writes": [
+              "active"
+            ],
+            "acquires": [],
+            "releases": []
+          },
+          "when": {
+            "all": [
+              {
+                "predicate": "unavailable",
+                "arguments": [
+                  "reply"
+                ]
+              }
+            ],
+            "none": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "respond",
+      "molecule": "enforcer",
+      "inputs": {
+        "context": "Context",
+        "binding": "Binding",
+        "request": "Request"
+      },
+      "outputs": {
+        "body": "Body"
+      },
+      "requires": [
+        {
+          "predicate": "context_bound",
+          "arguments": [
+            "context",
+            "binding"
+          ]
+        }
+      ],
+      "outcomes": [
+        {
+          "id": "allowed",
+          "produces": [
+            "body"
+          ],
+          "establishes": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            }
+          ],
+          "invalidates": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "effects": {
+            "reads": [
+              "active",
+              "artifact_store"
+            ],
+            "writes": [
+              "artifact_store"
+            ],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "denied",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "active",
+              "artifact_store"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        },
+        {
+          "id": "upstream_error",
+          "produces": [],
+          "establishes": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ],
+          "invalidates": [],
+          "effects": {
+            "reads": [
+              "active",
+              "artifact_store"
+            ],
+            "writes": [],
+            "acquires": [],
+            "releases": []
+          }
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "npm-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "npm-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "pypi-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "pypi-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "maven-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "maven-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "cargo-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "cargo-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "go-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "go-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "nuget-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "nuget-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "rubygems-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "rubygems-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "conan-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "conan-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "oci-known",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_known",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_known",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cached": "cached_response"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        },
+        {
+          "id": "cached_response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "cached_allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cached_allowed",
+          "outcome": "delivered-cached",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "cache_known",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-cached",
+        "delivered-live",
+        "malformed-snapshot",
+        "upstream-error"
+      ]
+    },
+    {
+      "id": "oci-cold",
+      "values": {
+        "binding": "Binding",
+        "request": "Request",
+        "reply": "Reply",
+        "context": "Context",
+        "body": "Body"
+      },
+      "inputs": [
+        "binding",
+        "request"
+      ],
+      "initial": [
+        {
+          "predicate": "no_delivery",
+          "arguments": [
+            "request"
+          ]
+        },
+        {
+          "predicate": "cache_missing",
+          "arguments": [
+            "binding"
+          ]
+        }
+      ],
+      "entry": "fetch",
+      "nodes": [
+        {
+          "id": "fetch",
+          "operation": "snapshot",
+          "bindings": {
+            "binding": "binding",
+            "reply": "reply"
+          },
+          "routes": {
+            "granted": "activate",
+            "malformed": "activate",
+            "refused": "activate",
+            "unavailable": "activate"
+          }
+        },
+        {
+          "id": "activate",
+          "operation": "activate_cold",
+          "bindings": {
+            "reply": "reply",
+            "binding": "binding",
+            "context": "context"
+          },
+          "routes": {
+            "active": "response",
+            "invalid": "invalid",
+            "refused": "authority_refused",
+            "cold": "cold"
+          }
+        },
+        {
+          "id": "response",
+          "operation": "respond",
+          "bindings": {
+            "context": "context",
+            "binding": "binding",
+            "request": "request",
+            "body": "body"
+          },
+          "routes": {
+            "allowed": "allowed",
+            "denied": "blocked",
+            "upstream_error": "error"
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "id": "allowed",
+          "outcome": "delivered-live",
+          "requires": [
+            {
+              "predicate": "delivered_exact",
+              "arguments": [
+                "request",
+                "body"
+              ]
+            },
+            {
+              "predicate": "registry_admitted",
+              "arguments": [
+                "request",
+                "binding"
+              ]
+            },
+            {
+              "predicate": "scoped",
+              "arguments": [
+                "reply",
+                "binding"
+              ]
+            }
+          ],
+          "forbids": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "blocked",
+          "outcome": "blocked",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "error",
+          "outcome": "upstream-error",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "authority_refused",
+          "outcome": "authority-refused",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "invalid",
+          "outcome": "malformed-snapshot",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "cold",
+          "outcome": "no-remembered-policy",
+          "requires": [
+            {
+              "predicate": "no_delivery",
+              "arguments": [
+                "request"
+              ]
+            },
+            {
+              "predicate": "cache_missing",
+              "arguments": [
+                "binding"
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOutcomes": [
+        "authority-refused",
+        "blocked",
+        "delivered-live",
+        "malformed-snapshot",
+        "no-remembered-policy",
+        "upstream-error"
+      ]
+    }
+  ]
+}

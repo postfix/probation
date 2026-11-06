@@ -610,7 +610,7 @@ fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, SyncError> {
 
 /// One read-only `REPEATABLE READ` snapshot, its change-log revision read first, so an
 /// answer's revision and its data agree (02 § Endpoints).
-async fn snapshot(
+pub(crate) async fn snapshot(
     pool: &PgPool,
 ) -> Result<(sqlx::Transaction<'static, sqlx::Postgres>, u64), sqlx::Error> {
     let mut tx = pool
@@ -934,7 +934,7 @@ struct Standing {
 
 /// The lookup answer for `hash`, read at `revision`. Only user and service keys are
 /// looked up: a firewall or automation token answers `Unknown` (T9).
-async fn look_up(
+pub(crate) async fn look_up(
     conn: &mut PgConnection,
     hash: KeyHash,
     revision: u64,

@@ -220,6 +220,24 @@ services:
         TOOLS: "twine==7.0.0"
     image: localhost/probation-e2e-client:twine7.0.0
 
+  # Every pinned client plus the runtime of the native-runner stack (tests/e2e/native):
+  # the Node fakes, the release `probation` binary (copied in by the scenario) and the
+  # clients run together here. pypi.org is loopback in this container only: a selected
+  # PyPI registry fetches files from the public PyPI names (src/artifacts/download.rs).
+  client-native:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: native.Dockerfile
+    image: localhost/probation-e2e-client:native-node24.22.1-py3.15.1
+    extra_hosts:
+      - "pypi.org:127.0.0.1"
+    volumes:
+      - ${E2E_WORK}/ca:/e2e/ca:ro
+      - ..:/src/tests/e2e:ro
+      - ../../../config.sample.toml:/src/config.sample.toml:ro
+      - ../../../blocklist.sample.json:/src/blocklist.sample.json:ro
+
   # Nightly clients.
   client-npm10:
     <<: *client

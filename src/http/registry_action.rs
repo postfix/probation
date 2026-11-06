@@ -309,13 +309,8 @@ fn canonical_package_action(request: &RegistryActionRequest) -> bool {
             return false;
         }
         if let Some((package, filename)) = name.split_once("/-/") {
-            let base = package.rsplit('/').next().unwrap_or("");
             return request.method == Method::DELETE
-                && PackageName::parse_route(package).is_ok()
-                && filename.len() <= 255
-                && filename.starts_with(&format!("{base}-"))
-                && filename.ends_with(".tgz")
-                && !filename.contains('/');
+                && canonical_tarball(package, filename);
         }
         return matches!(request.method, Method::PUT | Method::DELETE)
             && PackageName::parse_route(name).is_ok();
@@ -323,7 +318,16 @@ fn canonical_package_action(request: &RegistryActionRequest) -> bool {
     false
 }
 
-fn valid_revision(revision: &str) -> bool {
+pub(super) fn canonical_tarball(package: &str, filename: &str) -> bool {
+    let base = package.rsplit('/').next().unwrap_or("");
+    PackageName::parse_route(package).is_ok()
+        && filename.len() <= 255
+        && filename.starts_with(&format!("{base}-"))
+        && filename.ends_with(".tgz")
+        && !filename.contains('/')
+}
+
+pub(super) fn valid_revision(revision: &str) -> bool {
     !revision.is_empty()
         && revision.len() <= 100
         && revision

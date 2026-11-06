@@ -237,6 +237,18 @@ async fn transfer(
     let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
+    // A service caller's registry credential belongs to the selected catalog,
+    // not a separate artifact host (for example PyPI's files origin).
+    let read_authorization = if app.service_policy().is_some() {
+        let metadata_kind = match row.reference.ecosystem {
+            crate::policy::Ecosystem::Npm => OriginKind::NpmMetadata,
+            crate::policy::Ecosystem::PyPi => OriginKind::PypiMetadata,
+        };
+        let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
+        read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
+    } else {
+        read_authorization
+    };
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
             app.transport
@@ -373,10 +385,11 @@ async fn transfer(
     // The latest policy, against digests upstream may never have advertised.
     let now = app.clock.now_utc_micros();
     let pinned = computed.pinned_digests();
-    // Managed mode has no one policy to judge by: each waiter decides with its own
+    // Managed modes decide per waiter, including the service's selected registry:
+    // each waiter decides with its own
     // once the bytes are verified, so one tenant's block cannot refuse another's
     // download (C104). The bytes are published either way.
-    let decision = if app.managed().is_some() {
+    let decision = if app.managed().is_some() || app.service_policy().is_some() {
         Decision::Allow
     } else {
         match app.policy() {

@@ -57,6 +57,16 @@ jobs:
           path: target/e2e/out
           if-no-files-found: ignore
 
+  # Native npm/Python publishing acceptance on Linux, macOS and Windows with the pinned
+  # clients (publishing-proxy Slice 5). Nothing is released unless every OS passes.
+  native:
+    needs: test
+    # The called workflow reads this run's artifacts (the real-server handshake).
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/native-clients.yml
+
   codeql:
     needs: test
     runs-on: ubuntu-latest
@@ -109,7 +119,7 @@ jobs:
             probation-*.tar.gz.sha256
 
   release:
-    needs: [build, e2e]
+    needs: [build, e2e, native]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,7 +133,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   publish:
-    needs: [release, e2e]
+    needs: [release, e2e, native]
     runs-on: ubuntu-latest
     # Give this environment required reviewers in the repository settings, so a
     # pushed tag alone cannot publish to crates.io.

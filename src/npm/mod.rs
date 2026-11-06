@@ -240,6 +240,10 @@ async fn current_project(
     read_authorization: Option<&str>,
 ) -> Result<Arc<CachedProject>, ApiError> {
     let key = ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str());
+    if app.service_policy().is_some() {
+        // Request credentials must be accepted upstream before any shared cached bytes are used.
+        return refresh(app, name, &key, now, monotonic, true, None, origin, private_cidrs, read_authorization).await;
+    }
     let caches = app.store().caches();
     let ttl = Duration::from_secs(app.config.metadata_ttl_seconds);
     let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
@@ -754,6 +758,8 @@ async fn refresh(
             );
             return Err(ApiError::NotFound);
         }
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::Unauthenticated),
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::Blocked { reason: "the upstream registry denied this credential" }),
         Err(UpstreamError::Timeout) => {
             tracing::warn!(package = %name, "the upstream registry did not answer in time");
             return Err(ApiError::UpstreamTimeout);
@@ -795,19 +801,20 @@ async fn refresh(
 
     #[cfg(feature = "test-support")]
     crate::pause::at("before refresh commit", name.as_str()).await;
-    let committed = app
-        .store()
-        .commit_project_refresh_in(key.registry_id, ProjectRefresh {
-            ecosystem: Ecosystem::Npm,
-            name: name.as_str().to_owned(),
-            payload: Arc::clone(&payload),
-            validators: validators.clone(),
-            validated_at_micros: now,
-            fetched_at_micros,
-            references,
-        })
-        .await
-        .map_err(storage_error)?;
+    let refresh = ProjectRefresh {
+        ecosystem: Ecosystem::Npm,
+        name: name.as_str().to_owned(),
+        payload: Arc::clone(&payload),
+        validators: validators.clone(),
+        validated_at_micros: now,
+        fetched_at_micros,
+        references,
+    };
+    let committed = if app.service_policy().is_some() {
+        app.store().commit_request_references_in(key.registry_id, refresh).await
+    } else {
+        app.store().commit_project_refresh_in(key.registry_id, refresh).await
+    }.map_err(storage_error)?;
 
     // A refresh does not change a pin — `commit_project_refresh` carries them
     // forward — but it does replace the cached project, so they are read back with it.

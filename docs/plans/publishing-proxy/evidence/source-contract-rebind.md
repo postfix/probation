@@ -1,21 +1,22 @@
-# Slice 1 source contract rebinding
+# Local-client source contract rebind — 2026-11-02
 
-The original thirteen proposed obligations did not describe the implemented Rust call sites. The reopened design binds twelve selected obligations to actual or planned sources. The finite model still passes its twelve declared flows. This changes evidence coverage, not the approved certificate, registry, policy, or token behavior.
+The certificate-era model and sidecar are preserved as `molecule-flow-certificate-baseline.json` and `molecule-contracts-certificate-baseline.json`. The active files now describe the approved shared local service, separate policy-server and registry credentials, npm/PyPI operation boundaries, and service-scoped unpublish.
 
-`router molecule-verify --plan-root docs/plans/publishing-proxy --slice 1` returned `PENDING` with evidence at `/home/john/.local/state/software-factory/contract-evidence/run-CNdxh9`: all seven existing Slice 1 sources and their unsafe mutations passed with Structural fidelity; five obligations for absent Slice 2–4 sources are pending. No existing source check is unknown or failed. `router molecule-check` returned `PASS` for the finite model. The verifier's source snapshots, command records, raw analyzer results and hashes are in that evidence directory.
+`router molecule-check --plan-root docs/plans/publishing-proxy` returned PASS after the active model was revised.
 
-After the Slice 1 request-path fix, `molecule-verify --slice 1` was rerun with evidence at `/home/john/.local/state/software-factory/contract-evidence/run-Rf9eId`. All seven due Slice 1 source checks and unsafe controls PASS with Structural fidelity. The five absent Slice 2–4 sources remain PENDING. The approved model and sidecar were unchanged; the revised source retained the named analyzer anchors while using one request permit and one rate charge across the final live recheck.
+`router molecule-verify --plan-root docs/plans/publishing-proxy` returned UNKNOWN on run `run-xz0DVA` because four planned source obligations point to source files that do not yet exist:
 
-| Slice 1 check | Structural property and limit |
-|---|---|
-| `classify-before-dispatch` | Registry ID validation precedes npm package dispatch. Exact route table and unknown-route denial need runtime controls. |
-| `tls-peer-before-admit` | The required peer option precedes certificate admission. TLS provenance and same-peer value need runtime controls and source review. |
-| `current-certificate-before-grant` | Management certificate lookup precedes policy resolution. Exact peer, status, member and registry values need runtime controls. |
-| `policy-before-package-send` | Package resolution precedes npm metadata rendering. Policy outcome, artifacts and all routes need runtime controls. |
-| `self-service-before-bundle` | Member lookup precedes bundle rendering. Session ownership and the inline self-service switch need runtime controls. |
-| `certificate-revoke-before-success` | Certificate update execution precedes success redirect. Commit and next-request refusal need runtime controls. |
-| `member-disable-before-commit` | Member disable update auto-commits before success redirect. All-certificate refusal needs runtime controls. |
+- `src/http/service_registry.rs` — selected-route dispatch and current-policy response release, assigned to Slice 1 and lead `package-firewall-mvp` Slice 16.
+- `src/http/service_unpublish.rs` — service-scoped reference and marker-before-delete checks, assigned to Slice 3.
 
-The former `member-registry-before-grant` obligation is not selected. SMTC could not lower the full `sync::admit_certificate` control flow and could not establish the selected-registry argument on an extracted fluent SQL `bind`/`fetch_optional` chain. A generic `bind` check would pass even after removing the registry bind. Retaining that as a PASS would misstate the evidence. The production query in `crates/probation-server/src/sync.rs::admit_certificate` joins `memberships` to the certificate and organization, binds the selected registry and leaf fingerprint, requires an active member and certificate, and reads group policy in the same transaction. Independent source review must check those exact predicates. The Slice 1 E2E witness must exercise two members with different groups in one organization, foreign organization/registry refusal, disabled-member refusal, root rotation, revocation and management outage with zero upstream I/O on refusal. These are required product behaviors, not optional consequences of the analyzer limit.
+Three existing source obligations passed with their unsafe controls:
 
-The Slice 3 `canonical-token-packument` obligation now points to the planned absent `src/http/token_packument.rs`, so it remains genuinely pending until that slice creates its implementation. All future obligations retain explicit source paths, specs, unsafe mutations and runtime limits. Any source, spec or sidecar change requires fresh verification; design approval is required before delivery completion.
+- `src/http/registry_action.rs::forward_registry_action` — upstream publisher authorization before action send.
+- `src/http/token_packument.rs::serve_token_packument` — canonical token-packument guard before selected upstream send.
+- `src/http/audit_filter.rs::filter_audit_response` — visible advisory filter before response rendering.
+
+The complete verifier reports absent future sources as `SOURCE_MISSING` in full-plan mode. Gate QA preparation must classify them from the explicit slice assignment; only then may they be carried as future PENDING work. The specs for the planned service route and unpublish module are narrow call-order checks. Exact credential/header destination, selected-value binding, request-local cache behavior, atomic marker consumption, replay refusal and runtime platform behavior require the caller tests and independent review in `03-program-design.md` and `04-slices.md`.
+
+No product tests or implementation were run. The SMTC commands use the local daemon; the initial sandboxed attempt was blocked by daemon IPC and the successful verification used the authorized local runner with `XDG_STATE_HOME` under repository `.scratch`.
+
+Fresh verification — 2026-11-02: `router molecule-verify --plan-root docs/plans/publishing-proxy` returned UNKNOWN on run `run-Z0bKeh`. The three existing source obligations and their unsafe controls passed. The only remaining UNKNOWNs are the four declared future-source obligations: two in `src/http/service_registry.rs` (Slice 1, lead-owned) and two in `src/http/service_unpublish.rs` (Slice 3). Earlier run `run-mmnH55` could not connect to the SMTC daemon and was superseded by authorized local-daemon checks; `run-7WYQor` confirmed the same four missing future sources. The active design now specifies final authorization/handoff ordering with policy publication and durable service-scoped, revision-bound one-use unpublish markers; finite-model PASS does not prove those runtime/concurrency properties.

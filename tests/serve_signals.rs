@@ -1,8 +1,11 @@
 //! `serve` under a service manager: a `SIGTERM` that arrives while startup is still
 //! running must be caught, not left to the default disposition that kills the
 //! process outright.
+// Their Unix-only tests are cfg(unix); what only they use is then unused on Windows.
+#![cfg_attr(not(unix), allow(unused, dead_code))]
 
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 
@@ -13,6 +16,7 @@ const BINARY: &str = env!("CARGO_BIN_EXE_probation");
 /// test writes. The signal is sent while it is blocked, so whether it is caught
 /// depends only on whether the handler was installed before `App::start` returned.
 #[test]
+#[cfg(unix)]
 fn a_sigterm_during_startup_is_caught() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let cert = dir.path().join("cert.pem");
@@ -97,6 +101,7 @@ fn a_sigterm_during_startup_is_caught() {
 /// `SIGINT` (Ctrl-C) reaches the same graceful path as `SIGTERM`: the process says
 /// which signal stopped it, writes its shutdown summary, and exits zero.
 #[test]
+#[cfg(unix)]
 fn a_sigint_once_listening_shuts_down_gracefully() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let sample = std::fs::read_to_string("config.sample.toml").expect("the sample is readable");
