@@ -479,9 +479,14 @@ async fn holds_content(path: &Path, size: u64, key: &ContentKey) -> bool {
 }
 
 /// `fsync` on a directory needs it opened for reading, which is what makes a rename
-/// durable on Linux.
+/// durable on Linux (`crate::config::sync_directory`: a documented no-op on Windows, which cannot do it).
 async fn sync_directory(directory: &Path) -> Result<(), ContentError> {
-    let synced = async { tokio::fs::File::open(directory).await?.sync_all().await };
+    let target = directory.to_path_buf();
+    let synced = async {
+        tokio::task::spawn_blocking(move || crate::config::sync_directory(&target))
+            .await
+            .map_err(std::io::Error::other)?
+    };
     synced.await.map_err(|source| ContentError::Write {
         path: directory.to_path_buf(),
         source,

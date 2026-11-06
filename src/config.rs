@@ -1230,5 +1230,59 @@ pub(crate) fn write_atomically(
         std::fs::rename(path, previous)?;
     }
     temp.persist(path).map_err(|err| err.error)?;
-    std::fs::File::open(dir)?.sync_all()
+    sync_directory(dir)
+}
+
+/// Makes a change of directory entries (a rename or a removal inside `dir`) durable: `fsync` on the directory on Unix.
+/// Windows cannot open a directory like a file for `FlushFileBuffers` (access denied), and NTFS journals directory metadata
+/// itself, so there the call is a documented no-op: the files involved are already `sync_all`ed before they are renamed
+/// into place, and only the durability of the directory entry itself is left to the file system.
+pub(crate) fn sync_directory(dir: &Path) -> io::Result<()> {
+    sync_directory_with(dir, |d| std::fs::File::open(d), cfg!(windows))
+}
+
+fn sync_directory_with(
+    dir: &Path,
+    open: impl FnOnce(&Path) -> io::Result<std::fs::File>,
+    directory_sync_unsupported: bool,
+) -> io::Result<()> {
+    if directory_sync_unsupported {
+        return Ok(());
+    }
+    open(dir)?.sync_all()
+}
+
+#[cfg(test)]
+mod directory_sync_tests {
+    use super::sync_directory_with;
+    use std::cell::Cell;
+    use std::io;
+
+    fn refused(_: &std::path::Path) -> io::Result<std::fs::File> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied)) // what Windows answers to File::open on a directory
+    }
+
+    /// Windows cannot open a directory for FlushFileBuffers, so a directory sync there is a no-op: the file itself was
+    /// fsynced before the rename. (Hosted run: `/health/ready` stayed 503 forever because the marker removal failed here.)
+    #[test]
+    fn a_platform_without_directory_sync_does_not_open_the_directory() {
+        let opened = Cell::new(false);
+        let outcome = sync_directory_with(std::path::Path::new("."), |path| { opened.set(true); refused(path) }, true);
+        assert!(outcome.is_ok(), "no directory sync, no error: {outcome:?}");
+        assert!(!opened.get(), "the directory is not even opened");
+    }
+
+    /// Unix keeps its durability guarantee: a failing directory open or sync is an error, never swallowed.
+    #[test]
+    fn unix_still_fails_when_the_directory_cannot_be_synced() {
+        let error = sync_directory_with(std::path::Path::new("."), refused, false).expect_err("the failure is reported");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn a_real_directory_is_synced_on_this_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        super::sync_directory(dir.path()).expect("the directory syncs (or is a documented no-op on Windows)");
+        assert!(super::sync_directory(&dir.path().join("missing")).is_ok() == cfg!(windows), "a missing directory is an error where the sync is real");
+    }
 }

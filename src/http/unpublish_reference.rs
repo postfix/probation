@@ -52,7 +52,7 @@ fn data_key(app: &App) -> Result<[u8; 32], ApiError> {
         };
         file.write_all(&key).and_then(|_| file.sync_all()).map_err(|_| ApiError::StorageUnusable)?;
         fs::write(&marker, b"v1").map_err(|_| ApiError::StorageUnusable)?;
-        fs::File::open(&app.config.data_dir).and_then(|dir| dir.sync_all()).map_err(|_| ApiError::StorageUnusable)?;
+        crate::config::sync_directory(&app.config.data_dir).map_err(|_| ApiError::StorageUnusable)?;
         return Ok(key);
     }
     read_key(&path)

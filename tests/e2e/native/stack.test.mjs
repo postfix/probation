@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
+import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
 
 const scratch = process.env.NATIVE_TEST_SCRATCH;
 assert(scratch, "set NATIVE_TEST_SCRATCH");
@@ -58,6 +58,19 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   assert.match(text, /exit 3/);
   assert.ok(text.includes("to-stdout") && text.includes("to-stderr"), text);
   assert.match(describeFailure("tool", { status: null, signal: "SIGTERM", out: "", stdout: "", stderr: "" }), /signal SIGTERM/);
+}
+
+// A service that never becomes ready must explain itself: the /health/ready answer, the START of its log (the cause is usually
+// early; the tail is only repeated refusals) and what is in its data directory.
+{
+  const log = Array.from({ length: 200 }, (_, i) => `line-${i + 1}`).join("\n");
+  const report = notReadyReport({ ready: { status: 503, body: "storage: closed" }, log, listing: [{ name: "service-policy.checking", size: 9 }, { name: "blocklist.json", size: 120 }], timeoutMs: 60000 });
+  assert.match(report, /GET \/health\/ready -> 503/);
+  assert.ok(report.includes("storage: closed"));
+  assert.ok(report.includes("line-1\n") && report.includes("line-60\n") && !report.includes("line-61\n"), "the first 60 lines");
+  assert.ok(report.includes("line-200"), "and the last lines");
+  assert.ok(report.includes("service-policy.checking (9 bytes)") && report.includes("blocklist.json (120 bytes)"), "the data directory listing");
+  assert.match(notReadyReport({ ready: null, log: "", listing: [], timeoutMs: 1 }), /no answer/);
 }
 
 // SEC1: a run killed hard (SIGKILL, a Windows kill) leaves its marked hosts line and trust entry; the next run

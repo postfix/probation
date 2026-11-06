@@ -5,7 +5,7 @@
 // private (loopback) destinations, so the policy snapshot carries the operator-approved
 // exact origin and CIDR for each; the product's refusal of unapproved origins is untouched.
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, copyFileSync, realpathSync, mkdirSync, readFileSync, writeFileSync, openSync, chmodSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, copyFileSync, readdirSync, realpathSync, mkdirSync, readFileSync, writeFileSync, openSync, chmodSync, renameSync, statSync, unlinkSync } from "node:fs";
 import dns from "node:dns/promises";
 import https from "node:https";
 import net from "node:net";
@@ -181,6 +181,21 @@ export function keyFileWarnings({ platform = process.platform, file, restrict = 
 }
 function defaultRestrict(file) {
   return run("icacls", [file, "/inheritance:r", "/grant:r", `${process.env.USERNAME}:F`]);
+}
+
+/// What a timeout waiting for the service says: the answer of GET /health/ready, the first 60 lines of its log (the cause is
+/// usually early; the tail is only repeated refusals), the last 15 and the data directory's listing.
+export function notReadyReport({ ready, log, listing, timeoutMs }) {
+  const lines = log.split("\n");
+  const head = lines.slice(0, 60).join("\n");
+  const tail = lines.length > 60 ? lines.slice(-15).join("\n") : "";
+  return [
+    `probation not ready within ${timeoutMs} ms`,
+    ready ? `GET /health/ready -> ${ready.status} ${JSON.stringify(ready.body)}` : "GET /health/ready: no answer",
+    `data directory: ${listing.length ? listing.map((f) => `${f.name} (${f.size} bytes)`).join(", ") : "(empty)"}`,
+    `--- first 60 log lines ---\n${head}\n`,
+    ...(tail ? [`--- last 15 log lines ---\n${tail}\n`] : []),
+  ].join("\n");
 }
 
 /// Git bash reads a backslash as an escape: every path handed to a bash script uses forward slashes.
@@ -378,7 +393,14 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   const deadline = Date.now() + 60_000;
   while (!(await ready())) {
     if (exited !== null) throw new Error(`probation exited ${exited}: ${readFileSync(outLog, "utf8").slice(-2000)}`);
-    if (Date.now() > deadline) throw new Error(`probation not ready: ${readFileSync(outLog, "utf8").slice(-2000)}`);
+    if (Date.now() > deadline) {
+      const answer = await new Promise((resolve) => https.get(`${base}/health/ready`, { ca: readFileSync(caFile) }, (res) => {
+        const chunks = []; res.on("data", (c) => chunks.push(c)).on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString().slice(0, 500) }));
+      }).on("error", () => resolve(null)));
+      let listing = [];
+      try { listing = readdirSync(data).map((name) => ({ name, size: statSync(join(data, name)).size })); } catch { /* none */ }
+      throw new Error(notReadyReport({ ready: answer, log: readFileSync(outLog, "utf8"), listing, timeoutMs: 60_000 }));
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
   return {

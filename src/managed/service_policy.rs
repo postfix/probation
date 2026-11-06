@@ -314,9 +314,7 @@ impl ServicePolicy {
                     });
             if !matching {
                 std::fs::remove_file(&previous).map_err(|_| ServicePolicyError)?;
-                std::fs::File::open(&self.data_dir)
-                    .and_then(|dir| dir.sync_all())
-                    .map_err(|_| ServicePolicyError)?;
+                crate::config::sync_directory(&self.data_dir).map_err(|_| ServicePolicyError)?;
             }
         }
         self.clear_marker(REFUSED)?;
@@ -332,9 +330,7 @@ impl ServicePolicy {
             .map_err(|_| ServicePolicyError)?
         {
             std::fs::remove_file(self.data_dir.join(name)).map_err(|_| ServicePolicyError)?;
-            std::fs::File::open(&self.data_dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|_| ServicePolicyError)?;
+            crate::config::sync_directory(&self.data_dir).map_err(|_| ServicePolicyError)?;
         }
         Ok(())
     }
