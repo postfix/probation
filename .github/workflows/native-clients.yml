@@ -18,6 +18,9 @@ name: Native package clients
 on:
   workflow_call:
   workflow_dispatch:
+  # TEMPORARY: remove before merging; lets the branch run its own hosted jobs
+  push:
+    branches: [slice5-native-ci]
   schedule:
     - cron: "23 4 * * *"
 

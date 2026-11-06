@@ -170,7 +170,10 @@ def same_steps(actual, expected, label):
 need(set(wf) == {"name", True, "permissions", "jobs"}, f"unexpected top-level keys {sorted(map(str, wf))}")
 need(wf.get("permissions") == {"contents": "read", "actions": "read"}, "top-level permissions must be exactly contents: read and actions: read (the handshake is read from this run's artifacts)")
 on = wf.get(True, {})
-need(set(on) == {"workflow_call", "workflow_dispatch", "schedule"}, f"unexpected triggers {sorted(on)}")
+BASE_TRIGGERS = {"workflow_call", "workflow_dispatch", "schedule"}
+need(set(on) in (BASE_TRIGGERS, BASE_TRIGGERS | {"push"}), f"unexpected triggers {sorted(on)}")
+# The one temporary exception: a push of exactly the branch that carries this work, no tags, paths or patterns.
+need("push" not in on or same(on["push"], {"branches": ["slice5-native-ci"]}), f"the push trigger may only be `branches: [slice5-native-ci]`, found {on.get('push')!r}")
 need(on.get("workflow_call") in ({}, None), "workflow_call must declare no secrets or inputs")
 need(on.get("workflow_dispatch") in ({}, None), "workflow_dispatch must declare no inputs")
 need(on.get("schedule") == [{"cron": "23 4 * * *"}], "unexpected schedule")

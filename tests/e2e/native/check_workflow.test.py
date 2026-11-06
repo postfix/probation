@@ -7,6 +7,8 @@ import json, os, pathlib, subprocess, sys, tempfile
 here = pathlib.Path(__file__).resolve().parent
 root = here.parents[2]
 good = (root / ".github/workflows/native-clients.yml").read_text()
+ON_PUSH_BRANCH = "  push:\n    branches: [slice5-native-ci]\n"
+ON_PUSH_BLOCK = "  # TEMPORARY: remove before merging; lets the branch run its own hosted jobs\n" + ON_PUSH_BRANCH
 checker = pathlib.Path(os.environ.get("NATIVE_CHECKER", here / "check_workflow.py"))  # a stub makes the canary in run_tests.py trip
 scratch = os.environ.get("NATIVE_TEST_SCRATCH")  # small text files only; unset uses the system temp dir
 
@@ -99,6 +101,16 @@ mutations = {
     "actions: write": sub("  contents: read\n  actions: read\n", "  contents: read\n  actions: write\n"),
     "a repository secret for the tunnel": sub("          GH_TOKEN: ${{ github.token }}\n        run: node tests/e2e/native/rendezvous.mjs server-wait-done", "          GH_TOKEN: ${{ secrets.TUNNEL_TOKEN }}\n        run: node tests/e2e/native/rendezvous.mjs server-wait-done"),
     "stub tunnel switched on": sub("          export E2E_REMOTE_DIR=\"$RUNNER_TEMP/remote\"\n", "          export E2E_REMOTE_DIR=\"$RUNNER_TEMP/remote\"\n          export E2E_TUNNEL=stub\n"),
+    # --- triggers: the temporary push of the one branch is allowed; nothing broader
+    "push on another branch": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("slice5-native-ci", "main")),
+    "push on every branch": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("[slice5-native-ci]", "['**']")),
+    "push on two branches": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("[slice5-native-ci]", "[slice5-native-ci, main]")),
+    "push with tags": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    tags: ['v*']\n"),
+    "push with paths": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    paths: ['docs/**']\n"),
+    "push with branches-ignore": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    branches-ignore: [x]\n"),
+    "bare push": sub(ON_PUSH_BRANCH, "  push:\n"),
+    "pull_request": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"),
+    "pull_request_target": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n"),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 
@@ -128,6 +140,10 @@ release_mutations = {
 ids_check = subprocess.run([sys.executable, str(checker), "--verify-ids", "E2E-publishing-native-linux", "E2E-no-such-scenario"], capture_output=True, text=True)
 assert ids_check.returncode == 1 and "E2E-no-such-scenario" in ids_check.stdout and "native-linux" not in ids_check.stdout.replace("E2E-publishing-native-linux exists", ""), f"--verify-ids must name only the unknown ID: {ids_check.stdout}"
 
+# The permanent shape (no push trigger at all) is accepted too.
+assert ON_PUSH_BLOCK in good, "the temporary push trigger is in the workflow"
+code, out = check(good.replace(ON_PUSH_BLOCK, ""))
+assert code == 0, f"the workflow without the temporary push trigger must pass: {out}"
 code, out = check(good)
 assert code == 0, f"the known-good workflow must pass: {out}"
 failed = []
