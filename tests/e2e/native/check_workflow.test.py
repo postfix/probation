@@ -3,29 +3,31 @@
 checker, and the unmutated workflow must pass.  python3 tests/e2e/native/check_workflow.test.py
 """
 import json, os, pathlib, subprocess, sys, tempfile
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 
 here = pathlib.Path(__file__).resolve().parent
 root = here.parents[2]
-good = (root / ".github/workflows/native-clients.yml").read_text()
+good = (root / ".github/workflows/native-clients.yml").read_text(encoding="utf-8")
 ON_PUSH_BRANCH = "  push:\n    branches: [slice5-native-ci]\n"
 ON_PUSH_BLOCK = "  # TEMPORARY: remove before merging; lets the branch run its own hosted jobs\n" + ON_PUSH_BRANCH
 checker = pathlib.Path(os.environ.get("NATIVE_CHECKER", here / "check_workflow.py"))  # a stub makes the canary in run_tests.py trip
 scratch = os.environ.get("NATIVE_TEST_SCRATCH")  # small text files only; unset uses the system temp dir
 
 
-good_release = (root / ".github/workflows/release.yml").read_text()
+good_release = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
 
 def check(text, release=None):
     with tempfile.TemporaryDirectory(dir=scratch) as d:
         path = pathlib.Path(d) / "wf.yml"
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         command = [sys.executable, str(checker), "--file", str(path)]
         if release is not None:
             rel = pathlib.Path(d) / "release.yml"
-            rel.write_text(release)
+            rel.write_text(release, encoding="utf-8")
             command += ["--release", str(rel)]
-        r = subprocess.run(command, capture_output=True, text=True)
+        r = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
         return r.returncode, r.stdout + r.stderr
 
 
@@ -111,6 +113,8 @@ mutations = {
     "bare push": sub(ON_PUSH_BRANCH, "  push:\n"),
     "pull_request": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"),
     "pull_request_target": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n"),
+    "Python UTF-8 mode dropped from the job env": sub('      PYTHONUTF8: "1"\n', ""),
+    "Python IO encoding dropped from the job env": sub("      PYTHONIOENCODING: utf-8\n", ""),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 
@@ -137,7 +141,7 @@ release_mutations = {
     "native job passes secrets (C6)": good_release.replace("    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n    secrets: inherit\n", 1),
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
 }
-ids_check = subprocess.run([sys.executable, str(checker), "--verify-ids", "E2E-publishing-native-linux", "E2E-no-such-scenario"], capture_output=True, text=True)
+ids_check = subprocess.run([sys.executable, str(checker), "--verify-ids", "E2E-publishing-native-linux", "E2E-no-such-scenario"], capture_output=True, encoding="utf-8", errors="replace")
 assert ids_check.returncode == 1 and "E2E-no-such-scenario" in ids_check.stdout and "native-linux" not in ids_check.stdout.replace("E2E-publishing-native-linux exists", ""), f"--verify-ids must name only the unknown ID: {ids_check.stdout}"
 
 # The permanent shape (no push trigger at all) is accepted too.
@@ -166,22 +170,22 @@ for name, release_text in release_mutations.items():
         failed.append(name)
         print(f"CRASH (not a clean FAIL): {name}: {out[-300:]}")
 def run_checker(*extra):
-    r = subprocess.run([sys.executable, str(checker), *extra], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(checker), *extra], capture_output=True, encoding="utf-8", errors="replace")
     return r.returncode, r.stdout + r.stderr
 
 
 with tempfile.TemporaryDirectory(dir=scratch) as d:
     d = pathlib.Path(d)
     # The tunnel pin and the code that obeys it.
-    good_tunnel = json.loads((here / "tunnel.json").read_text())
+    good_tunnel = json.loads((here / "tunnel.json").read_text(encoding="utf-8"))
     for name, change in {"version latest": {"version": "latest"}, "a short sha": {"sha256": "abc123"}, "a non-hex sha": {"sha256": "z" * 64}, "the deb asset": {"asset": "cloudflared-linux-amd64.deb"}, "a floating version": {"version": "2026.10"}}.items():
-        (d / "tunnel.json").write_text(json.dumps({"cloudflared": {**good_tunnel["cloudflared"], **change}}))
+        (d / "tunnel.json").write_text(json.dumps({"cloudflared": {**good_tunnel["cloudflared"], **change}}), encoding="utf-8")
         code, out = run_checker("--tunnel", str(d / "tunnel.json"))
         if code == 0:
             failed.append(f"tunnel.json: {name}")
             print(f"BYPASS: tunnel.json {name}")
-    rendezvous_text = (here / "rendezvous.mjs").read_text()
-    cloudflared_text = (here / "cloudflared.mjs").read_text()
+    rendezvous_text = (here / "rendezvous.mjs").read_text(encoding="utf-8")
+    cloudflared_text = (here / "cloudflared.mjs").read_text(encoding="utf-8")
     code_mutations = {
         "masks printed after the key is written": ("--rendezvous", rendezvous_text.replace("console.log(maskLines(handshake).join(\"\\n\"));\n    const keyFile", "const keyFile", 1).replace("writeFileSync(keyFile, `${handshake.key}\\n`, { mode: 0o600 });", "writeFileSync(keyFile, `${handshake.key}\\n`, { mode: 0o600 });\n    console.log(maskLines(handshake).join(\"\\n\"));", 1)),
         "handshake not validated": ("--rendezvous", rendezvous_text.replace("const handshake = parseHandshake(readFileSync(join(out, \"handshake.json\"), \"utf8\"));", "const handshake = JSON.parse(readFileSync(join(out, \"handshake.json\"), \"utf8\"));", 1)),
@@ -191,13 +195,13 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
     }
     for name, (option_name, text) in code_mutations.items():
         assert text != (rendezvous_text if option_name == "--rendezvous" else cloudflared_text), name
-        (d / "mutated.mjs").write_text(text)
+        (d / "mutated.mjs").write_text(text, encoding="utf-8")
         code, out = run_checker(option_name, str(d / "mutated.mjs"))
         if code == 0:
             failed.append(f"code: {name}")
             print(f"BYPASS: {name}")
     # SEC3: the hashed requirements must pin exactly the PIN_* versions, every line with a hash.
-    good_requirements = (here / "ci-requirements.txt").read_text()
+    good_requirements = (here / "ci-requirements.txt").read_text(encoding="utf-8")
     bad_requirements = {
         "twine at another version": good_requirements.replace("\ntwine==7.0.0 ", "\ntwine==6.0.0 ", 1),
         "uv at another version": good_requirements.replace("\nuv==0.13.5 ", "\nuv==0.13.4 ", 1),
@@ -208,34 +212,34 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
     }
     for name, text in bad_requirements.items():
         assert text != good_requirements, name
-        (d / "req.txt").write_text(text)
+        (d / "req.txt").write_text(text, encoding="utf-8")
         code, out = run_checker("--ci-requirements", str(d / "req.txt"))
         if code == 0:
             failed.append(f"ci-requirements: {name}")
             print(f"BYPASS: ci-requirements {name}")
-    good_checker = (here / "checker-requirements.txt").read_text()
+    good_checker = (here / "checker-requirements.txt").read_text(encoding="utf-8")
     for name, text in {"pyyaml removed": "# nothing\n", "pyyaml without hashes": "pyyaml==6.0.3\n", "pyyaml with a range": "pyyaml>=6 \\\n    --hash=sha256:" + "0" * 64 + "\n"}.items():
-        (d / "chk.txt").write_text(text)
+        (d / "chk.txt").write_text(text, encoding="utf-8")
         code, out = run_checker("--checker-requirements", str(d / "chk.txt"))
         if code == 0:
             failed.append(f"checker-requirements: {name}")
             print(f"BYPASS: checker-requirements {name}")
     # H2: the wrapper must still discover every test, run both canaries and count assertions.
-    wrapper_text = (here / "run_tests.py").read_text()
+    wrapper_text = (here / "run_tests.py").read_text(encoding="utf-8")
     for name, text in {"fixed test list": wrapper_text.replace('sorted(here.glob("*.test.*"))', '[here / "assertions.test.mjs"]'),
                        "no stub canary": wrapper_text.replace("if not stub_checker_canary():", "if False:"),
                        "no assertion counting": wrapper_text.replace("count-asserts.mjs", "gone.mjs")}.items():
-        (d / "wrapper.py").write_text(text)
+        (d / "wrapper.py").write_text(text, encoding="utf-8")
         code, out = run_checker("--run-tests", str(d / "wrapper.py"))
         if code == 0:
             failed.append(f"run_tests.py: {name}")
             print(f"BYPASS: run_tests.py {name}")
     # G10: pins.json with a range, `latest` or a wildcard.
     import json
-    real_pins = json.loads((here / "pins.json").read_text())
+    real_pins = json.loads((here / "pins.json").read_text(encoding="utf-8"))
     for tool, bad_value in [("node", "latest"), ("npm", "*"), ("python", "3.15"), ("uv", "^0.13.5"), ("pip", "26.2.x")]:
         pins = dict(real_pins, **{tool: bad_value})
-        (d / "pins.json").write_text(json.dumps(pins))
+        (d / "pins.json").write_text(json.dumps(pins), encoding="utf-8")
         code, out = run_checker("--pins", str(d / "pins.json"))
         if code == 0 or tool not in out:
             failed.append(f"pins.json {tool}={bad_value}")
@@ -243,7 +247,7 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
     # G10: a scenario meta inside a block comment declares nothing.
     scenarios = d / "scenarios"
     scenarios.mkdir()
-    (scenarios / "a.mjs").write_text('/*\nexport const meta = { id: "E2E-service-policy", suites: [] };\n*/\nexport const meta = { id: "E2E-other", suites: [] };\n')
+    (scenarios / "a.mjs").write_text('/*\nexport const meta = { id: "E2E-service-policy", suites: [] };\n*/\nexport const meta = { id: "E2E-other", suites: [] };\n', encoding="utf-8")
     code, out = run_checker("--scenarios-dir", str(scenarios), "--verify-ids", "E2E-service-policy")
     if code == 0:
         failed.append("scenario meta in a block comment")

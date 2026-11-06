@@ -3,6 +3,8 @@
 rejected, a good one accepted, and the stub-checker canary must trip.
 python3 tests/e2e/native/run_tests.test.py"""
 import os, pathlib, sys, tempfile
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 
 here = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(here))
@@ -15,12 +17,12 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
 
     def js(name, body):
         path = d / f"{name}.test.mjs"
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         return path
 
     def py(name, body):
         path = d / f"{name}.test.py"
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         return path
 
     ok_js = js("good", 'import assert from "node:assert/strict";\nassert.equal(1, 1);\nconsole.log("good.test: ok");\n')

@@ -42,6 +42,13 @@ export async function waitFor(what, check, { timeout = 60_000, every = 500 } = {
   }
 }
 
+/// The DNS server the gateway's nginx asks for the upstream names. Docker's embedded DNS is at 127.0.0.11; Podman's
+/// answers on the network's gateway address. `E2E_RESOLVER` overrides.
+export function resolverFor({ versionText, net, override }) {
+  if (override) return override;
+  return /podman/i.test(versionText) ? `${net}.1` : "127.0.0.11";
+}
+
 export class Stack {
   /// {work, project, net ("11.220.0"), bridgePort, canary, nightly}
   constructor(options) {
@@ -50,6 +57,8 @@ export class Stack {
     if (this.canary) this.files.push("-f", join(COMPOSE_DIR, "canary.yml"));
     this.command = (process.env.E2E_COMPOSE_CMD ?? "docker compose").split(" ");
     this.engine = process.env.E2E_ENGINE ?? (this.command[0].startsWith("podman") ? "podman" : "docker");
+    // A `docker` that is a wrapper for podman (some developer machines) says so in its version.
+    this.engineVersion = spawnSync(this.engine, ["--version"], { encoding: "utf8" }).stdout ?? "";
   }
 
   get env() {
@@ -178,7 +187,7 @@ export class Stack {
     writeFileSync(
       join(this.work, "gateway-nginx.conf"),
       readFileSync(join(COMPOSE_DIR, "gateway-nginx.conf"), "utf8")
-        .replaceAll("E2E_RESOLVER", `${this.net}.1`).replaceAll("E2E_SERVER", `${this.net}.12`),
+        .replaceAll("E2E_RESOLVER", resolverFor({ versionText: this.engineVersion, net: this.net, override: process.env.E2E_RESOLVER })).replaceAll("E2E_SERVER", `${this.net}.12`),
     );
     writeFileSync(
       join(this.work, "server.toml"),

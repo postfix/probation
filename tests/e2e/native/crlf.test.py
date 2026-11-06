@@ -3,6 +3,8 @@
 verdict: the workflow checker and the Dockerfile test accept CRLF copies of their inputs, and .gitattributes keeps
 scripts and requirements files LF in the first place.   python3 tests/e2e/native/crlf.test.py"""
 import os, pathlib, subprocess, sys, tempfile
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 
 here = pathlib.Path(__file__).resolve().parent
 root = here.parents[2]
@@ -26,21 +28,21 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         crlf(src, d / name)
     r = subprocess.run([sys.executable, str(here / "check_workflow.py"), "--file", str(d / "wf.yml"), "--release", str(d / "release.yml"),
                         "--ci-requirements", str(d / "ci.txt"), "--checker-requirements", str(d / "chk.txt"), "--native-requirements", str(d / "native.txt"),
-                        "--tunnel", str(d / "tunnel.json"), "--pins", str(d / "pins.json")], capture_output=True, text=True)
+                        "--tunnel", str(d / "tunnel.json"), "--pins", str(d / "pins.json")], capture_output=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"the workflow checker must pass on CRLF copies:\n{r.stdout}{r.stderr}"
     # The Dockerfile test reads the image definition and its requirements from NATIVE_CLIENTS_DIR.
     clients = d / "clients"
     clients.mkdir()
     crlf(root / "tests/e2e/compose/clients/native.Dockerfile", clients / "native.Dockerfile")
     crlf(root / "tests/e2e/compose/clients/native-requirements.txt", clients / "native-requirements.txt")
-    r = subprocess.run(["node", str(here / "dockerfile.test.mjs")], capture_output=True, text=True, env={**os.environ, "NATIVE_CLIENTS_DIR": str(clients)})
+    r = subprocess.run(["node", str(here / "dockerfile.test.mjs")], capture_output=True, encoding="utf-8", errors="replace", env={**os.environ, "NATIVE_CLIENTS_DIR": str(clients)})
     assert r.returncode == 0 and r.stdout.strip().endswith("dockerfile.test: ok"), f"dockerfile.test must pass on CRLF copies:\n{r.stdout}{r.stderr}"
 
 # .gitattributes keeps what bash and the parsers read LF.
 need = ["tests/e2e/fixtures/make-ca.sh", "tests/e2e/native/ci-requirements.txt", "tests/e2e/native/checker-requirements.txt",
         "tests/e2e/compose/clients/native-requirements.txt", "tests/e2e/compose/clients/native.Dockerfile", ".github/workflows/native-clients.yml",
         "tests/e2e/native/run_tests.py", "tests/e2e/native/rendezvous.mjs", "config.sample.toml"]
-r = subprocess.run(["git", "check-attr", "eol", "--"] + need, cwd=root, capture_output=True, text=True)
+r = subprocess.run(["git", "check-attr", "eol", "--"] + need, cwd=root, capture_output=True, encoding="utf-8", errors="replace")
 assert r.returncode == 0, r.stderr
 not_lf = [line for line in r.stdout.splitlines() if not line.endswith(": eol: lf")]
 assert not not_lf, f".gitattributes must set eol=lf for: {not_lf}"

@@ -1,8 +1,10 @@
 {
   "assertions.test.mjs": 51,
+  "ca-script.test.mjs": 3,
   "clients.test.mjs": 28,
   "cloudflared.test.mjs": 15,
   "dockerfile.test.mjs": 5,
+  "harness-engine.test.mjs": 3,
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,
   "pf.test.mjs": 15,
@@ -12,5 +14,5 @@
   "scope.test.mjs": 3,
   "snapshot-proxy.test.mjs": 12,
   "spawn-args.test.mjs": 13,
-  "stack.test.mjs": 19
+  "stack.test.mjs": 24
 }

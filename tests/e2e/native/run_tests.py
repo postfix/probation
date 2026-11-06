@@ -6,6 +6,8 @@ canaries run first: check_workflow.test.py must FAIL against a checker that alwa
 judge itself must reject a silent, a failing and a non-asserting test.   python3 tests/e2e/native/run_tests.py
 """
 import json, os, pathlib, re, subprocess, sys, tempfile
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 
 here = pathlib.Path(__file__).resolve().parent
 SKIP_ON = {"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}  # their fakes are POSIX shell scripts
@@ -42,10 +44,10 @@ def run_one(path, minimum, extra_env=None):
         with tempfile.TemporaryDirectory(dir=os.environ.get("NATIVE_TEST_SCRATCH")) as d:
             counts = pathlib.Path(d) / "count"
             env["NATIVE_ASSERT_COUNT_FILE"] = str(counts)
-            r = subprocess.run(["node", "--import", count_import(), str(path)], capture_output=True, text=True, env=env, timeout=900)
-            count = int(counts.read_text()) if counts.exists() else None
+            r = subprocess.run(["node", "--import", count_import(), str(path)], capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=900)
+            count = int(counts.read_text(encoding="utf-8")) if counts.exists() else None
     else:
-        r = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, env=env, timeout=900)
+        r = subprocess.run([sys.executable, str(path)], capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=900)
         count = None
     findings = judge(path, r.returncode, r.stdout, count, minimum)
     if findings:  # a hosted failure is diagnosed from this log: the test's own stderr and the tail of its stdout
@@ -58,8 +60,8 @@ def stub_checker_canary():
     """True if check_workflow.test.py correctly fails when the checker always exits 0."""
     with tempfile.TemporaryDirectory(dir=os.environ.get("NATIVE_TEST_SCRATCH")) as d:
         stub = pathlib.Path(d) / "stub_checker.py"
-        stub.write_text("import sys\nsys.exit(0)\n")
-        r = subprocess.run([sys.executable, str(here / "check_workflow.test.py")], capture_output=True, text=True,
+        stub.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+        r = subprocess.run([sys.executable, str(here / "check_workflow.test.py")], capture_output=True, encoding="utf-8", errors="replace",
                            env={**os.environ, "NATIVE_CHECKER": str(stub)}, timeout=900)
     return r.returncode != 0
 
@@ -84,7 +86,7 @@ def main():
     if missed:
         print(f"FAIL canary: the judge accepted {missed}")
         return 1
-    expected = json.loads((here / "expected-asserts.json").read_text())
+    expected = json.loads((here / "expected-asserts.json").read_text(encoding="utf-8"))
     tests = sorted(here.glob("*.test.*"))
     failures = []
     for path in tests:

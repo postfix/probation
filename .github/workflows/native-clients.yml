@@ -52,6 +52,8 @@ jobs:
       PIN_UV: "0.13.5"
       NATIVE_PLATFORM: ${{ matrix.platform }}
       CARGO_TERM_COLOR: always
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -84,6 +86,13 @@ jobs:
         env:
           CHECK_PYTHON: ${{ steps.checker_python.outputs.python-path }}
         run: '"$CHECK_PYTHON" tests/e2e/native/check_workflow.py'
+      - name: Show the shell and openssl the CA script uses
+        shell: bash
+        run: |
+          bash --version | head -1
+          command -v openssl
+          openssl version
+          bash -x tests/e2e/fixtures/make-ca.sh "$RUNNER_TEMP/ca-probe" 2>&1 | tail -60
       - name: Install the harness dependencies
         run: npm ci --prefix tests/e2e --no-audit --no-fund
       - name: Run the native harness unit tests
@@ -204,6 +213,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-real-server-logs
-          path: ${{ runner.temp }}/remote/harness.log
+          path: |
+            ${{ runner.temp }}/remote/harness.log
+            target/e2e/out
           retention-days: 3
           if-no-files-found: ignore

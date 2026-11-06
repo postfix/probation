@@ -9,6 +9,8 @@ command), and every PIN_* is tied to what the steps install. Anything else fails
 Mutation tests: check_workflow.test.py.
 """
 import json, pathlib, re, sys
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 import yaml
 
 
@@ -42,7 +44,7 @@ root = pathlib.Path(__file__).resolve().parents[3]
 pins_path = root / "tests/e2e/native/pins.json"
 if "--pins" in sys.argv:
     pins_path = pathlib.Path(sys.argv[sys.argv.index("--pins") + 1])
-pins = json.loads(pins_path.read_text())
+pins = json.loads(pins_path.read_text(encoding="utf-8"))
 path = root / ".github/workflows/native-clients.yml"
 if "--file" in sys.argv:
     path = pathlib.Path(sys.argv[sys.argv.index("--file") + 1])
@@ -50,7 +52,7 @@ release_path = root / ".github/workflows/release.yml"
 if "--release" in sys.argv:
     release_path = pathlib.Path(sys.argv[sys.argv.index("--release") + 1])
 raw = path.read_bytes()
-text = path.read_text()
+text = path.read_text(encoding="utf-8")
 bad = []
 # C5: printable ASCII and line breaks only (no look-alike letters, zero-width or bidi characters),
 # and no explicit YAML tags.
@@ -62,7 +64,7 @@ for label, content in (("native-clients.yml", raw), ("release.yml", release_path
         bad.append(f"{label} uses an explicit YAML tag (!tag or !!tag)")
 try:
     wf = load_strict(text)
-    release_wf = load_strict(release_path.read_text())
+    release_wf = load_strict(release_path.read_text(encoding="utf-8"))
 except yaml.YAMLError as error:
     print(f"FAIL workflow is not plain YAML: {error}")
     sys.exit(1)
@@ -76,6 +78,7 @@ UPLOAD = {"uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607f
 EXPECTED_ENV = {
     "PIN_NODE": pins["node"], "PIN_NPM": pins["npm"], "PIN_PYTHON": pins["python"], "PIN_PIP": pins["pip"],
     "PIN_TWINE": pins["twine"], "PIN_UV": pins["uv"], "NATIVE_PLATFORM": "${{ matrix.platform }}", "CARGO_TERM_COLOR": "always",
+    "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
 }
 UNIT_TESTS = '''export NATIVE_TEST_SCRATCH="$RUNNER_TEMP/native-tests"
 mkdir -p "$NATIVE_TEST_SCRATCH"
@@ -90,6 +93,8 @@ NATIVE_STEPS = [
      "run": '"$CHECK_PYTHON" -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/checker-requirements.txt'},
     {"name": "Install pinned clients", "shell": "bash", "run": 'npm install --global "npm@$PIN_NPM"\npython -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/ci-requirements.txt\n'},
     {"name": "Verify this workflow's structure", "shell": "bash", "env": CHECK_ENV, "run": '"$CHECK_PYTHON" tests/e2e/native/check_workflow.py'},
+    {"name": "Show the shell and openssl the CA script uses", "shell": "bash",
+     "run": 'bash --version | head -1\ncommand -v openssl\nopenssl version\nbash -x tests/e2e/fixtures/make-ca.sh "$RUNNER_TEMP/ca-probe" 2>&1 | tail -60\n'},
     {"name": "Install the harness dependencies", "run": "npm ci --prefix tests/e2e --no-audit --no-fund"},
     {"name": "Run the native harness unit tests", "shell": "bash", "env": CHECK_ENV, "run": UNIT_TESTS},
     {"name": "Verify exact client versions", "run": "node tests/e2e/native/clients.mjs"},
@@ -120,7 +125,7 @@ REAL_SERVER_STEPS = [
     {"name": "Release the scenario and check what the native jobs did", "if": "always()", "run": f'{RV} server-release --dir "$RUNNER_TEMP/remote" --timeout-min 10'},
     {"name": "Tear down the tunnel and the stack", "if": "always()", "run": f'{RV} server-teardown --dir "$RUNNER_TEMP/remote"'},
     {"name": "Keep the logs", "if": "always()", "uses": UPLOAD_SHA,
-     "with": {"name": "native-real-server-logs", "path": "${{ runner.temp }}/remote/harness.log", "retention-days": 3, "if-no-files-found": "ignore"}},
+     "with": {"name": "native-real-server-logs", "path": "${{ runner.temp }}/remote/harness.log\ntarget/e2e/out\n", "retention-days": 3, "if-no-files-found": "ignore"}},
 ]
 LINUX_SCENARIOS = ["E2E-service-policy", "E2E-publishing-npm-read", "E2E-publishing-npm-actions", "E2E-publishing-python-service",
                    "E2E-publishing-full-matrix", "E2E-publishing-native-linux"]
@@ -216,17 +221,17 @@ same_steps(real.get("steps"), REAL_SERVER_STEPS, "real-server")
 # The tunnel binary is pinned in tunnel.json: an exact release, the official asset, a SHA-256; and the rendezvous
 # commands print their masks before they write or export anything.
 tunnel_path = option("--tunnel", root / "tests/e2e/native/tunnel.json")
-tunnel = json.loads(tunnel_path.read_text()).get("cloudflared", {})
+tunnel = json.loads(tunnel_path.read_text(encoding="utf-8")).get("cloudflared", {})
 need(re.fullmatch(r"\d{4}\.\d+\.\d+", str(tunnel.get("version", ""))), f"tunnel.json: cloudflared version must be an exact release, got {tunnel.get('version')!r}")
 need(re.fullmatch(r"[0-9a-f]{64}", str(tunnel.get("sha256", ""))), "tunnel.json: cloudflared sha256 must be a 64-digit hex digest")
 need(tunnel.get("asset") == "cloudflared-linux-amd64", f"tunnel.json: cloudflared asset must be cloudflared-linux-amd64, got {tunnel.get('asset')!r}")
-rendezvous = option("--rendezvous", root / "tests/e2e/native/rendezvous.mjs").read_text()
+rendezvous = option("--rendezvous", root / "tests/e2e/native/rendezvous.mjs").read_text(encoding="utf-8")
 client_wait = rendezvous[rendezvous.index('command === "client-wait"'):rendezvous.index('command === "client-probe"')]
 need(client_wait.index("maskLines(handshake)") < client_wait.index("writeFileSync(keyFile") < client_wait.index("appendFileSync(process.env.GITHUB_ENV"),
      "rendezvous.mjs client-wait must print the masks before it writes the key file or the environment")
 need("maskLines(handshake)" in rendezvous[rendezvous.index('command === "server-wait-ready"'):rendezvous.index('command === "server-ensure-handshake"')], "rendezvous.mjs server-wait-ready must print the masks")
 need("parseHandshake(" in client_wait, "rendezvous.mjs client-wait must validate the handshake before using it")
-fetcher = option("--cloudflared-js", root / "tests/e2e/native/cloudflared.mjs").read_text()
+fetcher = option("--cloudflared-js", root / "tests/e2e/native/cloudflared.mjs").read_text(encoding="utf-8")
 need("expected: pin.sha256" in fetcher and "downloadUrl(pin)" in fetcher, "cloudflared.mjs must download the pinned version and verify the pinned checksum")
 
 # release.yml: the gate. `native` calls this workflow with nothing conditional, and both
@@ -282,7 +287,7 @@ def scenario_ids():
         folder = pathlib.Path(sys.argv[sys.argv.index("--scenarios-dir") + 1])
     ids = set()
     for scenario in folder.glob("*.mjs"):
-        code = re.sub(r"/\*.*?\*/", "", scenario.read_text(), flags=re.S)
+        code = re.sub(r"/\*.*?\*/", "", scenario.read_text(encoding="utf-8"), flags=re.S)
         code = re.sub(r"^[ \t]*//.*$", "", code, flags=re.M)
         ids.update(re.findall(r'^export const meta = \{[^}]*?\bid: "([^"]+)"', code, re.M | re.S))
     return ids
@@ -294,7 +299,7 @@ def verify_ids(wanted):
     if not problems and "--scenarios-dir" not in sys.argv and (root / "tests/e2e/node_modules").exists():
         import subprocess
         for w in wanted:
-            r = subprocess.run(["node", str(root / "tests/e2e/harness/run.mjs"), "--list", "--only", w], capture_output=True, text=True)
+            r = subprocess.run(["node", str(root / "tests/e2e/harness/run.mjs"), "--list", "--only", w], capture_output=True, encoding="utf-8", errors="replace")
             if r.returncode != 0 or w not in r.stdout:
                 problems.append(f"run.mjs --list --only {w} failed: {r.stderr.strip()[:200]}")
     return problems
@@ -333,16 +338,16 @@ def requirement_findings(requirements_text, label, want_extra=(), tools=True):
     return findings
 
 
-for problem in requirement_findings(option("--ci-requirements", root / "tests/e2e/native/ci-requirements.txt").read_text(), "ci-requirements.txt"):
+for problem in requirement_findings(option("--ci-requirements", root / "tests/e2e/native/ci-requirements.txt").read_text(encoding="utf-8"), "ci-requirements.txt"):
     need(False, problem)
-for problem in requirement_findings(option("--checker-requirements", root / "tests/e2e/native/checker-requirements.txt").read_text(), "checker-requirements.txt", want_extra=("pyyaml",), tools=False):
+for problem in requirement_findings(option("--checker-requirements", root / "tests/e2e/native/checker-requirements.txt").read_text(encoding="utf-8"), "checker-requirements.txt", want_extra=("pyyaml",), tools=False):
     need(False, problem)
-for problem in requirement_findings(option("--native-requirements", root / "tests/e2e/compose/clients/native-requirements.txt").read_text(), "native-requirements.txt"):
+for problem in requirement_findings(option("--native-requirements", root / "tests/e2e/compose/clients/native-requirements.txt").read_text(encoding="utf-8"), "native-requirements.txt"):
     need(False, problem)
 
 # Every *.test.* file is run by the one wrapper step (the canonical "Run the native harness unit
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
-wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text()
+wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
 need('sorted(here.glob("*.test.*"))' in wrapper, "run_tests.py must discover every *.test.* file with here.glob(\"*.test.*\")")
 need("if not stub_checker_canary():" in wrapper and "judge_canary()" in wrapper, "run_tests.py must run both canaries before the tests")
 need("--import" in wrapper and "count-asserts.mjs" in wrapper and "expected-asserts.json" in wrapper, "run_tests.py must count assertion calls of the JavaScript tests")

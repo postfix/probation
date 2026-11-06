@@ -19,7 +19,7 @@ import { parsePfToken, pfSteps } from "./pf.mjs";
 export { winCommandLine };
 
 // On Windows runners a bare `bash` may be WSL's launcher; Git for Windows' bash carries openssl.
-const BASH = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe") : "bash";
+export const BASH = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe") : "bash";
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 export const OWNER = "e2e-owner";
 export const DENIED = "e2e-denied";
@@ -43,7 +43,13 @@ const credential = (auth) => auth === `Bearer ${OWNER}` ? "developer-owner" : au
 export function run(command, args, options = {}) {
   const [file, argv, opts] = launch(command, args, { encoding: "utf8", timeout: 300_000, ...options }, process.platform, { shim: false });
   const r = spawnSync(file, argv, opts);
-  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  return { status: r.status ?? -1, signal: r.signal ?? null, error: r.error?.code ?? r.error?.message ?? null, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+/// A failure message that is never empty: which command, the exit status or signal, the spawn error (ENOENT ...), both streams.
+export function describeFailure(what, r) {
+  const how = [r.signal ? `signal ${r.signal}` : `exit ${r.status}`, r.error].filter(Boolean).join(", ");
+  return `${what} failed (${how})\n--- stdout ---\n${(r.stdout ?? "").trim() || "(empty)"}\n--- stderr ---\n${(r.stderr ?? "").trim() || "(empty)"}`;
 }
 
 /// The clients must not block this process: the fake registries it hosts have to answer them.
@@ -251,7 +257,7 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   removeStaleHostsLines(hooks.hostsFile ?? HOSTS);
   (hooks.staleTrust ?? removeStaleTrust)();
   const ca = run(BASH, [posixPath(join(root, "tests/e2e/fixtures/make-ca.sh")), posixPath(work)]);
-  if (ca.status !== 0) throw new Error(`make-ca failed: ${ca.out}`);
+  if (ca.status !== 0) throw new Error(describeFailure(`make-ca.sh under ${BASH}`, ca));
   const caFile = join(work, "ca", "ca.pem");
   const tls = { cert: readFileSync(join(work, "tls", "cert.pem")), key: readFileSync(join(work, "tls", "key.pem")) };
   undo.push((hooks.trust ?? trust)(caFile));

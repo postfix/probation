@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { HANDLED_SIGNALS, composeTrustBundle, posixPath, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
+import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
 
 const scratch = process.env.NATIVE_TEST_SCRATCH;
 assert(scratch, "set NATIVE_TEST_SCRATCH");
@@ -47,6 +47,18 @@ const refused = (port) => new Promise((resolve) => { const c = net.connect(port,
 // Git bash reads a backslash as an escape: paths handed to bash scripts use forward slashes.
 assert.equal(posixPath("C:\\Users\\runner\\work\\make-ca.sh"), "C:/Users/runner/work/make-ca.sh");
 assert.equal(posixPath("/home/x/y"), "/home/x/y");
+
+// A command that could not even start must say why (hosted Windows: "make-ca failed: " with nothing after it).
+{
+  const missing = run("definitely-not-a-program-xyz", ["--version"]);
+  assert.equal(missing.status, -1);
+  assert.match(describeFailure("tool", missing), /tool failed \(exit -1, ENOENT\)/);
+  const failing = run(process.execPath, ["-e", "console.log('to-stdout'); console.error('to-stderr'); process.exit(3)"]);
+  const text = describeFailure("tool", failing);
+  assert.match(text, /exit 3/);
+  assert.ok(text.includes("to-stdout") && text.includes("to-stderr"), text);
+  assert.match(describeFailure("tool", { status: null, signal: "SIGTERM", out: "", stdout: "", stderr: "" }), /signal SIGTERM/);
+}
 
 // SEC1: a run killed hard (SIGKILL, a Windows kill) leaves its marked hosts line and trust entry; the next run
 // removes both before it starts, even though the stale line makes pypi.org look like loopback.
