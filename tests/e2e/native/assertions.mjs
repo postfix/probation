@@ -168,6 +168,9 @@ export function envFindings(env, trust = {}) {
 /// Requirement 7: for every native job (`labels`) the real server's snapshot proxy saw, through the tunnel and from an address
 /// other than the server job's own (its `serverLabel` probe), a labelled probe with the throwaway key AND the native
 /// probation's own snapshot request (no label) from that same tunnel-client address.
+/// The label is the client-supplied X-Native-Job header: this check guards honest mistakes (a job that never reached the
+/// server, or reached it from the server job's own address), NOT forgery by someone who holds the throwaway key, who can
+/// send any label. The key holder is trusted for the length of the run.
 export function remoteSnapshotFindings({ entries, labels, serverLabel = "linux-server" }) {
   const findings = [];
   const served = (e) => e.keyOk && e.status === 200 && e.path === "/api/v1/policy/snapshot";

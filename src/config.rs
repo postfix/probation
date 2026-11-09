@@ -1237,6 +1237,12 @@ pub(crate) fn write_atomically(
 /// Windows cannot open a directory like a file for `FlushFileBuffers` (access denied), and NTFS journals directory metadata
 /// itself, so there the call is a documented no-op: the files involved are already `sync_all`ed before they are renamed
 /// into place, and only the durability of the directory entry itself is left to the file system.
+///
+/// NTFS journaling gives metadata CONSISTENCY, not durability: the directory sync is a no-op there, so a crash inside the
+/// NTFS log-flush window right after the refusal marker is written could lose the rename of `service-policy.refused` and
+/// re-admit the refused grant for one restart plus one poll interval. The durable explicit-refusal guarantee is therefore
+/// narrowed on Windows (it never held there before: the service did not start). Possible hardening: open the directory with
+/// FILE_FLAG_BACKUP_SEMANTICS and `sync_all`, or use MOVEFILE_WRITE_THROUGH on the rename.
 pub(crate) fn sync_directory(dir: &Path) -> io::Result<()> {
     sync_directory_with(dir, |d| std::fs::File::open(d), cfg!(windows))
 }

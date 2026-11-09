@@ -7,13 +7,13 @@
   "harness-engine.test.mjs": 3,
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,
-  "openssl-setup.test.mjs": 11,
+  "openssl-setup.test.mjs": 17,
   "pf.test.mjs": 15,
   "rendezvous-cli.test.mjs": 23,
   "rendezvous.test.mjs": 19,
   "run-ids.test.mjs": 6,
   "scope.test.mjs": 3,
-  "snapshot-proxy.test.mjs": 12,
+  "snapshot-proxy.test.mjs": 20,
   "spawn-args.test.mjs": 13,
   "stack.test.mjs": 24
 }

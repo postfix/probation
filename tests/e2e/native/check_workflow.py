@@ -263,6 +263,17 @@ if probe_path.exists():
         need(same({str(k): v for k, v in probe_wf.items()}, {str(k): v for k, v in PROBE.items()}),
              f"native-call-probe.yml must be exactly one push of slice5-native-ci and one job calling native-clients.yml with contents: read and actions: read (no secrets, with, if, needs): {json.dumps({str(k): v for k, v in probe_wf.items()})[:300]}")
 
+# The Actions token (GH_TOKEN) belongs only to the `gh` rendezvous steps that read this run's artifacts: never in a workflow- or
+# job-level env, never in a build or test step, so no cargo build script or client process can see it.
+TOKEN_STEPS = ("rendezvous.mjs client-wait", "rendezvous.mjs server-wait-done")
+need("GH_TOKEN" not in json.dumps(wf.get("env", {})), "GH_TOKEN must not be set at workflow level")
+for job_name, job in jobs.items():
+    need("GH_TOKEN" not in json.dumps(job.get("env", {})), f"GH_TOKEN must not be set in the env of job {job_name}")
+    for step in job.get("steps", []):
+        if "GH_TOKEN" in json.dumps(step.get("env", {})):
+            need(any(s in str(step.get("run", "")) for s in TOKEN_STEPS), f"GH_TOKEN reaches a step other than the rendezvous waits: {step.get('name', step.get('run', ''))[:60]}")
+need(text.count("GH_TOKEN") == 2, f"GH_TOKEN must appear exactly twice (the two rendezvous waits), found {text.count('GH_TOKEN')}")
+
 # H1: every job. No continue-on-error anywhere, no `|| true`, no `if` except the upload-artifact
 # `always()` steps; and any job that writes, uses an environment or secrets, or runs a publishing
 # command must transitively need both native and e2e.

@@ -124,6 +124,9 @@ mutations = {
     "Playwright browser install dropped from linux-managed": sub("      - run: npx --prefix tests/e2e playwright install --with-deps chromium\n", ""),
     "Playwright install without the system libraries": sub("playwright install --with-deps chromium", "playwright install chromium"),
     "CA diagnostic step back": sub("      - name: Install the harness dependencies\n", "      - name: Show the shell\n        shell: bash\n        run: bash -x tests/e2e/fixtures/make-ca.sh \"$RUNNER_TEMP/ca-probe\" 2>&1 | tail -60\n      - name: Install the harness dependencies\n"),
+    "GH_TOKEN in the build step env": sub('        env:\n          AWS_LC_SYS_USE_SYSTEM: "0"\n', '        env:\n          AWS_LC_SYS_USE_SYSTEM: "0"\n          GH_TOKEN: ${{ github.token }}\n'),
+    "GH_TOKEN in the job env": sub('      PYTHONUTF8: "1"\n', '      PYTHONUTF8: "1"\n      GH_TOKEN: ${{ github.token }}\n'),
+    "GH_TOKEN in the unit test step": sub('      - name: Run the native harness unit tests\n        shell: bash\n        env:\n', '      - name: Run the native harness unit tests\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n'),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 

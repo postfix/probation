@@ -24,8 +24,8 @@ export function findImportLibrary(roots, fs) {
       if (!entries) continue;
       if (entries.some((e) => e.toLowerCase() === "libcrypto.lib")) {
         const bin = fs.join(root, "bin");
-        const dll = (fs.list(bin) ?? []).some((e) => /^libcrypto-\d.*\.dll$/i.test(e));
-        return { lib: fs.join(dir, "libcrypto.lib"), bin: dll ? bin : null };
+        const dll = (fs.list(bin) ?? []).find((e) => /^libcrypto-\d.*\.dll$/i.test(e));
+        return { lib: fs.join(dir, "libcrypto.lib"), bin: dll ? bin : null, dll: dll ? fs.join(bin, dll) : null };
       }
       if (depth < 5) for (const e of entries) if (!/\.[a-z]+$/i.test(e)) queue.push([fs.join(dir, e), depth + 1]);
     }
@@ -48,10 +48,21 @@ export function buildPlan({ platform, brewPrefix, found, shimDir, encoded, rustf
   }
   if (platform === "win32") {
     if (!found) throw new Error("no OpenSSL import library (libcrypto.lib) was found or built");
-    if (!found.bin) throw new Error(`the OpenSSL DLL (libcrypto-3*.dll) is not beside ${found.lib}`);
-    return { env: withLibraryDir(shimDir.replaceAll("\\", "/"), { encoded, rustflags }), path: [found.bin], shim: { from: found.lib, to: `${shimDir}\\crypto.lib` } };
+    if (!found.bin || !found.dll) throw new Error(`the OpenSSL DLL (libcrypto-3*.dll) is not beside ${found.lib}`);
+    // Only the shim directory goes on PATH, holding the import library and libcrypto-3*.dll (whose own imports are all System32 DLLs):
+    // the whole <root>\bin of an OpenSSL or vcpkg tree (other DLLs, openssl.exe) never becomes searchable for every later step.
+    const dllName = found.dll.split(/[\\/]/).pop();
+    return { env: withLibraryDir(shimDir.replaceAll("\\", "/"), { encoded, rustflags }), path: [shimDir],
+      shim: { from: found.lib, to: `${shimDir}\\crypto.lib` }, dll: { from: found.dll, to: `${shimDir}\\${dllName}` } };
   }
   return { env: {}, path: [], shim: null };
+}
+
+/// $GITHUB_ENV and $GITHUB_PATH are line files: a value with a line break would add a variable or a PATH entry of its own.
+export function assertSingleLine(plan) {
+  for (const [what, value] of [...Object.entries(plan.env).map(([k, v]) => [k, v]), ...plan.path.map((p) => ["PATH entry", p])]) {
+    if (/[\r\n]/.test(`${what}${value}`)) throw new Error(`refusing to write ${what}: its value holds a line break`);
+  }
 }
 
 /// Runs a command and answers its trimmed stdout; `show` instead lets a chatty command (vcpkg) write straight to the log.
@@ -80,11 +91,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const shimDir = join(process.env.RUNNER_TEMP ?? process.env.TEMP, "openssl-shim");
     plan = buildPlan({ platform, found, shimDir, ...inherited });
     mkdirSync(shimDir, { recursive: true });
+    assertSingleLine(plan);
     copyFileSync(plan.shim.from, plan.shim.to);
+    copyFileSync(plan.dll.from, plan.dll.to);
     console.log(`crypto.lib <- ${plan.shim.from}`);
   } else {
     plan = buildPlan({ platform });
   }
+  assertSingleLine(plan);
   if (process.env.GITHUB_ENV) for (const [k, v] of Object.entries(plan.env)) appendFileSync(process.env.GITHUB_ENV, `${k}=${v}\n`);
   if (process.env.GITHUB_PATH) for (const p of plan.path) appendFileSync(process.env.GITHUB_PATH, `${p}\n`);
   console.log(`openssl for the linker: ${JSON.stringify(plan.env)} path +${JSON.stringify(plan.path)}`);
