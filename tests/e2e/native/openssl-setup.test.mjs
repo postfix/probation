@@ -6,16 +6,23 @@ import assert from "node:assert/strict";
 import { buildPlan, findImportLibrary, windowsRoots } from "./openssl-setup.mjs";
 
 // macOS: Homebrew's lib directory is added to the linker's search path.
-assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/opt/homebrew/opt/openssl@3" }), { env: { RUSTFLAGS: "-L native=/opt/homebrew/opt/openssl@3/lib" }, path: [], shim: null });
+const US = "\x1f"; // CARGO_ENCODED_RUSTFLAGS separates flags with it, so a path may hold spaces
+assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/opt/homebrew/opt/openssl@3" }), { env: { CARGO_ENCODED_RUSTFLAGS: `-L${US}native=/opt/homebrew/opt/openssl@3/lib` }, path: [], shim: null });
 assert.throws(() => buildPlan({ platform: "darwin", brewPrefix: "" }), /Homebrew/);
 // Linux: the system libcrypto (libssl-dev) is already on the default path.
 assert.deepEqual(buildPlan({ platform: "linux" }), { env: {}, path: [], shim: null });
 // Windows: the import library is copied under the name rustc asks for, and the DLL directory goes on PATH.
 const plan = buildPlan({ platform: "win32", found: { lib: "C:\\Program Files\\OpenSSL-Win64\\lib\\VC\\x64\\MD\\libcrypto.lib", bin: "C:\\Program Files\\OpenSSL-Win64\\bin" }, shimDir: "D:\\a\\_temp\\openssl-shim" });
 assert.deepEqual(plan.shim, { from: "C:\\Program Files\\OpenSSL-Win64\\lib\\VC\\x64\\MD\\libcrypto.lib", to: "D:\\a\\_temp\\openssl-shim\\crypto.lib" });
-assert.deepEqual(plan.env, { RUSTFLAGS: "-L native=D:/a/_temp/openssl-shim" }, "forward slashes in the flag");
+assert.deepEqual(plan.env, { CARGO_ENCODED_RUSTFLAGS: `-L${US}native=D:/a/_temp/openssl-shim` }, "forward slashes in the flag");
 assert.deepEqual(plan.path, ["C:\\Program Files\\OpenSSL-Win64\\bin"]);
 assert.throws(() => buildPlan({ platform: "win32", found: null, shimDir: "x" }), /import library/);
+
+// An existing RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS is kept (ours is appended), and a path with spaces stays one argument.
+assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/p", rustflags: "-C target-cpu=native  -D warnings" }).env, { CARGO_ENCODED_RUSTFLAGS: `-C${US}target-cpu=native${US}-D${US}warnings${US}-L${US}native=/p/lib` });
+assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/p", encoded: `-C${US}link-arg=a b`, rustflags: "ignored" }).env, { CARGO_ENCODED_RUSTFLAGS: `-C${US}link-arg=a b${US}-L${US}native=/p/lib` }, "the encoded variable wins, as in cargo");
+assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/Users/a b/openssl" }).env, { CARGO_ENCODED_RUSTFLAGS: `-L${US}native=/Users/a b/openssl/lib` });
+assert.deepEqual(buildPlan({ platform: "win32", found: { lib: "C:\\x\\libcrypto.lib", bin: "C:\\x\\bin" }, shimDir: "D:\\a b\\shim", rustflags: "-D warnings" }).env, { CARGO_ENCODED_RUSTFLAGS: `-D${US}warnings${US}-L${US}native=D:/a b/shim` });
 
 // Finding it: libcrypto.lib (never the static variant), with the DLL directory beside it.
 const tree = {

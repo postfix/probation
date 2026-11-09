@@ -86,13 +86,6 @@ jobs:
         env:
           CHECK_PYTHON: ${{ steps.checker_python.outputs.python-path }}
         run: '"$CHECK_PYTHON" tests/e2e/native/check_workflow.py'
-      - name: Show the shell and openssl the CA script uses
-        shell: bash
-        run: |
-          bash --version | head -1
-          command -v openssl
-          openssl version
-          bash -x tests/e2e/fixtures/make-ca.sh "$RUNNER_TEMP/ca-probe" 2>&1 | tail -60
       - name: Install the harness dependencies
         run: npm ci --prefix tests/e2e --no-audit --no-fund
       - name: Run the native harness unit tests

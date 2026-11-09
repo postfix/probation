@@ -8,15 +8,16 @@ import http from "node:http";
 
 export const SNAPSHOT_PATH = "/api/v1/policy/snapshot";
 
-export async function startSnapshotProxy({ key, forward, host = "127.0.0.1" }) {
+export async function startSnapshotProxy({ key, forward, host = "127.0.0.1", maxLog = 10_000 }) {
   const log = [];
+  let dropped = 0; // the tunnel is public: unauthenticated requests are logged only up to maxLog, then counted
   const server = http.createServer(async (req, res) => {
     const entry = {
       at: new Date().toISOString(), method: req.method, path: req.url,
       label: req.headers["x-native-job"] ?? null, cfIp: req.headers["cf-connecting-ip"] ?? null,
       keyOk: req.headers.authorization === `Bearer ${key}`, status: 0,
     };
-    log.push(entry);
+    if (entry.keyOk || log.length < maxLog) log.push(entry); else dropped++;
     const answer = (status, body = "", type = "text/plain") => { entry.status = status; res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(body) }); res.end(body); };
     req.resume();
     if (req.method !== "GET" || req.url !== SNAPSHOT_PATH) return answer(404, "not found\n");
@@ -34,6 +35,7 @@ export async function startSnapshotProxy({ key, forward, host = "127.0.0.1" }) {
   return {
     port: server.address().port,
     log,
+    dropped: () => dropped,
     close: () => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); }),
   };
 }

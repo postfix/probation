@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":52,"boundary":{"kind":"slice","number":5},"reopened":false,"history":[{"from":"hand","reason":"start","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"security"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"qa"}],"presentedSlice":4}
+{"generation":52,"boundary":{"kind":"slice","number":5},"reopened":false,"history":[{"from":"hand","reason":"start","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"security"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"security"},{"from":"engineering","reason":"complete","to":"qa"}],"presentedSlice":4}
 
 ## Gate 1 progress
 

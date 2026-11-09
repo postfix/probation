@@ -1,0 +1,17 @@
+name: Native call probe
+
+# TEMPORARY: remove before merging. It proves the workflow_call path of native-clients.yml on this branch the way
+# release.yml's `native` job calls it, without releasing anything: same grant (contents: read, actions: read), no
+# secrets, no `secrets: inherit`, nothing that publishes. Inside the called workflow github.run_id is THIS run's id,
+# so its artifacts are this run's and cannot be read by the run that native-clients.yml's own push trigger starts.
+
+on:
+  push:
+    branches: [slice5-native-ci]
+
+jobs:
+  native:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/native-clients.yml

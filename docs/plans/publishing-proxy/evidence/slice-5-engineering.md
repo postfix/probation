@@ -1,6 +1,6 @@
 # Slice 5 engineering evidence — native package-client CI (active local-client plan)
 
-Subject: HEAD 8d9f5e3 plus the dirty tree. No file under `src/` or `crates/` touched. Separate from the older certificate-era `slice-5.md`. This revision replaces the earlier external-endpoint design: the user rejected any `NATIVE_E2E_*` variable, secret or external server.
+Subject: written at HEAD 8d9f5e3 plus the dirty tree; **superseded where it conflicts with the 'Hosted runs' section below** (hosted run 42233412311 on 675221b, all green). The branch DID change product code (listed there); the statements below that say otherwise, or that nothing ran on a hosted runner, describe the state at the time they were written. Separate from the older certificate-era `slice-5.md`. This revision replaces the earlier external-endpoint design: the user rejected any `NATIVE_E2E_*` variable, secret or external server.
 
 ## Design as built
 Each native runner starts everything itself (`tests/e2e/native/stack.mjs`):
@@ -23,11 +23,11 @@ Not covered (stay in the Docker harness, now run by `linux-managed`): web-login,
 - `node tests/e2e/native/publishing.mjs` on this Linux host: PASS 37/37, twice, inside `unshare --map-root-user --net --mount` with a private `/etc/hosts` mapping `pypi.org` to 127.0.0.1 (the stand-in for a runner's passwordless sudo; no network, only loopback). Exit 1 with a nonexistent binary.
 - Tools in that run were NOT the pins: Node 20.19.6, npm 11.16.0, Python 3.14 venv with pip, Twine 7.0.0, uv 0.12.1, debug `probation` built from the dirty tree at HEAD 8d9f5e3.
 
-## Unverified (no PASS claimed)
-- **Windows cannot build the service today.** `src/config.rs:775`, `src/main.rs:14`, `src/delivery/*`, `src/http/unpublish_reference.rs` and `src/tasks/blocklist_poller.rs` use `std::os::unix` / `tokio::signal::unix`, so `cargo build --locked --bin probation` fails on windows-2025. The Windows job will fail at that step until lead Slice 25 ports the service; I did not weaken or skip it and may not edit `src/`.
-- Nothing has run on a GitHub runner: macOS 26 and Ubuntu 24.04 jobs, setup-python 3.15.1, the exact pins (Node 24.22.1, npm 11.21.1, Python 3.15.1, pip 26.2.2, Twine 7.0.0, uv 0.13.5), `cargo build` on macOS, keychain/`certutil` CA trust, Git-for-Windows `bash`/openssl for `make-ca.sh`, the Windows hosts file edit, macOS wildcard bind of port 443, and whether the Rust platform verifier on macOS/Windows honors the installed CA.
-- `linux-managed` (Docker harness) was not run here.
-- The Slice 5 direct witness (native jobs run the Slice 2-4 scenarios with zero skipped clients on all three OS) is therefore not met; Linux has a local, unpinned pass only.
+## Unverified at the time of writing (no PASS claimed) — SUPERSEDED, see 'Hosted runs'
+- **(Historic; fixed, see 'Hosted runs'.) Windows could not build the service.** `src/config.rs:775`, `src/main.rs:14`, `src/delivery/*`, `src/http/unpublish_reference.rs` and `src/tasks/blocklist_poller.rs` use `std::os::unix` / `tokio::signal::unix`, so `cargo build --locked --bin probation` fails on windows-2025. The Windows job will fail at that step until lead Slice 25 ports the service; I did not weaken or skip it and may not edit `src/`.
+- (Historic; all of these ran in hosted run 42233412311.) Nothing had run on a GitHub runner: macOS 26 and Ubuntu 24.04 jobs, setup-python 3.15.1, the exact pins (Node 24.22.1, npm 11.21.1, Python 3.15.1, pip 26.2.2, Twine 7.0.0, uv 0.13.5), `cargo build` on macOS, keychain/`certutil` CA trust, Git-for-Windows `bash`/openssl for `make-ca.sh`, the Windows hosts file edit, macOS wildcard bind of port 443, and whether the Rust platform verifier on macOS/Windows honors the installed CA.
+- (Historic.) `linux-managed` (Docker harness) was not run here; it passed 6 of 6 on the hosted run.
+- (Historic.) The direct witness is met on the hosted run for the native scope below; see 'Hosted runs' for what stays Docker-only.
 - Docker Desktop and cluster-daemon evidence remain separate and untouched.
 
 ## Linux all-components run (2026-11-04) — real policy server, portal catalog, firewall, Node fakes, pinned client images
@@ -50,11 +50,11 @@ Logs: scratch `out-E2E-publishing-full-matrix` (deleted after this report; the f
 **E2E-publishing-native-linux** (`tests/e2e/scenarios/publishing-native-linux.mjs`, new): signs up an org through the portal, adds an npm registry `https://127.0.0.1:43111/` and a PyPI registry `https://pypi.org/`, requests a private-egress approval for 127.0.0.1/32 on each and has the operator approve both, issues a service key, adds a policy block for the hidden package, copies the release `probation` binary into a new `client-native` container (Node 24.22.1 + npm 11.21.1 + Python 3.15.1 + pip 26.2.2 + Twine 7.0.0 + uv 0.13.5; `pypi.org` is loopback in that container), runs `clients.mjs` and then `publishing.mjs` there. The native service uses the real server at `https://sync.e2e.test` over the `clients` network (the gateway) and the portal-created catalog; the Node fakes, native firewall and clients run together in that container. Observed pins (clients.mjs output): platform linux-x64, node 24.22.1, npm 11.21.1, python 3.15.1, pip 26.2.2, twine 7.0.0, uv 0.13.5. 37 checks passed, 0 failed. In this mode the "service key goes only to the snapshot endpoint" check is vacuous (the real server is not logged); the registry-side check "the service key never reaches a registry" is real.
 Changed for it: `tests/e2e/compose/compose.yml` (`client-native` service), `tests/e2e/compose/clients/native.Dockerfile`, `tests/e2e/harness/stack.mjs` (`client-native` added to CLIENTS, so every harness stack now builds and starts it), `tests/e2e/native/{stack,publishing}.mjs` (optional real-server mode via `NATIVE_POLICY_URL` etc.), `.github/workflows/native-clients.yml` and `check_workflow.py` (the scenario joins `linux-managed`). `python3 tests/e2e/native/check_workflow.py` passes.
 
-## What still differs from the real runners
+## What still differed from the real runners (historic, before the hosted run)
 - Containers, not hosted runners: Podman rootless on this machine, not an Ubuntu 24.04 GitHub image with Docker Engine 29.9.2; the Linux job there has not run. The native stack ran inside a container (root, port 443 bindable, `/etc/hosts` via `extra_hosts`), not as an unprivileged process after `sudo` hosts/sysctl edits as `native-clients.yml` does on the runner.
 - The `probation` binary was the release image build (Debian bookworm), not `cargo build --locked --bin probation` on the runner.
 - The real policy server was reached over the compose `clients` network via the gateway, the stand-in for the undefined "protected runner network". No macOS or Windows host was involved; the hosted-job link to a Linux policy server remains the open question reported to the lead. The `native-clients.yml` native-clients matrix still starts the in-process snapshot server (a local proof of clients, binary and fakes only), so it is not acceptance evidence.
-- Windows still cannot build the service (unix-only code in `src/`).
+- (Historic.) Windows could not yet build the service; it builds and passes on the hosted run.
 
 ## Fix of the full-matrix certificate-admission 503 (2026-11-05)
 
@@ -86,5 +86,57 @@ Not proven: that the production 429 was a >200/s burst exactly (the server keeps
 - **Design.** `native-clients.yml` now has two kinds of job. `real-server` (ubuntu-24.04, hard timeout 110 min) runs the real stack through the Docker harness (`E2E-publishing-native-remote`): policy server, portal, catalog with the npm registry `https://127.0.0.1:43111/` and the PyPI registry `https://pypi.org/`, each with an operator-approved private-egress entry for 127.0.0.1/32, a throwaway service key and a policy block hiding one package, all created at run time. A filtering proxy on a loopback port forwards only `GET /api/v1/policy/snapshot` with that key to the real server; a pinned, SHA-256-verified cloudflared quick tunnel exposes that proxy. The three `native-clients` matrix jobs (ubuntu, macOS, Windows) take the tunnel URL and key from the handshake and run the natively built probation, loopback Node fakes and the pinned clients against the real server. The in-process snapshot is a local-only fixture; in Actions `publishing.mjs` refuses to run without the handshake.
 - **Rendezvous** (no `needs` between the jobs): `native-handshake` artifact from the server job, `native-done-<platform>` from each native job, polled through `gh api` with bounded waits; details and tests in `tests/e2e/native/rendezvous.mjs`, `rendezvous.test.mjs`, `rendezvous-cli.test.mjs`. Teardown, ensure-handshake, release and the completion records run in `always()` steps, so a failed or cancelled native job (for example Windows, which cannot yet build the service) still lets the server job finish.
 - **What the tunnel exposes:** the snapshot response (policy and registry descriptors, no credentials) to a caller holding the throwaway key, for the job's lifetime. **Residual:** the handshake artifact holds the tunnel URL and the key. Artifacts of a public repository are readable by anyone who can read the repository, so for up to a day (retention 1) anyone could fetch the snapshot with that key until the server job ends; both are masked in logs, the data is synthetic and the key is useless afterwards. The handshake is never copied into `GITHUB_ENV` or logs; the downloaded copy is overwritten after the key is moved to a 0600 file.
-- **Unverified until a hosted run:** cloudflared 2026.10.7 starting on a runner, printing its address and carrying traffic (quick tunnels are best-effort and rate-limited; `--protocol http2` is used so only TCP 7844 outbound is needed); that the artifact API lists and `gh run download` retrieves an artifact uploaded earlier in the same still-running run (including when the workflow is called from release.yml, where the caller grants `actions: read`); `gh` being present and authorised on all three runners; the `nohup` background harness surviving across the real-server job's steps; the macOS and Windows runners trusting the test CA and reaching a `*.trycloudflare.com` certificate; the Rust platform verifier on macOS and Windows; the Ubuntu native job's trust file (system roots appended); time budgets (image build plus stack before the handshake, 35 min bound); the Windows build, which still fails on unix-only code (that job reports failure and the server job then fails its own check, correctly). The sandbox here refused to run a downloaded cloudflared, so nothing about the tunnel program itself was run; the stub-mode run proves the real server, portal catalog, proxy filtering, handshake file, release flag and the proof-of-origin check.
+- **Unverified until a hosted run (all of it ran on 42233412311 except the Rust platform-verifier note; see 'Hosted runs'):** cloudflared 2026.10.7 starting on a runner, printing its address and carrying traffic (quick tunnels are best-effort and rate-limited; `--protocol http2` is used so only TCP 7844 outbound is needed); that the artifact API lists and `gh run download` retrieves an artifact uploaded earlier in the same still-running run (including when the workflow is called from release.yml, where the caller grants `actions: read`); `gh` being present and authorised on all three runners; the `nohup` background harness surviving across the real-server job's steps; the macOS and Windows runners trusting the test CA and reaching a `*.trycloudflare.com` certificate; the Rust platform verifier on macOS and Windows; the Ubuntu native job's trust file (system roots appended); time budgets (image build plus stack before the handshake, 35 min bound); the Windows build, which still fails on unix-only code (that job reports failure and the server job then fails its own check, correctly). The sandbox here refused to run a downloaded cloudflared, so nothing about the tunnel program itself was run; the stub-mode run proves the real server, portal catalog, proxy filtering, handshake file, release flag and the proof-of-origin check.
 - **Recommended, not added:** CODEOWNERS coverage of `check_workflow.py`, `run_tests.py`, `rendezvous.mjs` and `cloudflared.mjs`, because a change to any of them changes what judges the workflow.
+
+## Hosted runs
+
+**Run 42233412311, commit 675221b, branch slice5-native-ci: success.**
+
+| Job | Job id | Result |
+|---|---|---|
+| native linux-x64 | 127944746834 | success, 75 checks |
+| native darwin-arm64 | 127944746753 | success, 75 checks |
+| native win32-x64 | 127944746338 | success, 75 checks |
+| real-server | 127944746662 | success: "3 native jobs reached the real server; 38 snapshot requests", 0 refused |
+| linux-managed | 127944746845 | success, 6 of 6 scenarios incl. E2E-publishing-full-matrix (2601 s) |
+
+Logs: `gh api repos/postfix/probation/actions/jobs/<id>/logs`.
+
+### Hosted failures and their fixes, in order
+1. Lockfile held localhost URLs (`tests/e2e/package-lock.json`): regenerated so `npm ci` resolves from the registry; `lockfile.test.mjs` guards it.
+2. Windows: dynamic import of a drive-letter path (`run.mjs` now imports a file URL); paths handed to Git bash (`posixPath`); CRLF checkouts (`.gitattributes`, `crlf.test.py`); cp1252 console and default file encoding (`encoding.test.py`, `PYTHONUTF8`/`PYTHONIOENCODING`, `errors="backslashreplace"`); `make-ca.sh` silent failure and the fake `openssl` that Git's own openssl shadowed (`OPENSSL` variable, `ca-script.test.mjs`).
+3. `clients.test.mjs` on Linux: the "wrong node pin" case equalled the runner's real pin; the wrong pin is now derived from the running node.
+4. macOS: a symlinked temp directory (/var -> /private/var) broke `inside()` provenance checks; the fake twine's shebang chained two scripts (ENOEXEC).
+5. linux-managed: nginx resolver `<net>.1` is Podman's DNS, Docker Engine answers at 127.0.0.11 (`resolverFor`, `E2E_RESOLVER`).
+6. linux-managed: the browser scenarios needed `playwright install --with-deps chromium`.
+7. macOS and Windows link failures (`ld: library 'crypto' not found`, `LNK1181 crypto.lib`): `src/managed/enterprise_certificate.rs` declares `#[link(name = "crypto")]` for its OCSP code; fixed in CI by `tests/e2e/native/openssl-setup.mjs` (Homebrew openssl@3 on macOS; an MSVC import library copied as `crypto.lib` plus the DLL directory on PATH on Windows). `AWS_LC_SYS_USE_SYSTEM=0` was tried first and was not the cause; it stays as a safeguard.
+8. Windows service never ready (`/health/ready` 503): Windows cannot open a directory to fsync it. One `config::sync_directory` now serves every directory sync (Unix: fsync as before; Windows: documented no-op).
+
+### What this branch changed under src/ and crates/ (correcting 'No file under src/ or crates/ touched')
+- `src/managed/client.rs`: the request pacer (fix of the full-matrix certificate-admission 503).
+- `config::sync_directory` at 5 sites: `src/config.rs` (and its definition), `src/managed/service_policy.rs`, `src/http/unpublish_reference.rs`, `src/artifacts/content.rs`.
+- Windows `cfg` gates in `src/main.rs`, `crates/probation-server/src/lib.rs`, `src/config.rs`, `src/delivery/*`.
+- 7 integration test files adjusted for Windows.
+Windows now builds and runs the service (the earlier 'Windows cannot build the service today' no longer holds).
+
+### What the native jobs cover, and what stays Linux-Docker-only
+Native (linux-x64, darwin-arm64, win32-x64), 75 client-facing checks against the REAL Linux policy server through the tunnel: publish, install, view, audit, deprecate, unpublish, token-packument, and Python via Twine, pip and uv.
+Linux-Docker-only (`linux-managed`, 6 scenarios): web-login, legacy login, outage/restart, redirect/header/slow/size bounds, Basic/Bearer breadth, SSO/issuer/10,000-client rows.
+
+### Accepted by the user on 2026-11-09
+Scope: the native scope exactly as above; the Docker-only rows are not run natively.
+Residuals:
+- Windows ACLs on the service key file and the delivery log are not verified (`stack.mjs` restricts the key with `icacls`; the hosted log shows the warning "the ACL of ...service.key is not verified").
+- Windows directory-entry durability relies on NTFS journaling: Windows cannot fsync a directory, so `sync_directory` is a no-op there; files are still `sync_all`ed before the rename.
+- macOS pf redirect with a warned wildcard-bind fallback. Hosted darwin job 127944746753: the fallback did NOT fire (no "the pf redirect of 127.0.0.1:443 did not work" line in the log, and 75 checks passed through pypi.org:443). The pf path is therefore the one that ran.
+- A public cloudflared quick tunnel with a filtering proxy (only the throwaway key's snapshot GET), plus a 1-day `native-handshake` artifact holding the tunnel URL and a throwaway key, readable by anyone with repo read access until retention ends; masked in logs, useless after the server job ends.
+- The hard OpenSSL link in `enterprise_certificate.rs` is supplied by CI. Product follow-up: pure-Rust OCSP or a vendored OpenSSL.
+- Other images are pinned by tag only and the apt packages in the test image are unpinned.
+- `linux-managed` repeats release e2e work (about 65-70 minutes).
+- The changes poll in `src/managed/sync.rs` stays unpaced, by decision.
+
+### Removal of the runner-side test CA on macOS and Windows
+Code (`stack.mjs`): `trust()` adds the CA (macOS `security add-trusted-cert` into the System keychain, Windows `certutil -addstore Root`) and returns an undo (`security remove-trusted-cert -d`, `certutil -delstore Root probation-e2e-ca`); the undo runs on stop, exit and SIGINT/SIGTERM, and a stale CA is deleted at the start of the next run (`removeStaleTrust`).
+Proven by the hosted logs: both jobs added the CA (otherwise the service would have failed to trust the registries, and `trust()` throws on a failed add) and neither log holds a "cleanup step failed" line, so no undo step threw.
+NOT proven: that the CA is gone. The undo ignores the exit status of `remove-trusted-cert` / `-delstore` (a non-zero status is not reported), the logs print nothing from them, and nothing re-queries the keychain or Root store afterwards. `remove-trusted-cert` removes the trust setting, not necessarily the certificate from the keychain. The runners are ephemeral VMs discarded after the job, which is the actual protection; the CA key is a throwaway generated per run.

@@ -49,6 +49,7 @@ path = root / ".github/workflows/native-clients.yml"
 if "--file" in sys.argv:
     path = pathlib.Path(sys.argv[sys.argv.index("--file") + 1])
 release_path = root / ".github/workflows/release.yml"
+probe_path = option("--probe", root / ".github/workflows/native-call-probe.yml")
 if "--release" in sys.argv:
     release_path = pathlib.Path(sys.argv[sys.argv.index("--release") + 1])
 raw = path.read_bytes()
@@ -93,8 +94,6 @@ NATIVE_STEPS = [
      "run": '"$CHECK_PYTHON" -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/checker-requirements.txt'},
     {"name": "Install pinned clients", "shell": "bash", "run": 'npm install --global "npm@$PIN_NPM"\npython -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/ci-requirements.txt\n'},
     {"name": "Verify this workflow's structure", "shell": "bash", "env": CHECK_ENV, "run": '"$CHECK_PYTHON" tests/e2e/native/check_workflow.py'},
-    {"name": "Show the shell and openssl the CA script uses", "shell": "bash",
-     "run": 'bash --version | head -1\ncommand -v openssl\nopenssl version\nbash -x tests/e2e/fixtures/make-ca.sh "$RUNNER_TEMP/ca-probe" 2>&1 | tail -60\n'},
     {"name": "Install the harness dependencies", "run": "npm ci --prefix tests/e2e --no-audit --no-fund"},
     {"name": "Run the native harness unit tests", "shell": "bash", "env": CHECK_ENV, "run": UNIT_TESTS},
     {"name": "Verify exact client versions", "run": "node tests/e2e/native/clients.mjs"},
@@ -246,6 +245,23 @@ for gated in ("release", "publish"):
     needs = [needs] if isinstance(needs, str) else (needs or [])
     need("native" in needs, f"release.yml's {gated} job must need native (needs: {needs})")
 need("e2e" in (release.get("release", {}).get("needs") or []), "release.yml's release job must need e2e directly")
+
+# The TEMPORARY call probe (remove before merging): absent is the permanent shape; present, it is exactly one push of the one
+# branch and one job that calls this workflow with release.yml's grant, no secrets and nothing else.
+if probe_path.exists():
+    probe_bytes = probe_path.read_bytes()
+    odd = sorted({chr(b) if b < 128 else f"0x{b:02x}" for b in probe_bytes if not (0x20 <= b <= 0x7E or b in (0x0A, 0x0D))})
+    need(not odd, f"native-call-probe.yml holds characters outside printable ASCII: {odd[:6]}")
+    try:
+        probe_wf = load_strict(probe_bytes.decode("utf-8", errors="replace"))
+    except yaml.YAMLError as error:
+        probe_wf = None
+        need(False, f"native-call-probe.yml is not plain YAML: {error}")
+    PROBE = {"name": "Native call probe", True: {"push": {"branches": ["slice5-native-ci"]}},
+             "jobs": {"native": {"permissions": {"contents": "read", "actions": "read"}, "uses": "./.github/workflows/native-clients.yml"}}}
+    if probe_wf is not None:
+        need(same({str(k): v for k, v in probe_wf.items()}, {str(k): v for k, v in PROBE.items()}),
+             f"native-call-probe.yml must be exactly one push of slice5-native-ci and one job calling native-clients.yml with contents: read and actions: read (no secrets, with, if, needs): {json.dumps({str(k): v for k, v in probe_wf.items()})[:300]}")
 
 # H1: every job. No continue-on-error anywhere, no `|| true`, no `if` except the upload-artifact
 # `always()` steps; and any job that writes, uses an environment or secrets, or runs a publishing

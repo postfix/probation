@@ -123,6 +123,7 @@ mutations = {
     "OpenSSL step after the build": sub("      - name: Provide OpenSSL's libcrypto for the OCSP code\n        shell: bash\n        run: node tests/e2e/native/openssl-setup.mjs apply\n", "").replace("      - name: Wait for the real server's handshake\n", "      - name: Provide OpenSSL's libcrypto for the OCSP code\n        shell: bash\n        run: node tests/e2e/native/openssl-setup.mjs apply\n      - name: Wait for the real server's handshake\n", 1),
     "Playwright browser install dropped from linux-managed": sub("      - run: npx --prefix tests/e2e playwright install --with-deps chromium\n", ""),
     "Playwright install without the system libraries": sub("playwright install --with-deps chromium", "playwright install chromium"),
+    "CA diagnostic step back": sub("      - name: Install the harness dependencies\n", "      - name: Show the shell\n        shell: bash\n        run: bash -x tests/e2e/fixtures/make-ca.sh \"$RUNNER_TEMP/ca-probe\" 2>&1 | tail -60\n      - name: Install the harness dependencies\n"),
     "renamed scenario ID (C1)": sub("--only E2E-publishing-native-linux", "--only E2E-publishing-native-linx"),
 }
 
@@ -149,6 +150,49 @@ release_mutations = {
     "native job passes secrets (C6)": good_release.replace("    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n    secrets: inherit\n", 1),
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
 }
+failed = []
+good_probe = (root / ".github/workflows/native-call-probe.yml").read_text(encoding="utf-8")
+CALL = "    uses: ./.github/workflows/native-clients.yml\n"
+probe_mutations = {
+    "probe with secrets: inherit": good_probe.replace(CALL, CALL + "    secrets: inherit\n"),
+    "probe with a named secret": good_probe.replace(CALL, CALL + "    secrets:\n      X: ${{ secrets.X }}\n"),
+    "probe with inputs": good_probe.replace(CALL, CALL + "    with:\n      x: 1\n"),
+    "probe permissions widened": good_probe.replace("      actions: read\n", "      actions: write\n"),
+    "probe with extra permission": good_probe.replace("      actions: read\n", "      actions: read\n      packages: write\n"),
+    "probe without permissions": good_probe.replace("    permissions:\n      contents: read\n      actions: read\n", ""),
+    "probe calls another workflow": good_probe.replace("native-clients.yml", "release.yml"),
+    "probe on every branch": good_probe.replace("[slice5-native-ci]", "['**']"),
+    "probe on main": good_probe.replace("[slice5-native-ci]", "[main]"),
+    "probe on pull_request": good_probe.replace("on:\n  push:", "on:\n  pull_request:\n  push:"),
+    "probe with a second job": good_probe + "  publish:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n",
+    "probe job with if": good_probe.replace(CALL, "    if: always()\n" + CALL),
+    "probe job with needs": good_probe.replace(CALL, "    needs: other\n" + CALL),
+    "probe with a non-ASCII character": good_probe.replace("Native call probe", "Native call probe\u200b", 1),
+    "probe with a duplicate key": good_probe.replace(CALL, CALL + CALL),
+}
+for name, probe_text in probe_mutations.items():
+    assert probe_text != good_probe, f"{name}: mutation changed nothing"
+    with tempfile.TemporaryDirectory(dir=scratch) as d:
+        probe_file = pathlib.Path(d) / "probe.yml"
+        probe_file.write_text(probe_text, encoding="utf-8")
+        r = subprocess.run([sys.executable, str(checker), "--probe", str(probe_file)], capture_output=True, encoding="utf-8", errors="replace")
+        out = r.stdout + r.stderr
+        if r.returncode == 0:
+            failed.append(name)
+            print(f"BYPASS (checker passed): {name}")
+        elif "FAIL " not in out or "Traceback" in out:
+            failed.append(name)
+            print(f"CRASH (not a clean FAIL): {name}: {out[-300:]}")
+r = subprocess.run([sys.executable, str(checker), "--probe", str(here / "no-such-probe.yml")], capture_output=True, encoding="utf-8", errors="replace")
+assert r.returncode == 0, f"without the temporary probe the workflow must pass: {r.stdout}{r.stderr}"
+# Under workflow_call github.run_id is the CALLER's id: every artifact wait and upload of the called workflow must key on it
+# (never a fixed run), so the direct run and the probe's run cannot read each other's handshake or completion records.
+for name, text in {"wait-done on another run": sub('--repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --timeout-min 55', '--repo "$GITHUB_REPOSITORY" --run-id 1 --timeout-min 55'),
+                   "client-wait on another run": sub('--run-id "$GITHUB_RUN_ID" --out', '--run-id 1 --out')}.items():
+    code, out = check(text)
+    if code == 0:
+        failed.append(name)
+        print(f"BYPASS (checker passed): {name}")
 ids_check = subprocess.run([sys.executable, str(checker), "--verify-ids", "E2E-publishing-native-linux", "E2E-no-such-scenario"], capture_output=True, encoding="utf-8", errors="replace")
 assert ids_check.returncode == 1 and "E2E-no-such-scenario" in ids_check.stdout and "native-linux" not in ids_check.stdout.replace("E2E-publishing-native-linux exists", ""), f"--verify-ids must name only the unknown ID: {ids_check.stdout}"
 
@@ -158,7 +202,6 @@ code, out = check(good.replace(ON_PUSH_BLOCK, ""))
 assert code == 0, f"the workflow without the temporary push trigger must pass: {out}"
 code, out = check(good)
 assert code == 0, f"the known-good workflow must pass: {out}"
-failed = []
 for name, text in mutations.items():
     assert text != good, f"{name}: mutation changed nothing"
     code, out = check(text)
@@ -266,4 +309,4 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         print(f"a real meta must be found: {out}")
 if failed:
     sys.exit(1)
-print(f"check_workflow.test: {len(mutations) + len(release_mutations)} bypasses all fail, known-good passes")
+print(f"check_workflow.test: {len(mutations) + len(release_mutations) + len(probe_mutations)} bypasses all fail, known-good passes")

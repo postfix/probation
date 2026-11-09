@@ -2,7 +2,7 @@
 // the machine that builds it needs one the linker can find. Linux runners have the system library. macOS: Homebrew's openssl@3 with
 // its lib directory on the linker's search path. Windows: an MSVC import library named crypto.lib (OpenSSL ships libcrypto.lib), found
 // among the preinstalled OpenSSL locations or built by the image's vcpkg, with its DLL directory on PATH for running the binary.
-//   node tests/e2e/native/openssl-setup.mjs apply     appends RUSTFLAGS to $GITHUB_ENV and the DLL directory to $GITHUB_PATH
+//   node tests/e2e/native/openssl-setup.mjs apply     appends CARGO_ENCODED_RUSTFLAGS (the existing flags kept) to $GITHUB_ENV and the DLL directory to $GITHUB_PATH
 import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, win32 } from "node:path";
@@ -33,42 +33,52 @@ export function findImportLibrary(roots, fs) {
   return null;
 }
 
-export function buildPlan({ platform, brewPrefix, found, shimDir }) {
+const US = "\x1f";
+/// Cargo's CARGO_ENCODED_RUSTFLAGS (flags joined by U+001F, so a path may hold spaces) with `-L native=<dir>` appended to whatever
+/// flags the environment already has: that variable if set, else RUSTFLAGS split on whitespace (as cargo reads it).
+const withLibraryDir = (dir, { encoded, rustflags }) => {
+  const existing = encoded ? encoded.split(US) : (rustflags ?? "").split(/\s+/).filter(Boolean);
+  return { CARGO_ENCODED_RUSTFLAGS: [...existing, "-L", `native=${dir}`].join(US) };
+};
+
+export function buildPlan({ platform, brewPrefix, found, shimDir, encoded, rustflags }) {
   if (platform === "darwin") {
     if (!brewPrefix) throw new Error("Homebrew's openssl@3 prefix is unknown: is openssl@3 installed?");
-    return { env: { RUSTFLAGS: `-L native=${brewPrefix}/lib` }, path: [], shim: null };
+    return { env: withLibraryDir(`${brewPrefix}/lib`, { encoded, rustflags }), path: [], shim: null };
   }
   if (platform === "win32") {
     if (!found) throw new Error("no OpenSSL import library (libcrypto.lib) was found or built");
     if (!found.bin) throw new Error(`the OpenSSL DLL (libcrypto-3*.dll) is not beside ${found.lib}`);
-    return { env: { RUSTFLAGS: `-L native=${shimDir.replaceAll("\\", "/")}` }, path: [found.bin], shim: { from: found.lib, to: `${shimDir}\\crypto.lib` } };
+    return { env: withLibraryDir(shimDir.replaceAll("\\", "/"), { encoded, rustflags }), path: [found.bin], shim: { from: found.lib, to: `${shimDir}\\crypto.lib` } };
   }
   return { env: {}, path: [], shim: null };
 }
 
-function run(command, args) {
-  const r = spawnSync(command, args, { encoding: "utf8", timeout: 1_800_000, stdio: ["ignore", "pipe", "inherit"] });
+/// Runs a command and answers its trimmed stdout; `show` instead lets a chatty command (vcpkg) write straight to the log.
+function run(command, args, { show = false } = {}) {
+  const r = spawnSync(command, args, { encoding: "utf8", timeout: 1_800_000, maxBuffer: 64 * 1024 * 1024, stdio: show ? "inherit" : ["ignore", "pipe", "inherit"] });
   if (r.status !== 0) throw new Error(`${command} ${args.join(" ")} exited ${r.status}`);
-  return r.stdout.trim();
+  return show ? "" : r.stdout.trim();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if (process.argv[2] !== "apply") { console.error("usage: openssl-setup.mjs apply"); process.exit(2); }
   const platform = process.platform;
+  const inherited = { encoded: process.env.CARGO_ENCODED_RUSTFLAGS, rustflags: process.env.RUSTFLAGS };
   let plan;
   if (platform === "darwin") {
     if (spawnSync("brew", ["list", "openssl@3"], { stdio: "ignore" }).status !== 0) run("brew", ["install", "openssl@3"]);
-    plan = buildPlan({ platform, brewPrefix: run("brew", ["--prefix", "openssl@3"]) });
+    plan = buildPlan({ platform, brewPrefix: run("brew", ["--prefix", "openssl@3"]), ...inherited });
   } else if (platform === "win32") {
     const fs = { list: (d) => { try { return readdirSync(d); } catch { return null; } }, join: (...p) => win32.join(...p) };
     let found = findImportLibrary(windowsRoots(process.env), fs);
     if (!found && process.env.VCPKG_INSTALLATION_ROOT) {
       console.log("no preinstalled OpenSSL import library: building openssl:x64-windows with the image's vcpkg");
-      run(join(process.env.VCPKG_INSTALLATION_ROOT, "vcpkg.exe"), ["install", "openssl:x64-windows", "--clean-after-build"]);
+      run(join(process.env.VCPKG_INSTALLATION_ROOT, "vcpkg.exe"), ["install", "openssl:x64-windows", "--clean-after-build"], { show: true });
       found = findImportLibrary(windowsRoots(process.env), fs);
     }
     const shimDir = join(process.env.RUNNER_TEMP ?? process.env.TEMP, "openssl-shim");
-    plan = buildPlan({ platform, found, shimDir });
+    plan = buildPlan({ platform, found, shimDir, ...inherited });
     mkdirSync(shimDir, { recursive: true });
     copyFileSync(plan.shim.from, plan.shim.to);
     console.log(`crypto.lib <- ${plan.shim.from}`);

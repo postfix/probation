@@ -46,5 +46,14 @@ assert.ok(rest.every((e) => e.status === 401 || e.status === 404), "every other 
 const failing = await startSnapshotProxy({ key, forward: async () => { throw new Error("down"); } });
 const down = await new Promise((resolve) => http.get({ host: "127.0.0.1", port: failing.port, path: snapshot, headers: auth }, (res) => { res.resume(); resolve(res.statusCode); }));
 assert.equal(down, 502);
+// A flood of unauthenticated requests cannot grow the log without bound; requests with the right key are always kept.
+const capped = await startSnapshotProxy({ key, forward: async () => ({ status: 200, body: Buffer.from("{}") }), maxLog: 5 });
+const hit = (headers) => new Promise((resolve) => http.get({ host: "127.0.0.1", port: capped.port, path: snapshot, headers }, (res) => { res.resume(); resolve(res.statusCode); }));
+for (let i = 0; i < 20; i++) assert.equal(await hit({}), 401);
+assert.equal(capped.log.length, 5, "unauthenticated entries stop at the cap");
+assert.equal(capped.dropped(), 15, "the rest are counted");
+assert.equal(await hit(auth), 200);
+assert.equal(capped.log.at(-1).keyOk, true, "a request with the key is logged past the cap");
+await capped.close();
 await proxy.close(); await failing.close();
 console.log("snapshot-proxy.test: ok");
