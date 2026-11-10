@@ -7,6 +7,10 @@ expected one (so no `if`, `|| true`, `; exit 0`, echo or comment can stand in fo
 command), and every PIN_* is tied to what the steps install. Anything else fails.
   python3 tests/e2e/native/check_workflow.py [--file PATH]
 Mutation tests: check_workflow.test.py.
+
+Known limit (not a bug): "Re-run failed jobs" on a run where only the native jobs fail re-runs only
+those jobs. The real-server job is not re-run, so no new handshake appears and the re-run native jobs
+wait for it until their timeout. Re-run ALL jobs of the run instead. The workflow is not changed for this.
 """
 import ast, json, pathlib, re, sys
 for _stream in (sys.stdout, sys.stderr):
@@ -287,14 +291,22 @@ def needed(job_name, seen=None):
     return seen
 
 
-PUBLISHING = re.compile(r"cargo publish|gh release|docker push|docker login|npm publish|twine upload|gh api|ghcr\.io|git push|build-push-action|--push\b")
+PUBLISHING = re.compile(r"cargo\s+(publish|release)|gh\s+(release|api|workflow)|docker\s+(push|login)|npm\s+(run\s+)?publish|uv\s+publish|twine\s+upload|ghcr\.io|git\s+push"
+                        r"|crane\s+(push|copy)|skopeo\s+(copy|sync)|build-push-action|docker/login-action|action-gh-release|gh-action-pypi-publish|--push\b")
 HIDES_FAILURE = re.compile(r"\|\||\bset\s+\+e|\bset\s+\+o\s+errexit|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
+need(release_wf.get("permissions") == {"contents": "read"}, f"release.yml's top-level permissions must be exactly contents: read, found {release_wf.get('permissions')!r}")
+# Failure hidden by shell structure: a pipe without pipefail, a command in an `if`/`while` condition, or a background `&`.
+# ("shell: bash" runs with -eo pipefail.)
+PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+CONDITIONAL = re.compile(r"(^|[;&|({]|\bthen|\bdo|\belse)\s*(if|elif|while|until)\b", re.M)
+BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")
 for job_name, job in release.items():
     need("continue-on-error" not in job, f"release.yml job {job_name} must not continue-on-error")
     need("if" not in job, f"release.yml job {job_name} must have no `if` (found {job.get('if')!r}): `always()` or `!cancelled()` would run it past a failed gate")
     perms = job.get("permissions") or {}
     # security-events: write only uploads code-scanning results (codeql); everything else that writes publishes.
-    writes = isinstance(perms, str) and "write" in perms or isinstance(perms, dict) and any("write" in str(v) for k, v in perms.items() if k != "security-events")
+    # Allowlist: nothing above `read` outside a job that needs native and e2e (the codeql upload is the one exception).
+    writes = isinstance(perms, str) and perms != "read-all" or isinstance(perms, dict) and any(str(v) != "read" for k, v in perms.items() if k != "security-events")
     job_text = json.dumps(job)
     sensitive = writes or "environment" in job or "secrets" in job_text or bool(PUBLISHING.search(job_text))
     for step in job.get("steps", []) or []:
@@ -303,7 +315,11 @@ for job_name, job in release.items():
             exempt = str(step.get("if")) == "always()" and str(step.get("uses", "")).startswith("actions/upload-artifact@")
             need(exempt, f"release.yml job {job_name} has a step `if: {step['if']}` (only upload-artifact steps may use always())")
         # release.yml has no `||` at all, so any of them is a hidden failure (`|| echo`, `|| /bin/true`, `|| :`); likewise `set +e`, `; true`, `; :`, `exit 0`
-        need(not HIDES_FAILURE.search(str(step.get("run", ""))), f"release.yml job {job_name} hides a failure (`||`, `set +e`, `; true` or `exit 0`)")
+        run = str(step.get("run", ""))
+        need(not HIDES_FAILURE.search(run), f"release.yml job {job_name} hides a failure (`||`, `set +e`, `; true` or `exit 0`)")
+        need(not PIPE.search(run) or "pipefail" in run or step.get("shell") == "bash", f"release.yml job {job_name} pipes a command without pipefail (`shell: bash` or `set -o pipefail`)")
+        need(not CONDITIONAL.search(run), f"release.yml job {job_name} runs a command as an if/while condition, which swallows its failure")
+        need(not BACKGROUND.search(run), f"release.yml job {job_name} backgrounds a command with `&`")
     if sensitive:
         chain = needed(job_name)
         need({"native", "e2e"} <= chain, f"release.yml job {job_name} writes, publishes or uses secrets or an environment, so it must transitively need native and e2e (it needs {sorted(chain)})")
@@ -379,6 +395,15 @@ for problem in requirement_findings(option("--native-requirements", root / "test
 # Every *.test.* file is run by the one wrapper step (the canonical "Run the native harness unit
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
 wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
+# Floors the registry may not go below (F9): raise them with the tests, never lower them or drop an entry.
+MIN_FLOORS = {"assertions.test.mjs": 118, "ca-script.test.mjs": 3, "check_workflow.test.py": 175, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 28, "rendezvous-cli.test.mjs": 63, "rendezvous.test.mjs": 61, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 53, "spawn-args.test.mjs": 34, "stack.test.mjs": 24}
+SKIP_ON_LITERAL = '{"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}'
+expected_path = option("--expected", root / "tests/e2e/native/expected-asserts.json")
+registry = json.loads(expected_path.read_text(encoding="utf-8"))
+for test_name, floor in MIN_FLOORS.items():
+    need(isinstance(registry.get(test_name), int) and registry[test_name] >= floor, f"expected-asserts.json: {test_name} is {registry.get(test_name)!r}, must be at least {floor}")
+
+
 def wrapper_findings(source):
     """run_tests.py judged by its syntax tree, never by substring: a comment or a string cannot satisfy any of these."""
     try:
@@ -394,6 +419,13 @@ def wrapper_findings(source):
     guard = lambda test_dump: any(isinstance(n, ast.If) and ast.dump(n.test) == test_dump and returns(n.body, 1) and not n.orelse for n in body)
     assign = lambda name, value_dump: any(isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == name and ast.dump(n.value) == value_dump for n in body)
     findings = []
+    skip = [n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "SKIP_ON" for t in n.targets)]
+    if len(skip) != 1 or ast.dump(skip[0].value) != expr(SKIP_ON_LITERAL):
+        findings.append(f"run_tests.py SKIP_ON must be exactly {SKIP_ON_LITERAL}")
+    stores = [n for n in ast.walk(main_def) if isinstance(n, ast.Name) and n.id == "findings" and isinstance(n.ctx, ast.Store)]
+    runs = [n for n in ast.walk(main_def) if isinstance(n, ast.Assign) and [getattr(t, "id", None) for t in n.targets] == ["findings"] and isinstance(n.value, ast.Call) and ast.dump(n.value.func) == expr("run_one")]
+    if len(stores) != 1 or len(runs) != 1:
+        findings.append("run_tests.py main() must bind `findings` exactly once, to run_one(...), before it is added to failures")
     if not guard(expr("not stub_checker_canary()")):
         findings.append("run_tests.py main() must return 1 when the stub-checker canary fails (a top-level `if not stub_checker_canary(): ... return 1`)")
     if not assign("missed", expr("judge_canary()")) or not guard(expr("missed")):

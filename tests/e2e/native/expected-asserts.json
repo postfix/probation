@@ -1,7 +1,7 @@
 {
   "assertions.test.mjs": 118,
   "ca-script.test.mjs": 3,
-  "check_workflow.test.py": 153,
+  "check_workflow.test.py": 175,
   "clients.test.mjs": 513,
   "cloudflared.test.mjs": 30,
   "crlf.test.py": 9,

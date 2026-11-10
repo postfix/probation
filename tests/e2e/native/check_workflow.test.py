@@ -160,6 +160,22 @@ release_mutations = {
     "job-level if on the native job (C6)": good_release.replace("  native:\n    needs: test\n", "  native:\n    needs: test\n    if: false\n", 1),
     "native job passes secrets (C6)": good_release.replace("    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n    secrets: inherit\n", 1),
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
+    "top-level permissions contents: write (F5r2)": good_release.replace("permissions:\n  contents: read\n\nenv:", "permissions:\n  contents: write\n\nenv:", 1),
+    "test job with a write grant and no native/e2e chain (F5r2)": good_release.replace("  test:\n    runs-on: ubuntu-latest\n", "  test:\n    runs-on: ubuntu-latest\n    permissions:\n      packages: write\n", 1),
+    "build job with id-token: write (F5r2)": good_release.replace("  build:\n    needs: codeql\n", "  build:\n    needs: codeql\n    permissions:\n      id-token: write\n", 1),
+    "cargo test piped without pipefail (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: cargo test --workspace --locked | cat\n", 1),
+    "cargo test inside an if (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: if cargo test --workspace --locked; then echo ok; fi\n", 1),
+    "cargo test with a trailing & (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: cargo test --workspace --locked &\n", 1),
+    "stray job: npm  publish (two spaces) (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm  publish\n",
+    "stray job: uv publish (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv publish\n",
+    "stray job: cargo release publish (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo release publish\n",
+    "stray job: npm run publish (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm run publish\n",
+    "stray job: gh workflow run (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh workflow run x.yml\n",
+    "stray job: crane push (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: crane push a b\n",
+    "stray job: skopeo copy (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: skopeo copy a b\n",
+    "stray job: docker/login-action (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/login-action@0000000000000000000000000000000000000000\n",
+    "stray job: softprops/action-gh-release (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: softprops/action-gh-release@0000000000000000000000000000000000000000\n",
+    "stray job: pypa/gh-action-pypi-publish (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: pypa/gh-action-pypi-publish@0000000000000000000000000000000000000000\n",
 }
 failed = []
 extra_checks = []  # the mutations of the loops below, counted into the final line (run_tests pins the total)
@@ -310,6 +326,10 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
                        "the canary result ignored": wrap("        return 1\n    missed", "        pass\n    missed"),
                        "main always returns 0": wrap('finding(s)")\n        return 1', 'finding(s)")\n        return 0'),
                        "the exit status dropped": wrap("sys.exit(main())", "main()"),
+                       "SKIP_ON widened (F9)": wrap('"rendezvous-cli.test.mjs"}}', '"rendezvous-cli.test.mjs", "stack.test.mjs", "pf.test.mjs"}}'),
+                       "SKIP_ON on another platform (F9)": wrap('SKIP_ON = {"win32"', 'SKIP_ON = {"linux": {"stack.test.mjs"}, "win32"'),
+                       "findings reset before aggregation (F9)": wrap("        failures += findings\n", "        findings = []\n        failures += findings\n"),
+                       "findings reassigned after run_one (F9)": wrap("        print(f\"{'ok  '", "        findings = findings[:0]\n        print(f\"{'ok  '"),
                        "the registry not read": wrap('(directory / "expected-asserts.json").read_text(encoding="utf-8")', '"{}"')}.items():
         extra_checks.append(name)
         (d / "wrapper.py").write_text(text, encoding="utf-8")
@@ -317,6 +337,18 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         if code == 0:
             failed.append(f"run_tests.py: {name}")
             print(f"BYPASS: run_tests.py {name}")
+    # F9: expected-asserts.json may not lower a floor, nor drop an entry (a deleted test deleted with its registration).
+    real_expected = json.loads((here / "expected-asserts.json").read_text(encoding="utf-8"))
+    some = next(iter(real_expected))
+    lowered = dict(real_expected, **{some: real_expected[some] - 1})
+    dropped = {k: v for k, v in real_expected.items() if k != some}
+    for name, table in {"a floor lowered": lowered, "an entry deleted": dropped}.items():
+        extra_checks.append(name)
+        (d / "expected.json").write_text(json.dumps(table), encoding="utf-8")
+        code, out = run_checker("--expected", str(d / "expected.json"))
+        if code == 0:
+            failed.append(f"expected-asserts.json: {name}")
+            print(f"BYPASS: expected-asserts.json {name}")
     # G10: pins.json with a range, `latest` or a wildcard.
     import json
     real_pins = json.loads((here / "pins.json").read_text(encoding="utf-8"))

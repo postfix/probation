@@ -45,7 +45,8 @@ jobs:
       - run: npm ci --prefix tests/e2e --no-audit --no-fund
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
       - run: node tests/e2e/harness/run.mjs --suite release
-      - run: docker save localhost/probation:e2e localhost/probation-server:e2e | gzip > images.tar.gz
+      - shell: bash # -eo pipefail: a failed docker save must fail the step
+        run: docker save localhost/probation:e2e localhost/probation-server:e2e | gzip > images.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: images
