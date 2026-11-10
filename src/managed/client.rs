@@ -778,4 +778,75 @@ mod tests {
         }
         assert_eq!(order, (0..10).collect::<Vec<_>>());
     }
+
+    /// P5: the wait on the FIFO lock honours the request's deadline. A holds the window, a
+    /// head waiter sleeps toward it with a long deadline, and B queued behind the lock with
+    /// half a window left must be refused at about half a window, not when the head wakes.
+    #[tokio::test]
+    async fn a_waiter_queued_on_the_lock_gives_up_at_its_own_deadline() {
+        let pacer = Arc::new(Pacer::new(1, 10, W));
+        drop(pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
+        let head = {
+            let pacer = Arc::clone(&pacer);
+            tokio::spawn(async move { pacer.acquire(Tick::now() + Duration::from_secs(5)).await.map(drop) })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = Tick::now();
+        assert_eq!(pacer.acquire(started + W / 2).await.unwrap_err(), CallError::Busy);
+        assert!(started.elapsed() < W * 3 / 4, "B overshot its deadline: {:?}", started.elapsed());
+        head.await.unwrap().unwrap();
+    }
+
+    /// P16: the production `acquire` (not the test helper) records the grant, so a pacer
+    /// whose clients are all gone is kept for one quiet window.
+    #[tokio::test]
+    async fn a_real_acquire_keeps_the_pacer_for_a_quiet_window() {
+        let token = FirewallToken::new("p16-token".into());
+        let first = pacer_for(&token);
+        drop(first.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
+        drop(first);
+        let again = pacer_for(&token);
+        assert_eq!(again.window_len().await, 1, "the window survived its last client");
+    }
+
+    /// P18: a full window frees when its oldest send ages out (front + window), not a
+    /// window after the later caller arrived.
+    #[tokio::test]
+    async fn an_aged_window_wakes_at_the_front_plus_the_window() {
+        let pacer = Pacer::new(2, 10, W);
+        let t0 = Tick::now();
+        drop(pacer.acquire(t0 + Duration::from_secs(5)).await.unwrap());
+        tokio::time::sleep(W / 3).await;
+        drop(pacer.acquire(t0 + Duration::from_secs(5)).await.unwrap());
+        let front = pacer.window_front().await.unwrap();
+        drop(pacer.acquire(t0 + Duration::from_secs(5)).await.unwrap());
+        let late = Tick::now() - (front + W);
+        assert!(late < W / 6, "woke {late:?} after front + window");
+    }
+
+    /// P13/P14: the token goes to the configured URL only: a redirect is not followed and
+    /// the environment proxy is not used.
+    #[tokio::test]
+    async fn redirects_are_not_followed_and_the_environment_proxy_is_ignored() {
+        let elsewhere = MockServer::start().await;
+        let origin = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", format!("{}/api/v1/sync/certificate", elsewhere.uri())))
+            .mount(&origin)
+            .await;
+        let answer = burst(&client(&origin, 5), 1).await.pop().unwrap();
+        assert_eq!(answer, Err(CallError::Unreachable));
+        assert!(elsewhere.received_requests().await.unwrap().is_empty(), "the redirect was followed");
+
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // SAFETY: only this test sets proxy variables; every client here builds with no_proxy.
+        unsafe {
+            std::env::set_var("HTTP_PROXY", format!("http://{}", proxy.local_addr().unwrap()));
+            std::env::set_var("http_proxy", format!("http://{}", proxy.local_addr().unwrap()));
+        }
+        let (server, _seen) = counting_server().await;
+        let answer = burst(&client(&server, 5), 1).await.pop().unwrap();
+        assert!(matches!(answer, Ok(CertificateAdmission::Refused)), "{answer:?}");
+        assert!(tokio::time::timeout(Duration::from_millis(100), proxy.accept()).await.is_err(), "the call went through the proxy");
+    }
 }
