@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slice 5: Native package-client release acceptance</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--mut:#57606a;--line:#d0d7de;--ok:#1a7f37;--warn:#9a6700;--box:#f6f8fa;--acc:#0969da}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9da7b3;--line:#30363d;--ok:#3fb950;--warn:#d29922;--box:#161b22;--acc:#58a6ff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:1rem}
+h1{font-size:1.4rem;margin:.5rem 0}
+h2{font-size:1.15rem;margin:1.6rem 0 .4rem;border-bottom:1px solid var(--line);padding-bottom:.2rem}
+table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:.35rem .5rem;text-align:left;vertical-align:top;font-size:.92rem}
+th{background:var(--box)}
+code{background:var(--box);padding:0 .25rem;border-radius:3px;overflow-wrap:anywhere}
+a:focus,button:focus,summary:focus,[tabindex]:focus{outline:3px solid var(--acc);outline-offset:2px}
+svg{max-width:100%;height:auto;border:1px solid var(--line);background:var(--box)}
+svg text{fill:var(--fg);font:12px system-ui,sans-serif}
+svg rect{fill:var(--bg);stroke:var(--fg)}
+svg path{stroke:var(--fg);fill:none}
+.q{font-weight:700;margin-top:1.5rem;padding:.7rem;border:2px solid var(--acc)}
+.src,.st{color:var(--mut);font-size:.9rem;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<h1>Slice 5: Native package-client release acceptance (publishing-proxy)</h1>
+
+<h2>Delivered</h2>
+<p>A release can now prove, on Linux, macOS and Windows hosted runners, that the real npm and Python package clients publish, install and are refused correctly through the Probation service, with no certificate setup and no registry credentials held by the firewall. Before this slice, only a Linux Docker harness exercised the clients and the service did not build on Windows. Now each of the three native jobs builds the real <code>probation</code> binary, runs it with loopback Node fake registries, and runs 75 client-facing checks (npm publish, install, view, audit, deprecate, unpublish, token-packument; Python via Twine, pip and uv). Each job is judged against the real Linux policy server, reached through a filtering proxy and a pinned cloudflared quick tunnel (macOS and Windows cannot run the server). Deciding refusals that the checks assert: denied publish, deprecate, unpublish and upload return 403 with a new upstream row; a policy-hidden package serves no bytes to any caller; an unknown registry ID or an npm ID under the PyPI path is refused with zero upstream calls; the policy key reaches only the snapshot endpoint and never a registry.</p>
+
+<svg role="img" aria-labelledby="g1t g1d" viewBox="0 0 760 250" width="760" height="250">
+<title id="g1t">Slice 5 native acceptance flow</title>
+<desc id="g1d">The real-server job runs the policy server and a snapshot-only filtering proxy, exposed by a cloudflared tunnel. Three native jobs on linux-x64, darwin-arm64 and win32-x64 fetch the snapshot through the tunnel, run the client checks against loopback fakes, and report done records. The server job then checks which jobs reached it and releases. Separately, the linux-managed job runs six Docker scenarios.</desc>
+<rect x="10" y="20" width="170" height="70"/><text x="20" y="42">real-server job (Linux)</text><text x="20" y="60">policy server + portal catalog</text><text x="20" y="78">throwaway service key</text>
+<rect x="210" y="20" width="160" height="70"/><text x="220" y="42">filtering proxy</text><text x="220" y="60">forwards only GET</text><text x="220" y="78">/api/v1/policy/snapshot</text>
+<rect x="400" y="20" width="150" height="70"/><text x="410" y="42">cloudflared tunnel</text><text x="410" y="60">pinned, SHA-256 checked</text>
+<path d="M180 55H210M370 55H400"/>
+<rect x="580" y="10" width="170" height="40"/><text x="590" y="35">native linux-x64: 75 checks</text>
+<rect x="580" y="65" width="170" height="40"/><text x="590" y="90">native darwin-arm64: 75 checks</text>
+<rect x="580" y="120" width="170" height="40"/><text x="590" y="145">native win32-x64: 75 checks</text>
+<path d="M550 55H565V30H580M565 55V85H580M565 55V140H580"/>
+<rect x="10" y="130" width="360" height="50"/><text x="20" y="152">server checks each job reached it (labelled probe + own request)</text><text x="20" y="170">39 snapshot requests, 0 refused; then release</text>
+<path d="M580 140H370" /><text x="400" y="175">done records</text>
+<rect x="10" y="200" width="360" height="40"/><text x="20" y="225">linux-managed (Docker): 6 of 6 scenarios, separate job</text>
+</svg>
+
+<p>Required guarantees versus observed results are separate in the table below. The release workflow keeps the native job as a required <code>needs</code> of <code>release</code> and <code>publish</code> (<code>tdd-slice-5.md</code>, C6/D1/H1; checker mutations only, structure not an execution witness).</p>
+
+<h2>Proof</h2>
+<table>
+<thead><tr><th>Promise</th><th>Executed witness and observed result</th><th>Scope and limit</th></tr></thead>
+<tbody>
+<tr><td>Native publishing works on three platforms</td><td>Hosted runs 42656332388 "Native package clients" and 42656332482 "Native call probe" at HEAD 89604a6, all jobs green: 75 client-facing checks on linux-x64, darwin-arm64 and win32-x64; zero skipped clients (only two harness unit-test files skip on win32: POSIX-shell fakes).</td><td>Observed from hosted-CI logs; independent verifier did not rebuild Rust.</td></tr>
+<tr><td>Clients are judged by the real Linux policy server</td><td>real-server job: 3 native jobs reached the real server, 39 snapshot requests, 0 refused; linux-managed Docker harness green. Earlier green run 42233412311 at 675221b: 38 snapshot requests, linux-managed 6 of 6 including E2E-publishing-full-matrix.</td><td>Native jobs cover publish, install, view, audit, deprecate, unpublish, token-packument, Twine/pip/uv. Web-login, legacy login, outage/restart, redirect/header/slow/size bounds, Basic/Bearer breadth and SSO/issuer/10,000-client rows stay Docker-only (accepted scope).</td></tr>
+<tr><td>No certificate setup, no firewall-held registry credentials</td><td>No repository secrets; per-run throwaway snapshot key; run-time CA is server trust only and removed again; client config files hold no certificate/key setting (checked by the scenario).</td><td>CA removal on macOS/Windows is not re-queried; runners are ephemeral VMs.</td></tr>
+<tr><td>Declared source controls hold</td><td><code>router molecule-verify --plan-root docs/plans/publishing-proxy --slice 5</code> PASS, 9/9, no findings (classify-selected-registry, upstream-publisher-auth-before-send, canonical-token-packument, audit-filter-before-render, current-policy-before-service-response, service-reference-before-delete, service-marker-before-delete, classify-npm-delete-routes, service-removal-marker-after-put). Earlier UNKNOWN (SOURCE_SUBJECT_VACUOUS) was an SMTC indexing defect, fixed; source unchanged.</td><td>Structural source checks; receipt <code>slice-5-rust-receiver-scopes.json</code> unchanged.</td></tr>
+<tr><td>Windows now builds and runs the service</td><td>Failed first (<code>/health/ready</code> 503: Windows cannot open a directory to fsync). Fix: one <code>config::sync_directory</code> (Unix fsync unchanged; Windows documented no-op). Hosted win32 job passes 75 checks. <code>cargo check --target x86_64-pc-windows-gnu</code> also passes.</td><td>Console-event handlers and MSVC runtime beyond the hosted run not otherwise exercised.</td></tr>
+<tr><td>Management-call pacing (product change)</td><td>Failing first: server answered 429 to 300 of 500 calls. After <code>SyncClient::pace</code> (150 sends/s, 32 in flight): tests pass; full matrix PASS 2,937 s with zero "answering busy".</td><td>Production 429 cause not proved exactly; one passing run does not rule out other intermittents. Full matrix not rerun after later pacer edits.</td></tr>
+</tbody>
+</table>
+<p>Product code changed on this branch: <code>src/managed/client.rs</code> (pacer), <code>config::sync_directory</code> at 5 sites, Windows <code>cfg</code> gates in <code>src/main.rs</code>, <code>crates/probation-server/src/lib.rs</code>, <code>src/config.rs</code>, <code>src/delivery/*</code>, and 7 integration test files. Test-side churn (lockfile regeneration, <code>.gitattributes</code> LF) is mechanical.</p>
+
+<h2>Limits</h2>
+<p>Accepted by the user on 2026-11-09:</p>
+<ul>
+<li>Windows ACLs on the service key file and delivery log are not verified (<code>stack.mjs</code> restricts the key with icacls; the product check is POSIX-only).</li>
+<li>Windows directory-entry durability relies on NTFS journaling; a crash right after the refusal marker could re-admit a refused grant for one restart plus one poll interval.</li>
+<li>macOS pf redirect with a warned wildcard-bind fallback; on the hosted darwin job the fallback did not fire.</li>
+<li>Public cloudflared quick tunnel with a filtering proxy, plus a 1-day <code>native-handshake</code> artifact holding the tunnel URL and a throwaway key, readable by anyone with repo read access until retention ends; <code>native-real-server-logs</code> (3 days) is also readable.</li>
+<li>The hard OpenSSL link in <code>enterprise_certificate.rs</code> is supplied by CI (follow-up: pure-Rust OCSP or vendored OpenSSL).</li>
+<li>Other images pinned by tag only; apt packages in the test image unpinned; <code>linux-managed</code> repeats release e2e work (about 65-70 minutes); the changes poll in <code>src/managed/sync.rs</code> stays unpaced.</li>
+</ul>
+<p>Other limits and gaps: local <code>run_tests.py</code> under Node 20 gives 24 findings because the Node 24.22.1 pin guard refuses it (hosted runs on Node 24 pass). Router check reports two findings: slice 5 is done but its security review and its adversarial review have no recorded verdict (<code>missing-review-verdict</code>). Render: not inspected for this page.</p>
+
+<h2>Next</h2>
+<p>Before merge, the TEMPORARY push triggers in <code>native-clients.yml</code> and <code>native-call-probe.yml</code> must be removed. The unpushed local branch <code>fix16a-combined</code> (FIX-16-A) is separate and not part of this decision. The choice is whether to continue to the next slice now, do that merge-prep first, or request changes to Slice 5.</p>
+
+<h2>Recommendation</h2>
+<p>Do merge-prep first: the acceptance scope is met and verified, the residuals are user-accepted, and removing the temporary triggers is a small, known step; the two missing review verdicts are worth recording or deciding during that step.</p>
+
+<p class="st">Status: Slice 5 verified complete (sf-verification, qa=VERIFIED, 2026-11-10); HEAD 89604a6, branch slice5-native-ci; router recorded slice completion.</p>
+<p class="src">Sources: <code>evidence/slice-5-verification.md</code>; <code>evidence/slice-5-engineering.md</code> (Hosted runs, Accepted by the user on 2026-11-09); <code>evidence/slice-5-molecule-verify.md</code>; <code>evidence/tdd-slice-5.md</code>; <code>evidence/windows-port.md</code>; router check findings.</p>
+
+<p class="q" tabindex="0">Continue to the next slice, do merge-prep first, or request changes?</p>
+</main>
+</body>
+</html>

@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":52,"boundary":{"kind":"slice","number":5},"reopened":false,"history":[{"from":"hand","reason":"start","to":"engineering"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"security"},{"from":"engineering","reason":"complete","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"code-review"},{"from":"engineering","reason":"rework","to":"security"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"rework","to":"qa"},{"from":"engineering","reason":"complete","to":"code-review"},{"from":"engineering","reason":"complete","to":"security"},{"from":"engineering","reason":"complete","to":"qa"}],"presentedSlice":4}
+{"generation":53,"boundary":{"kind":"presentation","number":5},"reopened":false,"history":[],"presentedSlice":4}
 
 ## Gate 1 progress
 
@@ -99,7 +99,8 @@
   - proof: node tests/e2e/harness/run.mjs --only E2E-publishing-npm-actions; cargo test --workspace; cargo check --workspace; installed router molecule-check and molecule-verify --slice 3 with reviewed receiver receipt -> Workspace 786 passed/0 failed/22 ignored; native npm actions 1/0/0; actual production quotas PASS separately; fresh compiler and 8 HTTP tests PASS; model and installed 9 source obligations plus 9 unsafe controls PASS; Factory full tests and drift 299/0; unchanged 15-file subject; evidence/slice-3-verification.md VERIFIED; historical RED and tooling limits retained; reviews: code=SHIP, security=CLEAR, adversarial=PASS, qa=VERIFIED
 - [x] Slice 4 — PyPI publishing and uv workflows
   - proof: node tests/e2e/harness/run.mjs --only E2E-publishing-full-matrix -> PASS 1 passed/0 failed/0 not run in 2846.9 s; workspace 792/0/22; molecule-check PASS; molecule-verify 9/9 PASS; python-service large-upload probe PASS; evidence/slice-4.md; reviews: code=SHIP, security=CLEAR, adversarial=PASS, qa=VERIFIED
-- [ ] Slice 5 — Native package-client release acceptance
+- [x] Slice 5 — Native package-client release acceptance
+  - proof: gh run view 42656332388: native linux-x64/darwin-arm64/win32-x64 75 checks each, real-server 39 snapshot requests, linux-managed green; router molecule-verify slice 5 PASS 9/9 -> all jobs success on 89604a6, zero skipped clients, molecule-verify PASS, sf-verification VERIFIED (evidence/slice-5-verification.md); reviews: qa=VERIFIED
 
 ## Notes for a fresh session
 
