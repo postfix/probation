@@ -29,19 +29,25 @@ export function redirectAllowed(target) {
 
 export const sha256Of = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-function defaultDownload(url, hops = 0) {
+/// `timeoutMs` bounds each socket's idleness (connect, headers, every body chunk), so a stalled server cannot hang the job.
+/// `get` is the test seam for a plain-http local server.
+export function defaultDownload(url, { hops = 0, timeoutMs = 120_000, get = https.get } = {}) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const req = get(url, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
         res.resume();
-        const next = new URL(res.headers.location, url).href;
+        if (!res.headers.location) return reject(new Error(`redirect ${res.statusCode} without a Location header`));
+        let next;
+        try { next = new URL(res.headers.location, url).href; } catch { return reject(new Error(`unparsable redirect ${res.headers.location}`)); }
         if (hops >= 5 || !redirectAllowed(next)) return reject(new Error(`refusing the redirect to ${next}`));
-        return resolve(defaultDownload(next, hops + 1));
+        return resolve(defaultDownload(next, { hops: hops + 1, timeoutMs, get }));
       }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error(`download answered ${res.statusCode}`)); }
       const chunks = [];
       res.on("data", (c) => chunks.push(c)).on("end", () => resolve(Buffer.concat(chunks))).on("error", reject);
-    }).on("error", reject);
+    });
+    req.setTimeout(timeoutMs, () => { reject(new Error(`download timed out after ${timeoutMs} ms`)); req.destroy(); });
+    req.on("error", reject);
   });
 }
 

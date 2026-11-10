@@ -1,7 +1,8 @@
 // Pure checks used by publishing.mjs, with the mutation controls the review asked for.
 // node tests/e2e/native/assertions.test.mjs
 import assert from "node:assert/strict";
-import { artifactRowFindings, remoteSnapshotFindings, servedMatchesFakeFindings, buildClientEnv, deniedStepFindings, envFindings, fileUrlFindings, firewallDeniedFindings, hiddenBytesFindings, keyFindings, lockfileFindings, scanFindings, uvLockFindings } from "./assertions.mjs";
+import { readFileSync } from "node:fs";
+import { checkCountFindings, decidedRows, artifactRowFindings, remoteSnapshotFindings, servedMatchesFakeFindings, buildClientEnv, deniedStepFindings, envFindings, fileUrlFindings, firewallDeniedFindings, hiddenBytesFindings, keyFindings, lockfileFindings, scanFindings, uvLockFindings } from "./assertions.mjs";
 
 const marker = Buffer.from("TARBALL-BYTES-MARKER");
 const refusal = 403;
@@ -120,4 +121,38 @@ assert.ok(remoteSnapshotFindings({ entries: without((e) => e.label === "linux-se
 assert.ok(remoteSnapshotFindings({ entries: goodEntries.map((e) => (e.label === "win32-x64" ? { ...e, keyOk: false } : e)), labels }).some((f) => f.includes("win32-x64")), "a probe with the wrong key does not count");
 assert.ok(remoteSnapshotFindings({ entries: goodEntries.map((e) => (e.label === null && e.cfIp === "203.0.113.1" ? { ...e, status: 502 } : e)), labels }).some((f) => f.includes("linux-x64")), "an unanswered probation request does not count");
 assert.ok(remoteSnapshotFindings({ entries: goodEntries.map((e) => (e.cfIp === "203.0.113.2" ? { ...e, cfIp: null } : e)), labels }).some((f) => f.includes("darwin-arm64")), "no tunnel client address, no proof of origin");
+
+// Survivor controls (adversarial review F6/F8).
+assert.equal(lockfileFindings(lock(`https://evil/?x=${base}p-1.tgz`), base).length, 1, "the base inside a query string is not under the base");
+assert.equal(lockfileFindings(lock(`https://evil/${base}`), base).length, 1, "nor is the base later in the URL");
+assert.equal(keyFindings({ key, policyRows: [{ authorization: `Bearer ${key}`, path: "/api/v1/other" }], registryRows: [], logs: {}, requirePolicyRows: true }).length, 1, "the key sent to another path");
+assert.equal(deniedStepFindings({ rows: upstream(["PUT", "developer-denied", 403]), since: 0, method: "PUT", output: "npm error 403", exit: 1 }).length, 1, "a bare 403 (a port number) is not E403");
+assert.equal(deniedStepFindings({ rows: upstream(["PUT", "developer-denied", 403]), since: 0, method: "PUT", output: "forbidden", exit: 1 }).length, 1, "no E403 text");
+assert.equal(envFindings({ ...env, NODE_OPTIONS: "--require /x" }, trust).length, 1, "NODE_OPTIONS");
+for (const name of ["npm_config_ca", "NPM_CONFIG_CAFILE", "UV_NO_VERIFY_SSL", "UV_SYSTEM_CERTS", "GIT_SSL_NO_VERIFY", "GIT_SSL_CAINFO", "SSL_CERT_DIR", "SSLKEYLOGFILE"]) {
+  assert.equal(envFindings({ ...env, [name]: "1" }, trust).length, 1, `${name} is a finding`);
+}
+assert.deepEqual(envFindings({ ...env, npm_config_cache: "/c", npm_config_userconfig: "/u" }, trust), [], "npm cache and userconfig are not TLS settings");
+for (const text of ["cafile=/x.pem", "ca[]=-----BEGIN", "sslcert = /x", "tls-verify = false", "verify = false", "insecure-host = x"]) {
+  assert.equal(scanFindings({ found: [{ path: "/h/.npmrc", text }], expected: [] }).length, 1, `${text} is a finding`);
+}
+// Only "request decided" rows count.
+const other = JSON.stringify({ fields: { message: '"something else"', method: '"GET"', ecosystem: '"pypi"', status: 200, bytes: 990 } });
+assert.equal(decidedRows(text(other, row("GET", 200, 990))).length, 1, "a row with another message is ignored");
+assert.equal(artifactRowFindings({ logText: text(other, row("GET", 200, 990)), size: 990, before: 0 }).length, 0);
+// The entry's path matters to the remote probe.
+{
+  const e = (label, cfIp, path = "/api/v1/policy/snapshot") => ({ label, cfIp, path, keyOk: true, status: 200 });
+  const all = [e("linux-server", "1.1.1.1"), e("x", "2.2.2.2"), e(null, "2.2.2.2")];
+  assert.deepEqual(remoteSnapshotFindings({ entries: all, labels: ["x"] }), []);
+  assert.ok(remoteSnapshotFindings({ entries: all.map((x) => (x.label === "x" ? { ...x, path: "/other" } : x)), labels: ["x"] }).length >= 1, "a probe of another path does not count");
+  assert.ok(remoteSnapshotFindings({ entries: all.map((x) => (x.label === null ? { ...x, path: "/other" } : x)), labels: ["x"] }).length >= 1, "an own request of another path does not count");
+}
+// F8: the check count has a pinned floor.
+assert.deepEqual(checkCountFindings(75, 75), []);
+assert.equal(checkCountFindings(74, 75).length, 1, "below the floor");
+assert.equal(checkCountFindings(0, 75).length, 1);
+assert.equal(checkCountFindings(100, undefined).length, 1, "no floor pinned");
+assert.equal(JSON.parse(readFileSync(new URL("./pins.json", import.meta.url), "utf8")).minChecks, 75);
+assert.match(readFileSync(new URL("./publishing.mjs", import.meta.url), "utf8"), /checkCountFindings\(checks, loadPins\(\)\.minChecks\)/, "publishing.mjs applies the floor");
 console.log("assertions.test: ok");

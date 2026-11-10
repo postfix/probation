@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { downloadUrl, installVerified, loadPin, redirectAllowed, sha256Of } from "./cloudflared.mjs";
+import http from "node:http";
+import { defaultDownload, downloadUrl, installVerified, loadPin, redirectAllowed, sha256Of } from "./cloudflared.mjs";
 
 const scratch = process.env.NATIVE_TEST_SCRATCH;
 assert(scratch, "set NATIVE_TEST_SCRATCH");
@@ -37,4 +38,29 @@ assert.ok(!existsSync(dest2), "nothing is left under the final name");
 assert.ok(!existsSync(`${dest2}.part`), "nor a partial file");
 await assert.rejects(installVerified({ url: "https://github.com/x", expected: "0".repeat(63), dest: join(dir, "z"), download: async () => bytes }), /expected/);
 rmSync(dir, { recursive: true, force: true });
+
+// F3: a stalled server is cut off, and a redirect without a Location header is a clean rejection (not an uncaught throw).
+{
+  const sockets = new Set();
+  const server = http.createServer((req, res) => {
+    if (req.url === "/stall") return; // never answers
+    if (req.url === "/stall-body") { res.writeHead(200, { "content-length": "100" }); res.write("x"); return; }
+    if (req.url === "/no-location") { res.writeHead(302); return res.end(); }
+    res.writeHead(200); res.end("ok");
+  });
+  server.on("connection", (s) => { sockets.add(s); s.on("close", () => sockets.delete(s)); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const url = (p) => `http://127.0.0.1:${server.address().port}${p}`;
+  const opts = { get: http.get, timeoutMs: 300 };
+  const uncaught = []; const onUncaught = (e) => uncaught.push(e); process.on("uncaughtException", onUncaught);
+  await assert.rejects(defaultDownload(url("/stall"), opts), /timed out/);
+  await assert.rejects(defaultDownload(url("/stall-body"), opts), /timed out|aborted|reset/i);
+  await assert.rejects(defaultDownload(url("/no-location"), opts), /Location/);
+  assert.deepEqual(Buffer.from(await defaultDownload(url("/ok"), opts)), Buffer.from("ok"), "a normal download still works");
+  await new Promise((r) => setTimeout(r, 100));
+  process.off("uncaughtException", onUncaught);
+  assert.deepEqual(uncaught, [], "nothing escaped as an uncaught exception");
+  for (const s of sockets) s.destroy();
+  await new Promise((r) => server.close(r));
+}
 console.log("cloudflared.test: ok");

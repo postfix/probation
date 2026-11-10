@@ -51,4 +51,9 @@ for (const bad of ["4242 & calc", -1, 1.5, "x", undefined]) assert.throws(() => 
 const [direct, directArgv] = launch(bash, ["a b"], {}, "win32", { shim: false });
 assert.equal(direct, bash);
 assert.deepEqual(directArgv, ["a b"]);
+// Every cmd.exe metacharacter makes the word quoted (the splitter alone cannot tell: it splits only on white space).
+for (const c of "&^();,=!|") assert.equal(winCommandLine("p", [`a${c}b`]), `p "a${c}b"`, `${c} is quoted`);
+assert.equal(winCommandLine("p", ["plain"]), "p plain");
+assert.throws(() => taskkillArgs(0, "win32"), /pid/);
+assert.throws(() => taskkillArgs(0), /pid/, "a zero pid is refused on every platform");
 console.log("spawn-args.test: ok");

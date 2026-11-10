@@ -160,5 +160,12 @@ fails("a twine script that runs under a different interpreter", { change: { twin
 fails("a uv whose python find is outside the python prefix", { change: { uvPythonOutside: true } }, /uv's python/);
 fails("a pip whose path is outside the python prefix", { change: { pip: "pip 26.2.2 from /elsewhere/site-packages/pip (python 3.15)" } }, /pip/);
 fails("a pip running another python version", { change: { pip: "pip 26.2.2 from @PREFIX@/lib/site-packages/pip (python 3.13)" } }, /pip/);
+// F8: a missing pin is a failure, also when the tool is missing too (undefined must not equal undefined).
+for (const tool of ["node", "npm", "python", "pip", "twine", "uv"]) {
+  fails(`a missing ${tool} pin`, { pinsChange: { [tool]: undefined } }, new RegExp(`${tool}`));
+}
+fails("a missing twine pin and no twine", { pinsChange: { twine: undefined }, change: { twine: null } }, /twine/);
+fails("a missing pip pin and no pip", { pinsChange: { pip: undefined }, change: { pip: null } }, /pip/);
+fails("a missing npm pin and no npm", { pinsChange: { npm: undefined }, change: { npm: null } }, /npm/);
 assert.equal(run({ stderr: ["twine", "uv", "npm"] }).status, 0, "versions printed on stderr are read");
 console.log("clients.test: ok");

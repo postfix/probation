@@ -1,6 +1,12 @@
 // Pure checks behind publishing.mjs, each with a mutation control in assertions.test.mjs.
 // Every function returns a list of findings; an empty list means the property holds.
 
+/// The run made at least `floor` checks (pins.json `minChecks`, per OS): a scenario that stops early cannot pass on the few it ran.
+export function checkCountFindings(checks, floor) {
+  if (!Number.isInteger(floor) || floor < 1) return ["pins.json has no minChecks floor"];
+  return checks >= floor ? [] : [`only ${checks} checks ran, the pinned floor is ${floor}`];
+}
+
 /// A1: the three credential cases (`owner`, `denied`, `none`) of a hidden artifact each got
 /// exactly `refusal` and a body without any of the tarball's bytes.
 export function hiddenBytesFindings({ rows, markerBytes, refusal }) {
@@ -37,7 +43,7 @@ export function uvLockFindings(text, base) {
 }
 
 /// A4: the certificate/key scan looked at every expected config file and found no setting.
-export function scanFindings({ found, expected, pattern = /client_cert|certfile|keyfile|PRIVATE KEY|\bcert\s*=|(^|[\s_.-])key\s*=|strict-ssl\s*=\s*false|\bca\s*=|trusted-host|allow-insecure-host|native-tls|\bproxy\s*=/im }) {
+export function scanFindings({ found, expected, pattern = /client_cert|certfile|keyfile|PRIVATE KEY|\bcert\s*=|(^|[\s_.-])key\s*=|strict-ssl\s*=\s*false|\bca\s*=|cafile\s*=|\bca\[\]\s*=|ssl(cert|key)|tls-verify|verify\s*=\s*false|trusted-host|insecure-host|native-tls|\bproxy\s*=/im }) {
   const findings = [];
   for (const name of expected) {
     if (!found.some((f) => f.path.replaceAll("\\", "/").split("/").at(-1) === name)) findings.push(`${name} was not scanned`);
@@ -157,7 +163,7 @@ export function buildClientEnv(processEnv, extra) {
 /// D4: no variable that would give a client a certificate or key, a proxy, or a way around
 /// TLS verification. The server-trust variables the run sets itself (`trust`: name -> value) are
 /// allowed with exactly that value.
-const RISKY_ENV = /(CLIENT_?CERT|CLIENT_?KEY|_CERT$|_KEY(_FILE)?$|^(npm_config_|NPM_CONFIG_)(cert|key|cafile|strict_ssl|proxy|https_proxy|registry)|TLS_REJECT|PROXY|NODE_OPTIONS|PIP_(CERT|TRUSTED_HOST|INDEX_URL|EXTRA_INDEX_URL)|UV_(NATIVE_TLS|INSECURE|ALLOW_INSECURE|INDEX|DEFAULT_INDEX)|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS|TWINE_(CERT|REPOSITORY|USERNAME|PASSWORD))/i;
+const RISKY_ENV = /(CLIENT_?CERT|CLIENT_?KEY|_CERT$|_KEY(_FILE)?$|^(npm_config_|NPM_CONFIG_)(cert|key|cafile|ca$|strict_ssl|proxy|https_proxy|registry)|TLS_REJECT|PROXY|NODE_OPTIONS|PIP_(CERT|TRUSTED_HOST|INDEX_URL|EXTRA_INDEX_URL)|UV_(NATIVE_TLS|NO_VERIFY_SSL|SYSTEM_CERTS|INSECURE|ALLOW_INSECURE|INDEX|DEFAULT_INDEX)|SSL|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS|TWINE_(CERT|REPOSITORY|USERNAME|PASSWORD))/i;
 export function envFindings(env, trust = {}) {
   return Object.entries(env)
     .filter(([name]) => RISKY_ENV.test(name))
