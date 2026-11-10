@@ -29,7 +29,7 @@ const dir = mkdtempSync(join(scratch, "cf-"));
 const dest = join(dir, "cloudflared");
 await installVerified({ url: "https://github.com/x", expected: sha256Of(bytes), dest, download: async () => bytes });
 assert.deepEqual(readFileSync(dest), bytes);
-if (process.platform !== "win32") assert.ok(statSync(dest).mode & 0o100, "executable after verification");
+assert.ok(process.platform === "win32" || (statSync(dest).mode & 0o100), "executable after verification"); // Windows has no mode bit; the call count stays equal on every platform
 // A different file is refused, never written under the final name, and any older file there is removed.
 const dest2 = join(dir, "other");
 writeFileSync(dest2, "stale");
