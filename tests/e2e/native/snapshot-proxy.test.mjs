@@ -68,5 +68,23 @@ for (const wrong of [`Bearer ${key}x`, `Bearer ${key.slice(0, -1)}`, `Bearer ${k
   assert.equal(status, 401, JSON.stringify(wrong));
 }
 assert.match(await readFile(new URL("./snapshot-proxy.mjs", import.meta.url), "utf8"), /timingSafeEqual/, "no plain === on the key");
+// A forward answer without a content type is served as application/json.
+const bare = await startSnapshotProxy({ key, forward: async () => ({ status: 200, body: Buffer.from("{}") }) });
+const bareType = await new Promise((resolve) => http.get({ host: "127.0.0.1", port: bare.port, path: snapshot, headers: auth }, (res) => { res.resume(); resolve(res.headers["content-type"]); }));
+assert.equal(bareType, "application/json", "the default content type");
+// close() must not wait for an idle keep-alive connection (closeAllConnections), and that connection ends.
+const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+await new Promise((resolve) => http.get({ host: "127.0.0.1", port: bare.port, path: snapshot, headers: auth, agent }, (res) => { res.resume(); res.on("end", resolve); }));
+const socketClosed = new Promise((resolve) => { const [socket] = Object.values(agent.freeSockets).flat(); assert.ok(socket, "the connection is kept alive"); socket.once("close", () => resolve(true)); });
+const closed = await Promise.race([bare.close().then(() => "closed"), new Promise((resolve) => setTimeout(() => resolve("hung"), 4000))]);
+assert.equal(closed, "closed", "close() returns while a keep-alive connection is idle");
+assert.equal(await socketClosed, true, "and the keep-alive connection is ended");
+agent.destroy();
+// ... nor for a request still in flight (closeAllConnections; a plain close() waits for it).
+const stuck = await startSnapshotProxy({ key, forward: () => new Promise(() => {}) });
+const stuckReq = http.get({ host: "127.0.0.1", port: stuck.port, path: snapshot, headers: auth }, () => {});
+stuckReq.on("error", () => {});
+await new Promise((resolve) => setTimeout(resolve, 300));
+assert.equal(await Promise.race([stuck.close().then(() => "closed"), new Promise((resolve) => setTimeout(() => resolve("hung"), 4000))]), "closed", "close() ends a request in flight");
 await proxy.close(); await failing.close();
 console.log("snapshot-proxy.test: ok");

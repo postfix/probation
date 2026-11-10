@@ -20,4 +20,9 @@ assert.equal(parsePfToken("pf enabled\nToken : 18446744073709551615\n"), "184467
 assert.equal(parsePfToken("pf already enabled\n"), null);
 assert.equal(parsePfToken("pf enabled\nToken : 123\n"), "123", "the token line is not the first line");
 assert.equal(parsePfToken("a\nb\nToken:7"), "7");
+// release takes only a string of digits; the token line must start the line with "Token" and carry digits.
+for (const bad of [12345, null, ["12"], { toString: () => "12" }]) assert.throws(() => steps.release(bad), /token/, `non-string ${typeof bad}`);
+assert.equal(parsePfToken("xToken : 1\n"), null, "the Token anchor");
+assert.equal(parsePfToken("Token : \n"), null, "digits are required");
+assert.equal(parsePfToken("Token : x1\n"), null, "digits directly after the colon");
 console.log("pf.test: ok");

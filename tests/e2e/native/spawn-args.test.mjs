@@ -56,4 +56,9 @@ for (const c of "&^();,=!|") assert.equal(winCommandLine("p", [`a${c}b`]), `p "a
 assert.equal(winCommandLine("p", ["plain"]), "p plain");
 assert.throws(() => taskkillArgs(0, "win32"), /pid/);
 assert.throws(() => taskkillArgs(0), /pid/, "a zero pid is refused on every platform");
+// F6: an argument with white space AND several trailing backslashes stays one word (every backslash of the run doubled).
+for (const n of [1, 2, 3, 4]) {
+  const trailing = "\\".repeat(n);
+  assert.deepEqual(splitWindows(winCommandLine("c", [`a b${trailing}`, "next"])), ["c", `a b${trailing}`, "next"], `${n} trailing backslashes`);
+}
 console.log("spawn-args.test: ok");

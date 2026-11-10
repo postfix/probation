@@ -136,6 +136,15 @@ assert.deepEqual(envFindings({ ...env, npm_config_cache: "/c", npm_config_userco
 for (const text of ["cafile=/x.pem", "ca[]=-----BEGIN", "sslcert = /x", "tls-verify = false", "verify = false", "insecure-host = x"]) {
   assert.equal(scanFindings({ found: [{ path: "/h/.npmrc", text }], expected: [] }).length, 1, `${text} is a finding`);
 }
+// F-risky: every RISKY_ENV name on its own is a finding, and a trusted exact value is not.
+for (const name of ["NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "PIP_TRUSTED_HOST", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_CERT", "TWINE_REPOSITORY", "TWINE_USERNAME", "TWINE_PASSWORD", "TWINE_CERT", "CLIENT_CERT", "CLIENT_KEY", "SSL_CERT_FILE", "SSL_CERT_DIR", "CLIENTCERT", "CLIENTKEY", "MY_CERT", "MY_KEY_FILE", "HTTPS_PROXY", "UV_INDEX", "UV_DEFAULT_INDEX", "UV_INSECURE", "UV_ALLOW_INSECURE", "UV_NATIVE_TLS", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_OPTIONS"]) {
+  assert.deepEqual(envFindings({ [name]: "x" }, {}), [`${name} is set in the client environment`], `${name} on its own`);
+  assert.deepEqual(envFindings({ [name]: "x" }, { [name]: "x" }), [], `${name} with its trusted value`);
+}
+// every scanFindings alternative on its own
+for (const text of ["client_cert=/c", "certfile=/c", "keyfile=/k", "-----BEGIN PRIVATE KEY-----", "cert = /c", "key = /k", "_key = /k", "strict-ssl = false", "ca = /x", "cafile = /x", "ca[] = /x", "sslcert=/c", "sslkey=/k", "tls-verify=false", "tls-verify = true", "verify = false", "trusted-host = h", "insecure-host = h", "native-tls = true", "proxy = http://p"]) {
+  assert.equal(scanFindings({ found: [{ path: "/h/x.conf", text: `a=b\n${text}\n` }], expected: [] }).length, 1, `${text} alone is a finding`);
+}
 // Only "request decided" rows count.
 const other = JSON.stringify({ fields: { message: '"something else"', method: '"GET"', ecosystem: '"pypi"', status: 200, bytes: 990 } });
 assert.equal(decidedRows(text(other, row("GET", 200, 990))).length, 1, "a row with another message is ignored");

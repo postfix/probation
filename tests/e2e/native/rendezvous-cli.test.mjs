@@ -21,6 +21,7 @@ function setup(artifacts, handshake) {
   const bin = join(root, "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$@" >> "$GH_LOG"
 case "$1" in
   api) for n in $(echo "$ARTIFACTS" | tr ',' ' '); do echo "{\\"name\\":\\"$n\\",\\"id\\":1}"; done ;;
   run) dir=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dir="$2"; shift; done; mkdir -p "$dir"; cp "$HANDSHAKE_FILE" "$dir/handshake.json" ;;
@@ -29,7 +30,7 @@ esac
   chmodSync(join(bin, "gh"), 0o755);
   const file = join(root, "fixture.json");
   writeFileSync(file, typeof handshake === "string" ? handshake : `${JSON.stringify(handshake)}\n`);
-  const env = { PATH: `${bin}:${process.env.PATH}`, ARTIFACTS: artifacts.join(","), HANDSHAKE_FILE: file, GITHUB_ENV: join(root, "env") };
+  const env = { PATH: `${bin}:${process.env.PATH}`, ARTIFACTS: artifacts.join(","), HANDSHAKE_FILE: file, GITHUB_ENV: join(root, "env"), GH_LOG: join(root, "gh.log") };
   writeFileSync(env.GITHUB_ENV, "");
   return { root, env };
 }
@@ -45,6 +46,9 @@ const run = (args, env) => spawnSync(process.execPath, [cli, ...args], { encodin
   assert.deepEqual(lines.slice(0, 3), [`::add-mask::${ready.url}`, "::add-mask::calm-lake-42.trycloudflare.com", `::add-mask::${key}`], "masks are the first output");
   assert.ok(!lines.slice(3).join("\n").includes(key) && !r.stderr.includes(key), "nothing else prints the key");
   assert.equal(readFileSync(join(out, "service.key"), "utf8"), `${key}\n`);
+  const calls = readFileSync(env.GH_LOG, "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(calls.filter((c) => c.startsWith("run download")), [`run download 7 --repo o/r --name native-handshake-2 --dir ${out}`], "the download names the attempt's artifact");
+  assert.ok(calls.some((c) => c.startsWith("api repos/o/r/actions/runs/7/artifacts")), "the listing is of this repo and run");
   assert.equal(statSync(join(out, "service.key")).mode & 0o777, 0o600);
   assert.equal(readFileSync(join(out, "handshake.json"), "utf8").trim(), "{}", "the downloaded copy with the key is overwritten");
   const github = readFileSync(env.GITHUB_ENV, "utf8");
@@ -92,6 +96,7 @@ for (const [what, handshake, pattern] of [["another host", { ...ready, url: "htt
   let r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64,darwin-arm64,win32-x64", "--repo", "o/r", "--run-id", "7", "--attempt", "2", "--timeout-min", "1"], env);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /every native job reported/);
+  assert.ok(readFileSync(env.GH_LOG, "utf8").split("\n").some((c) => c.startsWith("api repos/o/r/actions/runs/7/artifacts")), "the artifacts of this repo and run are listed");
   // a previous attempt's done artifacts do not count for attempt 3
   r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64,darwin-arm64,win32-x64", "--repo", "o/r", "--run-id", "7", "--attempt", "3", "--timeout-min", "0.001"], env);
   assert.match(r.stdout, /still missing: native-done-linux-x64-3, native-done-darwin-arm64-3, native-done-win32-x64-3/, r.stdout);
@@ -179,5 +184,30 @@ for (const content of ["", "0\n", "-3\n", "abc\n", "1.5\n"]) {
   assert.equal(code, 0);
   assert.match(out, /torn down/);
   rmSync(root, { recursive: true, force: true });
+}
+// server-teardown must leave a process GROUP alone when the pid file says -<leader>, and never touch init for "1".
+{
+  const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); // its own group: pgid == pid
+  const gone = new Promise((resolve) => leader.once("exit", resolve));
+  try {
+    assert.ok(leader.pid > 1);
+    const groupAlive = () => { try { process.kill(-leader.pid, 0); return true; } catch { return false; } };
+    assert.ok(groupAlive(), "the group exists before teardown");
+    for (const content of [`-${leader.pid}\n`, "1\n", `1e${String(leader.pid).length}\n`, `0x${leader.pid.toString(16)}\n`]) {
+      const { root, env } = setup([], ready);
+      const dir = join(root, "remote");
+      mkdirSync(dir);
+      for (const name of ["harness.pid", "cloudflared.pid"]) writeFileSync(join(dir, name), content);
+      const started = Date.now();
+      const r = run(["server-teardown", "--dir", dir], env);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(Date.now() - started < 2500, `${JSON.stringify(content)} is refused without signalling (a signalled pid waits 3 s)`);
+      assert.ok(groupAlive(), `${JSON.stringify(content)} left the process group alive`);
+      rmSync(root, { recursive: true, force: true });
+    }
+  } finally {
+    leader.kill("SIGKILL");
+    await gone;
+  }
 }
 console.log("rendezvous-cli.test: ok");
