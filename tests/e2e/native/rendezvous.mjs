@@ -26,8 +26,14 @@ export const doneArtifact = (label, attempt) => {
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(label)) throw new Error(`bad job label ${JSON.stringify(label)}`);
   return `native-done-${label}-${attemptOf(attempt)}`;
 };
-/// A pid worth signalling: kill(0) and kill(-n) address process groups, kill(1) is init.
-export const signalablePid = (text) => { const pid = Number(String(text).trim()); return Number.isInteger(pid) && pid > 1 ? pid : null; };
+/// A pid worth signalling: plain decimal digits only (no sign, exponent, hex, blanks inside), safe integer, above 1:
+/// kill(0) and kill(-n) address process groups, kill(1) is init. A trailing newline (`echo $! > file`) is fine.
+export const signalablePid = (text) => {
+  const digits = String(text).trimEnd();
+  if (!/^[1-9][0-9]*$/.test(digits)) return null;
+  const pid = Number(digits);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
+};
 
 const realClock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 

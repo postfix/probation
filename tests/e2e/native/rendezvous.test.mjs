@@ -1,7 +1,7 @@
 // The handshake between the real-server job and the native jobs, with a fake clock and a fake artifact API.
 // node tests/e2e/native/rendezvous.test.mjs
 import assert from "node:assert/strict";
-import { handshakeArtifact, doneArtifact, envLines, maskLines, parseHandshake, pollUntil, waitForArtifact, waitForAll, failedHandshake } from "./rendezvous.mjs";
+import { handshakeArtifact, doneArtifact, envLines, maskLines, parseHandshake, pollUntil, waitForArtifact, waitForAll, failedHandshake, signalablePid } from "./rendezvous.mjs";
 
 const key = "prb_" + "e".repeat(32);
 const ready = { status: "ready", url: "https://quiet-river-1234.trycloudflare.com", key, npmId: 4, pypiId: 5, npmPort: 43111, hiddenName: "token-private-ab12cd34" };
@@ -88,4 +88,9 @@ bad({ pypiId: "5" }, "a string pypi id");
 bad({ pypiId: 1.5 }, "a fractional pypi id");
 bad({ pypiId: 2 ** 40 }, "an absurd pypi id");
 bad({ pypiId: undefined }, "a missing pypi id");
+// signalablePid: only plain decimal pids above 1 (a trailing newline from `echo $! > file` is fine).
+for (const [text, want] of [["12345\n", 12345], ["2", 2], ["12345", 12345], ["12345\r\n", 12345]]) assert.equal(signalablePid(text), want, JSON.stringify(text));
+for (const bad of ["1", "1\n", "0", "-3", "-12345", "+12", "1e3", "0x10", "0b11", "0o7", " 12\n", "\n12", "1 2", "12abc", "1.5", "", "abc", "007", "9007199254740993", "99999999999999999999", "Infinity", "NaN", undefined, null]) {
+  assert.equal(signalablePid(bad), null, `${JSON.stringify(bad)} is refused`);
+}
 console.log("rendezvous.test: ok");
