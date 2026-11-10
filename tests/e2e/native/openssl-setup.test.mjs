@@ -19,6 +19,31 @@ assert.deepEqual(plan.path, ["D:\\a\\_temp\\openssl-shim"], "only the shim direc
 assert.deepEqual(plan.dll, { from: "C:\\Program Files\\OpenSSL-Win64\\bin\\libcrypto-3-x64.dll", to: "D:\\a\\_temp\\openssl-shim\\libcrypto-3-x64.dll" });
 assert.throws(() => buildPlan({ platform: "win32", found: null, shimDir: "x" }), /import library/);
 
+// o12: a plan on Windows never goes ahead with a missing DLL or DLL directory.
+assert.throws(() => buildPlan({ platform: "win32", found: { lib: "C:\\x\\libcrypto.lib", bin: null, dll: null }, shimDir: "D:\\s" }), /DLL/);
+assert.throws(() => buildPlan({ platform: "win32", found: { lib: "C:\\x\\libcrypto.lib", bin: "C:\\x\\bin", dll: null }, shimDir: "D:\\s" }), /DLL/);
+assert.throws(() => buildPlan({ platform: "win32", found: { lib: "C:\\x\\libcrypto.lib", bin: null, dll: "C:\\x\\bin\\libcrypto-3.dll" }, shimDir: "D:\\s" }), /DLL/);
+
+// o2: only libcrypto-<digit>...dll counts as the DLL.
+for (const bad of ["libcrypto.dll", "xlibcrypto-3.dll", "libcrypto-x.dll", "libcrypto-3.dll.bak", "libcrypto-3.dllx", "libssl-3-x64.dll"]) {
+  const t = { "R": ["bin", "lib"], "R\\bin": [bad], "R\\lib": ["libcrypto.lib"] };
+  assert.deepEqual(findImportLibrary(["R"], { list: (d) => t[d] ?? null, join: (...p) => p.join("\\") }), { lib: "R\\lib\\libcrypto.lib", bin: null, dll: null }, bad);
+}
+for (const good of ["libcrypto-3-x64.dll", "LIBCRYPTO-3.DLL", "libcrypto-1_1-x64.dll"]) {
+  const t = { "R": ["bin", "lib"], "R\\bin": [good], "R\\lib": ["libcrypto.lib"] };
+  assert.equal(findImportLibrary(["R"], { list: (d) => t[d] ?? null, join: (...p) => p.join("\\") }).dll, `R\\bin\\${good}`, good);
+}
+// o3: the search goes five directories below a root, no deeper.
+const chain = (levels) => {
+  const t = {};
+  let dir = "R";
+  for (let i = 0; i < levels; i++) { const next = `${dir}\\d${i}`; t[dir] = [`d${i}`]; dir = next; }
+  t[dir] = ["libcrypto.lib"];
+  return { list: (d) => t[d] ?? null, join: (...p) => p.join("\\") };
+};
+assert.ok(findImportLibrary(["R"], chain(5)), "five levels down is found");
+assert.equal(findImportLibrary(["R"], chain(6)), null, "six levels down is not");
+
 // An existing RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS is kept (ours is appended), and a path with spaces stays one argument.
 assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/p", rustflags: "-C target-cpu=native  -D warnings" }).env, { CARGO_ENCODED_RUSTFLAGS: `-C${US}target-cpu=native${US}-D${US}warnings${US}-L${US}native=/p/lib` });
 assert.deepEqual(buildPlan({ platform: "darwin", brewPrefix: "/p", encoded: `-C${US}link-arg=a b`, rustflags: "ignored" }).env, { CARGO_ENCODED_RUSTFLAGS: `-C${US}link-arg=a b${US}-L${US}native=/p/lib` }, "the encoded variable wins, as in cargo");

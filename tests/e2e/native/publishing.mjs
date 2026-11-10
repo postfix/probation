@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import https from "node:https";
 import { fileURLToPath } from "node:url";
-import { servedMatchesFakeFindings, buildClientEnv, deniedStepFindings, envFindings, fileUrlFindings, firewallDeniedFindings, hiddenBytesFindings, keyFindings, lockfileFindings, scanFindings, servedRows, uvLockFindings } from "./assertions.mjs";
+import { checkCountFindings, servedMatchesFakeFindings, buildClientEnv, deniedStepFindings, envFindings, fileUrlFindings, firewallDeniedFindings, hiddenBytesFindings, keyFindings, lockfileFindings, scanFindings, servedRows, uvLockFindings } from "./assertions.mjs";
 import { checkClients, loadPins, which } from "./clients.mjs";
 import net from "node:net";
 import { DENIED, OWNER, runAsync, startStack } from "./stack.mjs";
@@ -329,6 +329,9 @@ with zipfile.ZipFile(f"{out}/{name}-{version}-py3-none-any.whl", "w") as z:
   await stack?.stop();
   if (!process.env.NATIVE_WORK) rmSync(work, { recursive: true, force: true });
 }
+const floor = checkCountFindings(checks, loadPins().minChecks);
+for (const f of floor) console.error(f);
+failures.push(...floor);
 if (checks === 0 || failures.length) {
   console.error(`native publishing FAILED: ${failures.length} failed of ${checks}`);
   process.exit(1);

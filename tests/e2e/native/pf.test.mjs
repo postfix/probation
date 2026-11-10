@@ -18,4 +18,6 @@ assert.deepEqual(steps.release("12345"), { command: "sudo", args: ["-n", "pfctl"
 for (const bad of ["12345; reboot", "", "1 2", undefined, "-X"]) assert.throws(() => steps.release(bad), /token/);
 assert.equal(parsePfToken("pf enabled\nToken : 18446744073709551615\n"), "18446744073709551615");
 assert.equal(parsePfToken("pf already enabled\n"), null);
+assert.equal(parsePfToken("pf enabled\nToken : 123\n"), "123", "the token line is not the first line");
+assert.equal(parsePfToken("a\nb\nToken:7"), "7");
 console.log("pf.test: ok");

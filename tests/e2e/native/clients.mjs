@@ -81,11 +81,12 @@ export function checkClients({ pins, platformWanted, env = process.env, runningN
     const r = output(command, args, env, how);
     const got = r.ok ? r.text.match(pattern)?.[1] : undefined;
     seen[name] = got ?? null;
-    if (got !== want) failures.push(`${label}: want ${want}, got ${got ?? `missing or unparsable (${r.error ?? "no match"}: ${r.text.slice(0, 120)})`}`);
+    if (want === undefined || got !== want) failures.push(`${label}: want ${want ?? "a pinned version (the pin is missing)"}, got ${got ?? `missing or unparsable (${r.error ?? "no match"}: ${r.text.slice(0, 120)})`}`);
     return r;
   };
   if (!platformWanted) failures.push("NATIVE_PLATFORM is not set");
   else if (platform !== platformWanted) failures.push(`platform: want ${platformWanted}, got ${platform}`);
+  for (const name of ["node", "npm", "python", "pip", "twine", "uv"]) if (typeof pins[name] !== "string" || !pins[name]) failures.push(`pins.json has no ${name} pin`);
   seen.node = runningNode;
   if (runningNode !== pins.node) failures.push(`node: want ${pins.node}, the running node is ${runningNode}`);
   for (const tool of ["node", "npm", python, "twine", "uv"]) seen.paths[tool === python ? "python" : tool] = which(tool, env);
@@ -108,7 +109,7 @@ export function checkClients({ pins, platformWanted, env = process.env, runningN
   else {
     const pipFrom = output(python, ["-m", "pip", "--version"], env).text.match(/^pip \S+ from (.+?) \(python (\d+\.\d+)\)/);
     if (pipFrom && !inside(pipFrom[1], prefix)) failures.push(`pip: ${pipFrom[1]} is outside the python prefix ${prefix}`);
-    if (pipFrom && pipFrom[2] !== pins.python.split(".").slice(0, 2).join(".")) failures.push(`pip: runs python ${pipFrom[2]}, want ${pins.python}`);
+    if (pipFrom && pipFrom[2] !== String(pins.python).split(".").slice(0, 2).join(".")) failures.push(`pip: runs python ${pipFrom[2]}, want ${pins.python}`);
     const twinePath = seen.paths.twine;
     if (twinePath && !inside(twinePath, prefix)) failures.push(`twine: ${twinePath} is outside the python prefix ${prefix}`);
     else if (twinePath && !win) {

@@ -4,9 +4,15 @@
 // server and answers {status, contentType, body}. The log records, for each request, the job label
 // (X-Native-Job, set by the jobs' own probe), the tunnel client's address (Cf-Connecting-Ip), whether the key
 // was right and what was answered, so the real-server job can prove who talked to it.
+import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 
 export const SNAPSHOT_PATH = "/api/v1/policy/snapshot";
+
+const sameKey = (given, key) => {
+  const a = Buffer.from(given ?? ""), b = Buffer.from(`Bearer ${key}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 
 export async function startSnapshotProxy({ key, forward, host = "127.0.0.1", maxLog = 10_000 }) {
   const log = [];
@@ -15,7 +21,7 @@ export async function startSnapshotProxy({ key, forward, host = "127.0.0.1", max
     const entry = {
       at: new Date().toISOString(), method: req.method, path: req.url,
       label: req.headers["x-native-job"] ?? null, cfIp: req.headers["cf-connecting-ip"] ?? null,
-      keyOk: req.headers.authorization === `Bearer ${key}`, status: 0,
+      keyOk: sameKey(req.headers.authorization, key), status: 0,
     };
     if (entry.keyOk || log.length < maxLog) log.push(entry); else dropped++;
     const answer = (status, body = "", type = "text/plain") => { entry.status = status; res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(body) }); res.end(body); };
@@ -34,6 +40,7 @@ export async function startSnapshotProxy({ key, forward, host = "127.0.0.1", max
   await new Promise((resolve) => server.listen(0, host, resolve));
   return {
     port: server.address().port,
+    address: server.address().address,
     log,
     dropped: () => dropped,
     close: () => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); }),

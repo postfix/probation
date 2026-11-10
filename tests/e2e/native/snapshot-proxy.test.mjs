@@ -1,6 +1,7 @@
 // The only thing the tunnel exposes: GET of the policy snapshot with the run's throwaway key.
 // node tests/e2e/native/snapshot-proxy.test.mjs
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { startSnapshotProxy } from "./snapshot-proxy.mjs";
 
@@ -55,5 +56,17 @@ assert.equal(capped.dropped(), 15, "the rest are counted");
 assert.equal(await hit(auth), 200);
 assert.equal(capped.log.at(-1).keyOk, true, "a request with the key is logged past the cap");
 await capped.close();
+// Binds loopback by default; an upstream status is passed through; the key is compared in constant time (same length only).
+assert.equal(proxy.address, "127.0.0.1", "the default bind is loopback");
+const unavailable = await startSnapshotProxy({ key, forward: async () => ({ status: 503, body: Buffer.from("later") }) });
+const got503 = await new Promise((resolve) => http.get({ host: "127.0.0.1", port: unavailable.port, path: snapshot, headers: auth }, (res) => { res.resume(); resolve(res.statusCode); }));
+assert.equal(got503, 503, "an upstream 503 is not turned into 200");
+assert.equal(unavailable.log[0].status, 503);
+await unavailable.close();
+for (const wrong of [`Bearer ${key}x`, `Bearer ${key.slice(0, -1)}`, `Bearer ${key.slice(0, -1)}d`, key, ""]) {
+  const status = await new Promise((resolve) => http.get({ host: "127.0.0.1", port: proxy.port, path: snapshot, headers: { authorization: wrong } }, (res) => { res.resume(); resolve(res.statusCode); }));
+  assert.equal(status, 401, JSON.stringify(wrong));
+}
+assert.match(await readFile(new URL("./snapshot-proxy.mjs", import.meta.url), "utf8"), /timingSafeEqual/, "no plain === on the key");
 await proxy.close(); await failing.close();
 console.log("snapshot-proxy.test: ok");
