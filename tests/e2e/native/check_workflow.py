@@ -8,7 +8,7 @@ command), and every PIN_* is tied to what the steps install. Anything else fails
   python3 tests/e2e/native/check_workflow.py [--file PATH]
 Mutation tests: check_workflow.test.py.
 """
-import json, pathlib, re, sys
+import ast, json, pathlib, re, sys
 for _stream in (sys.stdout, sys.stderr):
     _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 import yaml
@@ -101,13 +101,13 @@ NATIVE_STEPS = [
     {"name": "Build the native service", "env": {"AWS_LC_SYS_USE_SYSTEM": "0"}, "run": "cargo build --locked --bin probation"},
     {"name": "Allow the low loopback port", "shell": "bash", "run": 'if [ "$RUNNER_OS" = Linux ]; then sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0; fi\n'},
     {"name": "Wait for the real server's handshake", "shell": "bash", "env": {"GH_TOKEN": "${{ github.token }}"},
-     "run": 'node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --out "$RUNNER_TEMP/handshake" --timeout-min 50'},
+     "run": 'node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --out "$RUNNER_TEMP/handshake" --timeout-min 50'},
     {"name": "Probe the tunnel as this job", "shell": "bash", "run": 'node tests/e2e/native/rendezvous.mjs client-probe --label "$NATIVE_PLATFORM"'},
     {"name": "Native npm and Python publishing", "run": "node tests/e2e/native/publishing.mjs"},
     {"name": "Record this job's completion", "if": "always()", "shell": "bash",
      "run": 'node tests/e2e/native/rendezvous.mjs done --label "$NATIVE_PLATFORM" --status "${{ job.status }}" --out "$RUNNER_TEMP/done"'},
     {"name": "Upload the completion record", "if": "always()", "uses": UPLOAD_SHA,
-     "with": {"name": "native-done-${{ matrix.platform }}", "path": "${{ runner.temp }}/done/done.json", "retention-days": 1}},
+     "with": {"name": "native-done-${{ matrix.platform }}-${{ github.run_attempt }}", "path": "${{ runner.temp }}/done/done.json", "retention-days": 1}},
 ]
 RV = "node tests/e2e/native/rendezvous.mjs"
 REAL_SERVER_STEPS = [
@@ -119,13 +119,13 @@ REAL_SERVER_STEPS = [
     {"name": "Wait for the tunnel and mask it", "run": f'{RV} server-wait-ready --dir "$RUNNER_TEMP/remote" --timeout-min 35'},
     {"name": "Make sure a handshake exists", "if": "always()", "run": f'{RV} server-ensure-handshake --dir "$RUNNER_TEMP/remote"'},
     {"name": "Publish the handshake", "if": "always()", "uses": UPLOAD_SHA,
-     "with": {"name": "native-handshake", "path": "${{ runner.temp }}/remote/handshake.json", "retention-days": 1, "if-no-files-found": "error"}},
+     "with": {"name": "native-handshake-${{ github.run_attempt }}", "path": "${{ runner.temp }}/remote/handshake.json", "retention-days": 1, "if-no-files-found": "error"}},
     {"name": "Wait for the native jobs", "if": "always()", "shell": "bash", "env": {"GH_TOKEN": "${{ github.token }}"},
-     "run": f'{RV} server-wait-done --dir "$RUNNER_TEMP/remote" --expect linux-x64,darwin-arm64,win32-x64 --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --timeout-min 55'},
+     "run": f'{RV} server-wait-done --dir "$RUNNER_TEMP/remote" --expect linux-x64,darwin-arm64,win32-x64 --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55'},
     {"name": "Release the scenario and check what the native jobs did", "if": "always()", "run": f'{RV} server-release --dir "$RUNNER_TEMP/remote" --timeout-min 10'},
     {"name": "Tear down the tunnel and the stack", "if": "always()", "run": f'{RV} server-teardown --dir "$RUNNER_TEMP/remote"'},
     {"name": "Keep the logs", "if": "always()", "uses": UPLOAD_SHA,
-     "with": {"name": "native-real-server-logs", "path": "${{ runner.temp }}/remote/harness.log\ntarget/e2e/out\n", "retention-days": 3, "if-no-files-found": "ignore"}},
+     "with": {"name": "native-real-server-logs-${{ github.run_attempt }}", "path": "${{ runner.temp }}/remote/harness.log\ntarget/e2e/out\n", "retention-days": 3, "if-no-files-found": "ignore"}},
 ]
 LINUX_SCENARIOS = ["E2E-service-policy", "E2E-publishing-npm-read", "E2E-publishing-npm-actions", "E2E-publishing-python-service",
                    "E2E-publishing-full-matrix", "E2E-publishing-native-linux"]
@@ -287,7 +287,8 @@ def needed(job_name, seen=None):
     return seen
 
 
-PUBLISHING = re.compile(r"cargo publish|gh release|docker push|docker login|npm publish|twine upload|gh api|ghcr\.io")
+PUBLISHING = re.compile(r"cargo publish|gh release|docker push|docker login|npm publish|twine upload|gh api|ghcr\.io|git push|build-push-action|--push\b")
+HIDES_FAILURE = re.compile(r"\|\||\bset\s+\+e|\bset\s+\+o\s+errexit|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
 for job_name, job in release.items():
     need("continue-on-error" not in job, f"release.yml job {job_name} must not continue-on-error")
     need("if" not in job, f"release.yml job {job_name} must have no `if` (found {job.get('if')!r}): `always()` or `!cancelled()` would run it past a failed gate")
@@ -301,7 +302,8 @@ for job_name, job in release.items():
         if "if" in step:
             exempt = str(step.get("if")) == "always()" and str(step.get("uses", "")).startswith("actions/upload-artifact@")
             need(exempt, f"release.yml job {job_name} has a step `if: {step['if']}` (only upload-artifact steps may use always())")
-        need(not re.search(r"\|\|\s*(true|:)\b|\|\|\s*exit\s+0|;\s*exit\s+0\s*$", str(step.get("run", "")), re.M), f"release.yml job {job_name} hides a failure with || true or exit 0")
+        # release.yml has no `||` at all, so any of them is a hidden failure (`|| echo`, `|| /bin/true`, `|| :`); likewise `set +e`, `; true`, `; :`, `exit 0`
+        need(not HIDES_FAILURE.search(str(step.get("run", ""))), f"release.yml job {job_name} hides a failure (`||`, `set +e`, `; true` or `exit 0`)")
     if sensitive:
         chain = needed(job_name)
         need({"native", "e2e"} <= chain, f"release.yml job {job_name} writes, publishes or uses secrets or an environment, so it must transitively need native and e2e (it needs {sorted(chain)})")
@@ -377,9 +379,46 @@ for problem in requirement_findings(option("--native-requirements", root / "test
 # Every *.test.* file is run by the one wrapper step (the canonical "Run the native harness unit
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
 wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
-need('sorted(here.glob("*.test.*"))' in wrapper, "run_tests.py must discover every *.test.* file with here.glob(\"*.test.*\")")
-need("if not stub_checker_canary():" in wrapper and "judge_canary()" in wrapper, "run_tests.py must run both canaries before the tests")
-need("--import" in wrapper and "count-asserts.mjs" in wrapper and "expected-asserts.json" in wrapper, "run_tests.py must count assertion calls of the JavaScript tests")
+def wrapper_findings(source):
+    """run_tests.py judged by its syntax tree, never by substring: a comment or a string cannot satisfy any of these."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        return [f"run_tests.py does not parse: {error}"]
+    expr = lambda code: ast.dump(ast.parse(code, mode="eval").body)
+    main_def = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    if main_def is None:
+        return ["run_tests.py has no main()"]
+    body = main_def.body
+    returns = lambda stmts, value: bool(stmts) and isinstance(stmts[-1], ast.Return) and isinstance(stmts[-1].value, ast.Constant) and stmts[-1].value.value == value
+    guard = lambda test_dump: any(isinstance(n, ast.If) and ast.dump(n.test) == test_dump and returns(n.body, 1) and not n.orelse for n in body)
+    assign = lambda name, value_dump: any(isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) and n.targets[0].id == name and ast.dump(n.value) == value_dump for n in body)
+    findings = []
+    if not guard(expr("not stub_checker_canary()")):
+        findings.append("run_tests.py main() must return 1 when the stub-checker canary fails (a top-level `if not stub_checker_canary(): ... return 1`)")
+    if not assign("missed", expr("judge_canary()")) or not guard(expr("missed")):
+        findings.append("run_tests.py main() must run judge_canary() into `missed` and return 1 if it is non-empty")
+    if not assign("tests", expr('sorted(directory.glob("*.test.*"))')):
+        findings.append('run_tests.py main() must discover every test with `tests = sorted(directory.glob("*.test.*"))`')
+    if not assign("failures", expr("[]")) or not guard(expr("failures")):
+        findings.append("run_tests.py main() must start `failures = []` and return 1 if it is non-empty")
+    collected = [n for n in ast.walk(main_def) if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and n.target.id == "failures" and isinstance(n.op, ast.Add)]
+    if not any(isinstance(f.value, ast.Name) and f.value.id == "findings" for f in collected) or not any(isinstance(n, ast.Call) and ast.dump(n.func) == expr("run_one") for n in ast.walk(main_def)):
+        findings.append("run_tests.py main() must add run_one's findings to failures")
+    if not (isinstance(body[-1], ast.Return) and returns(body, 0)):
+        findings.append("run_tests.py main() must end with `return 0` after the failure guard")
+    if not any(isinstance(n, ast.If) and ast.dump(n.test) == expr('__name__ == "__main__"') and [ast.dump(x) for x in n.body] == [ast.dump(ast.parse("sys.exit(main())").body[0])] for n in tree.body):
+        findings.append("run_tests.py must end with `if __name__ == \"__main__\": sys.exit(main())`")
+    docs = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}  # docstrings are prose, not use
+    strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs}
+    for needed_string in ("--import", "count-asserts.mjs", "expected-asserts.json"):
+        if needed_string not in strings:
+            findings.append(f"run_tests.py must use {needed_string} (assertion counting)")
+    return findings
+
+
+for problem in wrapper_findings(wrapper):
+    need(False, problem)
 
 # Whole-file rules (comments and strings included).
 for line in re.findall(r"uses:\s*(\S+)", text):

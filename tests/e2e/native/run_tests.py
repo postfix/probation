@@ -33,8 +33,8 @@ def judge(path, code, stdout, count, minimum):
     if not lines or not success_pattern(path).match(lines[-1]):
         findings.append(f"{path.name}: its success line is not the last line of output (last: {lines[-1][:80] if lines else 'nothing'!r})")
     findings += [f"{path.name}: output line {line[:80]!r}" for line in lines if BAD_LINE.match(line)]
-    if path.suffix == ".mjs" and (count is None or count < minimum):
-        findings.append(f"{path.name}: {count} assertion calls, expected at least {minimum}")
+    if (path.suffix == ".mjs" or minimum) and (count is None or count < minimum):  # a Python test counts its own checks in its success line
+        findings.append(f"{path.name}: {count} {'assertion calls' if path.suffix == '.mjs' else 'checks'}, expected at least {minimum}")
     return findings
 
 
@@ -48,7 +48,8 @@ def run_one(path, minimum, extra_env=None):
             count = int(counts.read_text(encoding="utf-8")) if counts.exists() else None
     else:
         r = subprocess.run([sys.executable, str(path)], capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=900)
-        count = None
+        last = (r.stdout.strip().splitlines() or [""])[-1]
+        count = int(m.group(1)) if (m := re.match(r"^\S+\.test: (\d+)\b", last)) else None
     findings = judge(path, r.returncode, r.stdout, count, minimum)
     if findings:  # a hosted failure is diagnosed from this log: the test's own stderr and the tail of its stdout
         tail = lambda text: "\n".join(text.rstrip().splitlines()[-40:])
@@ -77,7 +78,7 @@ def judge_canary():
     return [what for findings, what in cases if not findings]
 
 
-def main():
+def main(directory=here):
     skipped = SKIP_ON.get(sys.platform, set())
     if not stub_checker_canary():
         print("FAIL canary: check_workflow.test.py passed against a checker that always exits 0")
@@ -86,14 +87,16 @@ def main():
     if missed:
         print(f"FAIL canary: the judge accepted {missed}")
         return 1
-    expected = json.loads((here / "expected-asserts.json").read_text(encoding="utf-8"))
-    tests = sorted(here.glob("*.test.*"))
+    expected = json.loads((directory / "expected-asserts.json").read_text(encoding="utf-8"))
+    tests = sorted(directory.glob("*.test.*"))
     failures = []
+    # expected-asserts.json registers every test file: a deleted one (or a halved count) cannot pass unnoticed
+    failures += [f"{name} is registered in expected-asserts.json but does not exist" for name in expected if name not in skipped and not (directory / name).exists()]
     for path in tests:
         if path.name in skipped:
             print(f"SKIPPED on {sys.platform}: {path.name} (POSIX shell fakes)")
             continue
-        if path.suffix == ".mjs" and path.name not in expected:
+        if path.name not in expected:
             failures.append(f"{path.name} has no entry in expected-asserts.json")
             continue
         findings = run_one(path, expected.get(path.name, 0))

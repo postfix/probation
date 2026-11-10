@@ -14,11 +14,20 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-export const HANDSHAKE = "native-handshake";
-export const doneArtifact = (label) => {
-  if (!/^[a-z0-9-]+$/.test(label)) throw new Error(`bad job label ${JSON.stringify(label)}`);
-  return `native-done-${label}`;
+// Artifact names carry GITHUB_RUN_ATTEMPT: a re-run keeps the run id, so without it the re-run's upload would
+// collide with the first attempt's artifact (upload-artifact v4 refuses duplicate names) and its waits would
+// read the first attempt's stale handshake or done records.
+const attemptOf = (attempt) => {
+  if (!/^[1-9][0-9]*$/.test(String(attempt ?? ""))) throw new Error(`bad run attempt ${JSON.stringify(attempt)}`);
+  return String(attempt);
 };
+export const handshakeArtifact = (attempt) => `native-handshake-${attemptOf(attempt)}`;
+export const doneArtifact = (label, attempt) => {
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(label)) throw new Error(`bad job label ${JSON.stringify(label)}`);
+  return `native-done-${label}-${attemptOf(attempt)}`;
+};
+/// A pid worth signalling: kill(0) and kill(-n) address process groups, kill(1) is init.
+export const signalablePid = (text) => { const pid = Number(String(text).trim()); return Number.isInteger(pid) && pid > 1 ? pid : null; };
 
 const realClock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
@@ -52,7 +61,7 @@ export async function waitForAll({ list, names, timeoutMs, intervalMs, now = rea
   }
 }
 
-export const failedHandshake = (reason) => ({ status: "failed", reason: String(reason).slice(0, 300) });
+export const failedHandshake = (reason) => ({ status: "failed", reason: String(reason) });
 
 /// The handshake is strict because a native job sends its throwaway key to the URL in it.
 export function parseHandshake(text) {
@@ -63,7 +72,7 @@ export function parseHandshake(text) {
   if (h?.status !== "ready") bad(`unknown status ${JSON.stringify(h?.status)}`);
   if (typeof h.url !== "string" || !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(h.url)) bad("the URL is not a bare https quick-tunnel origin");
   if (typeof h.key !== "string" || !/^prb_[A-Za-z0-9]{32}$/.test(h.key)) bad("the service key is malformed");
-  for (const field of ["npmId", "pypiId"]) if (!Number.isInteger(h[field]) || h[field] < 1) bad(`${field} is not a registry id`);
+  for (const field of ["npmId", "pypiId"]) if (!Number.isSafeInteger(h[field]) || h[field] < 1 || h[field] > 2 ** 31) bad(`${field} is not a registry id`);
   if (!Number.isInteger(h.npmPort) || h.npmPort < 1024 || h.npmPort > 65535) bad("npmPort is not a high port");
   if (typeof h.hiddenName !== "string" || !/^token-private-[a-z0-9-]+$/.test(h.hiddenName)) bad("hiddenName is malformed");
   return { status: h.status, url: h.url, key: h.key, npmId: h.npmId, pypiId: h.pypiId, npmPort: h.npmPort, hiddenName: h.hiddenName };
@@ -85,15 +94,16 @@ function gh(args) {
 }
 const artifactsOf = (repo, run) => () => JSON.parse(`[${gh(["api", `repos/${repo}/actions/runs/${run}/artifacts?per_page=100`, "--jq", ".artifacts[] | {name, id}"]).trim().split("\n").filter(Boolean).join(",")}]`);
 const flag = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i < 0 ? fallback : process.argv[i + 1]; };
+const attempt = () => attemptOf(flag("attempt"));
 const minutes = (name, fallback) => Number(flag(name, fallback)) * 60_000;
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 async function main(command) {
   if (command === "client-wait") {
     const [repo, run, out] = [flag("repo"), flag("run-id"), flag("out")];
-    await waitForArtifact({ list: artifactsOf(repo, run), name: HANDSHAKE, timeoutMs: minutes("timeout-min", 50), intervalMs: 15_000 });
+    await waitForArtifact({ list: artifactsOf(repo, run), name: handshakeArtifact(attempt()), timeoutMs: minutes("timeout-min", 50), intervalMs: 15_000 });
     mkdirSync(out, { recursive: true });
-    gh(["run", "download", run, "--repo", repo, "--name", HANDSHAKE, "--dir", out]);
+    gh(["run", "download", run, "--repo", repo, "--name", handshakeArtifact(attempt()), "--dir", out]);
     const handshake = parseHandshake(readFileSync(join(out, "handshake.json"), "utf8"));
     console.log(maskLines(handshake).join("\n"));
     const keyFile = join(out, "service.key");
@@ -104,8 +114,14 @@ async function main(command) {
   } else if (command === "client-probe") {
     const [url, keyFile, label] = [process.env.NATIVE_POLICY_URL, process.env.NATIVE_SERVICE_KEY_FILE, flag("label")];
     const key = readFileSync(keyFile, "utf8").trim();
-    const probe = () => new Promise((resolve) => https.get(`${url}/api/v1/policy/snapshot`, { headers: { authorization: `Bearer ${key}`, "x-native-job": label } }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0)));
-    await pollUntil({ check: async () => (await probe()) === 200, timeoutMs: 120_000, intervalMs: 5_000, what: "the tunnel to answer the snapshot probe" });
+    // every request is bounded (a tunnel that accepts and never answers must not hang the step past the poll's deadline)
+    const requestMs = Number(flag("request-sec", 10)) * 1000;
+    const probe = () => new Promise((resolve) => {
+      const req = https.get(`${url}/api/v1/policy/snapshot`, { headers: { authorization: `Bearer ${key}`, "x-native-job": label }, timeout: requestMs }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on("timeout", () => { req.destroy(); resolve(0); });
+      req.on("error", () => resolve(0));
+    });
+    await pollUntil({ check: async () => (await probe()) === 200, timeoutMs: minutes("timeout-min", 2), intervalMs: 5_000, what: "the tunnel to answer the snapshot probe" });
     console.log(`probe as ${label}: the snapshot endpoint answered 200 through the tunnel`);
   } else if (command === "done") {
     const out = flag("out");
@@ -139,7 +155,7 @@ async function main(command) {
   } else if (command === "server-wait-done") {
     const dir = flag("dir");
     if (existsSync(join(dir, "handshake.json")) && JSON.parse(readFileSync(join(dir, "handshake.json"), "utf8")).status !== "ready") { console.log("no handshake was published: nothing to wait for"); return; }
-    const names = flag("expect").split(",").map(doneArtifact);
+    const names = flag("expect").split(",").map((label) => doneArtifact(label, attempt()));
     const { missing } = await waitForAll({ list: artifactsOf(flag("repo"), flag("run-id")), names, timeoutMs: minutes("timeout-min", 50), intervalMs: 15_000 });
     console.log(missing.length ? `deadline reached; still missing: ${missing.join(", ")}` : "every native job reported");
   } else if (command === "server-release") {
@@ -160,8 +176,8 @@ async function main(command) {
     for (const name of ["harness.pid", "cloudflared.pid"]) {
       const file = join(dir, name);
       if (!existsSync(file)) continue;
-      const pid = Number(readFileSync(file, "utf8"));
-      if (alive(pid)) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } await realClock.sleep(3000); if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
+      const pid = signalablePid(readFileSync(file, "utf8"));
+      if (pid && alive(pid)) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } await realClock.sleep(3000); if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
     }
     console.log("torn down");
   } else {

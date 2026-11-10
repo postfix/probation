@@ -57,6 +57,44 @@ assert run_tests.count_import().startswith("file:///"), run_tests.count_import()
 assert run_tests.count_import().endswith("/count-asserts.mjs")
 rejected += 0
 
+# main() itself: one failing .test.mjs among passing ones must exit 1; all passing exits 0; a registered file that
+# vanished, an unregistered file, and a Python test whose own count fell below its pin are each findings.
+import io, json, contextlib  # noqa: E402
+
+
+def main_over(files, expected):
+    real_canary, run_tests.stub_checker_canary = run_tests.stub_checker_canary, lambda: True  # the canary has its own test below
+    with tempfile.TemporaryDirectory(dir=scratch) as t:
+        t = pathlib.Path(t)
+        for name, body in files.items():
+            (t / name).write_text(body, encoding="utf-8")
+        (t / "expected-asserts.json").write_text(json.dumps(expected), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                code = run_tests.main(t)
+            finally:
+                run_tests.stub_checker_canary = real_canary
+        return code, out.getvalue()
+
+
+GOOD = 'import assert from "node:assert/strict";\nassert.equal(1, 1);\nconsole.log("a.test: ok");\n'
+BAD = 'import assert from "node:assert/strict";\nassert.equal(1, 1);\nprocess.exitCode = 1;\nconsole.log("b.test: ok");\n'
+PY = 'print("p.test: 5 bypasses all fail")\n'
+code, out = main_over({"a.test.mjs": GOOD, "p.test.py": PY}, {"a.test.mjs": 1, "p.test.py": 5})
+assert code == 0, out
+for what, (files, expected) in {
+    "a failing test file": ({"a.test.mjs": GOOD, "b.test.mjs": BAD, "p.test.py": PY}, {"a.test.mjs": 1, "b.test.mjs": 1, "p.test.py": 5}),
+    "a registered test file deleted": ({"a.test.mjs": GOOD}, {"a.test.mjs": 1, "p.test.py": 5}),
+    "a test file with no registration": ({"a.test.mjs": GOOD, "p.test.py": PY}, {"a.test.mjs": 1}),
+    "a Python test whose count halved": ({"a.test.mjs": GOOD, "p.test.py": PY}, {"a.test.mjs": 1, "p.test.py": 10}),
+}.items():
+    code, out = main_over(files, expected)
+    assert code == 1, f"{what} must exit 1: {out}"
+    rejected += 1
+# judge: a Python test that reports fewer checks than pinned is rejected
+assert run_tests.judge(here / "p.test.py", 0, "p.test: 3 bypasses all fail\n", 3, 50), "a halved Python count"
+assert not run_tests.judge(here / "p.test.py", 0, "p.test: 50 bypasses all fail\n", 50, 50)
+
 # The canary: a checker that always exits 0 must make check_workflow.test.py fail.
 assert run_tests.stub_checker_canary(), "check_workflow.test.py passed against a checker that always exits 0"
 rejected += 1

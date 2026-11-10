@@ -1,7 +1,7 @@
 // The handshake between the real-server job and the native jobs, with a fake clock and a fake artifact API.
 // node tests/e2e/native/rendezvous.test.mjs
 import assert from "node:assert/strict";
-import { doneArtifact, envLines, maskLines, parseHandshake, pollUntil, waitForArtifact, waitForAll, failedHandshake } from "./rendezvous.mjs";
+import { handshakeArtifact, doneArtifact, envLines, maskLines, parseHandshake, pollUntil, waitForArtifact, waitForAll, failedHandshake } from "./rendezvous.mjs";
 
 const key = "prb_" + "e".repeat(32);
 const ready = { status: "ready", url: "https://quiet-river-1234.trycloudflare.com", key, npmId: 4, pypiId: 5, npmPort: 43111, hiddenName: "token-private-ab12cd34" };
@@ -25,11 +25,11 @@ const clock = () => { let t = 0; return { now: () => t, sleep: async (ms) => { t
 {
   const { now, sleep } = clock();
   let polls = 0;
-  const list = async () => (++polls < 3 ? [{ name: "other" }] : [{ name: "other" }, { name: "native-handshake" }]);
-  assert.equal((await waitForArtifact({ list, name: "native-handshake", timeoutMs: 600_000, intervalMs: 10_000, now, sleep })).name, "native-handshake");
+  const list = async () => (++polls < 3 ? [{ name: "other" }] : [{ name: "other" }, { name: handshakeArtifact("1") }]);
+  assert.equal((await waitForArtifact({ list, name: handshakeArtifact("1"), timeoutMs: 600_000, intervalMs: 10_000, now, sleep })).name, handshakeArtifact("1"));
   assert.equal(polls, 3);
   const c = clock();
-  await assert.rejects(waitForArtifact({ list: async () => [], name: "native-handshake", timeoutMs: 30_000, intervalMs: 10_000, now: c.now, sleep: c.sleep }), /timed out/);
+  await assert.rejects(waitForArtifact({ list: async () => [], name: handshakeArtifact("1"), timeoutMs: 30_000, intervalMs: 10_000, now: c.now, sleep: c.sleep }), /timed out/);
   // A listing error does not end the wait: the next poll tries again.
   const d = clock();
   let flaky = 0;
@@ -41,12 +41,12 @@ const clock = () => { let t = 0; return { now: () => t, sleep: async (ms) => { t
   const { now, sleep } = clock();
   const present = new Set();
   let polls = 0;
-  const list = async () => { polls++; if (polls === 2) present.add("native-done-linux-x64"); if (polls === 3) present.add("native-done-win32-x64"); if (polls === 4) present.add("native-done-darwin-arm64"); return [...present].map((name) => ({ name })); };
-  const done = await waitForAll({ list, names: ["linux-x64", "darwin-arm64", "win32-x64"].map(doneArtifact), timeoutMs: 600_000, intervalMs: 10_000, now, sleep });
+  const list = async () => { polls++; if (polls === 2) present.add("native-done-linux-x64-1"); if (polls === 3) present.add("native-done-win32-x64-1"); if (polls === 4) present.add("native-done-darwin-arm64-1"); return [...present].map((name) => ({ name })); };
+  const done = await waitForAll({ list, names: ["linux-x64", "darwin-arm64", "win32-x64"].map((l) => doneArtifact(l, "1")), timeoutMs: 600_000, intervalMs: 10_000, now, sleep });
   assert.deepEqual(done.missing, []);
   const c = clock();
-  const partial = await waitForAll({ list: async () => [{ name: doneArtifact("linux-x64") }], names: ["linux-x64", "darwin-arm64"].map(doneArtifact), timeoutMs: 40_000, intervalMs: 10_000, now: c.now, sleep: c.sleep });
-  assert.deepEqual(partial.missing, [doneArtifact("darwin-arm64")], "the deadline returns what is still missing instead of hanging");
+  const partial = await waitForAll({ list: async () => [{ name: doneArtifact("linux-x64", "1") }], names: ["linux-x64", "darwin-arm64"].map((l) => doneArtifact(l, "1")), timeoutMs: 40_000, intervalMs: 10_000, now: c.now, sleep: c.sleep });
+  assert.deepEqual(partial.missing, [doneArtifact("darwin-arm64", "1")], "the deadline returns what is still missing instead of hanging");
   assert.equal(c.now() <= 40_000, true, "and never waits past the deadline");
 }
 
@@ -76,6 +76,16 @@ assert.ok(env.includes("NATIVE_SERVICE_KEY_FILE=/tmp/hs/service.key"));
 assert.ok(env.includes("NATIVE_NPM_PORT=43111") && env.includes("NATIVE_NPM_REGISTRY_ID=4") && env.includes("NATIVE_PYPI_REGISTRY_ID=5") && env.includes("NATIVE_HIDDEN_NAME=token-private-ab12cd34"));
 assert.ok(env.includes("NATIVE_POLICY_PUBLIC_TRUST=1"), "the tunnel's certificate is a public one");
 assert.ok(!env.join("\n").includes(key), "the key is in a file, not in the environment");
-assert.equal(doneArtifact("win32-x64"), "native-done-win32-x64");
-assert.throws(() => doneArtifact("../x"), /label/);
+assert.equal(doneArtifact("win32-x64", "2"), "native-done-win32-x64-2");
+assert.equal(handshakeArtifact("3"), "native-handshake-3");
+assert.notEqual(doneArtifact("win32-x64", "1"), doneArtifact("win32-x64", "2"), "a re-run attempt has its own artifact names");
+for (const label of ["../x", "x\n", "-", "a--b", "-a", "a-", ""]) assert.throws(() => doneArtifact(label, "1"), /label/, JSON.stringify(label));
+for (const attempt of [undefined, "", "0", "1x", "x1", "1\n", "-1"]) { assert.throws(() => doneArtifact("linux-x64", attempt), /attempt/); assert.throws(() => handshakeArtifact(attempt), /attempt/); }
+// a long failure reason is kept whole; a pypiId that is no registry id is refused
+assert.equal(failedHandshake("r".repeat(1000)).reason.length, 1000);
+bad({ pypiId: 0 }, "a zero pypi id");
+bad({ pypiId: "5" }, "a string pypi id");
+bad({ pypiId: 1.5 }, "a fractional pypi id");
+bad({ pypiId: 2 ** 40 }, "an absurd pypi id");
+bad({ pypiId: undefined }, "a missing pypi id");
 console.log("rendezvous.test: ok");

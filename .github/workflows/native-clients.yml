@@ -7,8 +7,8 @@ name: Native package clients
 # both registries and their private-egress approvals) and exposes only the policy snapshot, with the
 # run's throwaway service key, through a cloudflared quick tunnel (a pinned, checksum-verified
 # release; no account, no named tunnel, no repository secret). The jobs meet through run artifacts
-# (tests/e2e/native/rendezvous.mjs), every wait bounded: `native-handshake` from the server job,
-# `native-done-<platform>` from each native job. The server job then checks that every native job
+# (tests/e2e/native/rendezvous.mjs), every wait bounded: `native-handshake-<attempt>` from the server job,
+# `native-done-<platform>-<attempt>` from each native job. The server job then checks that every native job
 # really reached it, and tears the tunnel down (always). The handshake artifact holds the tunnel URL
 # and the throwaway key; both are masked in logs and are useless once the job ends.
 # A missing or wrong client, a failed build or a failed assertion fails the job.
@@ -120,7 +120,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --out "$RUNNER_TEMP/handshake" --timeout-min 50
+        run: node tests/e2e/native/rendezvous.mjs client-wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --out "$RUNNER_TEMP/handshake" --timeout-min 50
       - name: Probe the tunnel as this job
         shell: bash
         run: node tests/e2e/native/rendezvous.mjs client-probe --label "$NATIVE_PLATFORM"
@@ -134,7 +134,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-done-${{ matrix.platform }}
+          name: native-done-${{ matrix.platform }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/done/done.json
           retention-days: 1
 
@@ -197,7 +197,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-handshake
+          name: native-handshake-${{ github.run_attempt }}
           path: ${{ runner.temp }}/remote/handshake.json
           retention-days: 1
           if-no-files-found: error
@@ -206,7 +206,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node tests/e2e/native/rendezvous.mjs server-wait-done --dir "$RUNNER_TEMP/remote" --expect linux-x64,darwin-arm64,win32-x64 --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --timeout-min 55
+        run: node tests/e2e/native/rendezvous.mjs server-wait-done --dir "$RUNNER_TEMP/remote" --expect linux-x64,darwin-arm64,win32-x64 --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55
       - name: Release the scenario and check what the native jobs did
         if: always()
         run: node tests/e2e/native/rendezvous.mjs server-release --dir "$RUNNER_TEMP/remote" --timeout-min 10
@@ -217,7 +217,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-real-server-logs
+          name: native-real-server-logs-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/remote/harness.log
             target/e2e/out

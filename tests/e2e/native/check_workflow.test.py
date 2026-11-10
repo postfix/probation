@@ -92,7 +92,7 @@ mutations = {
     "completion upload without always()": sub("      - name: Upload the completion record\n        if: always()\n", "      - name: Upload the completion record\n"),
     "real-server without the hard timeout": sub("    timeout-minutes: 110\n", ""),
     "real-server with a longer timeout": sub("    timeout-minutes: 110\n", "    timeout-minutes: 360\n"),
-    "unbounded wait for the native jobs": sub("--expect linux-x64,darwin-arm64,win32-x64 --repo \"$GITHUB_REPOSITORY\" --run-id \"$GITHUB_RUN_ID\" --timeout-min 55", "--expect linux-x64,darwin-arm64,win32-x64 --repo \"$GITHUB_REPOSITORY\" --run-id \"$GITHUB_RUN_ID\" --timeout-min 5000"),
+    "unbounded wait for the native jobs": sub("--expect linux-x64,darwin-arm64,win32-x64 --repo \"$GITHUB_REPOSITORY\" --run-id \"$GITHUB_RUN_ID\" --attempt \"$GITHUB_RUN_ATTEMPT\" --timeout-min 55", "--expect linux-x64,darwin-arm64,win32-x64 --repo \"$GITHUB_REPOSITORY\" --run-id \"$GITHUB_RUN_ID\" --attempt \"$GITHUB_RUN_ATTEMPT\" --timeout-min 5000"),
     "client waits for the handshake forever": sub("--out \"$RUNNER_TEMP/handshake\" --timeout-min 50", "--out \"$RUNNER_TEMP/handshake\" --timeout-min 5000"),
     "cloudflared fetched with curl": sub("run: node tests/e2e/native/cloudflared.mjs fetch \"$RUNNER_TEMP/cloudflared\"", "run: curl -L -o \"$RUNNER_TEMP/cloudflared\" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x \"$RUNNER_TEMP/cloudflared\""),
     "cloudflared fetch step removed": sub("      - name: Fetch cloudflared (pinned, checksum-verified)\n        run: node tests/e2e/native/cloudflared.mjs fetch \"$RUNNER_TEMP/cloudflared\"\n", ""),
@@ -143,6 +143,14 @@ release_mutations = {
     "release needs build and native only (H1)": good_release.replace("  release:\n    needs: [build, e2e, native]\n", "  release:\n    needs: [build, native]\n", 1),
     "an extra job running cargo publish with no needs (H1)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo publish --workspace\n        env:\n          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n",
     "an extra job pushing images with no needs (H1)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker push ghcr.io/x/y:z\n",
+    '|| echo in a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: cargo package --workspace --exclude probation-server --locked || echo ignored\n', 1),
+    '|| /bin/true in a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: cargo package --workspace --exclude probation-server --locked || /bin/true\n', 1),
+    '|| : at the end of a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: cargo package --workspace --exclude probation-server --locked || :\n', 1),
+    'set +e in a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: |\n          set +e\n          cargo package --workspace --exclude probation-server --locked\n', 1),
+    '; true in a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: cargo package --workspace --exclude probation-server --locked; true\n', 1),
+    "an extra job running git push with no needs (F5)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git push origin HEAD:refs/tags/v9\n",
+    "an extra job using build-push-action with no needs (F5)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/build-push-action@0000000000000000000000000000000000000000\n",
+    "an extra job running buildx --push with no needs (F5)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker buildx build --push -t x/y .\n",
     "|| true in a release step (H1)": good_release.replace("      - run: cargo package --workspace --exclude probation-server --locked\n", "      - run: cargo package --workspace --exclude probation-server --locked || true\n", 1),
     "step if outside the upload-artifact exception (H1)": good_release.replace("      - run: cargo publish --workspace --locked --no-verify\n", "      - if: always()\n        run: cargo publish --workspace --locked --no-verify\n", 1),
     "continue-on-error on a job (H1)": good_release.replace("  codeql:\n    needs: test\n", "  codeql:\n    needs: test\n    continue-on-error: true\n", 1),
@@ -154,6 +162,7 @@ release_mutations = {
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
 }
 failed = []
+extra_checks = []  # the mutations of the loops below, counted into the final line (run_tests pins the total)
 good_probe = (root / ".github/workflows/native-call-probe.yml").read_text(encoding="utf-8")
 CALL = "    uses: ./.github/workflows/native-clients.yml\n"
 probe_mutations = {
@@ -190,8 +199,14 @@ r = subprocess.run([sys.executable, str(checker), "--probe", str(here / "no-such
 assert r.returncode == 0, f"without the temporary probe the workflow must pass: {r.stdout}{r.stderr}"
 # Under workflow_call github.run_id is the CALLER's id: every artifact wait and upload of the called workflow must key on it
 # (never a fixed run), so the direct run and the probe's run cannot read each other's handshake or completion records.
-for name, text in {"wait-done on another run": sub('--repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --timeout-min 55', '--repo "$GITHUB_REPOSITORY" --run-id 1 --timeout-min 55'),
-                   "client-wait on another run": sub('--run-id "$GITHUB_RUN_ID" --out', '--run-id 1 --out')}.items():
+for name, text in {"wait-done on another run": sub('--repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55', '--repo "$GITHUB_REPOSITORY" --run-id 1 --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55'),
+                   "client-wait on another run": sub('--run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --out', '--run-id 1 --attempt "$GITHUB_RUN_ATTEMPT" --out'),
+                   "client-wait without the attempt": sub(' --attempt "$GITHUB_RUN_ATTEMPT" --out', ' --out'),
+                   "wait-done without the attempt": sub(' --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55', ' --timeout-min 55'),
+                   "handshake upload without the attempt": sub("name: native-handshake-${{ github.run_attempt }}", "name: native-handshake"),
+                   "done upload without the attempt": sub("name: native-done-${{ matrix.platform }}-${{ github.run_attempt }}", "name: native-done-${{ matrix.platform }}"),
+                   "logs upload without the attempt": sub("name: native-real-server-logs-${{ github.run_attempt }}", "name: native-real-server-logs")}.items():
+    extra_checks.append(name)
     code, out = check(text)
     if code == 0:
         failed.append(name)
@@ -280,9 +295,23 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
             print(f"BYPASS: checker-requirements {name}")
     # H2: the wrapper must still discover every test, run both canaries and count assertions.
     wrapper_text = (here / "run_tests.py").read_text(encoding="utf-8")
-    for name, text in {"fixed test list": wrapper_text.replace('sorted(here.glob("*.test.*"))', '[here / "assertions.test.mjs"]'),
+    def wrap(old, new):
+        assert old in wrapper_text, old
+        return wrapper_text.replace(old, new, 1)
+    for name, text in {"fixed test list": wrapper_text.replace('sorted(directory.glob("*.test.*"))', '[here / "assertions.test.mjs"]'),
                        "no stub canary": wrapper_text.replace("if not stub_checker_canary():", "if False:"),
-                       "no assertion counting": wrapper_text.replace("count-asserts.mjs", "gone.mjs")}.items():
+                       "no assertion counting": wrapper_text.replace("count-asserts.mjs", "gone.mjs"),
+                       "decoy: if False and the canary in a comment": wrap("if not stub_checker_canary():", "if False and not stub_checker_canary():  # if not stub_checker_canary():"),
+                       "decoy: missed emptied, judge_canary() in a comment": wrap("missed = judge_canary()", "missed = []  # judge_canary()"),
+                       "decoy: glob only in a comment": wrap('tests = sorted(directory.glob("*.test.*"))', 'tests = [here / "assertions.test.mjs"]  # sorted(here.glob("*.test.*"))'),
+                       "decoy: glob in a string": wrap('tests = sorted(directory.glob("*.test.*"))', 'tests = [here / "assertions.test.mjs"]; _ = \'sorted(here.glob("*.test.*"))\''),
+                       "failures never fail the run": wrap("    if failures:\n", "    if False:\n"),
+                       "failures never collected": wrap("        failures += findings\n", "        pass\n"),
+                       "the canary result ignored": wrap("        return 1\n    missed", "        pass\n    missed"),
+                       "main always returns 0": wrap('finding(s)")\n        return 1', 'finding(s)")\n        return 0'),
+                       "the exit status dropped": wrap("sys.exit(main())", "main()"),
+                       "the registry not read": wrap('(directory / "expected-asserts.json").read_text(encoding="utf-8")', '"{}"')}.items():
+        extra_checks.append(name)
         (d / "wrapper.py").write_text(text, encoding="utf-8")
         code, out = run_checker("--run-tests", str(d / "wrapper.py"))
         if code == 0:
@@ -312,4 +341,4 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         print(f"a real meta must be found: {out}")
 if failed:
     sys.exit(1)
-print(f"check_workflow.test: {len(mutations) + len(release_mutations) + len(probe_mutations)} bypasses all fail, known-good passes")
+print(f"check_workflow.test: {len(mutations) + len(release_mutations) + len(probe_mutations) + len(extra_checks)} bypasses all fail, known-good passes")

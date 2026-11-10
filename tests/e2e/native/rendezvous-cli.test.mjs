@@ -4,7 +4,8 @@
 // NATIVE_TEST_SCRATCH=<disk dir> node tests/e2e/native/rendezvous-cli.test.mjs
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import net from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,9 +37,9 @@ const run = (args, env) => spawnSync(process.execPath, [cli, ...args], { encodin
 
 // client-wait: downloads the handshake, prints the masks FIRST, keeps the key in a private file, not in the environment.
 {
-  const { root, env } = setup(["other", "native-handshake"], ready);
+  const { root, env } = setup(["other", "native-handshake-2"], ready);
   const out = join(root, "hs");
-  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--out", out, "--timeout-min", "1"], env);
+  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--attempt", "2", "--out", out, "--timeout-min", "1"], env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const lines = r.stdout.split("\n");
   assert.deepEqual(lines.slice(0, 3), [`::add-mask::${ready.url}`, "::add-mask::calm-lake-42.trycloudflare.com", `::add-mask::${key}`], "masks are the first output");
@@ -53,9 +54,9 @@ const run = (args, env) => spawnSync(process.execPath, [cli, ...args], { encodin
 }
 // A hostile or failed handshake: no key file, no environment, a non-zero exit.
 for (const [what, handshake, pattern] of [["another host", { ...ready, url: "https://evil.example" }, /handshake/], ["a failed server job", { status: "failed", reason: "tunnel did not come up" }, /server job failed: tunnel did not come up/], ["not JSON", "<html>", /handshake/]]) {
-  const { root, env } = setup(["native-handshake"], handshake);
+  const { root, env } = setup(["native-handshake-2"], handshake);
   const out = join(root, "hs");
-  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--out", out, "--timeout-min", "1"], env);
+  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--attempt", "2", "--out", out, "--timeout-min", "1"], env);
   assert.notEqual(r.status, 0, what);
   assert.match(r.stderr, pattern, what);
   assert.ok(!existsSync(join(out, "service.key")), `${what}: no key file`);
@@ -84,15 +85,18 @@ for (const [what, handshake, pattern] of [["another host", { ...ready, url: "htt
 }
 // server-wait-done: nothing to wait for after a failed handshake; otherwise it ends when every job has reported.
 {
-  const { root, env } = setup(["native-done-linux-x64", "native-done-darwin-arm64", "native-done-win32-x64"], ready);
+  const { root, env } = setup(["native-done-linux-x64-2", "native-done-darwin-arm64-2", "native-done-win32-x64-2"], ready);
   const dir = join(root, "remote");
   mkdirSync(dir);
   writeFileSync(join(dir, "handshake.json"), `${JSON.stringify(ready)}\n`);
-  let r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64,darwin-arm64,win32-x64", "--repo", "o/r", "--run-id", "7", "--timeout-min", "1"], env);
+  let r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64,darwin-arm64,win32-x64", "--repo", "o/r", "--run-id", "7", "--attempt", "2", "--timeout-min", "1"], env);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /every native job reported/);
+  // a previous attempt's done artifacts do not count for attempt 3
+  r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64,darwin-arm64,win32-x64", "--repo", "o/r", "--run-id", "7", "--attempt", "3", "--timeout-min", "0.001"], env);
+  assert.match(r.stdout, /still missing: native-done-linux-x64-3, native-done-darwin-arm64-3, native-done-win32-x64-3/, r.stdout);
   writeFileSync(join(dir, "handshake.json"), '{"status":"failed","reason":"x"}\n');
-  r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64", "--repo", "o/r", "--run-id", "7", "--timeout-min", "1"], { ...env, ARTIFACTS: "" });
+  r = run(["server-wait-done", "--dir", dir, "--expect", "linux-x64", "--repo", "o/r", "--run-id", "7", "--attempt", "2", "--timeout-min", "1"], { ...env, ARTIFACTS: "" });
   assert.match(r.stdout, /nothing to wait for/);
   rmSync(root, { recursive: true, force: true });
 }
@@ -125,6 +129,55 @@ for (const [ok, status] of [[true, 0], [false, 1]]) {
   const r = run(["done", "--label", "win32-x64", "--status", "failure", "--out", join(root, "d")], env);
   assert.equal(r.status, 0);
   assert.equal(JSON.parse(readFileSync(join(root, "d", "done.json"), "utf8")).status, "failure");
+  rmSync(root, { recursive: true, force: true });
+}
+// client-wait: another attempt's handshake is not accepted (attempt 3 finds only native-handshake-2).
+{
+  const { root, env } = setup(["native-handshake-2"], ready);
+  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--attempt", "3", "--out", join(root, "hs"), "--timeout-min", "0.001"], env);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /native-handshake-3/);
+  assert.ok(!existsSync(join(root, "hs", "service.key")));
+  rmSync(root, { recursive: true, force: true });
+}
+// client-wait/server-wait-done without --attempt refuse to guess.
+{
+  const { root, env } = setup(["native-handshake-2"], ready);
+  const r = run(["client-wait", "--repo", "o/r", "--run-id", "7", "--out", join(root, "hs"), "--timeout-min", "0.001"], env);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /attempt/);
+  rmSync(root, { recursive: true, force: true });
+}
+// client-probe against a TLS server that never answers: bounded by --timeout-min plus one request timeout, exits non-zero.
+{
+  const server = net.createServer(() => {}); // accepts the TCP connection, never answers the TLS hello
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { root, env } = setup([], ready);
+  writeFileSync(join(root, "k"), `${key}\n`);
+  const child = spawn(process.execPath, [cli, "client-probe", "--label", "linux-x64", "--timeout-min", "0.02", "--request-sec", "1"], { env: { ...env, NATIVE_POLICY_URL: `https://127.0.0.1:${server.address().port}`, NATIVE_SERVICE_KEY_FILE: join(root, "k") } });
+  let stderr = "";
+  child.stderr.on("data", (d) => { stderr += d; });
+  const started = Date.now();
+  const code = await new Promise((resolve) => { const t = setTimeout(() => { child.kill("SIGKILL"); resolve("hung"); }, 20_000); child.on("close", (c) => { clearTimeout(t); resolve(c); }); });
+  server.close();
+  assert.equal(code, 1, `the probe must give up, got ${code}: ${stderr}`);
+  assert.ok(Date.now() - started < 10_000, "and promptly");
+  assert.match(stderr, /timed out/);
+  rmSync(root, { recursive: true, force: true });
+}
+// server-teardown never signals pid 0 / negative / garbage (kill(0) would signal its own process group): run in its own group.
+for (const content of ["", "0\n", "-3\n", "abc\n", "1.5\n"]) {
+  const { root, env } = setup([], ready);
+  const dir = join(root, "remote");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "harness.pid"), content);
+  const child = spawn(process.execPath, [cli, "server-teardown", "--dir", dir], { env, detached: true });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const [code, signal] = await new Promise((resolve) => child.on("close", (c, sg) => resolve([c, sg])));
+  assert.equal(signal, null, `pid file ${JSON.stringify(content)} made teardown signal its own group`);
+  assert.equal(code, 0);
+  assert.match(out, /torn down/);
   rmSync(root, { recursive: true, force: true });
 }
 console.log("rendezvous-cli.test: ok");
