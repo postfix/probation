@@ -396,7 +396,7 @@ for problem in requirement_findings(option("--native-requirements", root / "test
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
 wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
 # Floors the registry may not go below (F9): raise them with the tests, never lower them or drop an entry.
-MIN_FLOORS = {"assertions.test.mjs": 118, "ca-script.test.mjs": 3, "check_workflow.test.py": 175, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 28, "rendezvous-cli.test.mjs": 63, "rendezvous.test.mjs": 61, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 53, "spawn-args.test.mjs": 34, "stack.test.mjs": 24}
+MIN_FLOORS = {"assertions.test.mjs": 192, "ca-script.test.mjs": 3, "check_workflow.test.py": 175, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 35, "rendezvous-cli.test.mjs": 80, "rendezvous.test.mjs": 89, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 58, "spawn-args.test.mjs": 38, "stack.test.mjs": 24}
 SKIP_ON_LITERAL = '{"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}'
 expected_path = option("--expected", root / "tests/e2e/native/expected-asserts.json")
 registry = json.loads(expected_path.read_text(encoding="utf-8"))

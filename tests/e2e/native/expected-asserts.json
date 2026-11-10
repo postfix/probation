@@ -1,5 +1,5 @@
 {
-  "assertions.test.mjs": 118,
+  "assertions.test.mjs": 192,
   "ca-script.test.mjs": 3,
   "check_workflow.test.py": 175,
   "clients.test.mjs": 513,
@@ -11,13 +11,13 @@
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,
   "openssl-setup.test.mjs": 37,
-  "pf.test.mjs": 28,
-  "rendezvous-cli.test.mjs": 63,
-  "rendezvous.test.mjs": 61,
+  "pf.test.mjs": 35,
+  "rendezvous-cli.test.mjs": 80,
+  "rendezvous.test.mjs": 89,
   "run-ids.test.mjs": 6,
   "run_tests.test.py": 11,
   "scope.test.mjs": 3,
-  "snapshot-proxy.test.mjs": 53,
-  "spawn-args.test.mjs": 34,
+  "snapshot-proxy.test.mjs": 58,
+  "spawn-args.test.mjs": 38,
   "stack.test.mjs": 24
 }
