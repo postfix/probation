@@ -100,7 +100,7 @@
 - [x] Slice 4 — PyPI publishing and uv workflows
   - proof: node tests/e2e/harness/run.mjs --only E2E-publishing-full-matrix -> PASS 1 passed/0 failed/0 not run in 2846.9 s; workspace 792/0/22; molecule-check PASS; molecule-verify 9/9 PASS; python-service large-upload probe PASS; evidence/slice-4.md; reviews: code=SHIP, security=CLEAR, adversarial=PASS, qa=VERIFIED
 - [x] Slice 5 — Native package-client release acceptance
-  - proof: gh run view 42656332388: native linux-x64/darwin-arm64/win32-x64 75 checks each, real-server 39 snapshot requests, linux-managed green; router molecule-verify slice 5 PASS 9/9 -> all jobs success on 89604a6, zero skipped clients, molecule-verify PASS, sf-verification VERIFIED (evidence/slice-5-verification.md); reviews: qa=VERIFIED
+  - proof: gh run view 42656332388: native linux-x64/darwin-arm64/win32-x64 75 checks each, real-server 39 snapshot requests, linux-managed green; router molecule-verify slice 5 PASS 9/9 -> all jobs success on 89604a6, zero skipped clients, molecule-verify PASS, sf-verification VERIFIED (evidence/slice-5-verification.md); adversarial review FIX in two rounds (F1-F12), fixes landed with mutation-killing regression tests and hosted runs green, final round-2 fixes not independently re-reviewed; accepted open: server-wait-done ignores done.json status, Pacer mutants p11/p12 unchecked, idle-not-total download timeouts, Windows-only paths unit-tested only; reviews: security=CLEAR, adversarial=FIXED, qa=VERIFIED
 
 ## Notes for a fresh session
 
