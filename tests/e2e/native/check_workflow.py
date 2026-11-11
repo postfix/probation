@@ -181,9 +181,7 @@ need(set(wf) == {"name", True, "permissions", "jobs"}, f"unexpected top-level ke
 need(wf.get("permissions") == {"contents": "read", "actions": "read"}, "top-level permissions must be exactly contents: read and actions: read (the handshake is read from this run's artifacts)")
 on = wf.get(True, {})
 BASE_TRIGGERS = {"workflow_call", "workflow_dispatch", "schedule"}
-need(set(on) in (BASE_TRIGGERS, BASE_TRIGGERS | {"push"}), f"unexpected triggers {sorted(on)}")
-# The one temporary exception: a push of exactly the branch that carries this work, no tags, paths or patterns.
-need("push" not in on or same(on["push"], {"branches": ["slice5-native-ci"]}), f"the push trigger may only be `branches: [slice5-native-ci]`, found {on.get('push')!r}")
+need(set(on) == BASE_TRIGGERS, f"unexpected triggers {sorted(on)} (no push trigger of any form)")
 need(on.get("workflow_call") in ({}, None), "workflow_call must declare no secrets or inputs")
 need(on.get("workflow_dispatch") in ({}, None), "workflow_dispatch must declare no inputs")
 need(on.get("schedule") == [{"cron": "23 4 * * *"}], "unexpected schedule")
@@ -250,22 +248,8 @@ for gated in ("release", "publish"):
     need("native" in needs, f"release.yml's {gated} job must need native (needs: {needs})")
 need("e2e" in (release.get("release", {}).get("needs") or []), "release.yml's release job must need e2e directly")
 
-# The TEMPORARY call probe (remove before merging): absent is the permanent shape; present, it is exactly one push of the one
-# branch and one job that calls this workflow with release.yml's grant, no secrets and nothing else.
-if probe_path.exists():
-    probe_bytes = probe_path.read_bytes()
-    odd = sorted({chr(b) if b < 128 else f"0x{b:02x}" for b in probe_bytes if not (0x20 <= b <= 0x7E or b in (0x0A, 0x0D))})
-    need(not odd, f"native-call-probe.yml holds characters outside printable ASCII: {odd[:6]}")
-    try:
-        probe_wf = load_strict(probe_bytes.decode("utf-8", errors="replace"))
-    except yaml.YAMLError as error:
-        probe_wf = None
-        need(False, f"native-call-probe.yml is not plain YAML: {error}")
-    PROBE = {"name": "Native call probe", True: {"push": {"branches": ["slice5-native-ci"]}},
-             "jobs": {"native": {"permissions": {"contents": "read", "actions": "read"}, "uses": "./.github/workflows/native-clients.yml"}}}
-    if probe_wf is not None:
-        need(same({str(k): v for k, v in probe_wf.items()}, {str(k): v for k, v in PROBE.items()}),
-             f"native-call-probe.yml must be exactly one push of slice5-native-ci and one job calling native-clients.yml with contents: read and actions: read (no secrets, with, if, needs): {json.dumps({str(k): v for k, v in probe_wf.items()})[:300]}")
+# The hosted-run call probe was temporary scaffolding: the permanent shape is that it does not exist.
+need(not probe_path.exists(), "native-call-probe.yml must be absent (it was temporary; remove it)")
 
 # The Actions token (GH_TOKEN) belongs only to the `gh` rendezvous steps that read this run's artifacts: never in a workflow- or
 # job-level env, never in a build or test step, so no cargo build script or client process can see it.
@@ -396,7 +380,7 @@ for problem in requirement_findings(option("--native-requirements", root / "test
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
 wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
 # Floors the registry may not go below (F9): raise them with the tests, never lower them or drop an entry.
-MIN_FLOORS = {"assertions.test.mjs": 192, "ca-script.test.mjs": 3, "check_workflow.test.py": 175, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 35, "rendezvous-cli.test.mjs": 80, "rendezvous.test.mjs": 89, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 58, "spawn-args.test.mjs": 38, "stack.test.mjs": 24}
+MIN_FLOORS = {"assertions.test.mjs": 192, "ca-script.test.mjs": 3, "check_workflow.test.py": 160, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 35, "rendezvous-cli.test.mjs": 80, "rendezvous.test.mjs": 89, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 58, "spawn-args.test.mjs": 38, "stack.test.mjs": 24}
 SKIP_ON_LITERAL = '{"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}'
 expected_path = option("--expected", root / "tests/e2e/native/expected-asserts.json")
 registry = json.loads(expected_path.read_text(encoding="utf-8"))

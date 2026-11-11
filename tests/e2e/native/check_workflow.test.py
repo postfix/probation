@@ -9,8 +9,7 @@ for _stream in (sys.stdout, sys.stderr):
 here = pathlib.Path(__file__).resolve().parent
 root = here.parents[2]
 good = (root / ".github/workflows/native-clients.yml").read_text(encoding="utf-8")
-ON_PUSH_BRANCH = "  push:\n    branches: [slice5-native-ci]\n"
-ON_PUSH_BLOCK = "  # TEMPORARY: remove before merging; lets the branch run its own hosted jobs\n" + ON_PUSH_BRANCH
+PUSH = "  workflow_dispatch:\n  push:\n"
 checker = pathlib.Path(os.environ.get("NATIVE_CHECKER", here / "check_workflow.py"))  # a stub makes the canary in run_tests.py trip
 scratch = os.environ.get("NATIVE_TEST_SCRATCH")  # small text files only; unset uses the system temp dir
 
@@ -103,14 +102,13 @@ mutations = {
     "actions: write": sub("  contents: read\n  actions: read\n", "  contents: read\n  actions: write\n"),
     "a repository secret for the tunnel": sub("          GH_TOKEN: ${{ github.token }}\n        run: node tests/e2e/native/rendezvous.mjs server-wait-done", "          GH_TOKEN: ${{ secrets.TUNNEL_TOKEN }}\n        run: node tests/e2e/native/rendezvous.mjs server-wait-done"),
     "stub tunnel switched on": sub("          export E2E_REMOTE_DIR=\"$RUNNER_TEMP/remote\"\n", "          export E2E_REMOTE_DIR=\"$RUNNER_TEMP/remote\"\n          export E2E_TUNNEL=stub\n"),
-    # --- triggers: the temporary push of the one branch is allowed; nothing broader
-    "push on another branch": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("slice5-native-ci", "main")),
-    "push on every branch": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("[slice5-native-ci]", "['**']")),
-    "push on two branches": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH.replace("[slice5-native-ci]", "[slice5-native-ci, main]")),
-    "push with tags": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    tags: ['v*']\n"),
-    "push with paths": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    paths: ['docs/**']\n"),
-    "push with branches-ignore": sub(ON_PUSH_BRANCH, ON_PUSH_BRANCH + "    branches-ignore: [x]\n"),
-    "bare push": sub(ON_PUSH_BRANCH, "  push:\n"),
+    # --- triggers: no push of any form is permitted
+    "push on a branch": sub("  workflow_dispatch:\n", PUSH + "    branches: [main]\n"),
+    "push on every branch": sub("  workflow_dispatch:\n", PUSH + "    branches: ['**']\n"),
+    "push with tags": sub("  workflow_dispatch:\n", PUSH + "    tags: ['v*']\n"),
+    "push with paths": sub("  workflow_dispatch:\n", PUSH + "    paths: ['docs/**']\n"),
+    "push with branches-ignore": sub("  workflow_dispatch:\n", PUSH + "    branches-ignore: [x]\n"),
+    "bare push": sub("  workflow_dispatch:\n", PUSH),
     "pull_request": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"),
     "pull_request_target": sub("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n"),
     "Python UTF-8 mode dropped from the job env": sub('      PYTHONUTF8: "1"\n', ""),
@@ -179,40 +177,15 @@ release_mutations = {
 }
 failed = []
 extra_checks = []  # the mutations of the loops below, counted into the final line (run_tests pins the total)
-good_probe = (root / ".github/workflows/native-call-probe.yml").read_text(encoding="utf-8")
-CALL = "    uses: ./.github/workflows/native-clients.yml\n"
-probe_mutations = {
-    "probe with secrets: inherit": good_probe.replace(CALL, CALL + "    secrets: inherit\n"),
-    "probe with a named secret": good_probe.replace(CALL, CALL + "    secrets:\n      X: ${{ secrets.X }}\n"),
-    "probe with inputs": good_probe.replace(CALL, CALL + "    with:\n      x: 1\n"),
-    "probe permissions widened": good_probe.replace("      actions: read\n", "      actions: write\n"),
-    "probe with extra permission": good_probe.replace("      actions: read\n", "      actions: read\n      packages: write\n"),
-    "probe without permissions": good_probe.replace("    permissions:\n      contents: read\n      actions: read\n", ""),
-    "probe calls another workflow": good_probe.replace("native-clients.yml", "release.yml"),
-    "probe on every branch": good_probe.replace("[slice5-native-ci]", "['**']"),
-    "probe on main": good_probe.replace("[slice5-native-ci]", "[main]"),
-    "probe on pull_request": good_probe.replace("on:\n  push:", "on:\n  pull_request:\n  push:"),
-    "probe with a second job": good_probe + "  publish:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n",
-    "probe job with if": good_probe.replace(CALL, "    if: always()\n" + CALL),
-    "probe job with needs": good_probe.replace(CALL, "    needs: other\n" + CALL),
-    "probe with a non-ASCII character": good_probe.replace("Native call probe", "Native call probe\u200b", 1),
-    "probe with a duplicate key": good_probe.replace(CALL, CALL + CALL),
-}
-for name, probe_text in probe_mutations.items():
-    assert probe_text != good_probe, f"{name}: mutation changed nothing"
-    with tempfile.TemporaryDirectory(dir=scratch) as d:
-        probe_file = pathlib.Path(d) / "probe.yml"
-        probe_file.write_text(probe_text, encoding="utf-8")
-        r = subprocess.run([sys.executable, str(checker), "--probe", str(probe_file)], capture_output=True, encoding="utf-8", errors="replace")
-        out = r.stdout + r.stderr
-        if r.returncode == 0:
-            failed.append(name)
-            print(f"BYPASS (checker passed): {name}")
-        elif "FAIL " not in out or "Traceback" in out:
-            failed.append(name)
-            print(f"CRASH (not a clean FAIL): {name}: {out[-300:]}")
+# The call probe was temporary: its presence is rejected, its absence is the permanent shape.
+probe_mutations = {"native-call-probe.yml present": None}
+with tempfile.TemporaryDirectory(dir=scratch) as d:
+    probe_file = pathlib.Path(d) / "probe.yml"
+    probe_file.write_text("name: Native call probe\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(checker), "--probe", str(probe_file)], capture_output=True, encoding="utf-8", errors="replace")
+    assert r.returncode != 0 and "FAIL " in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr, f"a present probe must fail cleanly: {r.stdout}{r.stderr}"
 r = subprocess.run([sys.executable, str(checker), "--probe", str(here / "no-such-probe.yml")], capture_output=True, encoding="utf-8", errors="replace")
-assert r.returncode == 0, f"without the temporary probe the workflow must pass: {r.stdout}{r.stderr}"
+assert r.returncode == 0, f"without the probe the workflow must pass: {r.stdout}{r.stderr}"
 # Under workflow_call github.run_id is the CALLER's id: every artifact wait and upload of the called workflow must key on it
 # (never a fixed run), so the direct run and the probe's run cannot read each other's handshake or completion records.
 for name, text in {"wait-done on another run": sub('--repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55', '--repo "$GITHUB_REPOSITORY" --run-id 1 --attempt "$GITHUB_RUN_ATTEMPT" --timeout-min 55'),
@@ -230,10 +203,6 @@ for name, text in {"wait-done on another run": sub('--repo "$GITHUB_REPOSITORY" 
 ids_check = subprocess.run([sys.executable, str(checker), "--verify-ids", "E2E-publishing-native-linux", "E2E-no-such-scenario"], capture_output=True, encoding="utf-8", errors="replace")
 assert ids_check.returncode == 1 and "E2E-no-such-scenario" in ids_check.stdout and "native-linux" not in ids_check.stdout.replace("E2E-publishing-native-linux exists", ""), f"--verify-ids must name only the unknown ID: {ids_check.stdout}"
 
-# The permanent shape (no push trigger at all) is accepted too.
-assert ON_PUSH_BLOCK in good, "the temporary push trigger is in the workflow"
-code, out = check(good.replace(ON_PUSH_BLOCK, ""))
-assert code == 0, f"the workflow without the temporary push trigger must pass: {out}"
 code, out = check(good)
 assert code == 0, f"the known-good workflow must pass: {out}"
 for name, text in mutations.items():
