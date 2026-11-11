@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":53,"boundary":{"kind":"presentation","number":5},"reopened":false,"history":[],"presentedSlice":4}
+{"generation":54,"boundary":null,"reopened":false,"history":[],"presentedSlice":5}
 
 ## Gate 1 progress
 
