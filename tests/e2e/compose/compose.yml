@@ -156,8 +156,10 @@ services:
       e2e:
         ipv4_address: ${E2E_NET:-11.220.0}.11
       edge: {}
+    # Loopback unless E2E_BRIDGE_BIND names an address: a native macOS/Windows runner reaching a remote
+    # Linux stack needs the host's own address here (README). The bridge only tunnels to the e2e network.
     ports:
-      - "127.0.0.1:${E2E_BRIDGE_PORT:-18128}:3128"
+      - "${E2E_BRIDGE_BIND:-127.0.0.1}:${E2E_BRIDGE_PORT:-18128}:3128"
 
   firewall-1:
     <<: *firewall

@@ -159,6 +159,10 @@ pub async fn serve_artifact_in(
         .policy_for(principal)
         .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
+    // C1029: read the OSV generation BEFORE evaluating, so a verdict change landing
+    // during or after the evaluation is seen by the gate at release.
+    let osv_generation = app.osv.generation();
+    let osv_seen = osv_generation.load(std::sync::atomic::Ordering::Acquire);
     let decision = evaluate(app, &policy, now, &row, &pinned).await;
     let revision = policy.snapshot.as_ref().map(|snapshot| snapshot.revision);
     let Some(auth) = Authorized::from_decision(decision, revision) else {
@@ -168,7 +172,11 @@ pub async fn serve_artifact_in(
         ));
     };
     record_would_block(app, principal, &policy, now, &row, &pinned).await;
-    let auth = auth.under_authority(principal.and_then(|principal| principal.authority.clone()));
+    let auth = auth.under_authority(
+        principal
+            .and_then(|principal| principal.authority.clone())
+            .map(|authority| authority.with_osv(osv_generation, osv_seen)),
+    );
 
     if method == Method::HEAD {
         // SPEC §9: HEAD runs every check, including a cold verification, and returns
@@ -228,7 +236,7 @@ async fn evaluate(
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
-    osv::evaluate(&app.osv, policy, now, &candidate(row, pinned)).await
+    osv::evaluate_scoped(&app.osv, policy, now, &candidate(row, pinned), app.osv_scope(row.registry_id)).await
 }
 
 fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {
@@ -267,7 +275,9 @@ fn refused(
 }
 
 /// A served artifact whose OSV setting is log-only and which OSV flags is recorded as
-/// "would have blocked" (C81). The OSV answer is the one `osv::evaluate` just cached.
+/// "would have blocked" (C81). The OSV answer is read from the cache `osv::evaluate`
+/// just filled; after a failed lookup nothing is cached, so nothing is recorded and
+/// OSV is not queried again (diagnostic only, no verdict change).
 async fn record_would_block(
     app: &App,
     principal: Option<&Principal>,
@@ -284,10 +294,10 @@ async fn record_would_block(
         .policy
         .rules_for(candidate.ecosystem, candidate.name, candidate.version);
     if rules.osv != probation_policy::OsvSetting::LogOnly
-        || !app
+        || app
             .osv
-            .check(candidate.ecosystem, candidate.name, candidate.version)
-            .await
+            .cached_or_stale(candidate.ecosystem, candidate.name, candidate.version)
+            != Some(true)
     {
         return;
     }
@@ -344,6 +354,24 @@ async fn open_or_download(
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<&str>,
 ) -> Result<(PinnedFile, Vec<Digest>, bool), ApiError> {
+    // C1028: a credential-bearing read (the caller's own upstream credential, or any request
+    // the allow-list of LS-F4 classed request-scoped) is never served from and never
+    // written to the shared content store; its body lives in a request-owned file.
+    if app.service_policy().is_some() && (read_authorization.is_some() || crate::http::logging::request_scoped()) {
+        let scoped = download::fetch_request_scoped(app, row, origin, private_cidrs, read_authorization.map(str::to_owned))
+            .await
+            .map_err(|err| service_download_error(app, &err))?;
+        let mut pinned = pinned;
+        if pinned.is_empty() {
+            pinned = vec![
+                Digest { algorithm: crate::policy::HashAlgorithm::Sha256, bytes: Box::from(scoped.sha256.as_slice()) },
+                Digest { algorithm: crate::policy::HashAlgorithm::Sha512, bytes: Box::from(scoped.sha512.as_slice()) },
+            ];
+        }
+        app.store().caches().references.remove(&row.id);
+        let file = PinnedFile::request_scoped(scoped.file, scoped.size);
+        return Ok((file, pinned, true));
+    }
     if let (Some(key), Some(size)) = (row.content_key, row.pinned_size) {
         match app.content.open_verified(&key, size).await {
             Ok(file) => return Ok((file, pinned, false)),
@@ -372,7 +400,7 @@ async fn open_or_download(
 
     let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned))
         .await
-        .map_err(|err| download_error(&err, app.clock.now_utc_micros()))?;
+        .map_err(|err| service_download_error(app, &err))?;
     // The row in hand predates the pins this download just established.
     app.store().caches().references.remove(&row.id);
 
@@ -438,6 +466,19 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
 /// Taken by reference because one transfer's error is shared by every waiter on it
 /// (SPEC §9: "returned consistently to waiters"), and `DownloadError` carries an
 /// `io::Error` and a `turso::Error`, neither of which clones.
+/// In shared-service mode an upstream 401/403 on an artifact is the caller's credential
+/// being refused, as it is on metadata; elsewhere it stays an upstream failure.
+fn service_download_error(app: &App, err: &DownloadError) -> ApiError {
+    if app.service_policy().is_some() {
+        match err {
+            DownloadError::Upstream(crate::upstream::UpstreamError::Status(401)) => return ApiError::UpstreamUnauthenticated,
+            DownloadError::Upstream(crate::upstream::UpstreamError::Status(403)) => return ApiError::UpstreamDenied,
+            _ => {}
+        }
+    }
+    download_error(err, app.clock.now_utc_micros())
+}
+
 fn download_error(err: &DownloadError, now: i64) -> ApiError {
     match err {
         DownloadError::Refused(_) => {
@@ -453,6 +494,9 @@ fn download_error(err: &DownloadError, now: i64) -> ApiError {
     match err {
         DownloadError::Refused(decision) => decision_error(*decision, now),
         DownloadError::Capacity(_) => ApiError::CapacityExhausted,
+        DownloadError::Temp(crate::http::credential_temp::TempError::TooLarge) => ApiError::PayloadTooLarge,
+        DownloadError::Temp(crate::http::credential_temp::TempError::Busy) => ApiError::Overloaded,
+        DownloadError::Temp(_) => ApiError::CapacityExhausted,
         DownloadError::Upstream(crate::upstream::UpstreamError::Timeout) => {
             ApiError::UpstreamTimeout
         }

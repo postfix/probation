@@ -30,7 +30,7 @@ pub(super) const UNKNOWN_FOR: Duration = Duration::from_secs(30);
 
 enum Entry {
     Live {
-        principal: Principal,
+        principal: Box<Principal>,
         expires_at: Instant,
         last_used: Instant,
         /// Expired by a `place` row rather than by its TTL: re-looked-up on next use,
@@ -189,7 +189,7 @@ impl KeyCache {
                 ..
             }) if now < *expires_at => {
                 *last_used = now;
-                Some(principal.clone())
+                Some((**principal).clone())
             }
             _ => None,
         }
@@ -205,7 +205,7 @@ impl KeyCache {
                 ..
             }) => {
                 *last_used = now;
-                Some(principal.clone())
+                Some((**principal).clone())
             }
             _ => None,
         }
@@ -231,7 +231,7 @@ impl KeyCache {
         self.put(
             hash,
             Entry::Live {
-                principal,
+                principal: Box::new(principal),
                 expires_at: now + self.ttl,
                 last_used: now,
                 invalidated: false,
@@ -544,7 +544,7 @@ impl KeyCache {
         self.put(
             hash,
             Entry::Live {
-                principal,
+                principal: Box::new(principal),
                 expires_at: now,
                 last_used: now,
                 invalidated: false,

@@ -83,12 +83,8 @@ async fn send_selected_upstream_packument(
     let body = match result {
         Ok(MetadataResponse::Fresh { body, .. }) => body,
         Ok(MetadataResponse::Missing) => return Err(ApiError::NotFound),
-        Err(UpstreamError::Status(401)) => return Err(ApiError::Unauthenticated),
-        Err(UpstreamError::Status(403)) => {
-            return Err(ApiError::Blocked {
-                reason: "the upstream registry denied this token",
-            });
-        }
+        Err(UpstreamError::Status(401)) => return Err(ApiError::UpstreamUnauthenticated),
+        Err(UpstreamError::Status(403)) => return Err(ApiError::UpstreamDenied),
         Err(UpstreamError::Timeout) => return Err(ApiError::UpstreamTimeout),
         Err(err) => {
             tracing::warn!(error = %err, "token packument read failed");

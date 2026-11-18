@@ -9,8 +9,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use probation_policy::osv_key::osv_key;
+use probation_policy::osv_wire::{OsvOutcome, parse_central};
 use reqwest::Client;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -25,10 +27,50 @@ use crate::policy::Ecosystem;
 /// OSV's ecosystem spelling, which is not `Ecosystem::as_tag`'s: OSV's schema is
 /// case-sensitive and spells PyPI's ecosystem `PyPI`, while `as_tag` spells the
 /// blocklist file and log lines' `pypi`.
-fn osv_ecosystem(ecosystem: Ecosystem) -> &'static str {
+///
+/// `None` means the family is not OSV-covered (the mapping table in 03 "Central OSV
+/// lookup"); every delivered family maps today. The exhaustive match makes a family
+/// added without a mapping arm a compile error.
+pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
     match ecosystem {
-        Ecosystem::Npm => "npm",
-        Ecosystem::PyPi => "PyPI",
+        Ecosystem::Npm => Some("npm"),
+        Ecosystem::PyPi => Some("PyPI"),
+    }
+}
+
+/// Where a batcher sends its calls, and whether they carry a credential.
+#[derive(Clone)]
+pub(crate) struct Target {
+    url: Url,
+    central: Option<Central>,
+}
+
+/// A managed endpoint's server: the credential goes only to this origin.
+#[derive(Clone)]
+struct Central {
+    origin: url::Origin,
+    credential: Arc<str>,
+}
+
+impl Target {
+    pub(crate) fn direct(url: Url) -> Target {
+        Target { url, central: None }
+    }
+
+    /// `<server>/osv/v1/querybatch`, built by path segment, never by concatenation.
+    pub(crate) fn central(target: super::CentralTarget) -> Target {
+        let origin = target.base.origin();
+        let mut url = target.base;
+        if let Ok(mut segments) = url.path_segments_mut() {
+            segments.pop_if_empty().extend(["v1", "querybatch"]);
+        }
+        Target { url, central: Some(Central { origin, credential: target.credential.into() }) }
+    }
+}
+
+impl From<Url> for Target {
+    fn from(url: Url) -> Target {
+        Target::direct(url)
     }
 }
 
@@ -74,13 +116,14 @@ struct Vuln {
 /// produces is written into `cache`.
 pub(super) async fn run(
     client: Client,
-    url: Url,
+    target: impl Into<Target>,
     mut rx: mpsc::Receiver<OsvRequest>,
     request_timeout: Duration,
     cache: Arc<OsvCache>,
     shutdown: CancellationToken,
     upstreams: Arc<UpstreamHealth>,
 ) {
+    let target: Target = target.into();
     let mut batch: Vec<OsvRequest> = Vec::new();
     // Meaningful only while `batch` is non-empty, set when the first request of a
     // batch arrives, so the interval is counted from the oldest request rather than
@@ -93,7 +136,7 @@ pub(super) async fn run(
     let ship = |batch: &mut Vec<OsvRequest>, in_flight: &mut JoinSet<()>| {
         in_flight.spawn(flush(
             client.clone(),
-            url.clone(),
+            target.clone(),
             std::mem::take(batch),
             request_timeout,
             Arc::clone(&cache),
@@ -150,7 +193,7 @@ pub(super) async fn run(
 /// was — fail-open is fail-open (C14).
 async fn flush(
     client: Client,
-    url: Url,
+    target: Target,
     requests: Vec<OsvRequest>,
     request_timeout: Duration,
     cache: Arc<OsvCache>,
@@ -169,19 +212,25 @@ async fn flush(
             .map(|(ecosystem, name, version)| Query {
                 package: Package {
                     name: name.clone(),
-                    ecosystem: osv_ecosystem(*ecosystem),
+                    ecosystem: osv_ecosystem(*ecosystem).unwrap_or("unmapped"),
                 },
                 version: version.clone(),
             })
             .collect(),
     };
 
-    let outcome = tokio::time::timeout(request_timeout, send(&client, &url, &body)).await;
+    if let Some(central) = &target.central {
+        flush_central(&client, &target, central, keys, waiters, request_timeout, &cache, &upstreams).await;
+        return;
+    }
+    let url = &target.url;
+    let outcome = tokio::time::timeout(request_timeout, send(&client, url, &body)).await;
     // C69: a connect error, a timeout or a 5xx means OSV was not reached.
     let reached = match &outcome {
         Ok(Ok(_) | Err(SendError::Decode(_))) => true,
         Ok(Err(SendError::Transport(err))) => err.status().is_some_and(|s| !s.is_server_error()),
-        Err(_) => false,
+        // Central-mode errors never reach this direct-mode path.
+        Ok(Err(SendError::Status(_) | SendError::Oversize | SendError::Credential)) | Err(_) => false,
     };
     upstreams.record(Call::Osv, reached);
 
@@ -213,12 +262,150 @@ async fn flush(
 
     for (index, (key, waiter)) in keys.into_iter().zip(waiters).enumerate() {
         let matched = matches.as_ref().is_some_and(|matches| matches[index]);
-        // Cached before the reply, and whether or not anyone receives it: a waiter
-        // that stopped listening (it timed out, or its request was cancelled) must
-        // not cost the next caller another round trip, or lose a match.
-        cache.put(key, matched);
+        // Only a real answer is cached, before the reply and whether or not anyone
+        // receives it: a waiter that stopped listening must not cost the next caller
+        // another round trip, or lose a match. A failed batch has no answer, so it
+        // caches nothing (it could otherwise overwrite a live match).
+        if matches.is_some() {
+            cache.put(key, matched);
+        }
         let _ = waiter.send(matched);
     }
+}
+
+/// A managed endpoint's flush (C1030): the answer must carry the Probation envelope, only
+/// a non-degraded `upstream_ok` answer counts as OSV reached, and a failed or degraded
+/// result answers from the stale window instead of failing a retained match open (C1031).
+#[allow(clippy::too_many_arguments)]
+async fn flush_central(
+    client: &Client,
+    target: &Target,
+    central: &Central,
+    keys: Vec<(Ecosystem, String, String)>,
+    waiters: Vec<tokio::sync::oneshot::Sender<bool>>,
+    request_timeout: Duration,
+    cache: &Arc<OsvCache>,
+    upstreams: &Arc<UpstreamHealth>,
+) {
+    let n = keys.len();
+    // LS-F6: the key function the server validates with. A key it refuses is never sent
+    // and is degraded (counted), never silently a no-match.
+    let sendable: Vec<usize> = (0..n)
+        .filter(|i| {
+            let (ecosystem, name, version) = &keys[*i];
+            osv_ecosystem(*ecosystem).is_some() && osv_key(*ecosystem, name, version).is_ok()
+        })
+        .collect();
+    let body = QueryBatchRequest {
+        queries: sendable
+            .iter()
+            .map(|i| {
+                let (ecosystem, name, version) = &keys[*i];
+                Query {
+                    package: Package { name: name.clone(), ecosystem: osv_ecosystem(*ecosystem).unwrap_or("") },
+                    version: version.clone(),
+                }
+            })
+            .collect(),
+    };
+    let m = sendable.len();
+    if m < n {
+        // A key the shared function refuses is never sent; it is counted so it is visible.
+        upstreams.add_osv_keys_refused((n - m) as u64);
+        tracing::warn!(refused = n - m, "OSV keys refused by the key function were not asked about");
+    }
+    let sent = if m == 0 {
+        // Nothing to ask: no call, and nothing is recorded about the server.
+        Ok(Ok(Vec::new()))
+    } else {
+        tokio::time::timeout(request_timeout, send_central(client, target, central, &body, m * 8192 + 4096)).await
+    };
+    let answer = match sent {
+        Ok(Ok(_)) if m == 0 => Some(probation_policy::osv_wire::CentralAnswer { upstream_ok: true, outcomes: Vec::new() }),
+        Ok(Ok(bytes)) => match parse_central(&bytes, m) {
+            Ok(answer) => Some(answer),
+            Err(err) => {
+                tracing::warn!(?err, "the OSV server's answer was not usable; failing the batch open");
+                None
+            }
+        },
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "a batch of OSV lookups could not be sent to the server");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(?request_timeout, "an OSV lookup batch timed out");
+            None
+        }
+    };
+    let reached = answer.as_ref().is_some_and(|answer| answer.upstream_ok);
+    if m > 0 {
+        upstreams.record(Call::Osv, reached);
+        if !reached {
+            upstreams.add_osv_server_unreached(1);
+        }
+    }
+    let mut outcomes = vec![OsvOutcome::Degraded; n];
+    if let Some(answer) = answer {
+        for (i, outcome) in sendable.iter().zip(answer.outcomes) {
+            outcomes[*i] = outcome;
+        }
+    }
+    let degraded = outcomes.iter().filter(|o| **o == OsvOutcome::Degraded).count();
+    upstreams.record_osv_results(n as u64, degraded as u64);
+
+    let mut replies = Vec::with_capacity(n);
+    for (key, outcome) in keys.into_iter().zip(outcomes) {
+        // Stored before the reply and whether or not anyone receives it. Only a match or
+        // an `upstream_ok` no-match is stored; a degraded result stores nothing and keeps
+        // whatever the cache already holds.
+        replies.push(match outcome {
+            OsvOutcome::Matched => {
+                cache.put(key, true);
+                true
+            }
+            OsvOutcome::NoMatch => {
+                cache.put(key, false);
+                false
+            }
+            OsvOutcome::Degraded => cache.stale_match(&key),
+        });
+    }
+    // A new match is on disk before anyone is told about it.
+    let persisting = Arc::clone(cache);
+    let _ = tokio::task::spawn_blocking(move || persisting.persist()).await;
+    for (waiter, matched) in waiters.into_iter().zip(replies) {
+        let _ = waiter.send(matched);
+    }
+}
+
+async fn send_central(
+    client: &Client,
+    target: &Target,
+    central: &Central,
+    body: &QueryBatchRequest,
+    read_cap: usize,
+) -> Result<Vec<u8>, SendError> {
+    let body = serde_json::to_vec(body).expect("a struct of strings always serializes");
+    let mut request = client.post(target.url.clone()).header(CONTENT_TYPE, "application/json").body(body);
+    // Decided against the configured origin, not the URL a redirect might have named.
+    if target.url.origin() == central.origin {
+        let mut value = HeaderValue::from_str(&format!("Bearer {}", central.credential)).map_err(|_| SendError::Credential)?;
+        value.set_sensitive(true);
+        request = request.header(AUTHORIZATION, value);
+    }
+    let mut response = request.send().await.map_err(SendError::Transport)?;
+    if !response.status().is_success() {
+        return Err(SendError::Status(response.status().as_u16()));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(SendError::Transport)? {
+        if bytes.len() + chunk.len() > read_cap {
+            return Err(SendError::Oversize);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 async fn send(
@@ -252,6 +439,10 @@ async fn send(
 enum SendError {
     Transport(reqwest::Error),
     Decode(serde_json::Error),
+    /// Central mode: any non-2xx, including a redirect that was not followed.
+    Status(u16),
+    Oversize,
+    Credential,
 }
 
 impl std::fmt::Display for SendError {
@@ -259,6 +450,9 @@ impl std::fmt::Display for SendError {
         match self {
             SendError::Transport(err) => write!(f, "{err}"),
             SendError::Decode(err) => write!(f, "the response could not be decoded: {err}"),
+            SendError::Status(status) => write!(f, "the server answered {status}"),
+            SendError::Oversize => write!(f, "the answer was larger than its bound"),
+            SendError::Credential => write!(f, "the credential cannot be sent as a header"),
         }
     }
 }

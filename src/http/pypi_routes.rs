@@ -336,15 +336,17 @@ pub async fn selected_upload(
 ) -> Result<Response, ApiError> {
     use futures_util::StreamExt;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+    // LS-F10 class W: a write without the caller's own credential is refused locally with
+    // 401 before admission, a permit or any registry lookup (S28-5b).
+    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
+        .filter(|value| (value.starts_with("Basic ") && value.len() > 6) || (value.starts_with("Bearer ") && value.len() > 7))
+        .ok_or(ApiError::Unauthenticated)?.to_owned();
     let registry = super::registry_read::registry_id(&registry)?;
     let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
     let origin = principal.registry_origin.clone().ok_or(ApiError::NotFound)?;
     let origins = crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), principal.registry_private_cidrs.clone())
         .map_err(|_| ApiError::NotFound)?;
     origins.admit(&origin, crate::upstream::OriginKind::NpmMetadata).map_err(|_| ApiError::NotFound)?;
-    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
-        .filter(|value| (value.starts_with("Basic ") && value.len() > 6) || (value.starts_with("Bearer ") && value.len() > 7))
-        .ok_or(ApiError::Unauthenticated)?.to_owned();
     let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
         .filter(|value| value.starts_with("multipart/form-data; boundary=") && value.len() <= 256)
         .ok_or(ApiError::InvalidInput("Twine upload requires multipart content type"))?.to_owned();

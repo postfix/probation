@@ -430,7 +430,8 @@ impl Firewall {
             transport: Arc::new(Registry),
             origins,
             osv_client: probation::osv::unreachable_client(),
-            osv_base_url: None,
+            osv_base_url: Some(probation::osv::unreachable_base_url()),
+            osv_server_origin_override: None,
         })
         .await
         .expect("the firewall starts");

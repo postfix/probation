@@ -230,19 +230,56 @@ pub struct AbsentMark {
 }
 
 /// The three caches a metadata request touches.
+/// A shared metadata cache whose writes need a [`CacheToken`] (C1028, LS-F4): only
+/// `classify_read` (or a mode with no caller credential) can produce one, so a
+/// credential-bearing read cannot insert here by construction. Reads and removals are free.
+pub struct GatedCache<K, V>(ShardedCache<K, V>);
+
+impl<K: Hash + Eq + Clone, V> GatedCache<K, V> {
+    pub fn new(budget_bytes: u64) -> GatedCache<K, V> {
+        GatedCache(ShardedCache::new(budget_bytes))
+    }
+    pub fn get(&self, key: &K) -> Option<Arc<V>> {
+        self.0.get(key)
+    }
+    pub fn get_with_seen(&self, key: &K) -> (u64, Option<Arc<V>>) {
+        self.0.get_with_seen(key)
+    }
+    pub fn remove(&self, key: &K) {
+        self.0.remove(key)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn insert(&self, _token: &crate::http::credential_read::CacheToken, key: K, value: Arc<V>, bytes: u64) {
+        self.0.insert(key, value, bytes)
+    }
+    pub fn insert_if_current(&self, _token: &crate::http::credential_read::CacheToken, key: K, value: Arc<V>, bytes: u64, seen: u64) {
+        self.0.insert_if_current(key, value, bytes, seen)
+    }
+}
+
 pub struct MemoryCaches {
     /// Hot project records, so a cache miss on the rendered form does not always
     /// mean a database query.
-    pub projects: ShardedCache<ProjectKey, CachedProject>,
+    pub projects: GatedCache<ProjectKey, CachedProject>,
     /// Serialized filtered responses. This is the one that makes a fully warm
     /// request cost no query, no upstream call, and no repeated JSON parsing.
-    pub rendered: ShardedCache<RenderKey, RenderedResponse>,
+    pub rendered: GatedCache<RenderKey, RenderedResponse>,
     /// Hot reference records, so a warm artifact request does not query for the row
     /// it is about to check. Entries are dropped rather than edited whenever a
     /// download changes what the row says (pins, content mapping).
+    ///
+    /// Deliberately not a `GatedCache`: it holds identity only (a reference row: name, version,
+    /// filename, digests, content key), never a response body or a caller-credentialed
+    /// document, and the service path already refreshes the project with the caller's own
+    /// credential before a row is used. Credential-bearing bytes cannot enter it.
     pub references: ShardedCache<ReferenceId, ReferenceRow>,
     /// Confirmed-absent upstream names, TTL = `metadata_ttl` (TM-4).
-    pub absent: ShardedCache<ProjectKey, AbsentMark>,
+    pub absent: GatedCache<ProjectKey, AbsentMark>,
     /// How many times a *stored* project document has been parsed — never an upstream
     /// one, which a refresh must always parse.
     ///
@@ -265,10 +302,10 @@ impl MemoryCaches {
             .saturating_sub(references)
             .max(2);
         MemoryCaches {
-            projects: ShardedCache::new(rest / 2),
-            rendered: ShardedCache::new(rest - rest / 2),
+            projects: GatedCache::new(rest / 2),
+            rendered: GatedCache::new(rest - rest / 2),
             references: ShardedCache::new(references),
-            absent: ShardedCache::new(absent),
+            absent: GatedCache::new(absent),
             stored_parses: AtomicU64::new(0),
         }
     }

@@ -99,6 +99,7 @@ Unknown keys are refused at start, and every change needs a restart. Every setti
 | `[server] listen` | required | Address and port, plain HTTP. |
 | `[server] trusted_proxies` | `[]` | Your reverse proxies and load balancers (address ranges). Only from these peers is `X-Forwarded-For` read: the client is the rightmost entry that is not itself a listed proxy. Used for a firewall token's source check and for sign-in throttling. |
 | `[server] change_log_retention_days` | `7` | How long change rows are kept; not zero. A firewall offline for longer resets its cache when it comes back. |
+| `[server] osv_key_rate_per_minute` | `600` | Cache-missing OSV keys one credential may ask for per minute (burst 1000); not zero. The server answers `POST /osv/v1/querybatch` for managed and shared-service endpoints from one api.osv.dev client and a shared cache. |
 | `[portal]` | absent | Leave the whole section out to serve only the sync and automation APIs. Then nobody can sign in, and `admin bootstrap` prints no sign-in link (§5). |
 | `[portal] base_url` | required in `[portal]` | The portal's public address. Every emailed link and every OAuth callback is built from it. |
 | `[portal] firewall_url` | unset | The firewalls' public address, as npm and pip reach it. The keys page builds the `.npmrc` and `pip.conf` lines from it; unset, they show a `FIREWALL` placeholder. It needs a host and `https` (`http` only for `localhost` or a loopback address); anything else is refused at start. |

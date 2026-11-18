@@ -237,18 +237,7 @@ async fn transfer(
     let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
     let cap = app.config.max_artifact_bytes.get();
-    // A service caller's registry credential belongs to the selected catalog,
-    // not a separate artifact host (for example PyPI's files origin).
-    let read_authorization = if app.service_policy().is_some() {
-        let metadata_kind = match row.reference.ecosystem {
-            crate::policy::Ecosystem::Npm => OriginKind::NpmMetadata,
-            crate::policy::Ecosystem::PyPi => OriginKind::PypiMetadata,
-        };
-        let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
-        read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
-    } else {
-        read_authorization
-    };
+    let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
             app.transport
@@ -453,6 +442,111 @@ async fn transfer(
     })
 }
 
+/// A service caller's registry credential belongs to the selected catalog, not a separate
+/// artifact host (for example PyPI's files origin).
+fn selected_catalog_authorization(
+    app: &App,
+    row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    read_authorization: Option<String>,
+) -> Option<String> {
+    if app.service_policy().is_some() {
+        let metadata_kind = match row.reference.ecosystem {
+            crate::policy::Ecosystem::Npm => OriginKind::NpmMetadata,
+            crate::policy::Ecosystem::PyPi => OriginKind::PypiMetadata,
+        };
+        let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
+        read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
+    } else {
+        read_authorization
+    }
+}
+
+/// A fully received, verified body that lives only in a request-owned temporary file.
+pub struct RequestScoped {
+    pub file: crate::http::credential_temp::CompletedTemp,
+    pub size: u64,
+    pub sha256: [u8; 32],
+    pub sha512: [u8; 64],
+}
+
+/// C1028: the transfer of a credential-bearing read. The body goes to a request-owned
+/// file (LS-F16) and never to the shared content store; there is no single-flight, so no
+/// other caller can join a transfer made with this caller's credential. First-seen and
+/// digest pins hold identity only and are still recorded (cooldown and pin correctness).
+pub async fn fetch_request_scoped(
+    app: &Arc<App>,
+    row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<String>,
+) -> Result<RequestScoped, DownloadError> {
+    let temp_dir = app.credential_temp.as_ref().ok_or(DownloadError::Overloaded)?;
+    let permit = app.limits.download_permit().await.ok_or(DownloadError::Overloaded)?;
+    let _permit = permit;
+    let cap = app.config.max_artifact_bytes.get();
+    let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
+    let opened = match own_origin(app, row, origin, private_cidrs) {
+        Ok(()) => {
+            app.transport
+                .open_artifact(ArtifactRequest {
+                    url: row.reference.upstream_url.clone(),
+                    origin: origin.cloned(),
+                    private_cidrs: private_cidrs.to_vec(),
+                    read_authorization,
+                    max_bytes: cap,
+                })
+                .await
+        }
+        Err(refused) => Err(refused),
+    };
+    let call = match row.reference.ecosystem {
+        Ecosystem::Npm => Call::Npm,
+        Ecosystem::PyPi => Call::PypiArtifacts,
+    };
+    app.upstreams.record_upstream(call, &opened);
+    let body = opened.map_err(DownloadError::Upstream)?;
+    if body.declared_length.is_some_and(|declared| declared > cap) {
+        return Err(DownloadError::TooLarge { limit: cap });
+    }
+    let mut temp = temp_dir.begin(body.declared_length).map_err(DownloadError::Temp)?;
+    let (mut sha256, mut sha512, mut sha1, mut size) = (Sha256::new(), Sha512::new(), Sha1::new(), 0u64);
+    let mut stream = body.stream;
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(DownloadError::Upstream)?;
+        size = size.saturating_add(chunk.len() as u64);
+        if size > cap {
+            return Err(DownloadError::TooLarge { limit: cap });
+        }
+        sha256.update(&chunk);
+        sha512.update(&chunk);
+        sha1.update(&chunk);
+        // Off the async worker: the temporary file is a plain blocking file.
+        temp = temp.write_blocking(chunk.to_vec()).await.map_err(DownloadError::Temp)?;
+    }
+    if let Some(declared) = body.declared_length
+        && declared != size
+    {
+        return Err(DownloadError::SizeMismatch { declared, actual: size });
+    }
+    let completed = temp.into_file();
+    let computed = Computed { sha256: sha256.finalize().into(), sha512: sha512.finalize().into(), sha1: sha1.finalize().into(), size };
+    let (sha256, sha512) = (computed.sha256, computed.sha512);
+    verify_advertised(&row.reference.expected, &computed)?;
+    match app.store().pin_computed_digests(row.id, sha256, sha512, size).await.map_err(DownloadError::Storage)? {
+        PinOutcome::Established => {
+            app.store().caches().projects.remove(&ProjectKey::in_registry(
+                row.registry_id,
+                row.reference.ecosystem,
+                row.reference.name.as_str(),
+            ));
+        }
+        PinOutcome::MatchedExisting => {}
+        PinOutcome::Conflict => return Err(DownloadError::PinConflict),
+    }
+    Ok(RequestScoped { file: completed, size, sha256, sha512 })
+}
+
 /// SPEC §10: "Storage write failures make readiness false". A write the content
 /// directory refused is one; a full budget is not, because nothing was written.
 fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, DownloadError> {
@@ -568,6 +662,8 @@ pub enum DownloadError {
     /// The local filesystem could not take the bytes. SPEC §10: a `503`, never a
     /// relaxation of policy.
     Capacity(ContentError),
+    /// The request-owned temporary file of a credential-bearing read refused the body.
+    Temp(crate::http::credential_temp::TempError),
     /// Policy answered something other than `Allow` after the download completed.
     Refused(Decision),
     Storage(StoreError),
@@ -603,6 +699,7 @@ impl fmt::Display for DownloadError {
                 write!(f, "the artifact exceeds the {limit}-byte cap")
             }
             DownloadError::Capacity(err) => write!(f, "{err}"),
+            DownloadError::Temp(err) => write!(f, "the credential-read temporary file refused the body: {err:?}"),
             DownloadError::Refused(decision) => {
                 write!(f, "policy refused the verified bytes: {decision:?}")
             }

@@ -354,6 +354,7 @@ async fn a_second_instance_cannot_take_the_data_directory_lock() {
         origins,
         osv_client: probation::osv::unreachable_client(),
         osv_base_url: None,
+        osv_server_origin_override: None,
     })
     .await;
 

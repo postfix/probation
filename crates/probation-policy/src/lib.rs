@@ -9,6 +9,8 @@ pub mod api;
 pub mod blocklist_json;
 mod edit;
 pub mod names;
+pub mod osv_key;
+pub mod osv_wire;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +60,9 @@ pub enum Ecosystem {
 }
 
 impl Ecosystem {
+    /// Every delivered family. Each row that adds a family adds its entry here.
+    pub const ALL: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPi];
+
     /// The spelling used in the blocklist file (SPEC §8) and in log lines.
     pub const fn as_tag(self) -> &'static str {
         match self {

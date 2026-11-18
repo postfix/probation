@@ -120,6 +120,8 @@ struct RequestContext {
     peer: Option<IpAddr>,
     /// The place of the key a managed request was authenticated with.
     place: Mutex<Option<u32>>,
+    /// C1028: this read is credential-bearing; it must not touch a shared cache.
+    request_scoped: AtomicBool,
 }
 
 /// The codes [`RequestContext::ecosystem`] holds. Zero is "nothing recorded".
@@ -168,6 +170,21 @@ pub fn record_blocklist_revision(revision: u64) {
             *judged = Some(revision);
         }
     });
+}
+
+/// Marks this request's read as credential-bearing (C1028, LS-F4). Ignored outside a request.
+pub fn record_request_scoped() {
+    let _ = CONTEXT.try_with(|context| context.request_scoped.store(true, Ordering::Relaxed));
+}
+
+/// Whether this task is serving a request (the request context exists).
+pub fn in_request() -> bool {
+    CONTEXT.try_with(|_| ()).is_ok()
+}
+
+/// Whether this request was marked request-scoped. False outside a request.
+pub fn request_scoped() -> bool {
+    CONTEXT.try_with(|context| context.request_scoped.load(Ordering::Relaxed)).unwrap_or(false)
 }
 
 /// The peer address of the connection this request arrived on, when this process was
@@ -232,6 +249,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         blocklist_revision: Mutex::new(None),
         peer,
         place: Mutex::new(None),
+        request_scoped: AtomicBool::new(false),
     });
     let response = CONTEXT.scope(Arc::clone(&context), next.run(request)).await;
 

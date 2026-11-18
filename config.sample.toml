@@ -107,8 +107,14 @@ max_references_per_project = 20000
 # (5 minutes) if left out.
 osv_cache_ttl_seconds = 300
 # How long one OSV batch's outbound call may take before it fails open.
-# Optional, 500 if left out.
-osv_request_timeout_ms = 500
+# Optional, 2000 if left out. With [management] or [service_policy] at least 1600 (the
+# policy server answers OSV at 1500 ms).
+osv_request_timeout_ms = 2000
+# Managed and shared-service mode only (those modes ask the policy server, never
+# api.osv.dev; the timeout above must then be at least 1600): how long a matched
+# answer keeps refusing past its TTL while the server cannot be asked. Optional,
+# 86400 (24 hours) if left out; 3600 to 604800.
+# osv_stale_match_seconds = 86400
 # What an OSV match does: `enforce` denies, `diagnostic` logs the match and
 # allows, `off` skips the check. Optional, `enforce` if left out. In managed
 # mode each key's policy sets this instead.

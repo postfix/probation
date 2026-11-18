@@ -4440,3 +4440,34 @@ async fn invitation_survives_sign_up_and_sign_in() {
     assert_eq!(opened.location.as_deref(), Some("/signin"));
     assert!(!stranger.cookies.contains_key("probation_invite"));
 }
+
+#[tokio::test]
+async fn t_registry_osv_scope_form_sets_clears_and_is_listed() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let added = admin.submit(&catalog, &catalog, &[
+        ("name", "Mirror npm"), ("ecosystem", "npm"), ("target_url", "https://packages.example.test/"),
+    ]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Mirror npm'")
+        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT osv_scope FROM registries WHERE id = $1").bind(registry).fetch_one(&fx.db.app).await.unwrap() };
+    assert_eq!(stored().await, None, "new registries carry no scope: the default rule applies");
+    let action = format!("{catalog}/{registry}/osv-scope");
+    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("private"));
+    assert!(admin.get(&catalog).await.has("OSV scope"), "the catalog shows the field");
+    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("public"));
+    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None, "cleared");
+    assert_ne!(admin.submit(&catalog, &action, &[("osv_scope", "weird")]).await.status, StatusCode::SEE_OTHER, "an unknown value is refused");
+    // Another organisation's administrator cannot set it.
+    let mut other = admin_browser(&fx, "gus@globex.test").await;
+    let foreign = format!("/org/{}/registries/{registry}/osv-scope", world.globex.id);
+    let refused = other.submit(&format!("/org/{}/registries", world.globex.id), &foreign, &[("osv_scope", "private")]).await;
+    assert_ne!(refused.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None);
+}

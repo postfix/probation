@@ -84,6 +84,9 @@ pub struct OriginSet {
     pypi_artifacts: Url,
     allow_private_addresses: bool,
     private_cidrs: Vec<IpNet>,
+    /// LS-F9: absolute denylist of a snapshot-sourced registry; its own private CIDRs
+    /// cannot unlock a denied address.
+    deny: Option<std::sync::Arc<crate::http::service_connector::Denylist>>,
 }
 
 impl OriginSet {
@@ -126,6 +129,7 @@ impl OriginSet {
             pypi_artifacts: parse_origin(PYPI_ARTIFACTS),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
+            deny: None,
         }
     }
 
@@ -142,6 +146,7 @@ impl OriginSet {
             pypi_artifacts: pick(&config.pypi_artifacts_url, production.pypi_artifacts),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
+            deny: None,
         }
     }
 
@@ -157,6 +162,7 @@ impl OriginSet {
             pypi_artifacts: artifacts,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
+            deny: None,
         }
     }
 
@@ -167,6 +173,16 @@ impl OriginSet {
     pub fn refusing_private_addresses(mut self) -> OriginSet {
         self.allow_private_addresses = false;
         self
+    }
+
+    /// Addresses this set may never dial, whatever its private CIDRs say (LS-F9).
+    pub fn with_denylist(mut self, deny: std::sync::Arc<crate::http::service_connector::Denylist>) -> OriginSet {
+        self.deny = Some(deny);
+        self
+    }
+
+    pub fn denylist(&self) -> Option<std::sync::Arc<crate::http::service_connector::Denylist>> {
+        self.deny.clone()
     }
 
     pub fn origin(&self, kind: OriginKind) -> &Url {
@@ -184,7 +200,16 @@ impl OriginSet {
 
     pub fn private_cidrs(&self) -> &[IpNet] { &self.private_cidrs }
 
+    /// The connected peer of a request: the address rules plus the own-listener check,
+    /// which needs the peer's port.
+    pub fn allows_endpoint(&self, peer: std::net::SocketAddr) -> bool {
+        !self.deny.as_ref().is_some_and(|deny| deny.denies_endpoint(peer.ip(), peer.port())) && self.allows_address(peer.ip())
+    }
+
     pub fn allows_address(&self, ip: IpAddr) -> bool {
+        if self.deny.as_ref().is_some_and(|deny| deny.denies(ip)) {
+            return false;
+        }
         self.allow_private_addresses || super::resolver::is_public(ip)
             || self.private_cidrs.iter().any(|cidr| cidr.contains(&ip))
     }

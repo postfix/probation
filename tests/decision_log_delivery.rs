@@ -583,6 +583,7 @@ async fn tp16_unopenable_log_path_fails_startup() {
         origins,
         osv_client: probation::osv::unreachable_client(),
         osv_base_url: None,
+        osv_server_origin_override: None,
     })
     .await;
     // `Running` is not `Debug`, so this cannot be an `expect_err`.
@@ -1330,6 +1331,7 @@ async fn a_non_utf8_credential_refuses_to_start() {
         origins,
         osv_client: probation::osv::unreachable_client(),
         osv_base_url: None,
+        osv_server_origin_override: None,
     })
     .await;
     let Err(err) = started else {
@@ -1365,6 +1367,7 @@ async fn tp11b_credential_absent_from_startup_rejection() {
         origins,
         osv_client: probation::osv::unreachable_client(),
         osv_base_url: None,
+        osv_server_origin_override: None,
     })
     .await;
     // `Running` is not `Debug`, so this cannot be an `expect_err`.

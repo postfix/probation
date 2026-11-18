@@ -186,6 +186,13 @@ pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
     Ok(Raised { before, after })
 }
 
+/// Who an OSV lookup is charged to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum OsvCaller {
+    Firewall(i32),
+    Service(i64),
+}
+
 pub struct SyncState {
     pool: PgPool,
     secrets: Option<crate::accounts::SecretBox>,
@@ -208,6 +215,32 @@ impl SyncState {
     /// from one of its `allowed_source_cidrs` (403 `FIREWALL_SOURCE_REFUSED`), within its
     /// rate (429).
     async fn firewall(&self, headers: &HeaderMap, peer: IpAddr) -> Result<i32, SyncError> {
+        let firewall = self.firewall_identity(headers, peer).await?;
+        if !self.within_rate(firewall) {
+            return Err(SyncError::TooManyRequests);
+        }
+        Ok(firewall)
+    }
+
+    /// The closed set of credentials the OSV route accepts (C1030, D-OSV1): a live
+    /// `fwt_` firewall token from one of its allowed sources, or a live service-kind key.
+    /// Everything else is `Unauthenticated`; the sync request window is not charged.
+    pub(crate) async fn osv_caller(&self, headers: &HeaderMap, peer: IpAddr) -> Result<OsvCaller, SyncError> {
+        let bearer = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .ok_or(SyncError::Unauthenticated)?;
+        if bearer.starts_with("fwt_") {
+            return Ok(OsvCaller::Firewall(self.firewall_identity(headers, peer).await?));
+        }
+        match crate::service_policy::live_service_key_id(&self.pool, bearer).await? {
+            Some(id) => Ok(OsvCaller::Service(id)),
+            None => Err(SyncError::Unauthenticated),
+        }
+    }
+
+    async fn firewall_identity(&self, headers: &HeaderMap, peer: IpAddr) -> Result<i32, SyncError> {
         let token = headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
@@ -228,10 +261,14 @@ impl SyncState {
         if !source.is_some_and(|source| allowed.iter().any(|range| range.contains(&source))) {
             return Err(SyncError::SourceRefused);
         }
-        if !self.within_rate(firewall) {
-            return Err(SyncError::TooManyRequests);
-        }
         Ok(firewall)
+    }
+
+    /// The client address of a request: the peer, or behind a trusted proxy the address the
+    /// proxy forwarded (the same derivation `/sync` judges a firewall by).
+    pub(crate) fn source_of(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+        let peer = peer.to_canonical();
+        source_address(peer, headers, &self.trusted_proxies).unwrap_or(peer)
     }
 
     /// The app role's pool, for the routes served beside the sync API.

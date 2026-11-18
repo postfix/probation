@@ -663,6 +663,7 @@ fn report(settings_revision: u64, error: Option<&str>, period: u64) -> FirewallR
         effective_period_seconds: period,
         version: "9.9.9".to_owned(),
         failed_revision: None,
+            osv: None,
     }
 }
 
@@ -2310,6 +2311,7 @@ async fn t_fleet_push_staggered() {
     // earlier revision, does not fail the step; an error naming this one does.
     let stale = |failed: i32| FirewallReport {
         failed_revision: Some(failed as u64),
+            osv: None,
         ..report(0, Some("refused"), 60)
     };
     for _ in 0..2 {

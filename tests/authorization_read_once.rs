@@ -53,6 +53,10 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_metadata", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
     ("src/upstream/reqwest_transport.rs", "fn open_artifact", "header(header::AUTHORIZATION,HeaderValue::from_str(&value).map_err(|_|UpstreamError::Status(400))?)", 1),
+    // Row 30 (C1030): a managed endpoint's OSV batcher sends the endpoint's own credential
+    // (firewall token or service key) to its configured policy server only, origin-checked.
+    ("src/osv/batcher.rs", "", "usereqwest::header::{AUTHORIZATION,CONTENT_TYPE,HeaderValue};", 1),
+    ("src/osv/batcher.rs", "fn send_central", "header(AUTHORIZATION,value)", 1),
     ("src/config.rs", "struct Config", "siem_auth_header", 1),
     ("src/config.rs", "struct RawConfig", "siem_auth_header", 1),
     ("src/config.rs", "fn validate", "siem_auth_header", 4),

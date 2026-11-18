@@ -1,0 +1,345 @@
+//! Slice 28, C1028 / LS-F4: credential-bearing reads are detected by an allow-list.
+
+mod common;
+
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Uri};
+use common::{FakeAnswer, FakeRegistry, TestClock, TestServer, config_with_open_blocklist, fake_origins, npm_upstream_path};
+use probation::config::{FirewallToken, ServicePolicyConfig};
+use probation::upstream::{ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, Transport, UpstreamError};
+use probation_policy::{Layer, LayerKind, OsvSetting, PlaceRef, api::*};
+use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+use probation::http::credential_read::{FamilyReadRules, ReadClass, RequestParts, classify_read};
+
+
+fn classify(uri: &str, headers: &[(&str, &str)], pseudo: &[&str]) -> ReadClass {
+    let uri: Uri = uri.parse().unwrap();
+    let mut map = HeaderMap::new();
+    for (name, value) in headers {
+        map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+    }
+    classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: pseudo }, &FamilyReadRules::NPM)
+}
+
+fn eligible(uri: &str, headers: &[(&str, &str)]) -> bool {
+    matches!(classify(uri, headers, &[]), ReadClass::CacheEligible(_))
+}
+
+/// One case per carrier: each must make the read request-scoped.
+#[test]
+fn credential_bearing_read_never_enters_shared_caches() {
+    for (name, value) in [
+        ("authorization", "Bearer secret"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-nuget-apikey", "key"),
+        ("x-jfrog-art-api", "key"),
+        ("x-probe-unknown", "1"),
+        ("Authorization", "Bearer secret"),
+    ] {
+        assert!(!eligible("/npm/left-pad", &[(name, value)]), "{name} must be request-scoped");
+    }
+    // Repeated and mixed-case instances: one bad instance is enough.
+    assert!(!eligible("/npm/left-pad", &[("accept", "*/*"), ("AuThOrIzAtIoN", "x"), ("accept", "*/*")]));
+    // Query-string carriers and URL userinfo.
+    assert!(!eligible("/npm/left-pad?token=abc", &[]));
+    assert!(!eligible("/npm/left-pad?api_key=abc", &[]));
+    assert!(!eligible("https://user:pw@registry.example.test/npm/left-pad", &[]));
+    assert!(!eligible("https://user@registry.example.test/npm/left-pad", &[]));
+    // Any other pseudo-header makes the request request-scoped.
+    assert!(matches!(classify("/npm/left-pad", &[], &[":protocol"]), ReadClass::RequestScoped));
+    // Control: only allow-listed headers (common and the family's) keep the read cache-eligible.
+    assert!(eligible(
+        "/npm/left-pad",
+        &[("host", "x"), ("accept", "application/json"), ("accept-encoding", "gzip"), ("user-agent", "npm"), ("if-none-match", "\"a\""), ("npm-session", "s"), ("referer", "r"), ("range", "bytes=0-1")]
+    ));
+    assert!(eligible("https://registry.example.test/npm/left-pad", &[]), "absolute form without userinfo is ordinary");
+}
+
+// ---- C1028 end to end: bytes fetched under credential A are never served without it ----
+
+/// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
+struct PrivateArtifacts(Arc<FakeRegistry>, Mutex<Vec<Option<String>>>);
+
+#[async_trait::async_trait]
+impl Transport for PrivateArtifacts {
+    async fn fetch_token_packument(&self, mut request: MetadataRequest, authorization: &str) -> Result<MetadataResponse, UpstreamError> {
+        request.read_authorization = Some(authorization.to_owned());
+        self.fetch_metadata(request).await
+    }
+    async fn fetch_metadata(&self, request: MetadataRequest) -> Result<MetadataResponse, UpstreamError> {
+        if request.url.path().contains("login-meta") {
+            return Err(UpstreamError::Status(401));
+        }
+        if request.url.path().contains("deny-meta") {
+            return Err(UpstreamError::Status(403));
+        }
+        self.0.fetch_metadata(request).await
+    }
+    async fn fetch_named_read(&self, request: probation::upstream::NamedReadRequest) -> Result<bytes::Bytes, UpstreamError> {
+        match request.authorization.as_deref() {
+            Some("Bearer expired") => Err(UpstreamError::Status(401)),
+            Some("Bearer denied") => Err(UpstreamError::Status(403)),
+            _ => Ok(bytes::Bytes::from_static(b"{}")),
+        }
+    }
+    async fn open_artifact(&self, request: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
+        self.1.lock().unwrap().push(request.read_authorization.clone());
+        if request.url.path().contains("login") && request.read_authorization.is_none() {
+            return Err(UpstreamError::Status(401));
+        }
+        if request.url.path().contains("secret") && !request.url.path().ends_with(".whl") && request.read_authorization.as_deref() != Some("Bearer allowed") {
+            return Err(UpstreamError::Status(403));
+        }
+        self.0.open_artifact(request).await
+    }
+}
+
+fn service_snapshot() -> ServicePolicySnapshot {
+    let places = [PlaceRef { kind: LayerKind::Platform, id: 1 }, PlaceRef { kind: LayerKind::Org, id: 10 }];
+    ServicePolicySnapshot {
+        version: 1, key_id: KeyId(7), org: OrgId(10), account: places[1], revision: 1,
+        place_chain: places.iter().map(|place| ChainLink { place: *place, layer_revision: 1 }).collect(),
+        layers: places.iter().map(|place| PlaceLayer {
+            place: *place,
+            layer: Layer { freeze_seconds: Some(0), osv: Some(OsvSetting::Off), ..Layer::empty(place.kind) },
+            revision: 1,
+        }).collect(),
+        rate_limit: None, rate_limit_source: LimitSource::Default,
+        registries: vec![RegistryDescriptor {
+            registry: RegistryId(3), ecosystem: probation_policy::Ecosystem::Npm, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(4), ecosystem: probation_policy::Ecosystem::PyPi, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+        }],
+    }
+}
+
+fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { stack.push(path) } else if path.file_name().is_some_and(|n| n != "lock") { found.push(path) }
+        }
+    }
+    found
+}
+
+#[tokio::test]
+async fn credential_bearing_artifact_never_enters_the_shared_content_cache() {
+    let policy_server = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(service_snapshot()))
+        .mount(&policy_server).await;
+    let registry = FakeRegistry::new();
+    registry.answer(&npm_upstream_path("secret-pkg"), FakeAnswer::Body(serde_json::json!({
+        "name":"secret-pkg", "dist-tags":{"latest":"1.0.0"},
+        "versions":{"1.0.0":{"name":"secret-pkg","version":"1.0.0","dist":{"tarball":"https://npm.invalid/secret-pkg/-/secret-pkg-1.0.0.tgz",
+            "integrity":format!("sha256-{}", common::sync::base64(Sha256::digest(b"secret bytes")))}}},
+        "time":{"1.0.0":"2026-01-01T00:00:00Z"}
+    }).to_string()));
+    registry.answer(&common::npm_artifact_upstream_path("secret-pkg", "secret-pkg-1.0.0.tgz"), FakeAnswer::Body("secret bytes".into()));
+    registry.answer(&npm_upstream_path("open-pkg"), FakeAnswer::Body(serde_json::json!({
+        "name":"open-pkg", "dist-tags":{"latest":"1.0.0"},
+        "versions":{"1.0.0":{"name":"open-pkg","version":"1.0.0","dist":{"tarball":"https://npm.invalid/open-pkg/-/open-pkg-1.0.0.tgz",
+            "integrity":format!("sha256-{}", common::sync::base64(Sha256::digest(b"open bytes")))}}},
+        "time":{"1.0.0":"2026-01-01T00:00:00Z"}
+    }).to_string()));
+    registry.answer(&common::npm_artifact_upstream_path("open-pkg", "open-pkg-1.0.0.tgz"), FakeAnswer::Body("open bytes".into()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config_with_open_blocklist(dir.path());
+    config.service_policy = Some(ServicePolicyConfig {
+        server_url: policy_server.uri().parse().unwrap(),
+        service_key_file: "/test/key".into(),
+        service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
+        sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+    });
+    let transport = Arc::new(PrivateArtifacts(registry, Mutex::new(Vec::new())));
+    let server = TestServer::start_with_upstream(
+        config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
+        Arc::clone(&transport) as Arc<dyn Transport>, fake_origins(),
+    ).await;
+    let data = server.app().config.data_dir.clone();
+    let document: serde_json::Value = serde_json::from_str(&server.get("/registry/npm/3/secret-pkg").await.text().await.unwrap()).unwrap();
+    let artifact = reqwest::Url::parse(document["versions"]["1.0.0"]["dist"]["tarball"].as_str().unwrap()).unwrap().path().to_owned();
+
+    // Credential A fetches the bytes.
+    let a = server.get_with_headers(&artifact, &[("authorization", "Bearer allowed")]).await;
+    assert_eq!((a.status(), a.text().await.unwrap().as_str()), (StatusCode::OK, "secret bytes"));
+    assert!(files_under(&data.join("content")).is_empty(), "a credential-bearing body never enters the shared content store");
+    assert!(files_under(&data.join("credential-reads")).is_empty(), "the request-owned temporary file is gone");
+    // A caller without the credential performs its own upstream request and is refused.
+    let none = server.get(&artifact).await;
+    assert_eq!(none.status(), StatusCode::FORBIDDEN, "bytes fetched under credential A are never served without it");
+    assert_eq!(transport.1.lock().unwrap().last().cloned().flatten(), None, "the credential-less caller reached upstream with no credential");
+    // Credential B is judged by upstream, not by A's grant.
+    assert_eq!(server.get_with_headers(&artifact, &[("authorization", "Bearer other")]).await.status(), StatusCode::FORBIDDEN);
+    // An unlisted header makes the read request-scoped even with no Authorization.
+    let before = transport.1.lock().unwrap().len();
+    server.get_with_headers(&artifact, &[("x-probe-unknown", "1")]).await;
+    assert_eq!(transport.1.lock().unwrap().len(), before + 1, "the unknown-header read performed its own upstream request");
+
+    // Control: a header-only-allow-list read still uses the shared cache (one upstream
+    // transfer for two requests), so the bypass costs nothing for eligible reads.
+    let open: serde_json::Value = serde_json::from_str(&server.get("/registry/npm/3/open-pkg").await.text().await.unwrap()).unwrap();
+    let open_path = reqwest::Url::parse(open["versions"]["1.0.0"]["dist"]["tarball"].as_str().unwrap()).unwrap().path().to_owned();
+    let before = transport.1.lock().unwrap().len();
+    assert_eq!(server.get(&open_path).await.text().await.unwrap(), "open bytes");
+    assert_eq!(server.get(&open_path).await.text().await.unwrap(), "open bytes");
+    assert_eq!(transport.1.lock().unwrap().len(), before + 1, "two eligible reads, one transfer");
+
+    // PyPI: the same artifact path, so the same guarantee for a wheel.
+    let wheel = "secret_proj-1.0.0-py3-none-any.whl";
+    transport.0.answer(&common::pypi_upstream_path("secret-proj"), FakeAnswer::Body(serde_json::json!({
+        "meta":{"api-version":"1.1"}, "name":"secret-proj", "files":[{
+            "filename": wheel, "url": format!("https://files.invalid/packages/{wheel}"),
+            "hashes":{"sha256": hex::encode(Sha256::digest(b"secret wheel"))}, "upload-time":"2026-01-01T00:00:00Z"
+        }]
+    }).to_string()));
+    transport.0.answer(&format!("/packages/{wheel}"), FakeAnswer::Body("secret wheel".into()));
+    let index = server.get_with_headers("/registry/pypi/4/simple/secret-proj/", &[("accept", "application/vnd.pypi.simple.v1+json")]).await;
+    let index: serde_json::Value = serde_json::from_str(&index.text().await.unwrap()).unwrap();
+    let wheel_path = reqwest::Url::parse(index["files"][0]["url"].as_str().unwrap()).unwrap().path().to_owned();
+    // The caller's credential is never sent to PyPI's separate files host, but the request
+    // is still credential-bearing: its body must not enter the shared store.
+    let before = files_under(&data.join("content")).len();
+    let a = server.get_with_headers(&wheel_path, &[("authorization", "Bearer allowed")]).await;
+    assert_eq!((a.status(), a.text().await.unwrap().as_str()), (StatusCode::OK, "secret wheel"));
+    assert_eq!(files_under(&data.join("content")).len(), before, "no PyPI credential-bearing body in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+}
+
+/// A server in shared-service mode over the two-registry fixture above.
+async fn service_server() -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
+    let policy_server = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(service_snapshot()))
+        .mount(&policy_server).await;
+    let registry = FakeRegistry::new();
+    registry.answer(&npm_upstream_path("open-pkg"), FakeAnswer::Body(serde_json::json!({
+        "name":"open-pkg", "dist-tags":{"latest":"1.0.0"},
+        "versions":{"1.0.0":{"name":"open-pkg","version":"1.0.0","dist":{"tarball":"https://npm.invalid/open-pkg/-/open-pkg-1.0.0.tgz",
+            "integrity":format!("sha256-{}", common::sync::base64(Sha256::digest(b"open bytes")))}}},
+        "time":{"1.0.0":"2026-01-01T00:00:00Z"}
+    }).to_string()));
+    registry.answer(&common::pypi_upstream_path("open-proj"), FakeAnswer::Body(serde_json::json!({
+        "meta":{"api-version":"1.1"}, "name":"open-proj", "files":[{
+            "filename": "open_proj-1.0.0-py3-none-any.whl", "url": "https://files.invalid/packages/open_proj-1.0.0-py3-none-any.whl",
+            "hashes":{"sha256": hex::encode(Sha256::digest(b"w"))}, "upload-time":"2026-01-01T00:00:00Z"
+        }]
+    }).to_string()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config_with_open_blocklist(dir.path());
+    config.service_policy = Some(ServicePolicyConfig {
+        server_url: policy_server.uri().parse().unwrap(),
+        service_key_file: "/test/key".into(),
+        service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
+        sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+    });
+    let transport = Arc::new(PrivateArtifacts(registry, Mutex::new(Vec::new())));
+    let server = TestServer::start_with_upstream(
+        config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
+        Arc::clone(&transport) as Arc<dyn Transport>, fake_origins(),
+    ).await;
+    (server, transport, policy_server)
+}
+
+/// S28-1: one case per carrier on the metadata routes: afterwards no shared metadata,
+/// project or refusal cache holds an entry for that project, whatever the request carried.
+#[tokio::test]
+async fn credential_bearing_metadata_read_never_enters_shared_caches() {
+    use probation::store::cache::ProjectKey;
+    let carriers: &[(&str, &[(&str, &str)])] = &[
+        ("authorization", &[("authorization", "Bearer allowed")]),
+        ("cookie", &[("cookie", "session=1")]),
+        ("x-nuget-apikey", &[("x-nuget-apikey", "k")]),
+        ("x-jfrog-art-api", &[("x-jfrog-art-api", "k")]),
+        ("unknown header", &[("x-probe-unknown", "1")]),
+    ];
+    for (carrier, headers) in carriers {
+        let (server, _transport, _policy) = service_server().await;
+        let caches = server.app();
+        let npm_key = ProjectKey::in_registry(3, probation_policy::Ecosystem::Npm, "open-pkg");
+        let pypi_key = ProjectKey::in_registry(4, probation_policy::Ecosystem::PyPi, "open-proj");
+        let mut npm_headers = headers.to_vec();
+        npm_headers.push(("accept", "application/json"));
+        assert_eq!(server.get_with_headers("/registry/npm/3/open-pkg", &npm_headers).await.status(), StatusCode::OK, "{carrier}");
+        let mut pypi_headers = headers.to_vec();
+        pypi_headers.push(("accept", "application/vnd.pypi.simple.v1+json"));
+        assert_eq!(server.get_with_headers("/registry/pypi/4/simple/open-proj/", &pypi_headers).await.status(), StatusCode::OK, "{carrier}");
+        let store = caches.store().caches();
+        assert!(store.projects.get(&npm_key).is_none() && store.projects.get(&pypi_key).is_none(), "{carrier}: project snapshot cache is empty");
+        assert!(store.absent.get(&npm_key).is_none() && store.absent.get(&pypi_key).is_none(), "{carrier}: refusal cache is empty");
+        assert_eq!(store.rendered.len(), 0, "{carrier}: rendered cache is empty");
+    }
+}
+
+/// R28-5: an upstream refusal of an artifact has its own code, distinct from a policy BLOCKED.
+#[tokio::test]
+async fn artifact_upstream_401_and_403_have_their_own_codes() {
+    let (server, transport, _policy) = service_server().await;
+    let registry = &transport.0;
+    for name in ["login-pkg", "secret-pkg"] {
+        registry.answer(&npm_upstream_path(name), FakeAnswer::Body(serde_json::json!({
+            "name": name, "dist-tags":{"latest":"1.0.0"},
+            "versions":{"1.0.0":{"name":name,"version":"1.0.0","dist":{"tarball":format!("https://npm.invalid/{name}/-/{name}-1.0.0.tgz"),
+                "integrity":format!("sha256-{}", common::sync::base64(Sha256::digest(b"bytes")))}}},
+            "time":{"1.0.0":"2026-01-01T00:00:00Z"}
+        }).to_string()));
+        registry.answer(&common::npm_artifact_upstream_path(name, &format!("{name}-1.0.0.tgz")), FakeAnswer::Body("bytes".into()));
+    }
+    let tarball = |name: &str| format!("/registry/npm/3/{name}/-/{name}-1.0.0.tgz");
+    let mut seen = Vec::new();
+    for (name, headers) in [("login-pkg", vec![]), ("secret-pkg", vec![("authorization", "Bearer wrong")])] {
+        let document: serde_json::Value = serde_json::from_str(&server.get_with_headers(&format!("/registry/npm/3/{name}"), &headers).await.text().await.unwrap()).unwrap();
+        let artifact = reqwest::Url::parse(document["versions"]["1.0.0"]["dist"]["tarball"].as_str().unwrap()).unwrap().path().to_owned();
+        let _ = tarball(name);
+        let answer = server.get_with_headers(&artifact, &headers).await;
+        let status = answer.status();
+        let body: serde_json::Value = serde_json::from_str(&answer.text().await.unwrap()).unwrap();
+        seen.push((status.as_u16(), body["error"].as_str().unwrap().to_owned()));
+    }
+    assert_eq!(seen[0], (401, "UPSTREAM_AUTHENTICATION_REQUIRED".to_owned()), "upstream 401");
+    assert_eq!(seen[1], (403, "UPSTREAM_DENIED".to_owned()), "upstream 403 is not a policy BLOCKED");
+}
+
+/// N1: the metadata, token-packument and named-read upstream 401/403 carry the same distinct
+/// codes as artifacts (statuses unchanged), never a Probation key error or a policy BLOCKED.
+#[tokio::test]
+async fn metadata_upstream_401_and_403_have_their_own_codes() {
+    let (server, _transport, _policy) = service_server().await;
+    let code = |answer: reqwest::Response| async move {
+        let status = answer.status().as_u16();
+        let body: serde_json::Value = serde_json::from_str(&answer.text().await.unwrap()).unwrap();
+        (status, body["error"].as_str().unwrap_or_default().to_owned())
+    };
+    let login = (401, "UPSTREAM_AUTHENTICATION_REQUIRED".to_owned());
+    let denied = (403, "UPSTREAM_DENIED".to_owned());
+    // npm packument (src/npm/mod.rs) and PyPI index (src/pypi/mod.rs).
+    assert_eq!(code(server.get("/registry/npm/3/login-meta").await).await, login, "npm metadata 401");
+    assert_eq!(code(server.get("/registry/npm/3/deny-meta").await).await, denied, "npm metadata 403");
+    let simple = [("accept", "application/vnd.pypi.simple.v1+json")];
+    assert_eq!(code(server.get_with_headers("/registry/pypi/4/simple/login-meta/", &simple).await).await, login, "pypi index 401");
+    assert_eq!(code(server.get_with_headers("/registry/pypi/4/simple/deny-meta/", &simple).await).await, denied, "pypi index 403");
+    // The developer-token packument read (src/http/token_packument.rs).
+    assert_eq!(code(server.get_with_headers("/registry/npm/3/login-meta?write=true", &[("authorization", "Bearer token")]).await).await, login, "token packument 401");
+    assert_eq!(code(server.get_with_headers("/registry/npm/3/deny-meta?write=true", &[("authorization", "Bearer token")]).await).await, denied, "token packument 403");
+    // A named read (src/http/registry_routes.rs).
+    assert_eq!(code(server.get_with_headers("/registry/npm/3/-/whoami", &[("authorization", "Bearer expired")]).await).await, login, "named read 401");
+    assert_eq!(code(server.get_with_headers("/registry/npm/3/-/whoami", &[("authorization", "Bearer denied")]).await).await, denied, "named read 403");
+}
+
+/// N2: outside any request context (a background task, a test) shared-service mode has no
+/// classification, so no token is minted: fail closed. Other modes keep theirs.
+#[tokio::test]
+async fn cache_token_fails_closed_without_a_request_context_in_service_mode() {
+    let (server, _transport, _policy) = service_server().await;
+    assert!(probation::http::credential_read::cache_token(&server.app()).is_none());
+    let standalone = TestServer::start().await;
+    assert!(probation::http::credential_read::cache_token(&standalone.app()).is_some(), "standalone has no caller credential on reads");
+}

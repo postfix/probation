@@ -100,6 +100,10 @@ pub struct ContentStore {
     /// SPEC §10: "access updates batched off the request path". A hit records its key
     /// here and the maintenance pass writes them, so no request waits for a write.
     touched: Mutex<Vec<ContentKey>>,
+    /// Test seam: holds the next eviction after it claims its key and before it removes the
+    /// file. Compiled only under `test-support`.
+    #[cfg(feature = "test-support")]
+    evict_hold: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 impl ContentStore {
@@ -124,7 +128,18 @@ impl ContentStore {
             reserved: Arc::new(AtomicU64::new(0)),
             open: Arc::new(Mutex::new(OpenFiles::default())),
             touched: Mutex::new(Vec::new()),
+            #[cfg(feature = "test-support")]
+            evict_hold: Mutex::new(None),
         }
+    }
+
+    /// Test seam: the next eviction notifies the first handle once it has claimed its key and
+    /// waits for the second before it removes the file. Returns `(reached, release)`.
+    #[cfg(feature = "test-support")]
+    pub fn hold_next_eviction(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let handles = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        *self.evict_hold.lock().expect("the eviction hold") = Some(handles.clone());
+        handles
     }
 
     /// How many bytes in-flight downloads currently hold against the budget. Zero
@@ -194,6 +209,14 @@ impl ContentStore {
             }
         }
 
+        #[cfg(feature = "test-support")]
+        {
+            let hold = self.evict_hold.lock().expect("the eviction hold").take();
+            if let Some((reached, release)) = hold {
+                reached.notify_one();
+                release.notified().await;
+            }
+        }
         let removed = match tokio::fs::remove_file(self.path_for(key)).await {
             Ok(()) => true,
             // Already gone is the outcome eviction wanted.
@@ -414,7 +437,8 @@ impl ContentStore {
         Ok(PinnedFile {
             file,
             size,
-            _pin: pin,
+            _pin: Some(pin),
+            _scoped: None,
         })
     }
 }
@@ -549,10 +573,22 @@ impl Drop for TempDownload {
 pub struct PinnedFile {
     file: tokio::fs::File,
     size: u64,
-    _pin: OpenPin,
+    _pin: Option<OpenPin>,
+    /// Keeps a request-owned body's accounting until the response ends.
+    _scoped: Option<crate::http::credential_temp::CompletedTemp>,
 }
 
 impl PinnedFile {
+    /// A verified body held in a request-owned temporary file (C1028). It is not in the
+    /// shared content store, so nothing can evict, share or reuse it.
+    pub fn request_scoped(completed: crate::http::credential_temp::CompletedTemp, size: u64) -> PinnedFile {
+        use std::io::Seek;
+        let mut handle = &completed.file;
+        handle.seek(std::io::SeekFrom::Start(0)).expect("rewind the request-owned file");
+        let std_file = completed.file.try_clone().expect("duplicate the request-owned file handle");
+        PinnedFile { file: tokio::fs::File::from_std(std_file), size, _pin: None, _scoped: Some(completed) }
+    }
+
     pub fn size(&self) -> u64 {
         self.size
     }

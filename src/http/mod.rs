@@ -2,8 +2,11 @@
 
 pub mod artifact_routes;
 pub mod audit_filter;
+pub mod credential_read;
+pub mod credential_temp;
 pub mod error;
 pub mod health;
+pub mod listener_admission;
 pub mod limits;
 pub mod logging;
 pub mod npm_routes;
@@ -11,6 +14,7 @@ pub mod pypi_routes;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
+pub mod service_connector;
 pub mod service_registry;
 pub(crate) mod service_unpublish;
 pub mod token_packument;

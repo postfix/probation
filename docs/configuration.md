@@ -33,3 +33,23 @@ Set database URLs and the 64-character `PROBATION_SERVER_SECRET_KEY` in the envi
 Open **Policy** to change managed package rules. Open **Organisation → Package registries** to add an npm or PyPI target, a read credential, or an approved deletion destination. Open **Fleet** as a global admin to send shared firewall settings. Address, storage, TLS, and management connection settings stay in each firewall's own `config.toml`; they cannot be pushed. Give every managed firewall a restart policy so a settings push can take effect.
 
 See [Web interface](web-interface.md) for the pages and [Troubleshooting](troubleshooting.md) when a check or restart fails.
+
+## Shared service (`[service_policy]`)
+
+A firewall can take one organisation's policy from the policy server with an organisation
+service key and serve every admitted caller without a Probation login.
+
+| Key | Meaning |
+|---|---|
+| `[service_policy] server_url` | `https://` origin of the policy server (no path, userinfo, query or fragment). |
+| `[service_policy] service_key_file` | Absolute path of a private file holding the service key (one trailing newline is trimmed; printable ASCII, at most 512 bytes). |
+| `allowed_peer_cidrs` | CIDRs of peers admitted by their actual TCP address (at least /8 IPv4, /32 IPv6). Required for a non-loopback listener, which also needs TLS. Forwarding headers are never read. |
+| `control_plane_cidrs` | Cluster control-plane ranges a registry descriptor may never name or dial. |
+| `credential_temp_max_request_bytes` | Optional. Largest credential-bearing response held in a request-owned temporary file; above it the request gets `413`. Unset by default (the disk is the limit). |
+| `credential_temp_max_total_bytes` | Optional. Total of those files per process; a request that would not fit beside the others gets `503` with `Retry-After`. Unset by default. |
+
+Every request must carry a `Host` equal to `public_url` or to `127.0.0.1`, `[::1]` or `localhost` with
+the listener's own port; anything else gets `400`. Registry targets named by the policy server can never
+point at loopback, link-local, cloud-metadata addresses, the firewall's own listener or `control_plane_cidrs`,
+whatever private CIDRs the registry lists. To recover from a restored or rolled-back policy server see
+`probation reset-revision-floor` in `operations.md`.

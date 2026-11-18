@@ -6,6 +6,8 @@
 //! a report or a log line.
 
 pub mod activity;
+mod order_guards;
+pub mod publication_gate;
 pub mod service_policy;
 mod cache;
 pub mod certificates;
@@ -297,7 +299,7 @@ impl Managed {
         // shortcut: certificate activity has no key row; add a separate certificate
         // activity identity when the activity schema supports it.
         let principal = Principal {
-            authority: Some(service_policy::AuthorityReceipt { gate: Arc::clone(&self.publication_gate), generation }),
+            authority: Some(service_policy::AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation)),
             place,
             key_id: KeyId(0),
             policy: Arc::new(policy),
@@ -448,6 +450,11 @@ impl Managed {
         &self.sync
     }
 
+    /// The shared publication gate, so a test can place its barrier or poison it.
+    pub fn publication_gate(&self) -> &Arc<service_policy::PolicyPublicationGate> {
+        &self.publication_gate
+    }
+
     pub fn activity(&self) -> &ActivityQueue {
         &self.activity
     }
@@ -500,7 +507,7 @@ impl Managed {
             Ok((generation, current))
             }).map_err(|_| Refusal::Busy)??
         };
-        principal.authority = Some(service_policy::AuthorityReceipt { gate: Arc::clone(&self.publication_gate), generation });
+        principal.authority = Some(service_policy::AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation));
         self.admit(&principal, client)?;
         Ok(principal)
     }
@@ -1071,6 +1078,7 @@ impl Managed {
             effective_period_seconds: self.period.as_secs(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             failed_revision,
+            osv: None,
         }
     }
 

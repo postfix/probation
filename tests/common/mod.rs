@@ -213,6 +213,57 @@ impl TestServer {
         }
     }
 
+    /// A standalone server whose fixed api.osv.dev client is the one the test hands in (for
+    /// example one routed through a recording proxy).
+    pub async fn start_with_osv_client(
+        mut config: Config,
+        clock: Arc<dyn Clock>,
+        transport: Arc<dyn Transport>,
+        origins: OriginSet,
+        osv_client: reqwest::Client,
+    ) -> TestServer {
+        let data_dir = tempfile::tempdir().expect("a temporary data directory");
+        config.data_dir = data_dir.path().to_path_buf();
+        let running = start(config, clock, transport, origins, osv_client, None).await;
+        TestServer {
+            running,
+            client: downstream_client(),
+            _data_dir: Some(data_dir),
+        }
+    }
+
+    /// A managed or shared-service endpoint whose OSV lookups run the production derivation
+    /// (`<server>/osv`, credential attached) against `osv_server_origin` instead of the
+    /// configured server URL: the one test seam that keeps the https rule and credential
+    /// attachment in play against a loopback fake.
+    pub async fn start_with_osv_server_origin(
+        mut config: Config,
+        clock: Arc<dyn Clock>,
+        transport: Arc<dyn Transport>,
+        origins: OriginSet,
+        osv_client: reqwest::Client,
+        osv_server_origin: Url,
+    ) -> TestServer {
+        let data_dir = tempfile::tempdir().expect("a temporary data directory");
+        config.data_dir = data_dir.path().to_path_buf();
+        let running = App::start(AppDeps {
+            config,
+            clock,
+            transport,
+            origins,
+            osv_client,
+            osv_base_url: None,
+            osv_server_origin_override: Some(osv_server_origin),
+        })
+        .await
+        .expect("the server binds and starts");
+        TestServer {
+            running,
+            client: downstream_client(),
+            _data_dir: Some(data_dir),
+        }
+    }
+
     /// Starts in a directory the test owns, so a later start can find what this one
     /// persisted. `config.data_dir` is overwritten with `data_dir`.
     pub async fn start_in(
@@ -569,6 +620,11 @@ pub async fn start_unready(
     osv_client: reqwest::Client,
     osv_base_url: Option<Url>,
 ) -> Running {
+    // A managed or shared-service endpoint asks the policy server, over https, for OSV
+    // answers and never selects api.osv.dev. A test that is not about OSV points the plain
+    // test seam at an address nothing listens on, so its lookups fail open at once.
+    let managed = config.management.is_some() || config.service_policy.is_some();
+    let osv_base_url = osv_base_url.or_else(|| managed.then(probation::osv::unreachable_base_url));
     App::start(AppDeps {
         config,
         clock,
@@ -576,6 +632,7 @@ pub async fn start_unready(
         origins,
         osv_client,
         osv_base_url,
+        osv_server_origin_override: None,
     })
     .await
     .expect("the server binds and starts")

@@ -524,12 +524,8 @@ async fn named_read(
             .await;
         let bytes = match fetched {
             Ok(bytes) => bytes,
-            Err(UpstreamError::Status(401)) => return Err(ApiError::Unauthenticated),
-            Err(UpstreamError::Status(403)) => {
-                return Err(ApiError::Blocked {
-                    reason: "the upstream registry denied this read",
-                });
-            }
+            Err(UpstreamError::Status(401)) => return Err(ApiError::UpstreamUnauthenticated),
+            Err(UpstreamError::Status(403)) => return Err(ApiError::UpstreamDenied),
             Err(UpstreamError::Status(404)) => return Err(ApiError::NotFound),
             Err(UpstreamError::Timeout) => return Err(ApiError::UpstreamTimeout),
             Err(err) => {

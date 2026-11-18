@@ -13,7 +13,7 @@ use axum::{
 use probation_policy::{
     Ecosystem,
     api::{
-        KeyHash, KeyLookup, PlaceLayer, RegistryDeletionScope, RegistryDescriptor, RegistryId,
+        KeyHash, KeyLookup, OsvScope, PlaceLayer, RegistryDeletionScope, RegistryDescriptor, RegistryId,
         ServicePolicySnapshot,
     },
 };
@@ -52,7 +52,11 @@ async fn snapshot(
         })
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let (mut tx, _) = sync::snapshot(&state.pool).await.map_err(unavailable)?;
-    let scope = require_live_service_scope(&mut tx, &key).await?;
+    let scope = match require_live_service_scope(&mut tx, key).await? {
+        Ok(scope) => scope,
+        // Only a live key passes the guard, so this is always the refusal.
+        Err(standing) => return Err(crate::order_guards::snapshot_order(standing, true).expect_err("a live key is not a refusal")),
+    };
     {
         let now = Instant::now();
         let mut recent = state
@@ -71,9 +75,12 @@ async fn snapshot(
         {
             window.pop_front();
         }
-        if window.len() >= sync::FIREWALL_TOKEN_RATE_PER_SECOND {
-            return Err(StatusCode::TOO_MANY_REQUESTS);
-        }
+        // The scope above is live (a missing or suspended one already returned), so this is
+        // the only standing the guard can see here.
+        crate::order_guards::snapshot_order(
+            crate::order_guards::Standing::Live,
+            window.len() < sync::FIREWALL_TOKEN_RATE_PER_SECOND,
+        )?;
         window.push_back(now);
     }
     let answer = load_policy_snapshot(scope, &mut tx).await?;
@@ -84,12 +91,13 @@ async fn snapshot(
 async fn require_live_service_scope(
     tx: &mut Transaction<'_, Postgres>,
     key: &str,
-) -> Result<ServiceScope, StatusCode> {
+) -> Result<Result<ServiceScope, crate::order_guards::Standing>, StatusCode> {
+    use crate::order_guards::Standing;
     let hash = KeyHash::of(key);
     let service: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM keys WHERE hash = $1 AND kind = 'service' AND revoked_at IS NULL)")
         .bind(hash.0.as_slice()).fetch_one(&mut **tx).await.map_err(unavailable)?;
     if !service {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Ok(Err(Standing::Unknown));
     }
     let revision: i64 = sqlx::query_scalar("SELECT value FROM change_counter WHERE id = 1")
         .fetch_one(&mut **tx)
@@ -107,7 +115,7 @@ async fn require_live_service_scope(
             rate_limit,
             rate_limit_source,
             revision,
-        } => Ok(ServiceScope(ServicePolicySnapshot {
+        } => Ok(Ok(ServiceScope(ServicePolicySnapshot {
             version: 1,
             key_id,
             org,
@@ -118,9 +126,9 @@ async fn require_live_service_scope(
             revision,
             layers: Vec::new(),
             registries: Vec::new(),
-        })),
-        KeyLookup::Suspended { .. } => Err(StatusCode::FORBIDDEN),
-        _ => Err(StatusCode::UNAUTHORIZED),
+        }))),
+        KeyLookup::Suspended { .. } => Ok(Err(Standing::Suspended)),
+        _ => Ok(Err(Standing::Unknown)),
     }
 }
 
@@ -140,13 +148,14 @@ async fn load_policy_snapshot(
             revision,
         });
     }
-    let rows: Vec<(i64, String, Option<String>, bool)> = sqlx::query_as(
-        "SELECT id, ecosystem, target_url, trusted FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 1001"
+    type Row = (i64, String, Option<String>, bool, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, ecosystem, target_url, trusted, osv_scope FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
     ).bind(snapshot.org.0 as i32).fetch_all(&mut **tx).await.map_err(unavailable)?;
-    if rows.len() > 1000 {
+    if rows.len() > 256 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    for (id, tag, target_url, trusted) in rows {
+    for (id, tag, target_url, trusted, osv_scope) in rows {
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
@@ -169,6 +178,11 @@ async fn load_policy_snapshot(
             trusted,
             registry_private_cidrs,
             deletion_scopes,
+            osv_scope: match osv_scope.as_deref() {
+                Some("public") => Some(OsvScope::Public),
+                Some("private") => Some(OsvScope::Private),
+                _ => None,
+            },
         });
     }
     Ok(snapshot)
@@ -177,4 +191,37 @@ async fn load_policy_snapshot(
 fn unavailable(error: sqlx::Error) -> StatusCode {
     tracing::error!(%error, "service policy snapshot unavailable");
     StatusCode::SERVICE_UNAVAILABLE
+}
+
+/// Sets (`Some`) or clears (`None`) a registry's OSV scope (LS-F12). False when the
+/// registry is not this organisation's live registry.
+pub async fn set_osv_scope(
+    pool: &sqlx::PgPool,
+    org: i32,
+    registry: i64,
+    scope: Option<OsvScope>,
+) -> Result<bool, sqlx::Error> {
+    let column = scope.map(|scope| match scope {
+        OsvScope::Public => "public",
+        OsvScope::Private => "private",
+    });
+    let done = sqlx::query("UPDATE registries SET osv_scope = $1 WHERE id = $2 AND org_id = $3 AND removed_at IS NULL")
+        .bind(column)
+        .bind(registry)
+        .bind(org)
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// The id of a live service-kind key (`prb_`, not revoked), for the OSV route's closed
+/// credential set. User-kind, firewall-kind, revoked and unknown keys are `None`.
+pub(crate) async fn live_service_key_id(pool: &PgPool, key: &str) -> Result<Option<i64>, sqlx::Error> {
+    if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Ok(None);
+    }
+    sqlx::query_scalar("SELECT id::bigint FROM keys WHERE hash = $1 AND kind = 'service' AND revoked_at IS NULL")
+        .bind(KeyHash::of(key).0.as_slice())
+        .fetch_optional(pool)
+        .await
 }

@@ -51,6 +51,14 @@ enum Command {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
+    /// Operator command (LS-F8): clear only the persisted shared-service policy
+    /// revision floor, after a server restore, rollback or failover. Never clears a
+    /// refusal. Runs with the enforcer stopped or running.
+    ResetRevisionFloor {
+        /// Path to the TOML configuration file.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -80,6 +88,27 @@ async fn main() -> ExitCode {
             }
         }
         Command::CheckBlocklist { path } => check_blocklist(&path),
+        Command::ResetRevisionFloor { config } => reset_revision_floor(&config),
+    }
+}
+
+fn reset_revision_floor(path: &Path) -> ExitCode {
+    let result = Config::load(path)
+        .map_err(|err| err.to_string())
+        .and_then(|config| {
+            let policy = config.service_policy.as_ref().ok_or("no [service_policy] section: nothing to reset")?;
+            probation::managed::service_policy::ServicePolicy::reset_revision_floor(policy, &config.data_dir)
+                .map_err(|_| "cannot write the data directory".to_owned())
+        });
+    match result {
+        Ok(()) => {
+            println!("revision floor reset; the next valid snapshot sets the new floor");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{}: {err}", path.display());
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -157,13 +186,24 @@ async fn serve(config_path: &Path) -> ExitCode {
     // C71). The origins follow whatever configuration finally starts.
     let running = match probation::start_with_settings(config, |config| {
         let origins = OriginSet::configured(&config);
+        // LS-F9: snapshot-sourced registries are dialled under the denylist.
+        let transport = ReqwestTransport::for_origins(origins.clone());
+        let transport = if config.service_policy.is_some() {
+            transport.with_denylist(Arc::new(probation::http::service_connector::Denylist::new(
+                Some(config.listen),
+                config.control_plane_cidrs.clone(),
+            )))
+        } else {
+            transport
+        };
         AppDeps {
             config,
             clock: Arc::new(SystemClock),
-            transport: Arc::new(ReqwestTransport::for_origins(origins.clone())),
+            transport: Arc::new(transport),
             origins,
             osv_client: reqwest::Client::new(),
             osv_base_url: None,
+            osv_server_origin_override: None,
         }
     })
     .await

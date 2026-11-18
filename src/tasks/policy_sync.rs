@@ -118,9 +118,12 @@ async fn sync_once(app: &App, managed: &Managed, round: &mut Round) {
 }
 
 fn request(app: &App, managed: &Managed, batch: &Batch) -> ChangesRequest {
+    let mut report = managed.report(app.upstreams.take_period());
+    // Managed OSV is the policy server's: its health travels with the report (LS-F7, C1031).
+    report.osv = Some(app.upstreams.osv_report());
     ChangesRequest {
         since: managed.sync().cursor(),
-        report: managed.report(app.upstreams.take_period()),
+        report,
         activity: batch
             .events
             .iter()

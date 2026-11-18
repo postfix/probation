@@ -55,6 +55,8 @@ pub struct ReqwestTransport {
     origins: OriginSet,
     metadata_client: Client,
     artifact_client: Client,
+    /// LS-F9: applied to every selected (snapshot-sourced) registry.
+    service_deny: Option<std::sync::Arc<crate::http::service_connector::Denylist>>,
 }
 
 impl ReqwestTransport {
@@ -88,7 +90,15 @@ impl ReqwestTransport {
             origins,
             metadata_client,
             artifact_client,
+            service_deny: None,
         }
+    }
+
+    /// Snapshot-sourced registries (every selected origin) are dialled under this denylist
+    /// (LS-F9). Standalone and legacy targets keep their own gate.
+    pub fn with_denylist(mut self, deny: std::sync::Arc<crate::http::service_connector::Denylist>) -> ReqwestTransport {
+        self.service_deny = Some(deny);
+        self
     }
 
     /// Admission before any request: the URL must belong to a configured origin,
@@ -105,8 +115,14 @@ impl ReqwestTransport {
 
     fn selected_within(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool, metadata_total: Duration) -> Result<(OriginSet, Client), UpstreamError> {
         let origins = match origin {
-            Some(origin) => OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
-                .map_err(UpstreamError::RejectedUrl)?,
+            Some(origin) => {
+                let selected = OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
+                    .map_err(UpstreamError::RejectedUrl)?;
+                match &self.service_deny {
+                    Some(deny) => selected.with_denylist(std::sync::Arc::clone(deny)),
+                    None => selected,
+                }
+            }
             None if follow_redirects => {
                 return Ok((self.origins.clone(), if artifact { self.artifact_client.clone() } else { self.metadata_client.clone() }));
             }
@@ -136,7 +152,7 @@ fn base_builder(origins: &OriginSet) -> ClientBuilder {
         .referer(false)
         .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
-        .dns_resolver(GuardedResolver::with_cidrs(origins.allows_private_addresses(), origins.private_cidrs().to_vec()))
+        .dns_resolver(GuardedResolver::with_denylist(origins.allows_private_addresses(), origins.private_cidrs().to_vec(), origins.denylist(), origins.origin(OriginKind::NpmMetadata).port_or_known_default()))
         .redirect(same_origin_policy(origins.clone()))
 }
 
@@ -351,7 +367,7 @@ impl Transport for ReqwestTransport {
 fn check_connected_peer(response: &Response, origins: &OriginSet) -> Result<(), UpstreamError> {
     let peer = response.remote_addr().ok_or_else(||
         UpstreamError::Transport("upstream connected peer unavailable".to_owned()))?;
-    if !origins.allows_address(peer.ip()) {
+    if !origins.allows_endpoint(peer) {
         return Err(UpstreamError::RejectedAddress { addr: peer.ip() });
     }
     Ok(())

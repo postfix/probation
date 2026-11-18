@@ -287,20 +287,27 @@ async fn an_unreadable_object_at_the_path_is_replaced() {
 }
 
 /// Eviction and an open race for the same key; whichever claims it first wins, and
-/// the loser is told so rather than reading a file that is being removed.
+/// the loser is told so rather than reading a file that is being removed. The first
+/// eviction is held between its claim and the removal by an explicit hook, so the other
+/// two run in exactly that window on any machine load (no reliance on poll order).
 #[tokio::test]
 async fn an_open_during_eviction_is_refused_and_a_second_eviction_stands_aside() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let store = ContentStore::new(dir.path(), 1 << 20);
+    let store = std::sync::Arc::new(ContentStore::new(dir.path(), 1 << 20));
     let key = published(&store, b"evicted").await;
+    let (reached, release) = store.hold_next_eviction();
 
-    // `join!` polls in order: the first eviction claims the key and yields inside
-    // the removal, and only then do the other two run.
-    let (first, second, opened) = tokio::join!(
-        store.evict(&key),
-        store.evict(&key),
-        store.open_verified(&key, 7)
-    );
+    let first = tokio::spawn({
+        let (store, key) = (std::sync::Arc::clone(&store), key);
+        async move { store.evict(&key).await }
+    });
+    // The watchdog only detects a deadlock; ordering comes from the notifications.
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified()).await.expect("the first eviction reached the hold");
+    let second = store.evict(&key).await;
+    let opened = store.open_verified(&key, 7).await;
+    assert!(store.path_for(&key).exists(), "the file is still there while the claim is held");
+    release.notify_one();
+    let first = first.await.expect("the first eviction finishes");
     assert!(first, "the first eviction removed the file");
     assert!(!second, "a second pass over the same key stands aside");
     let refused = opened.err().expect("the open is refused");

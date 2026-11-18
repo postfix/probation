@@ -21,7 +21,7 @@ pub(super) struct ServiceRemoval<'a> {
 }
 
 pub(super) async fn record_successful_service_removal(response: &ActionResponse, reference: ServiceRemoval<'_>) -> Result<(), ApiError> {
-    let revision = resolve_removed_revision_from_put_or_authenticated_get(&response, &reference).await?;
+    let revision = resolve_removed_revision_from_put_or_authenticated_get(response, &reference).await?;
     commit_service_removal_marker(&reference, revision).await
 }
 
@@ -94,11 +94,11 @@ pub(super) async fn consume_service_marker_then_send(app: &Arc<App>, registry: u
     if !valid_revision(revision) || !authorization.starts_with("Bearer ") || authorization.len() <= 7 {
         return Err(ApiError::NotFound);
     }
-    let reference = check_service_reference(&app, registry, reference, package, filename).await?;
+    let reference = check_service_reference(app, registry, reference, package, filename).await?;
     let mut url = reference.url.clone();
     url.path_segments_mut().map_err(|_| ApiError::NotFound)?.push("-rev").push(revision);
     let file = tempfile::tempfile_in(&app.config.data_dir).map_err(|_| ApiError::StorageUnusable)?;
-    let marker = consume_service_marker(&app, registry, &reference, revision).await?;
+    let marker = consume_service_marker(app, registry, &reference, revision).await?;
     if !marker { return Err(ApiError::NotFound); }
     let result = app.transport.send_action(ActionRequest {
         url, origin: reference.origin, private_cidrs: reference.private_cidrs, method: Method::DELETE,

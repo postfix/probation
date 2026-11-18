@@ -84,6 +84,9 @@ pub struct Config {
     /// (C12c/C14). The same figure bounds both the outbound call and each waiter's
     /// reply, so there is one knob rather than two that could drift apart.
     pub osv_request_timeout_ms: NonZeroU64,
+    /// How long a matched OSV entry keeps refusing after its TTL while the policy server
+    /// cannot be asked (C1031). Managed and shared-service mode only.
+    pub osv_stale_match_seconds: u64,
     /// Whether OSV enforcement denies, only logs, or is skipped entirely (C16-C18b,
     /// D5/D6). Defaults to `Enforce` — today's behaviour — when absent.
     pub osv_mode: osv::OsvMode,
@@ -102,6 +105,13 @@ pub struct Config {
     pub management: Option<ManagementConfig>,
     pub service_policy: Option<ServicePolicyConfig>,
     pub allowed_peer_cidrs: Vec<ipnet::IpNet>,
+    /// LS-F16: optional bounds on credential-bearing read temporary files. Absent by
+    /// default, so the disk itself is the limit and no function is lost.
+    pub credential_temp_max_request_bytes: Option<u64>,
+    pub credential_temp_max_total_bytes: Option<u64>,
+    /// LS-F9: deployment-supplied cluster control-plane ranges a snapshot registry may
+    /// never name or dial.
+    pub control_plane_cidrs: Vec<ipnet::IpNet>,
     /// The three upstream origins, each replacing SPEC §11's fixed one when set (C35):
     /// `https`, no credentials, query, fragment or path, and never a private address.
     pub npm_upstream_url: Option<Url>,
@@ -110,6 +120,19 @@ pub struct Config {
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
+}
+
+impl Config {
+    /// The policy server a managed or shared-service endpoint asks for OSV answers, with
+    /// the credential it already uses for that server (C1030). There is no key that
+    /// selects direct api.osv.dev in these modes; standalone returns `None`.
+    pub fn osv_central_server(&self) -> Option<(&Url, &FirewallToken)> {
+        match (&self.management, &self.service_policy) {
+            (Some(management), _) => Some((&management.url, &management.token)),
+            (None, Some(service)) => Some((&service.server_url, &service.service_key)),
+            (None, None) => None,
+        }
+    }
 }
 
 /// A configuration file's text. Its `Debug` prints nothing, because `Config` is
@@ -165,6 +188,13 @@ impl FirewallToken {
     }
 
     pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// The secret, for a test that checks which credential a mode uses. **Compiled only
+    /// under `test-support`.**
+    #[cfg(feature = "test-support")]
+    pub fn expose_for_test_support(&self) -> &str {
         &self.0
     }
 }
@@ -248,7 +278,17 @@ const DEFAULT_OSV_CACHE_TTL_SECONDS: NonZeroU64 = NonZeroU64::new(300).unwrap();
 /// D4: an architect's estimate (not sourced from OSV's documented SLA — Gate 3
 /// least-confident-decision 3), short enough to keep C12c's outbound-call bound and
 /// C14's per-waiter reply bound both tight.
-const DEFAULT_OSV_REQUEST_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(500).unwrap();
+const DEFAULT_OSV_REQUEST_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(2000).unwrap();
+
+/// C1031: the stale-match window and its bounds (default 24 h, floor 1 h, ceiling 7 d).
+const DEFAULT_OSV_STALE_MATCH_SECONDS: u64 = 86_400;
+const MIN_OSV_STALE_MATCH_SECONDS: u64 = 3_600;
+const MAX_OSV_STALE_MATCH_SECONDS: u64 = 604_800;
+
+/// The policy server answers OSV at a 1500 ms deadline (user decision, measured api.osv.dev
+/// latency); a managed endpoint's timeout must
+/// stay strictly above it (03 "Per-query semantics and timing").
+const MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS: u64 = 1600;
 
 /// The longest `sync_interval_seconds` or `key_cache_ttl_seconds`: a day. Both are
 /// added to clock readings, and a value past what an `Instant` can hold would panic
@@ -302,6 +342,7 @@ struct RawConfig {
     log_consumer_identification: bool,
     osv_cache_ttl_seconds: Option<u64>,
     osv_request_timeout_ms: Option<u64>,
+    osv_stale_match_seconds: Option<u64>,
     osv_mode: Option<String>,
     tls_cert_path: Option<PathBuf>,
     tls_key_path: Option<PathBuf>,
@@ -310,6 +351,10 @@ struct RawConfig {
     service_policy: Option<RawServicePolicy>,
     #[serde(default)]
     allowed_peer_cidrs: Vec<String>,
+    credential_temp_max_request_bytes: Option<u64>,
+    credential_temp_max_total_bytes: Option<u64>,
+    #[serde(default)]
+    control_plane_cidrs: Vec<String>,
     npm_upstream_url: Option<String>,
     pypi_upstream_url: Option<String>,
     pypi_artifacts_url: Option<String>,
@@ -395,6 +440,7 @@ const OPTIONAL_KEYS: &[&str] = &[
     "log_consumer_identification",
     "osv_cache_ttl_seconds",
     "osv_request_timeout_ms",
+    "osv_stale_match_seconds",
     "osv_mode",
     "tls_cert_path",
     "tls_key_path",
@@ -402,6 +448,9 @@ const OPTIONAL_KEYS: &[&str] = &[
     "management",
     "service_policy",
     "allowed_peer_cidrs",
+    "credential_temp_max_request_bytes",
+    "credential_temp_max_total_bytes",
+    "control_plane_cidrs",
     "npm_upstream_url",
     "pypi_upstream_url",
     "pypi_artifacts_url",
@@ -635,19 +684,64 @@ impl RawConfig {
         let service_policy = self.service_policy.map(RawServicePolicy::validate).transpose()?;
         let allowed_peer_cidrs = self.allowed_peer_cidrs.iter().map(|text| {
             let cidr = text.parse::<ipnet::IpNet>().map_err(|_| invalid("allowed_peer_cidrs", "must contain valid CIDRs".to_owned()))?;
-            if cidr.prefix_len() == 0 {
-                return Err(invalid("allowed_peer_cidrs", "must not allow the entire network".to_owned()));
+            // LS-F10: at least /8 for IPv4 and /32 for IPv6.
+            let floor = if cidr.addr().is_ipv4() { 8 } else { 32 };
+            if cidr.prefix_len() < floor {
+                return Err(invalid("allowed_peer_cidrs", format!("must not be wider than /{floor} ({})", if cidr.addr().is_ipv4() { "IPv4" } else { "IPv6" })));
             }
             Ok(cidr)
         }).collect::<Result<Vec<_>, ConfigError>>()?;
+        // The own-listener denial needs the configured port (a descriptor must never point back).
+        if service_policy.is_some() && listen.port() == 0 {
+            return Err(invalid("listen", "must name a fixed port when [service_policy] is set".to_owned()));
+        }
         if service_policy.is_some() && !listen.ip().to_canonical().is_loopback()
             && (self.tls_cert_path.is_none() || self.tls_key_path.is_none() || allowed_peer_cidrs.is_empty()) {
             return Err(invalid("service_policy", "a non-loopback listener requires TLS and allowed_peer_cidrs".to_owned()));
         }
+        for (key, value) in [
+            ("credential_temp_max_request_bytes", self.credential_temp_max_request_bytes),
+            ("credential_temp_max_total_bytes", self.credential_temp_max_total_bytes),
+        ] {
+            if value == Some(0) {
+                return Err(invalid(key, "must be positive when set".to_owned()));
+            }
+        }
+        let control_plane_cidrs = self.control_plane_cidrs.iter().map(|text| {
+            text.parse::<ipnet::IpNet>().map_err(|_| invalid("control_plane_cidrs", "must contain valid CIDRs".to_owned()))
+        }).collect::<Result<Vec<_>, ConfigError>>()?;
         let management = self
             .management
             .map(|raw| raw.validate(sync_interval_seconds))
             .transpose()?;
+
+        let managed_osv = management.is_some() || service_policy.is_some();
+        let osv_request_timeout_ms = match self.osv_request_timeout_ms {
+            Some(value) => nonzero_u64("osv_request_timeout_ms", value)?,
+            None => DEFAULT_OSV_REQUEST_TIMEOUT_MS,
+        };
+        if managed_osv && osv_request_timeout_ms.get() < MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS {
+            return Err(invalid(
+                "osv_request_timeout_ms",
+                format!("must be at least {MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS} in managed and shared-service mode"),
+            ));
+        }
+        let osv_stale_match_seconds = match self.osv_stale_match_seconds {
+            Some(_) if !managed_osv => {
+                return Err(invalid(
+                    "osv_stale_match_seconds",
+                    "applies only with [management] or [service_policy]".to_owned(),
+                ));
+            }
+            Some(value) if !(MIN_OSV_STALE_MATCH_SECONDS..=MAX_OSV_STALE_MATCH_SECONDS).contains(&value) => {
+                return Err(invalid(
+                    "osv_stale_match_seconds",
+                    format!("must be between {MIN_OSV_STALE_MATCH_SECONDS} and {MAX_OSV_STALE_MATCH_SECONDS}"),
+                ));
+            }
+            Some(value) => value,
+            None => DEFAULT_OSV_STALE_MATCH_SECONDS,
+        };
 
         Ok(Config {
             listen,
@@ -702,10 +796,8 @@ impl RawConfig {
                 Some(value) => nonzero_u64("osv_cache_ttl_seconds", value)?,
                 None => DEFAULT_OSV_CACHE_TTL_SECONDS,
             },
-            osv_request_timeout_ms: match self.osv_request_timeout_ms {
-                Some(value) => nonzero_u64("osv_request_timeout_ms", value)?,
-                None => DEFAULT_OSV_REQUEST_TIMEOUT_MS,
-            },
+            osv_request_timeout_ms,
+            osv_stale_match_seconds,
             osv_mode: match self.osv_mode {
                 Some(value) => match value.to_lowercase().as_str() {
                     "enforce" => osv::OsvMode::Enforce,
@@ -726,6 +818,9 @@ impl RawConfig {
             management,
             service_policy,
             allowed_peer_cidrs,
+            credential_temp_max_request_bytes: self.credential_temp_max_request_bytes,
+            credential_temp_max_total_bytes: self.credential_temp_max_total_bytes,
+            control_plane_cidrs,
             npm_upstream_url,
             pypi_upstream_url,
             pypi_artifacts_url,
@@ -775,8 +870,9 @@ impl RawServicePolicy {
         let server_url = Url::parse(&self.server_url)
             .map_err(|_| invalid("service_policy.server_url", "must be a valid URL".to_owned()))?;
         if server_url.scheme() != "https" || server_url.host().is_none() || has_userinfo(&server_url)
-            || server_url.query().is_some() || server_url.fragment().is_some() {
-            return Err(invalid("service_policy.server_url", "requires HTTPS without credentials, query or fragment".to_owned()));
+            || server_url.query().is_some() || server_url.fragment().is_some()
+            || !matches!(server_url.path(), "" | "/") {
+            return Err(invalid("service_policy.server_url", "requires an HTTPS origin: no path, credentials, query or fragment".to_owned()));
         }
         if !self.service_key_file.is_absolute() {
             return Err(invalid("service_policy.service_key_file", "must be an absolute path".to_owned()));
@@ -799,7 +895,11 @@ impl RawServicePolicy {
         let mut key = String::new();
         file.take(1025).read_to_string(&mut key)
             .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
-        let key = key.trim();
+        // LS-F15: exactly one trailing newline is trimmed; every byte is printable ASCII.
+        let key = key.strip_suffix("\r\n").or_else(|| key.strip_suffix('\n')).unwrap_or(&key);
+        if key.len() > 512 || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Err(invalid("service_policy.service_key_file", "must hold one printable ASCII key of at most 512 bytes".to_owned()));
+        }
         if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|byte| byte.is_ascii_alphanumeric()) {
             return Err(invalid("service_policy.service_key_file", "requires a service API key".to_owned()));
         }

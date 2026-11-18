@@ -28,14 +28,14 @@ pub async fn respond(
         return Ok(next.run(request).await);
     }
     let peer = logging::peer().ok_or(ApiError::NotReady)?.to_canonical();
-    if !peer.is_loopback()
-        && !app
-            .config
-            .allowed_peer_cidrs
-            .iter()
-            .any(|cidr| cidr.contains(&peer))
-    {
+    if !super::listener_admission::peer_admitted(peer, &app.config.allowed_peer_cidrs) {
         return Err(ApiError::NetworkNotAllowed(peer));
+    }
+    // LS-F10 (user decision 2026-11-18): every peer, loopback included, must address the
+    // public host or one of this machine's own names on the listener's port. A rebinding
+    // host (a browser reaching 127.0.0.1 with `Host: attacker.test`) is refused.
+    if !host_admitted(&app.config.public_url, app.bound.get().map(|addr| addr.port()), &request) {
+        return Err(ApiError::InvalidInput("Host does not match the public URL"));
     }
     if !app.store().is_healthy() {
         return Err(ApiError::StorageUnusable);
@@ -44,6 +44,19 @@ pub async fn respond(
     let generation = publication_gate.generation();
     let policy = service.snapshot().ok_or(ApiError::PolicyUnavailable)?;
     let selected = classify_selected_registry(&request, &policy)?;
+    // C1028 / LS-F4: a read is cache-eligible only on the allow-list; anything else is
+    // request-scoped and never touches a shared cache.
+    if matches!(*request.method(), Method::GET | Method::HEAD) {
+        let rules = if request.uri().path().starts_with("/pypi/") || request.uri().path().starts_with("/registry/pypi/") {
+            &super::credential_read::FamilyReadRules::PYPI
+        } else {
+            &super::credential_read::FamilyReadRules::NPM
+        };
+        let parts = super::credential_read::RequestParts { uri: request.uri(), headers: request.headers(), extra_pseudo_headers: &[] };
+        if matches!(super::credential_read::classify_read(&parts, rules), super::credential_read::ReadClass::RequestScoped) {
+            logging::record_request_scoped();
+        }
+    }
     if request.method() == Method::DELETE {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
@@ -234,6 +247,17 @@ fn dispatch_npm_delete_route(route: NpmDeleteRoute) -> Result<(), ApiError> {
         NpmDeleteRoute::WholePackageRevision | NpmDeleteRoute::VersionReference
         | NpmDeleteRoute::NamedAction => Ok(()),
     }
+}
+
+fn host_admitted(public_url: &url::Url, local_port: Option<u16>, request: &Request) -> bool {
+    use axum::http::header::HOST;
+    let host = super::listener_admission::HostInput {
+        host_headers: request.headers().get_all(HOST).iter().map(|v| v.to_str().unwrap_or("\u{0}").to_owned()).collect(),
+        authority: request.uri().authority().map(|a| a.as_str().to_owned()).filter(|_| request.version() == axum::http::Version::HTTP_2),
+        target_authority: request.uri().authority().map(|a| a.as_str().to_owned()).filter(|_| request.version() != axum::http::Version::HTTP_2),
+    };
+    super::listener_admission::host_matches(public_url, &host)
+        || local_port.is_some_and(|port| super::listener_admission::local_host_matches(port, &host))
 }
 
 #[cfg(test)]

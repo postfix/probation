@@ -88,6 +88,7 @@ fn deps(config: Config) -> AppDeps {
         origins,
         osv_client: probation::osv::unreachable_client(),
         osv_base_url: None,
+        osv_server_origin_override: None,
     }
 }
 

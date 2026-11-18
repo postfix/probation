@@ -90,6 +90,26 @@ cargo build --release --locked -p probation-server
 The image runs `probation-server serve --config /etc/probation-server/config.toml`
 as the non-root user `probation`. Mount your settings file there.
 
+### Resetting the shared-service revision floor
+
+A firewall in `[service_policy]` mode refuses a policy snapshot whose revision is older than
+the one it holds (or equal with a different policy), and keeps its last good policy with
+`/health/ready` showing it degraded. After you restore the policy server from a backup, roll
+it back or fail over to an older replica, the server's revisions are lower than the floor the
+firewall remembers. Clear only that floor:
+
+```sh
+probation reset-revision-floor --config /etc/probation/config.toml
+```
+
+- Run it as the user that owns `data_dir` (or root). It edits the saved envelope directly, so it works with the
+  firewall stopped; with the firewall running it also leaves a `revision-floor-reset` marker the
+  firewall consumes at the start of its next poll. The marker is harmless when no firewall runs.
+- It never clears a refusal (a 401/403 on the snapshot route) and has no network trigger. The next valid
+  snapshot sets the new floor.
+- It logs one audit line with the previous floor and the invoking user (`SUDO_USER`, `USER`, `LOGNAME` or `USERNAME`, plus
+  the process uid on Linux). That identity comes from the host's environment; it is an audit hint, not authentication.
+
 ### Check before you start
 
 ```sh
@@ -358,10 +378,45 @@ Changing `osv_mode` needs a restart (or, in managed mode, a settings push).
 restrict outbound traffic (section 6), allow `api.osv.dev` too. Otherwise every
 OSV check times out and fails open, and packages are served without it.
 
-`osv_request_timeout_ms` (default 500) bounds one batch of OSV lookups before it
+`osv_request_timeout_ms` (default 2000) bounds one batch of OSV lookups before it
 fails open. All versions of a package are checked together, up to 256 per batch,
 so a package the service has not seen recently costs about one OSV round trip,
 not one per version.
+
+**Managed and shared-service mode: the policy server answers OSV.** An endpoint with
+`[management]` or `[service_policy]` never calls `api.osv.dev`. It sends the same
+osv.dev-shaped batch to `<server URL>/osv/v1/querybatch` with the credential it
+already uses for that server (the firewall token, or the organisation service key),
+and the policy server makes the one upstream call and keeps the shared answer cache.
+There is no key that points an endpoint at `api.osv.dev` in these modes, and an
+unreachable server never selects it: the lookup fails open, as above.
+
+- A managed endpoint keeps every matched (malicious) answer for `osv_stale_match_seconds`
+  (default 86400, from 3600 to 604800) after its normal TTL while the server cannot be
+  asked, and writes matched entries to `<data_dir>/osv-matches` (owner-only, replaced
+  atomically) so a restart during an outage still refuses them. An outage longer than
+  that window ends protection for those entries; a package never asked about before the
+  outage is unchecked until the server answers.
+- `osv_request_timeout_ms` must be at least 1600 in these modes (the server answers at a
+  1500 ms deadline; a slow upstream answer still lands in the server's cache, so a retry
+  converges).
+- **Upgrade the policy server first, then the endpoints.** An endpoint that finds no
+  Probation envelope in the answer treats OSV as unreached (known matches kept) until
+  the server is upgraded.
+- Server setting `[server] osv_key_rate_per_minute` (default 600, burst 1000) is the
+  cache-missing keys one credential may ask for per minute. Cache hits are never charged
+  as keys, but every request counts against a per-credential request rate (100 a second,
+  burst 500), and all credentials together share one key budget (12000 a minute) so the
+  single api.osv.dev connection cannot be exhausted by many tenants at once. Upstream
+  429 answers open a breaker for at most 60 s; breaker openings are counted.
+- Names and versions are asked about up to 1024 bytes each; a key refused beyond that is
+  never sent and is counted in `osv_keys_refused` (sync report and readiness detail).
+- A registry's `osv_scope` (portal registry page) decides whether its package names are
+  sent: `Public` (the default, including custom registries) or `Private` (never sent).
+- The same counters travel in every managed endpoint's sync report (`osv`). `/health/ready` on a shared-service endpoint reports `osv_degraded_warning` when more
+  than 5% of the last five minutes' OSV results were degraded. Readiness itself does not
+  change. Check the server's upstream health, then raise `osv_key_rate_per_minute` or
+  pre-warm the cache.
 
 ## 5. Backup, restore and upgrades
 
@@ -1269,7 +1324,8 @@ Every size and count above must not be zero.
 | `log_consumer_identification` | `false` | Refused unless `log_file_path` or `siem_url` is set. |
 | `osv_mode` | `enforce` | `enforce`, `diagnostic` or `off`. |
 | `osv_cache_ttl_seconds` | `300` | Not zero. |
-| `osv_request_timeout_ms` | `500` | Not zero. |
+| `osv_request_timeout_ms` | `2000` | Not zero; at least 1600 with `[management]` or `[service_policy]`. |
+| `osv_stale_match_seconds` | `86400` | 3600 to 604800; only with `[management]` or `[service_policy]`. |
 | `tls_cert_path`, `tls_key_path` | off | Both or neither. Section 6. |
 | `npm_upstream_url` | `https://registry.npmjs.org` | `https`, no user, query, path or private address. |
 | `pypi_upstream_url` | `https://pypi.org` | Same rules. |

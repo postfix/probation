@@ -96,6 +96,55 @@ pub struct ServicePolicySnapshot {
     pub registries: Vec<RegistryDescriptor>,
 }
 
+impl ServicePolicySnapshot {
+    /// LS-F8: SHA-256 over a canonical re-serialisation of the parsed digest fields
+    /// (version, key, org, chain, layers, revision, account). Object keys are sorted and
+    /// array order, so layer and rule order, is kept; rate fields and registries are
+    /// excluded (latest-wins at an equal revision). Never over the server's JSON bytes.
+    pub fn policy_digest(&self) -> [u8; 32] {
+        fn canonical(value: &serde_json::Value, out: &mut String) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    let mut keys: Vec<_> = map.keys().collect();
+                    keys.sort();
+                    out.push('{');
+                    for key in keys {
+                        out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                        out.push(':');
+                        canonical(&map[key], out);
+                        out.push(',');
+                    }
+                    out.push('}');
+                }
+                serde_json::Value::Array(items) => {
+                    out.push('[');
+                    for item in items {
+                        canonical(item, out);
+                        out.push(',');
+                    }
+                    out.push(']');
+                }
+                other => out.push_str(&other.to_string()),
+            }
+        }
+        let value = serde_json::json!({
+            "v": self.version, "key": self.key_id, "org": self.org, "chain": self.place_chain,
+            "layers": self.layers, "rev": self.revision, "account": self.account,
+        });
+        let mut text = String::new();
+        canonical(&value, &mut text);
+        Sha256::digest(text.as_bytes()).into()
+    }
+}
+
+/// LS-F12: whether a registry serves the public package namespace, so its package names
+/// may be sent to OSV. `Private` skips the lookup (Allow-without-OSV).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum OsvScope {
+    Public,
+    Private,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct RegistryDescriptor {
     pub registry: RegistryId,
@@ -104,6 +153,9 @@ pub struct RegistryDescriptor {
     pub trusted: bool,
     pub registry_private_cidrs: Vec<String>,
     pub deletion_scopes: Vec<RegistryDeletionScope>,
+    /// Absent reads as the default rule: `Public` (no protection is removed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osv_scope: Option<OsvScope>,
 }
 
 /// One package request's transport-owned TLS chain and selected URL registry.
@@ -258,6 +310,27 @@ pub struct FirewallReport {
     /// firewalls and servers read each other's reports (S7-14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_revision: Option<u64>,
+    /// Central OSV health counters (row 30, LS-F7, C1031). Absent from an older firewall's
+    /// report and left out when the firewall asks api.osv.dev itself, so older firewalls and
+    /// servers read each other's reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osv: Option<OsvReport>,
+}
+
+/// What a managed endpoint knows about its OSV lookups since it started.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct OsvReport {
+    /// More than 5% of the last five minutes' results were degraded.
+    pub degraded_warning: bool,
+    pub results_total: u64,
+    pub results_degraded: u64,
+    pub server_unreached: u64,
+    pub matches_file_degraded: u64,
+    pub stale_matches_expired: u64,
+    pub matches_records_skipped: u64,
+    /// Keys the shared key function refused (never sent, counted as degraded).
+    #[serde(default)]
+    pub keys_refused: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -491,6 +564,7 @@ mod tests {
                 effective_period_seconds: 55,
                 version: "0.2.2".to_owned(),
                 failed_revision: None,
+            osv: None,
             },
             activity: vec![ActivityEvent {
                 event_id: "1-1".to_owned(),

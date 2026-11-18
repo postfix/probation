@@ -166,7 +166,7 @@ mod tests {
             let before = state(&connection).await;
             assert_eq!(before.0, limit, "fixture seeds the literal production threshold");
             let candidate = distinct_lease(3, 0, 77);
-            assert!(matches!(commit(&mut connection, 3, 0, &candidate.package, &[candidate.clone()], 0).await, Err(StoreError::Busy)), "{limit}+1 must refuse through production quota code");
+            assert!(matches!(commit(&mut connection, 3, 0, &candidate.package, std::slice::from_ref(&candidate), 0).await, Err(StoreError::Busy)), "{limit}+1 must refuse through production quota code");
             assert_eq!(state(&connection).await, before, "{limit}+1 changes no stored row");
             assert!(get(&mut connection, 3, 0, candidate.reference_id, 0).await.unwrap().is_none(), "no dead action reference is committed");
         }

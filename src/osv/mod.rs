@@ -9,14 +9,20 @@
 //!
 //! [`OsvClient::check`] never fails closed (C3/C14): a cache miss that cannot be
 //! resolved — a full queue, a batcher timeout, a malformed or mismatched response —
-//! answers `false`, the same as a confirmed non-match, and is cached for a short
-//! negative TTL so a struggling OSV endpoint is not re-hammered by repeat callers.
+//! answers `false`, the same as a confirmed non-match. Failures cache nothing
+//! (C-S16-1); only a real non-match is cached, for a short negative TTL.
 
 pub(crate) mod batcher;
+pub mod matches;
 
+pub use batcher::osv_ecosystem;
+
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lru::LruCache;
 use reqwest::Client;
@@ -27,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use probation_policy::OsvSetting;
+use probation_policy::api::OsvScope;
 
 use crate::managed::report::UpstreamHealth;
 use crate::policy::{self, Candidate, CompiledPolicy, Decision, Ecosystem};
@@ -45,9 +52,9 @@ pub(crate) const OSV_BATCH_RECORDS: usize = 256;
 /// `pypi::resolve` judge all of a project's candidates together).
 pub(crate) const OSV_BATCH_INTERVAL: Duration = Duration::from_millis(10);
 
-/// How long a failure's answer stays cached (C14): short, so a struggling OSV
-/// endpoint is not re-hammered by repeat requests during an outage, but far shorter
-/// than a confirmed answer's TTL so the outage is not remembered past its own life.
+/// How long a confirmed non-match stays cached: far shorter than a match's TTL, so a
+/// package OSV later flags is not remembered as clean for long. A failed lookup has
+/// no answer and is never cached (C-S16-1).
 pub(crate) const OSV_NEGATIVE_TTL: Duration = Duration::from_secs(30);
 
 /// The bounded queue's capacity (G2/C12a): 4x `OSV_BATCH_RECORDS`, mirroring
@@ -83,53 +90,267 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
+/// A matched entry of a managed endpoint (C1031): refused on past its TTL, until
+/// `stale_until`, while the server cannot be asked.
+struct MatchedEntry {
+    expires_at: Instant,
+    stale_until: Instant,
+}
+
+type Key = (Ecosystem, String, String);
+
+/// What `OsvCache` keeps only in managed mode: matched entries exempt from LRU eviction
+/// and capped, the stale window, persistence and the counters.
+struct Retained {
+    stale_window: Duration,
+    path: Option<PathBuf>,
+    health: Arc<UpstreamHealth>,
+}
+
+struct Inner {
+    /// Bounded at `OSV_CACHE_ENTRIES`, least recently used out first; an expired
+    /// entry is also dropped as soon as a lookup finds it. In managed mode only
+    /// confirmed no-matches live here.
+    lru: LruCache<Key, CacheEntry>,
+    /// Managed mode only.
+    matched: HashMap<Key, MatchedEntry>,
+    dirty: bool,
+}
+
+/// The cache as a `put` hook sees it: between the store and the generation bump.
+pub struct PutView<'a> {
+    inner: &'a Inner,
+    now: Instant,
+}
+
+impl PutView<'_> {
+    pub fn get(&self, ecosystem: Ecosystem, name: &str, version: &str) -> Option<bool> {
+        let key = (ecosystem, name.to_owned(), version.to_owned());
+        if let Some(entry) = self.inner.matched.get(&key) {
+            return (entry.expires_at > self.now).then_some(true);
+        }
+        self.inner.lru.peek(&key).filter(|entry| entry.expires_at > self.now).map(|entry| entry.matched)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type PutHook = Box<dyn Fn(&PutView<'_>) + Send + Sync>;
+
 /// The short-TTL result cache (C13), internally locked so every caller shares one
 /// map without holding a lock of its own. Shared with the batcher, which writes
 /// every answer it gets whether or not its waiter is still listening.
 pub(crate) struct OsvCache {
-    /// Bounded at `OSV_CACHE_ENTRIES`, least recently used out first; an expired
-    /// entry is also dropped as soon as a lookup finds it.
-    entries: Mutex<LruCache<(Ecosystem, String, String), CacheEntry>>,
-    /// The TTL a match is cached for. A non-match — confirmed or a failure, which
-    /// `false` alone cannot tell apart — always uses `OSV_NEGATIVE_TTL`, the
-    /// conservative choice on that ambiguity.
+    entries: Mutex<Inner>,
+    /// The TTL a match is cached for. Only a confirmed non-match is cached, for
+    /// `OSV_NEGATIVE_TTL`; a failed lookup has no answer and is never cached.
     match_ttl: Duration,
+    /// C1029 `osv_generation`: advances when a stored answer is a match for a key with
+    /// no live match before it, the only change that can turn an allow into a deny.
+    generation: Arc<AtomicU64>,
+    retained: Option<Retained>,
+    /// Serialises `persist` (snapshot and write together), so an older snapshot can never be
+    /// renamed over a newer file.
+    persist_lock: Mutex<()>,
+    /// Test clock: milliseconds added to the real clock.
+    skew_ms: AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    put_hook: Mutex<Option<PutHook>>,
 }
+
+/// How many matched entries a managed endpoint keeps in memory and on disk.
+pub(crate) const OSV_MATCHED_CAP: usize = matches::MAX_ENTRIES;
 
 impl OsvCache {
     fn new(match_ttl: Duration) -> OsvCache {
+        OsvCache::build(match_ttl, None)
+    }
+
+    fn build(match_ttl: Duration, retained: Option<Retained>) -> OsvCache {
         let capacity = NonZeroUsize::new(OSV_CACHE_ENTRIES).expect("a non-zero bound");
         OsvCache {
-            entries: Mutex::new(LruCache::new(capacity)),
+            entries: Mutex::new(Inner { lru: LruCache::new(capacity), matched: HashMap::new(), dirty: false }),
             match_ttl,
+            generation: Arc::default(),
+            retained,
+            persist_lock: Mutex::new(()),
+            skew_ms: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            put_hook: Mutex::new(None),
         }
     }
 
-    fn get(&self, key: &(Ecosystem, String, String)) -> Option<bool> {
-        let mut entries = self.entries.lock().expect("the OSV cache");
-        match entries.get(key) {
-            Some(entry) if entry.expires_at > Instant::now() => return Some(entry.matched),
+    /// A managed endpoint's cache: stale-if-error matches, exempt from eviction, loaded
+    /// from and persisted to `path`. An unreadable file loads empty and never blocks.
+    fn managed(match_ttl: Duration, stale_window: Duration, path: Option<PathBuf>, health: Arc<UpstreamHealth>) -> OsvCache {
+        let cache = OsvCache::build(match_ttl, Some(Retained { stale_window, path: path.clone(), health: Arc::clone(&health) }));
+        if let Some(path) = path
+            && path.exists()
+        {
+            let now = cache.now();
+            let wall = cache.wall();
+            match matches::read_bounded(&path) {
+                None => health.add_osv_matches_file_degraded(1),
+                Some(bytes) => {
+                    let loaded = matches::load_matches(&bytes, wall, stale_window);
+                    if !loaded.header_ok {
+                        health.add_osv_matches_file_degraded(1);
+                    }
+                    health.add_osv_matches_records_skipped(loaded.skipped);
+                    let wall_unix = wall.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let mut inner = cache.entries.lock().expect("the OSV cache");
+                    for entry in loaded.entries {
+                        let remaining = Duration::from_secs(entry.expiry_unix.saturating_sub(wall_unix));
+                        // Past its TTL by construction: asked again as soon as the server is.
+                        inner.matched.insert(
+                            (entry.ecosystem, entry.name, entry.version),
+                            MatchedEntry { expires_at: now, stale_until: now + remaining },
+                        );
+                    }
+                }
+            }
+        }
+        cache
+    }
+
+    /// Shared handle to the C1029 counter, for a response to compare before handoff.
+    pub(crate) fn generation(&self) -> &Arc<AtomicU64> {
+        &self.generation
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.skew_ms.load(Ordering::Relaxed))
+    }
+
+    fn wall(&self) -> SystemTime {
+        SystemTime::now() + Duration::from_millis(self.skew_ms.load(Ordering::Relaxed))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn advance(&self, by: Duration) {
+        self.skew_ms.fetch_add(by.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// A live answer only: an expired or absent one is `None`, and so is a matched entry
+    /// past its TTL (it is asked again, and kept for [`OsvCache::stale_match`]).
+    fn get(&self, key: &Key) -> Option<bool> {
+        let now = self.now();
+        let mut inner = self.entries.lock().expect("the OSV cache");
+        if let Some(entry) = inner.matched.get(key) {
+            if entry.expires_at > now {
+                return Some(true);
+            }
+            if entry.stale_until <= now {
+                inner.matched.remove(key);
+                inner.dirty = true;
+                if let Some(retained) = &self.retained {
+                    retained.health.add_osv_stale_matches_expired(1);
+                }
+            }
+            return None;
+        }
+        match inner.lru.get(key) {
+            Some(entry) if entry.expires_at > now => return Some(entry.matched),
             Some(_) => {}
             None => return None,
         }
-        entries.pop(key);
+        inner.lru.pop(key);
         None
     }
 
-    pub(crate) fn put(&self, key: (Ecosystem, String, String), matched: bool) {
-        let ttl = if matched {
-            self.match_ttl
-        } else {
-            OSV_NEGATIVE_TTL
+    /// Whether a matched entry past its TTL is still inside its stale window: the answer
+    /// of a failed or degraded lookup (C1031). Never extends a no-match.
+    fn stale_match(&self, key: &Key) -> bool {
+        if self.retained.is_none() {
+            return false;
+        }
+        let now = self.now();
+        let mut inner = self.entries.lock().expect("the OSV cache");
+        match inner.matched.get(key) {
+            Some(entry) if entry.stale_until > now => true,
+            Some(_) => {
+                inner.matched.remove(key);
+                inner.dirty = true;
+                if let Some(retained) = &self.retained {
+                    retained.health.add_osv_stale_matches_expired(1);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn put(&self, key: Key, matched: bool) {
+        let now = self.now();
+        let mut inner = self.entries.lock().expect("the OSV cache");
+        let was_live_match = match inner.matched.get(&key) {
+            Some(entry) => entry.expires_at > now,
+            None => inner.lru.peek(&key).is_some_and(|entry| entry.matched && entry.expires_at > now),
         };
-        let mut entries = self.entries.lock().expect("the OSV cache");
-        entries.put(
-            key,
-            CacheEntry {
-                matched,
-                expires_at: Instant::now() + ttl,
-            },
-        );
+        match &self.retained {
+            Some(retained) if matched => {
+                inner.lru.pop(&key);
+                inner.matched.insert(
+                    key,
+                    MatchedEntry { expires_at: now + self.match_ttl, stale_until: now + self.match_ttl + retained.stale_window },
+                );
+                // The memory cap: nearest expiry out, counted as a health warning.
+                while inner.matched.len() > OSV_MATCHED_CAP {
+                    let nearest = inner.matched.iter().min_by_key(|(_, e)| e.stale_until).map(|(k, _)| k.clone());
+                    match nearest {
+                        Some(k) => inner.matched.remove(&k),
+                        None => break,
+                    };
+                    retained.health.add_osv_matches_file_degraded(1);
+                }
+                inner.dirty = true;
+            }
+            retained => {
+                if retained.is_some() && inner.matched.remove(&key).is_some() {
+                    inner.dirty = true;
+                }
+                let ttl = if matched { self.match_ttl } else { OSV_NEGATIVE_TTL };
+                inner.lru.put(key, CacheEntry { matched, expires_at: now + ttl });
+            }
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = self.put_hook.lock().expect("the put hook").as_ref() {
+            hook(&PutView { inner: &inner, now });
+        }
+        if matched && !was_live_match {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Writes the matched entries when they changed since the last write. Blocking file
+    /// I/O: the batcher calls it from `spawn_blocking`.
+    fn persist(&self) {
+        let Some(retained) = &self.retained else { return };
+        let Some(path) = &retained.path else { return };
+        let _serial = self.persist_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = self.now();
+        let wall_unix = self.wall().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let entries: Vec<(Ecosystem, String, String, u64)> = {
+            let mut inner = self.entries.lock().expect("the OSV cache");
+            if !inner.dirty {
+                return;
+            }
+            inner.dirty = false;
+            inner
+                .matched
+                .iter()
+                .filter(|(_, e)| e.stale_until > now)
+                .map(|((eco, name, version), e)| (*eco, name.clone(), version.clone(), wall_unix + e.stale_until.saturating_duration_since(now).as_secs()))
+                .collect()
+        };
+        let rendered = matches::render_matches(&entries);
+        if rendered.dropped > 0 {
+            retained.health.add_osv_matches_file_degraded(1);
+        }
+        if let Err(err) = matches::write_atomic(path, &rendered.bytes) {
+            tracing::warn!(error = %err, "the persisted OSV matches could not be written");
+            retained.health.add_osv_matches_file_degraded(1);
+            self.entries.lock().expect("the OSV cache").dirty = true;
+        }
     }
 }
 
@@ -143,6 +364,79 @@ pub struct OsvClient {
     /// in, so a waiter outlasts the flush it is in unless the batcher is still busy
     /// with an earlier one.
     request_timeout: Duration,
+}
+
+/// Where a managed endpoint's OSV lookups go: the policy server's `<origin>/osv` and the
+/// credential the endpoint already uses for that server. The credential is attached
+/// only to requests whose origin equals `base`'s, decided when the target is built.
+pub struct CentralTarget {
+    pub base: Url,
+    pub credential: String,
+}
+
+/// Managed-mode OSV settings (C1030, C1031).
+pub struct CentralOptions {
+    /// Test seam: allow an http server URL. Production never sets it; the credential still
+    /// goes only to the configured origin and redirects are never followed.
+    pub allow_http: bool,
+    pub cache_ttl: Duration,
+    pub request_timeout: Duration,
+    /// `osv_stale_match_seconds`.
+    pub stale_window: Duration,
+    /// `<data_dir>/osv-matches`; `None` keeps matches in memory only.
+    pub matches_path: Option<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CentralBaseError;
+
+/// The OSV base URL of a policy server: `<server origin>/osv`, built by path segment.
+/// https is required unless `allow_http` (the test seam only); userinfo, query and
+/// fragment are refused.
+pub fn central_base(server: &Url, allow_http: bool) -> Result<Url, CentralBaseError> {
+    let scheme_ok = server.scheme() == "https" || (allow_http && server.scheme() == "http");
+    if !scheme_ok
+        || server.host().is_none()
+        || !server.username().is_empty()
+        || server.password().is_some()
+        || server.query().is_some()
+        || server.fragment().is_some()
+    {
+        return Err(CentralBaseError);
+    }
+    let mut base = server.clone();
+    base.path_segments_mut().map_err(|()| CentralBaseError)?.pop_if_empty().push("osv");
+    Ok(base)
+}
+
+/// The dedicated OSV client of a managed endpoint: redirects disabled, https required
+/// unless `allow_http` (the test seam).
+fn central_http_client(allow_http: bool) -> Client {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(!allow_http)
+        .build()
+        .expect("a client with no custom TLS is always buildable")
+}
+
+/// The effective OSV scope of a registry (LS-F12): a registry on its family's fixed
+/// public source is `Public`; for any other target the explicit field wins, and an absent
+/// field is `Public` (no protection is removed; the operator may set `Private`).
+pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit: Option<OsvScope>) -> OsvScope {
+    let Some(target_url) = target_url else {
+        // No custom target: the family's own public registry.
+        return OsvScope::Public;
+    };
+    let target_url = Some(target_url);
+    let fixed: &[&str] = match ecosystem {
+        Ecosystem::Npm => &["registry.npmjs.org"],
+        Ecosystem::PyPi => &["pypi.org", "files.pythonhosted.org"],
+    };
+    let public_source = target_url
+        .and_then(|text| Url::parse(text).ok())
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| fixed.contains(&host.as_str()));
+    if public_source { OsvScope::Public } else { explicit.unwrap_or(OsvScope::Public) }
 }
 
 impl OsvClient {
@@ -169,7 +463,7 @@ impl OsvClient {
     /// `AppDeps::osv_base_url` override is present — the only other caller, besides
     /// this module's own unit tests, that needs a batcher pointed at anything but
     /// the fixed production endpoint.
-    pub(crate) fn spawn_with(
+    pub fn spawn_with(
         client: Client,
         url: Url,
         cache_ttl: Duration,
@@ -177,11 +471,43 @@ impl OsvClient {
         shutdown: CancellationToken,
         upstreams: Arc<UpstreamHealth>,
     ) -> (OsvClient, JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(OSV_CHANNEL_CAPACITY);
         let cache = Arc::new(OsvCache::new(cache_ttl));
+        OsvClient::spawn_on(client, batcher::Target::direct(url), cache, request_timeout, shutdown, upstreams)
+    }
+
+    /// A managed endpoint's client (C1030): the same cache, batcher and fail-open rules,
+    /// pointed at the policy server. It holds no reference to the policy refusal store, so
+    /// nothing it sees can create or clear an authority refusal (LS-F1).
+    pub fn spawn_central(
+        target: CentralTarget,
+        options: CentralOptions,
+        shutdown: CancellationToken,
+        upstreams: Arc<UpstreamHealth>,
+    ) -> (OsvClient, JoinHandle<()>) {
+        let cache = Arc::new(OsvCache::managed(
+            options.cache_ttl,
+            options.stale_window,
+            options.matches_path,
+            Arc::clone(&upstreams),
+        ));
+        // Built here, never handed in: redirects off and https only, so no caller can send the
+        // credential across an origin by passing a more permissive client (SEC-8).
+        let client = central_http_client(options.allow_http);
+        OsvClient::spawn_on(client, batcher::Target::central(target), cache, options.request_timeout, shutdown, upstreams)
+    }
+
+    fn spawn_on(
+        client: Client,
+        target: batcher::Target,
+        cache: Arc<OsvCache>,
+        request_timeout: Duration,
+        shutdown: CancellationToken,
+        upstreams: Arc<UpstreamHealth>,
+    ) -> (OsvClient, JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(OSV_CHANNEL_CAPACITY);
         let handle = tokio::spawn(batcher::run(
             client,
-            url,
+            target,
             rx,
             request_timeout,
             Arc::clone(&cache),
@@ -198,12 +524,77 @@ impl OsvClient {
         )
     }
 
+    /// The C1029 generation counter; read it before an evaluation starts.
+    pub fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(self.cache.generation())
+    }
+
+    /// [`OsvClient::cached`], also answering a matched entry past its TTL but inside the stale
+    /// window (managed mode): what a log-only "would have blocked" record must see.
+    pub fn cached_or_stale(&self, ecosystem: Ecosystem, name: &str, version: &str) -> Option<bool> {
+        let key = (ecosystem, name.to_owned(), version.to_owned());
+        self.cache.get(&key).or_else(|| self.cache.stale_match(&key).then_some(true))
+    }
+
+    /// **Test seam, `test-support` only.** `threads` threads each store one match and persist.
+    #[cfg(feature = "test-support")]
+    pub fn store_and_persist_concurrently_for_test(&self, threads: usize, round: usize) {
+        std::thread::scope(|scope| {
+            for i in 0..threads {
+                let cache = Arc::clone(&self.cache);
+                scope.spawn(move || {
+                    cache.put((Ecosystem::Npm, format!("p{round}-{i}"), "1.0.0".to_owned()), true);
+                    cache.persist();
+                });
+            }
+        });
+    }
+
+    /// The cached answer, if any, without ever querying OSV: `None` after a failure.
+    pub fn cached(&self, ecosystem: Ecosystem, name: &str, version: &str) -> Option<bool> {
+        self.cache
+            .get(&(ecosystem, name.to_owned(), version.to_owned()))
+    }
+
+    /// **Test seams, compiled only under `test-support`.** The cache clock, the LS-F14
+    /// hook between store and bump, and bulk fills for the eviction and cap cases.
+    #[cfg(feature = "test-support")]
+    pub fn advance_clock(&self, by: Duration) {
+        self.cache.advance(by);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn set_put_hook(&self, hook: PutHook) {
+        *self.cache.put_hook.lock().expect("the put hook") = Some(hook);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn fill_unmatched_for_test(&self, count: usize) {
+        for i in 0..count {
+            self.cache.put((Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()), false);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn fill_matched_for_test(&self, count: usize) {
+        for i in 0..count {
+            self.cache.put((Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()), true);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn matched_len(&self) -> usize {
+        self.cache.entries.lock().expect("the OSV cache").matched.len()
+    }
+
     /// `true` only on a confirmed OSV `MAL-*` match. Every failure path — a cache
     /// miss that cannot be resolved, a full or timed-out enqueue (C12a), a batch
     /// failure or length mismatch (C12b/C14), an outbound timeout (C12c) — answers
-    /// `false` instead. The batcher caches whatever answer a flush produced (see
-    /// `OsvCache::put` for the TTLs); this caches only a lookup that never reached
-    /// it.
+    /// `false` instead, and none of them is cached: only a real OSV answer reaches
+    /// the cache, and only the batcher writes it (see `OsvCache::put` for the TTLs).
+    ///
+    /// In managed mode a failure keeps answering `true` for a key whose matched entry is
+    /// still inside its stale window (C1031).
     pub async fn check(&self, ecosystem: Ecosystem, name: &str, version: &str) -> bool {
         let key = (ecosystem, name.to_owned(), version.to_owned());
         if let Some(matched) = self.cache.get(&key) {
@@ -214,17 +605,15 @@ impl OsvClient {
         let enqueued =
             tokio::time::timeout(OSV_ENQUEUE_TIMEOUT, self.tx.send((key.clone(), reply_tx))).await;
         if !matches!(enqueued, Ok(Ok(()))) {
-            self.cache.put(key, false);
-            return false;
+            return self.cache.stale_match(&key);
         }
         // Bounded even though the batcher always answers (see `batcher::run`): it
         // may still be busy with an earlier flush. A waiter that gives up here still
         // gets its answer cached by the batcher for the next caller.
-        tokio::time::timeout(self.request_timeout, reply_rx)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or(false)
+        match tokio::time::timeout(self.request_timeout, reply_rx).await {
+            Ok(Ok(matched)) => matched,
+            _ => self.cache.stale_match(&key),
+        }
     }
 }
 
@@ -248,6 +637,14 @@ pub fn unreachable_client() -> Client {
         .expect("a client with a DNS override is always buildable")
 }
 
+/// The OSV address nothing listens on, for tests that are not about OSV and run a
+/// managed or shared-service endpoint (the plain test seam: no credential, http). **Compiled
+/// only under `test-support`.**
+#[cfg(feature = "test-support")]
+pub fn unreachable_base_url() -> Url {
+    Url::parse("http://127.0.0.1:0/v1/querybatch").expect("a fixed, valid URL")
+}
+
 /// The shared C15 two-phase wrapper (D2) every production call site uses in place of
 /// a direct `policy::decide` call.
 ///
@@ -262,6 +659,19 @@ pub async fn evaluate(
     now_utc_micros: i64,
     candidate: &Candidate<'_>,
 ) -> Decision {
+    evaluate_scoped(osv, policy, now_utc_micros, candidate, OsvScope::Public).await
+}
+
+/// [`evaluate`] for a candidate that resolved from a registry of the given OSV scope
+/// (LS-F12). A `Private` registry's names are never sent anywhere: the lookup is skipped
+/// and the answer is the OSV-blind one (Allow without OSV).
+pub async fn evaluate_scoped(
+    osv: &OsvClient,
+    policy: &CompiledPolicy,
+    now_utc_micros: i64,
+    candidate: &Candidate<'_>,
+    scope: OsvScope,
+) -> Decision {
     let blind = policy::decide(policy, candidate, now_utc_micros, false);
     if !matches!(blind.decision, Decision::Allow) {
         return blind.decision;
@@ -269,7 +679,7 @@ pub async fn evaluate(
     let rules = policy
         .policy
         .rules_for(candidate.ecosystem, candidate.name, candidate.version);
-    if rules.osv == OsvSetting::Off {
+    if rules.osv == OsvSetting::Off || scope == OsvScope::Private {
         return blind.decision;
     }
 
@@ -356,6 +766,17 @@ mod tests {
 
         shutdown.cancel();
         let _ = handle.await;
+    }
+
+    /// A failed lookup caches nothing, so `cached` stays `None` and costs no query.
+    #[tokio::test]
+    async fn cached_is_none_after_a_failed_lookup() {
+        let (url, _server, count) = osv_server(500, true, StdDuration::ZERO).await;
+        let (client, _handle, _shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
+        let seen = count.load(Ordering::SeqCst);
+        assert_eq!(client.cached(Ecosystem::Npm, "left-pad", "1.0.0"), None);
+        assert_eq!(count.load(Ordering::SeqCst), seen, "cached never queries");
     }
 
     #[tokio::test]
@@ -511,6 +932,28 @@ mod tests {
         (decision, count.load(Ordering::SeqCst))
     }
 
+    /// LS-F12: the OSV lookup runs only for a Public registry; a Private one is
+    /// Allow-without-OSV and its names reach nothing.
+    #[tokio::test]
+    async fn osv_skipped_for_private_registry() {
+        for (scope, asked) in [(OsvScope::Private, 0), (OsvScope::Public, 1)] {
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &candidate("left-pad", "1.0.0"),
+                scope,
+            )
+            .await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), asked, "{scope:?}");
+            assert_eq!(matches!(decision, Decision::Allow), scope == OsvScope::Private, "{scope:?}: {decision:?}");
+        }
+    }
+
     #[tokio::test]
     async fn evaluate_skips_osv_when_producer_already_denies() {
         let blocked = crate::policy::BlocklistSnapshot::parse_and_validate(
@@ -594,6 +1037,23 @@ mod tests {
         let _ = handle.await;
     }
 
+    /// C1029: the generation advances only when a stored answer can turn an allow into
+    /// a deny: a match for a key with no live match before it.
+    #[test]
+    fn generation_advances_only_on_a_new_match() {
+        let cache = OsvCache::new(StdDuration::from_secs(60));
+        let key = |v: &str| (Ecosystem::Npm, "left-pad".to_owned(), v.to_owned());
+        let seen = || cache.generation().load(Ordering::SeqCst);
+        cache.put(key("1"), false);
+        assert_eq!(seen(), 0, "a non-match changes no verdict toward deny");
+        cache.put(key("1"), true);
+        assert_eq!(seen(), 1, "absent or non-match then match is a new deny");
+        cache.put(key("1"), true);
+        assert_eq!(seen(), 1, "re-storing a live match changes nothing");
+        cache.put(key("2"), true);
+        assert_eq!(seen(), 2, "a match for an absent key is new");
+    }
+
     /// A match is trusted for `cache_ttl` and no longer: past it OSV is asked again.
     #[tokio::test]
     async fn an_expired_answer_is_asked_again() {
@@ -610,16 +1070,16 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// A failed batch fails open and is cached too, so a struggling OSV endpoint is
-    /// not asked again by the next caller (C14).
+    /// A failed batch fails open but caches nothing: a failure is not an answer, so the
+    /// next caller asks OSV again (and a stored match can never be overwritten by one).
     #[tokio::test]
-    async fn a_failed_lookup_fails_open_and_is_not_retried_at_once() {
+    async fn a_failed_lookup_fails_open_and_caches_nothing() {
         let (url, _server, count) = osv_server(500, true, StdDuration::ZERO).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
 
         assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
         assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
-        assert_eq!(count.load(Ordering::SeqCst), 1, "the failure was cached");
+        assert_eq!(count.load(Ordering::SeqCst), 2, "a failure is not cached, so OSV is asked again");
 
         shutdown.cancel();
         let _ = handle.await;
@@ -730,6 +1190,7 @@ mod tests {
             origins: crate::upstream::OriginSet::production(),
             osv_client: unreachable_client(),
             osv_base_url: None,
+            osv_server_origin_override: None,
         })
         .await
         .expect("the app starts with a minimal config")

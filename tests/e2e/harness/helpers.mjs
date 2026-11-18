@@ -149,6 +149,7 @@ export function helpers(stack, { log = console.log } = {}) {
     /// Runs `script` (sh) in a client container, in a fresh directory holding `files`
     /// ({relative path: content}): {status, stdout, stderr}. Never throws on exit status.
     client(service, script, { files = {}, dir = `/work/${h.unique("run")}` } = {}) {
+      if (h.clientHost?.kind === "native") throw new Error(`h.client(${service}) is not available with --client-host native: a native run never uses client containers`);
       const writes = Object.entries(files).map(
         ([path, content]) => `mkdir -p "$(dirname '${path}')" && echo '${Buffer.from(content).toString("base64")}' | base64 -d > '${path}'`,
       );
@@ -157,6 +158,7 @@ export function helpers(stack, { log = console.log } = {}) {
 
     /// `npm <args>` in a project whose .npmrc is `npmrc` (as the keys page shows it).
     npm(args, { npmrc, client = "client-npm", packageJson = { name: "e2e-project", version: "1.0.0", private: true }, files = {} } = {}) {
+      if (h.clientHost?.kind === "native") return h.clientHost.npm(args, { npmrc, packageJson, files });
       return h.client(client, `npm ${args}`, {
         files: { "package.json": JSON.stringify(packageJson), ".npmrc": npmrc, ...files },
       });
@@ -164,6 +166,7 @@ export function helpers(stack, { log = console.log } = {}) {
 
     /// `pip <args>` with `pipConf` (as the keys page shows it) as the only config.
     pip(args, { pipConf, client = "client-pip", files = {} } = {}) {
+      if (h.clientHost?.kind === "native") return h.clientHost.pip(args, { pipConf, files });
       return h.client(client, `PIP_CONFIG_FILE=$PWD/pip.conf pip ${args}`, { files: { "pip.conf": pipConf, ...files } });
     },
 

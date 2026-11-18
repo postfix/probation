@@ -6,6 +6,8 @@ pub mod accounts;
 pub mod audit;
 pub mod fleet;
 pub mod keys;
+pub mod osv;
+pub(crate) mod order_guards;
 pub mod policy;
 pub mod portal;
 pub mod sync;
@@ -43,6 +45,13 @@ pub struct ServerConfig {
     /// How long `change_log` rows are kept; above a firewall snapshot's expected age.
     #[serde(default = "default_change_log_retention_days")]
     pub change_log_retention_days: u32,
+    /// Cache-missing OSV keys one credential may ask for per minute (LS-F7, C1030).
+    #[serde(default = "default_osv_key_rate_per_minute")]
+    pub osv_key_rate_per_minute: u32,
+}
+
+fn default_osv_key_rate_per_minute() -> u32 {
+    600
 }
 
 fn default_change_log_retention_days() -> u32 {
@@ -57,6 +66,9 @@ impl Config {
             toml::from_str(&text).map_err(|err| format!("{}: {err}", path.display()))?;
         if config.server.change_log_retention_days == 0 {
             return Err("server.change_log_retention_days must not be zero".to_owned());
+        }
+        if config.server.osv_key_rate_per_minute == 0 {
+            return Err("server.osv_key_rate_per_minute must not be zero".to_owned());
         }
         // The address people paste into `.npmrc` and `pip.conf`, with their key next to
         // it: it needs a host, and https unless that host is this machine (C34).
@@ -138,7 +150,8 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(config.server.listen).await?;
     let sync_secrets = portal.as_ref().map(|deps| accounts::SecretBox::new(deps.secret_key));
     let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies, sync_secrets));
-    let mut router = build_router(state);
+    let osv = Arc::new(osv::OsvState::production(Arc::clone(&state), config.server.osv_key_rate_per_minute));
+    let mut router = build_router_with_osv(state, osv);
     if let Some(deps) = portal {
         let secrets = accounts::SecretBox::new(deps.secret_key);
         jobs.extend(accounts::spawn_jobs(
@@ -215,10 +228,17 @@ where
 /// (C86) and the health probes. Serve it with connect info: the sync API checks the
 /// firewall's address (T31).
 pub fn build_router(state: Arc<sync::SyncState>) -> axum::Router {
+    let osv = Arc::new(osv::OsvState::production(Arc::clone(&state), default_osv_key_rate_per_minute()));
+    build_router_with_osv(state, osv)
+}
+
+/// `build_router` with the central OSV route's state supplied (a test gives it a fake
+/// upstream, a limits override and a clock).
+pub fn build_router_with_osv(state: Arc<sync::SyncState>, osv: Arc<osv::OsvState>) -> axum::Router {
     let automation = policy::router(state.pool().clone());
     let health = health(state.pool().clone());
     let service_policy = service_policy::router(state.pool().clone());
-    sync::router(state).merge(automation).merge(health).merge(service_policy)
+    sync::router(state).merge(automation).merge(health).merge(service_policy).merge(osv::router(osv))
 }
 
 /// `GET /health/live`: 200 while the process answers. `GET /health/ready`: 200 while the
@@ -391,49 +411,6 @@ pub mod admin {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Config;
-
-    /// T-portal-firewall-url-checked: `[portal] firewall_url` goes into the lines people
-    /// paste into `.npmrc` and `pip.conf`, so it needs a host, and https unless the host
-    /// is this machine.
-    #[test]
-    fn t_portal_firewall_url_checked() {
-        let dir = tempfile::tempdir().unwrap();
-        let load = |url: &str| {
-            let path = dir.path().join("server.toml");
-            std::fs::write(
-                &path,
-                format!(
-                    "[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"https://portal.test/\"\nfirewall_url = \"{url}\"\n"
-                ),
-            )
-            .unwrap();
-            Config::load(&path)
-        };
-        for good in [
-            "https://packages.example.org",
-            "https://packages.example.org:8443/probation/",
-            "http://127.0.0.1:8080",
-            "http://localhost:8080",
-            "http://[::1]:8080",
-        ] {
-            assert!(load(good).is_ok(), "{good}: {:?}", load(good).err());
-        }
-        for bad in [
-            "http://packages.example.org",
-            "http://10.0.0.5:8080",
-            "ftp://packages.example.org",
-            "file:///etc/probation",
-            "mailto:ops@example.org",
-        ] {
-            let refused = load(bad).expect_err(bad);
-            assert!(refused.contains("portal.firewall_url"), "{bad}: {refused}");
-        }
-    }
-}
-
 /// The stop requests a service manager sends: SIGTERM and SIGINT on Unix; on Windows the
 /// console control events (Ctrl+C, Ctrl+Break, close, shutdown), which have no SIGTERM.
 #[cfg(unix)]
@@ -486,6 +463,49 @@ impl StopRequests {
             _ = self.brk.recv() => {}
             _ = self.close.recv() => {}
             _ = self.shutdown.recv() => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    /// T-portal-firewall-url-checked: `[portal] firewall_url` goes into the lines people
+    /// paste into `.npmrc` and `pip.conf`, so it needs a host, and https unless the host
+    /// is this machine.
+    #[test]
+    fn t_portal_firewall_url_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |url: &str| {
+            let path = dir.path().join("server.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\nlisten = \"127.0.0.1:0\"\n\n[portal]\nbase_url = \"https://portal.test/\"\nfirewall_url = \"{url}\"\n"
+                ),
+            )
+            .unwrap();
+            Config::load(&path)
+        };
+        for good in [
+            "https://packages.example.org",
+            "https://packages.example.org:8443/probation/",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080",
+        ] {
+            assert!(load(good).is_ok(), "{good}: {:?}", load(good).err());
+        }
+        for bad in [
+            "http://packages.example.org",
+            "http://10.0.0.5:8080",
+            "ftp://packages.example.org",
+            "file:///etc/probation",
+            "mailto:ops@example.org",
+        ] {
+            let refused = load(bad).expect_err(bad);
+            assert!(refused.contains("portal.firewall_url"), "{bad}: {refused}");
         }
     }
 }

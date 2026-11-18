@@ -18,6 +18,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { checkNativeCounts, junitProperties, nativeClients, parseClientHost, requireNativeLane } from "./client-host.mjs";
 import { helpers } from "./helpers.mjs";
 import { ROOT, Stack } from "./stack.mjs";
 
@@ -29,10 +30,16 @@ const { values: args } = parseArgs({
     only: { type: "string", multiple: true },
     list: { type: "boolean" },
     "skip-build": { type: "boolean", default: Boolean(process.env.E2E_SKIP_BUILD) },
+    "client-host": { type: "string" },
     keep: { type: "boolean", default: Boolean(process.env.E2E_KEEP) },
   },
 });
 if (!SUITES.includes(args.suite)) throw new Error(`--suite must be one of ${SUITES.join(", ")}`);
+
+// --client-host native runs the pinned package clients on the host (client-host.mjs). Any
+// problem with it ends the run here, before a container exists: it never skips or uses containers.
+let clientHostKind;
+try { clientHostKind = parseClientHost(args["client-host"]); } catch (err) { console.error(`e2e: ${err.message}`); process.exit(1); }
 
 const dir = join(ROOT, "tests/e2e/scenarios");
 const scenarios = [];
@@ -53,6 +60,20 @@ const selected = scenarios
 if (selected.length === 0) {
   console.error(`e2e: no scenario is selected (suite ${args.suite}${args.only ? `, --only ${args.only.join(", ")}` : ""})`);
   process.exit(1);
+}
+const needNative = selected.filter((s) => s.clientHost === "native" && clientHostKind !== "native");
+if (needNative.length) {
+  console.error(`e2e: ${needNative.map((s) => s.id).join(", ")} requires --client-host native (it never runs in containers)`);
+  process.exit(1);
+}
+// Selection time, before the preflight and any stack work: every scenario of a native run must declare native clients.
+const notNative = clientHostKind === "native" ? selected.filter((s) => !s.native) : [];
+if (notNative.length) {
+  console.error(`e2e: ${notNative.map((s) => `${s.id} declares no native clients`).join("; ")}: it cannot run with --client-host native`);
+  process.exit(1);
+}
+if (clientHostKind === "native" && !args.list) {
+  try { requireNativeLane(); } catch (err) { console.error(`e2e: ${err.message}`); process.exit(1); }
 }
 if (args.list) {
   for (const s of selected) console.log(`${s.id}\t${s.suites.join(",")}\t${s.stack ?? "shared"}\t${s.title}`);
@@ -102,6 +123,11 @@ try {
     fresh = false;
     const h = helpers(stack, { log: (...line) => console.log(`[${scenario.id}]`, ...line) });
     h.suite = args.suite;
+    h.caFile = "/e2e/ca/ca.pem";
+    if (clientHostKind === "native") {
+      h.caFile = join(stack.work, "ca", "ca.pem");
+      h.clientHost = nativeClients({ work: stack.work, bridgePort: stack.bridgePort, caFile: h.caFile });
+    }
     const started = performance.now();
     let error;
     console.log(`e2e: ${scenario.id} ${scenario.title}`);
@@ -117,7 +143,7 @@ try {
       await h.close();
     }
     const seconds = (performance.now() - started) / 1000;
-    results.push({ scenario, seconds, error });
+    results.push({ scenario, seconds, error, used: h.clientHost?.used });
     console.log(`e2e: ${scenario.id} ${error ? "FAILED" : "passed"} in ${seconds.toFixed(1)} s`);
   }
 } finally {
@@ -126,17 +152,20 @@ try {
 }
 
 const failed = results.filter((r) => r.error);
+// Native runs must be complete: expected scenario and client counts, nothing skipped.
+const incomplete = clientHostKind === "native" ? checkNativeCounts({ selected, results }) : [];
+for (const problem of incomplete) console.error(`e2e: native run incomplete: ${problem}`);
 console.log(`e2e: ${results.length - failed.length} passed, ${failed.length} failed, ${selected.length - results.length} not run (suite ${args.suite})`);
-process.exit(failed.length || results.length < selected.length ? 1 : 0);
+process.exit(failed.length || incomplete.length || results.length < selected.length ? 1 : 0);
 
 function writeJunit() {
   const xml = (text) => String(text).replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]);
   const cases = selected.map((s) => {
     const r = results.find((x) => x.scenario === s);
     const name = `classname="e2e.${args.suite}" name="${xml(`${s.id} ${s.title}`)}" file="tests/e2e/scenarios/${s.file}"`;
-    if (!r) return `  <testcase ${name}><skipped message="not run"/></testcase>`;
+    if (!r) return `  <testcase ${name}>${junitProperties(clientHostKind, undefined)}<skipped message="not run"/></testcase>`;
     const failure = r.error ? `<failure message="${xml(r.error.message.split("\n")[0])}">${xml(r.error.stack ?? r.error)}</failure>` : "";
-    return `  <testcase ${name} time="${r.seconds.toFixed(3)}">${failure}</testcase>`;
+    return `  <testcase ${name} time="${r.seconds.toFixed(3)}">${junitProperties(clientHostKind, r.used)}${failure}</testcase>`;
   });
   const total = results.reduce((sum, r) => sum + r.seconds, 0);
   writeFileSync(

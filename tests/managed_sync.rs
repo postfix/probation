@@ -2249,7 +2249,8 @@ async fn t_settings_rollback() {
             transport: Arc::clone(&registry) as Arc<dyn Transport>,
             origins: fake_origins(),
             osv_client: probation::osv::unreachable_client(),
-            osv_base_url: None,
+            osv_base_url: Some(probation::osv::unreachable_base_url()),
+            osv_server_origin_override: None,
         }
     })
     .await
@@ -2277,7 +2278,8 @@ async fn t_settings_rollback() {
         transport: Arc::clone(&h.registry) as Arc<dyn Transport>,
         origins: fake_origins(),
         osv_client: probation::osv::unreachable_client(),
-        osv_base_url: None,
+        osv_base_url: Some(probation::osv::unreachable_base_url()),
+        osv_server_origin_override: None,
     })
     .await;
     assert!(
@@ -3033,6 +3035,24 @@ async fn t_sync_newer_layer_rebuilds_cached_keys() {
     assert_status(response, 403, "BLOCKED", "the new key, under the new layer").await;
     let response = h.get("/npm/left-pad", &acme_key()).await;
     assert_status(response, 403, "BLOCKED", "the cached key, at once").await;
+    h.server.shutdown().await;
+}
+
+/// Row 30 (LS-F7, C1031): the central OSV counters and the degraded-ratio warning travel in
+/// every sync report, additive to the wire older servers already read.
+#[tokio::test]
+async fn t_report_carries_osv_counters() {
+    let h = harness(|_, _| {}).await;
+    h.sync.sync_rounds(1).await;
+    let osv = last_report(&h.sync).osv.expect("a managed report carries the OSV counters");
+    assert_eq!(osv, probation_policy::api::OsvReport::default(), "nothing asked yet");
+    // An older firewall's report (no `osv` key) is still read, and the key is left out when absent.
+    let mut report = last_report(&h.sync);
+    report.osv = None;
+    let text = serde_json::to_string(&report).unwrap();
+    assert!(!text.contains("\"osv\":{"), "{text}");
+    let back: probation_policy::api::FirewallReport = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.osv, None);
     h.server.shutdown().await;
 }
 

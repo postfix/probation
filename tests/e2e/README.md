@@ -257,6 +257,35 @@ Also `E2E_PBT_PATH`, `E2E_PBT_REPLAY`, `E2E_PBT_PEOPLE` (8), `E2E_PBT_MAIL` and
 product fix is logged as "needs F…" and fails the scenario at its end, as `Needs` does.
 A product defect a run finds becomes a fixed sequence in `scenarios/pbt-regressions.mjs`.
 
+## Native client host and the cluster probe (slice 29)
+
+`--client-host native` runs the pinned package clients (`native/pins.json`) on the host
+instead of in the client containers; `h.npm`/`h.pip` switch at that one seam
+(`harness/client-host.mjs`) and reach the stack through the bridge's CONNECT proxy
+(`E2E_BRIDGE_HOST`, default 127.0.0.1) with the e2e CA at `h.caFile`. It needs
+`NATIVE_PLATFORM` (`linux-x64`, `darwin-arm64`, `win32-x64`) and exactly the pinned tools;
+anything else exits 1 before a container exists. It never skips and never falls back to
+containers: a scenario that declares `clientHost: "native"` refuses to run without the flag,
+a scenario without `meta.native` refuses to run with it, and the run fails unless every
+selected scenario ran and used each declared client (`meta.native = {npm: n, pip: n}`) at
+least n times; `h.client` (a client container) throws under the flag, scenarios without `meta.native`
+are rejected when the run is selected, and each JUnit testcase carries `client-host` and `<tool>-calls`
+properties. `node tests/e2e/native/client-host.test.mjs` checks these rules (it is in the native
+test list, `native/expected-asserts.json`, run by `native/run_tests.py`).
+
+A native runner on another machine than the stack needs the bridge reachable: publish it with
+`E2E_BRIDGE_BIND=<the Linux host's address>` (default `127.0.0.1`, unchanged) and run the runner with
+`E2E_BRIDGE_HOST=<that address>`. The bridge only tunnels to the e2e network, but a non-loopback bind
+exposes that tunnel to the network segment: bind a private interface only.
+
+- `E2E-service-native-smoke`: native npm and pip install through the shared service with no
+  login, and a blocklisted npm package is refused with the service's 403 and a blocklisted PyPI package shows no versions. `--client-host native --only E2E-service-native-smoke`.
+- `E2E-service-cluster-probe`: the pinned containerd (unprivileged, content store only, state
+  under `$E2E_WORK`) pulls `docker.io/library/alpine:latest` with the service as hosts.toml
+  `server`; a recording proxy proves what it contacted, including with the service paused,
+  and a control without `server` proves the recorder sees a fallback. It fails if
+  `containerd`/`ctr` are absent. Findings: `evidence/spike-native-cluster.md`.
+
 ## Suites
 
 | Suite | When | Clients | Blocks |

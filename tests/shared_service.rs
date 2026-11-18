@@ -111,6 +111,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
+                osv_scope: None,
             },
             RegistryDescriptor {
                 registry: RegistryId(4),
@@ -119,6 +120,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
+                osv_scope: None,
             },
         ],
     }
@@ -468,6 +470,10 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                             .await;
                     } else {
                         let mut denied = snapshot;
+                        // LS-F8: a real server moves the revision with every policy change.
+                        if change == "deny" {
+                            denied.revision += 1;
+                        }
                         if change == "rate" {
                             denied.rate_limit = std::num::NonZeroU32::new(1);
                         } else if change == "deny" {
@@ -977,4 +983,43 @@ async fn shared_service_applies_one_policy_without_downstream_login() {
             .is_none()
     );
     restarted.shutdown().await;
+}
+
+// ---- Slice 28, LS-F3 / LS-F16: readiness reports policy, gate, degraded registries ----
+
+#[tokio::test]
+async fn readiness_reports_policy_gate_and_degraded_registries() {
+    let policy_server = MockServer::start().await;
+    let mut raw = serde_json::to_value(policy_snapshot()).unwrap();
+    raw["layers"][1]["layer"]["blocks"] = serde_json::json!([
+        {"Package": {"ecosystem": "Npm", "name": "left-pad"}},
+        {"Package": {"ecosystem": "Maven2", "name": "org.example:lib"}}
+    ]);
+    raw["registries"].as_array_mut().unwrap().push(serde_json::json!({
+        "registry": 9, "ecosystem": "Maven2", "target_url": null, "trusted": false,
+        "registry_private_cidrs": [], "deletion_scopes": []
+    }));
+    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(raw))
+        .mount(&policy_server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config_with_open_blocklist(dir.path());
+    config.service_policy = Some(ServicePolicyConfig {
+        server_url: policy_server.uri().parse().unwrap(),
+        service_key_file: "/test/key".into(),
+        service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
+        sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+    });
+    let server = TestServer::start_with_upstream(
+        config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
+        Arc::new(CredentialRegistry(FakeRegistry::new(), std::sync::Mutex::new(Vec::new()))) as Arc<dyn Transport>, fake_origins(),
+    ).await;
+    let response = server.get("/health/ready").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let detail: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap_or(serde_json::Value::Null);
+    assert_eq!(detail["policy_active"], true);
+    assert_eq!(detail["degraded_registries"], serde_json::json!([9]));
+    assert_eq!(detail["policy_rules_skipped_unknown_ecosystem"], 1);
+    assert_eq!(detail["credential_temp_bytes"], 0);
+    assert_eq!(detail["gate_poisoned"], false);
 }

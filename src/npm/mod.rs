@@ -173,8 +173,11 @@ async fn serve_with_url(
     };
     let body: Arc<[u8]> = Arc::from(body);
 
-    if reusable && resolved.deadline_utc_micros > now {
+    if reusable && resolved.deadline_utc_micros > now
+        && let Some(token) = crate::http::credential_read::cache_token(app)
+    {
         caches.rendered.insert(
+            &token,
             render_key,
             Arc::new(RenderedResponse {
                 body: Arc::clone(&body),
@@ -297,9 +300,11 @@ async fn current_project(
         stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, origin, private_cidrs, read_authorization).await?,
     };
 
-    caches
-        .projects
-        .insert_if_current(key, Arc::clone(&cached), cached.approximate_bytes(), seen);
+    if let Some(token) = crate::http::credential_read::cache_token(app) {
+        caches
+            .projects
+            .insert_if_current(&token, key, Arc::clone(&cached), cached.approximate_bytes(), seen);
+    }
     Ok(cached)
 }
 
@@ -469,6 +474,7 @@ async fn resolve(
 
     // Every version is judged at once, so a cold project's OSV checks share one
     // batch rather than paying one OSV round trip per version.
+    let scope = app.osv_scope(registry_id);
     let decisions = futures_util::future::join_all(entries.iter().map(|entry| async {
         let candidate = Candidate {
             ecosystem: Ecosystem::Npm,
@@ -483,7 +489,7 @@ async fn resolve(
             // reader putting an older snapshot back — see `artifacts::download::fetch`.
             pinned_digests: cached.pins_of(&entry.id),
         };
-        crate::osv::evaluate(&app.osv, policy, now, &candidate).await
+        crate::osv::evaluate_scoped(&app.osv, policy, now, &candidate, scope).await
     }))
     .await;
 
@@ -749,17 +755,21 @@ async fn refresh(
             }
         },
         Ok(MetadataResponse::Missing) => {
+            // C1028: a service-mode refusal is never cached (it was decided under one caller's credential).
+            if let Some(token) = crate::http::credential_read::cache_token(app).filter(|_| app.service_policy().is_none()) {
             app.store().caches().absent.insert(
+                &token,
                 key.clone(),
                 Arc::new(AbsentMark {
                     observed_monotonic: monotonic,
                 }),
                 128,
             );
+            }
             return Err(ApiError::NotFound);
         }
-        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::Unauthenticated),
-        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::Blocked { reason: "the upstream registry denied this credential" }),
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::UpstreamUnauthenticated),
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::UpstreamDenied),
         Err(UpstreamError::Timeout) => {
             tracing::warn!(package = %name, "the upstream registry did not answer in time");
             return Err(ApiError::UpstreamTimeout);

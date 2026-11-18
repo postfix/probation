@@ -430,3 +430,81 @@ async fn accepted_stream_survives_later_authority_refusal_for_both_ecosystems() 
         }
     }
 }
+
+// ---- Slice 28 row: FIX-16-A cases on the common (login-free) service route ----
+
+/// A deny published and confirmed locally while a cold artifact request is still in flight
+/// on the common route (`/npm/...`, no selected-registry prefix) governs that request: it
+/// refuses, zero payload bytes. The unchanged control delivers the exact bytes.
+#[tokio::test]
+async fn common_route_policy_change_refuses_before_release() {
+    use probation::config::{FirewallToken, ServicePolicyConfig};
+    use probation_policy::api::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+    for deny in [true, false] {
+        let places = [probation_policy::PlaceRef { kind: LayerKind::Platform, id: 1 }, probation_policy::PlaceRef { kind: LayerKind::Org, id: 10 }];
+        let snapshot = |revision: u64, blocked: bool| ServicePolicySnapshot {
+            version: 1, key_id: KeyId(7), org: OrgId(10), account: places[1], revision,
+            place_chain: places.iter().map(|place| ChainLink { place: *place, layer_revision: 1 }).collect(),
+            layers: places.iter().map(|place| PlaceLayer {
+                place: *place,
+                layer: Layer {
+                    freeze_seconds: Some(0), osv: Some(OsvSetting::Off),
+                    blocks: if blocked && place.kind == LayerKind::Org { vec![Block::Package { ecosystem: Ecosystem::Npm, name: "common-race".into(), reason: None }] } else { vec![] },
+                    ..Layer::empty(place.kind)
+                },
+                revision: 1,
+            }).collect(),
+            rate_limit: None, rate_limit_source: LimitSource::Default,
+            registries: vec![RegistryDescriptor {
+                registry: RegistryId(3), ecosystem: Ecosystem::Npm, target_url: None, trusted: false,
+                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+            }],
+        };
+        let policy_server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/v1/policy/snapshot")).respond_with(ResponseTemplate::new(200).set_body_json(snapshot(1, false))).mount(&policy_server).await;
+        let bytes = "common route bytes";
+        let registry = FakeRegistry::new();
+        let raw = serde_json::json!({
+            "name":"common-race", "dist-tags":{"latest":"1.0.0"},
+            "versions":{"1.0.0":{"name":"common-race","version":"1.0.0","dist":{
+                "tarball": npm_tarball_url("common-race", "common-race-1.0.0.tgz"),
+                "integrity": format!("sha256-{}", base64(Sha256::digest(bytes.as_bytes())))}}},
+            "time":{"1.0.0":"2026-01-01T00:00:00Z"}
+        }).to_string();
+        registry.answer(&npm_upstream_path("common-race"), FakeAnswer::Body(raw.clone()));
+        registry.answer(&npm_artifact_upstream_path("common-race", "common-race-1.0.0.tgz"), FakeAnswer::Body(bytes.into()));
+        let gate = Gate::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config_with_open_blocklist(dir.path());
+        config.service_policy = Some(ServicePolicyConfig {
+            server_url: policy_server.uri().parse().unwrap(),
+            service_key_file: "/test/key".into(),
+            service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
+            sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        });
+        let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(), Arc::clone(&registry) as Arc<dyn Transport>, fake_origins()).await;
+        // The common route: `/npm/{package}` names the only npm registry; its tarball URL
+        // carries the selected prefix, so address the artifact through the common root.
+        let document: serde_json::Value = serde_json::from_str(&server.get("/npm/common-race").await.text().await.unwrap()).unwrap();
+        let tarball = reqwest::Url::parse(document["versions"]["1.0.0"]["dist"]["tarball"].as_str().unwrap()).unwrap().path().to_owned();
+        // The artifact request revalidates its project upstream; hold that revalidation.
+        registry.answer(&npm_upstream_path("common-race"), FakeAnswer::GatedMetadata { body: raw, gate: Arc::clone(&gate) });
+        let url = server.url(&tarball);
+        let request = tokio::spawn(async move { reqwest::get(url).await.unwrap() });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.wait_until_reached()).await.unwrap();
+        policy_server.reset().await;
+        let published = if deny { snapshot(2, true) } else { snapshot(1, false) };
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(published)).mount(&policy_server).await;
+        server.app().service_policy().unwrap().sync_once().await.unwrap();
+        gate.release();
+        let response = request.await.unwrap();
+        if deny {
+            assert!(!response.status().is_success(), "the deny published before release governs the request");
+            assert!(!response.text().await.unwrap().contains(bytes), "zero payload bytes");
+        } else {
+            assert_eq!(response.text().await.unwrap(), bytes, "an unchanged policy delivers the exact bytes");
+        }
+        server.shutdown().await;
+    }
+}

@@ -55,6 +55,15 @@ pub enum ApiError {
     /// Local capacity could not be reserved or reclaimed for a cold download
     /// (SPEC §10). Never a reason to relax policy.
     CapacityExhausted,
+    /// A credential-bearing read is larger than the configured temporary-file bound
+    /// (LS-F16). Deterministic, so no `Retry-After`.
+    PayloadTooLarge,
+    /// The upstream registry answered an artifact request with 401 (shared-service mode):
+    /// the caller's registry credential is missing or wrong, not a Probation key.
+    UpstreamUnauthenticated,
+    /// The upstream registry answered an artifact request with 403: its own refusal, distinct
+    /// from a Probation policy block.
+    UpstreamDenied,
     /// Storage is unusable, so no state change a response would depend on can be
     /// committed (SPEC §10).
     StorageUnusable,
@@ -121,6 +130,9 @@ impl ApiError {
                 StatusCode::FORBIDDEN
             }
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ApiError::UpstreamUnauthenticated => StatusCode::UNAUTHORIZED,
+            ApiError::UpstreamDenied => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
@@ -153,6 +165,9 @@ impl ApiError {
             ApiError::PolicyUnavailable => "POLICY_UNAVAILABLE",
             ApiError::Overloaded => "OVERLOADED",
             ApiError::CapacityExhausted => "CAPACITY_EXHAUSTED",
+            ApiError::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            ApiError::UpstreamUnauthenticated => "UPSTREAM_AUTHENTICATION_REQUIRED",
+            ApiError::UpstreamDenied => "UPSTREAM_DENIED",
             ApiError::StorageUnusable => "STORAGE_UNUSABLE",
             ApiError::PartialWriteUncertain => "PARTIAL_WRITE_UNCERTAIN",
             ApiError::InternalFailure => "INTERNAL_FAILURE",
@@ -188,6 +203,9 @@ impl ApiError {
             }
             ApiError::Overloaded => "the service is at capacity".to_owned(),
             ApiError::CapacityExhausted => "local storage could not take the artifact".to_owned(),
+            ApiError::UpstreamUnauthenticated => "the upstream registry requires a credential for this artifact; send your registry credential, not a Probation key".to_owned(),
+            ApiError::UpstreamDenied => "the upstream registry denied this credential for this artifact".to_owned(),
+            ApiError::PayloadTooLarge => "the response is larger than this service holds for a credential-bearing read".to_owned(),
             ApiError::StorageUnusable => {
                 "local storage is unusable, so no decision can be committed".to_owned()
             }

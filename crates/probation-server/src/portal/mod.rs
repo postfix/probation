@@ -226,6 +226,10 @@ fn routes() -> Routes {
         post(registries::set_trust),
     )
     .post(
+        "/org/{org}/registries/{registry}/osv-scope",
+        post(registries::set_osv_scope),
+    )
+    .post(
         "/org/{org}/registries/{registry}/read-credential",
         post(registries::set_read_credential),
     )

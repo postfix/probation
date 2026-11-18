@@ -39,7 +39,7 @@ const CHUNK_BYTES: usize = 64 * 1024;
 /// Proof that the final policy check ran and returned `Allow`.
 pub struct Authorized {
     blocklist_revision: Option<u64>,
-    authority: Option<crate::managed::service_policy::AuthorityReceipt>,
+    authority: Option<crate::managed::publication_gate::AuthorityReceipt>,
     /// Private, and the reason this type cannot be constructed anywhere else.
     _private: (),
 }
@@ -66,7 +66,7 @@ impl Authorized {
         self.blocklist_revision
     }
 
-    pub(crate) fn under_authority(mut self, authority: Option<crate::managed::service_policy::AuthorityReceipt>) -> Self {
+    pub(crate) fn under_authority(mut self, authority: Option<crate::managed::publication_gate::AuthorityReceipt>) -> Self {
         self.authority = authority;
         self
     }
@@ -157,7 +157,7 @@ pub fn parse_range(header: Option<&str>, total: u64) -> RangeRequest {
 
 /// A response built from a witness. There is no other way to build one with a body.
 pub struct ArtifactResponse {
-    authority: Option<crate::managed::service_policy::AuthorityReceipt>,
+    authority: Option<crate::managed::publication_gate::AuthorityReceipt>,
     status: StatusCode,
     total_length: u64,
     range: Option<ByteRange>,
@@ -250,14 +250,11 @@ impl ArtifactResponse {
 impl IntoResponse for ArtifactResponse {
     fn into_response(mut self) -> Response {
         if let Some(authority) = self.authority.take() {
-            use crate::managed::service_policy::{PreparedResponse, release_verified_response};
+            use crate::managed::publication_gate::{PreparedResponse, respond_order};
             let gate = std::sync::Arc::clone(&authority.gate);
             let prepared = PreparedResponse::artifact(authority, self);
-            return match gate.authorize_current_policy(&prepared) {
-                Ok(authorized) => release_verified_response(authorized)
-                    .unwrap_or_else(|_| crate::http::error::ApiError::PolicyUnavailable.into_response()),
-                Err(_) => crate::http::error::ApiError::PolicyUnavailable.into_response(),
-            };
+            return respond_order(gate, prepared)
+                .unwrap_or_else(|_| crate::http::error::ApiError::PolicyUnavailable.into_response());
         }
         let unsatisfiable = self.status == StatusCode::RANGE_NOT_SATISFIABLE;
         // `HEAD` reports the length of the entity it would have sent; a `416` has no

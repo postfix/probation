@@ -128,6 +128,12 @@ pub struct AppDeps {
     /// something — a match, not just a refusal — sets this to a local server's URL
     /// instead, alongside a plain `osv_client`.
     pub osv_base_url: Option<url::Url>,
+    /// **Test seam.** In managed and shared-service mode `App::start` derives the OSV base
+    /// (`<server>/osv`) from the configured server URL, requires https and attaches the
+    /// endpoint's credential. A test sets this to a loopback fake: it replaces the server
+    /// URL before the same derivation runs (and permits http), so the derivation and the
+    /// credential attachment still run in the test. Always `None` in production.
+    pub osv_server_origin_override: Option<url::Url>,
 }
 
 /// The shared state every handler sees.
@@ -170,6 +176,12 @@ pub struct App {
     /// Present only when `[management]` is set: each request's key names its policy.
     managed: Option<Managed>,
     service_policy: Option<managed::service_policy::ServicePolicy>,
+    /// Request-owned bodies of credential-bearing reads (C1028, LS-F16). Present only in
+    /// shared-service mode.
+    pub(crate) credential_temp: Option<http::credential_temp::CredentialTemp>,
+    /// The address the listener actually bound (set once, after the bind): the port the
+    /// loopback names of the Host check must carry.
+    pub(crate) bound: std::sync::OnceLock<SocketAddr>,
     /// Whether each upstream answered this sync period, for the managed report (C69).
     /// Recorded in standalone too, where nothing reads it.
     pub(crate) upstreams: Arc<UpstreamHealth>,
@@ -236,6 +248,21 @@ impl App {
             .as_ref()
             .and_then(|policy| policy.snapshot.as_ref())
             .map(|snapshot| snapshot.revision)
+    }
+
+    /// The OSV scope of the registry a candidate resolved from (LS-F12): the shared-service
+    /// snapshot's descriptor decides; everything else (standalone, managed, an unknown
+    /// registry) is `Public`, so no protection is removed.
+    pub fn osv_scope(&self, registry_id: u64) -> probation_policy::api::OsvScope {
+        self.service_policy
+            .as_ref()
+            .and_then(|policy| policy.snapshot())
+            .and_then(|snapshot| {
+                snapshot.registries.iter().find(|r| r.registry.0 == registry_id).map(|r| {
+                    osv::effective_scope(r.ecosystem, r.target_url.as_deref(), r.osv_scope)
+                })
+            })
+            .unwrap_or(probation_policy::api::OsvScope::Public)
     }
 
     pub fn store(&self) -> &StoreHandle {
@@ -307,8 +334,33 @@ impl App {
         let osv_request_timeout =
             std::time::Duration::from_millis(deps.config.osv_request_timeout_ms.get());
         let upstreams = Arc::new(UpstreamHealth::default());
-        let (osv, osv_task) = match deps.osv_base_url {
-            Some(url) => osv::OsvClient::spawn_with(
+        // Managed and shared-service mode never reach api.osv.dev: the base is the policy
+        // server's `/osv` (https), the credential is the one the endpoint already holds,
+        // and `AppDeps::osv_client` is ignored (T9-8). Only the plain `osv_base_url` test
+        // seam, which never carries a credential, can point it elsewhere.
+        let central = match (deps.config.osv_central_server(), &deps.osv_base_url) {
+            (Some((server_url, credential)), None) => {
+                let seam = deps.osv_server_origin_override.as_ref();
+                let base = osv::central_base(seam.unwrap_or(server_url), seam.is_some())
+                    .map_err(|_| StartupError::Osv("the policy server URL cannot carry OSV lookups: it must be an https origin without credentials, query or fragment"))?;
+                Some((base, credential.expose().to_owned(), seam.is_some()))
+            }
+            _ => None,
+        };
+        let (osv, osv_task) = match (central, deps.osv_base_url) {
+            (Some((base, credential, allow_http)), _) => osv::OsvClient::spawn_central(
+                osv::CentralTarget { base, credential },
+                osv::CentralOptions {
+                    allow_http,
+                    cache_ttl: osv_cache_ttl,
+                    request_timeout: osv_request_timeout,
+                    stale_window: std::time::Duration::from_secs(deps.config.osv_stale_match_seconds),
+                    matches_path: Some(deps.config.data_dir.join("osv-matches")),
+                },
+                drain.clone(),
+                Arc::clone(&upstreams),
+            ),
+            (None, Some(url)) => osv::OsvClient::spawn_with(
                 deps.osv_client,
                 url,
                 osv_cache_ttl,
@@ -316,7 +368,7 @@ impl App {
                 drain.clone(),
                 Arc::clone(&upstreams),
             ),
-            None => osv::OsvClient::new(
+            (None, None) => osv::OsvClient::new(
                 deps.osv_client,
                 osv_cache_ttl,
                 osv_request_timeout,
@@ -335,7 +387,18 @@ impl App {
             )
         });
         let service_policy = deps.config.service_policy.as_ref().map(|config|
-            managed::service_policy::ServicePolicy::load_with_clock(config, &deps.config.data_dir, Arc::clone(&deps.clock)));
+            managed::service_policy::ServicePolicy::load_with_clock(config, &deps.config.data_dir, Arc::clone(&deps.clock)).with_listener(deps.config.listen).with_control_plane(deps.config.control_plane_cidrs.clone()).with_health(Arc::clone(&upstreams)));
+        let credential_temp = if service_policy.is_some() {
+            Some(http::credential_temp::CredentialTemp::open(
+                &deps.config.data_dir,
+                http::credential_temp::Limits {
+                    max_request_bytes: deps.config.credential_temp_max_request_bytes,
+                    max_total_bytes: deps.config.credential_temp_max_total_bytes,
+                },
+            ).map_err(|_| StartupError::Delivery("the credential-reads directory is unsafe or cannot be created"))?)
+        } else {
+            None
+        };
         if let Some(policy) = &service_policy { let _ = policy.sync_once().await; }
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
@@ -357,6 +420,8 @@ impl App {
             osv,
             managed,
             service_policy,
+            credential_temp,
+            bound: std::sync::OnceLock::new(),
             upstreams,
         });
 
@@ -393,6 +458,7 @@ impl App {
             .set_nonblocking(true)
             .map_err(StartupError::Serve)?;
         let local_addr = std_listener.local_addr().map_err(StartupError::Serve)?;
+        let _ = app.bound.set(local_addr);
 
         let shutdown = CancellationToken::new();
         let tasks = tasks::spawn(
@@ -737,6 +803,8 @@ pub enum StartupError {
     /// log, and the rejection it most often reports is a malformed `PROBATION_SIEM_AUTH`.
     /// Nothing that could carry part of that value can be put here.
     Delivery(&'static str),
+    /// The OSV client could not be set up (managed base URL not usable).
+    Osv(&'static str),
 }
 
 impl fmt::Display for StartupError {
@@ -746,7 +814,7 @@ impl fmt::Display for StartupError {
             StartupError::Bind { addr, source } => write!(f, "cannot bind {addr}: {source}"),
             StartupError::Serve(source) => write!(f, "server stopped: {source}"),
             StartupError::Tls(source) => write!(f, "cannot load TLS certificate/key: {source}"),
-            StartupError::Delivery(reason) => write!(f, "{reason}"),
+            StartupError::Delivery(reason) | StartupError::Osv(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -758,7 +826,7 @@ impl std::error::Error for StartupError {
             StartupError::Bind { source, .. }
             | StartupError::Serve(source)
             | StartupError::Tls(source) => Some(source),
-            StartupError::Delivery(_) => None,
+            StartupError::Delivery(_) | StartupError::Osv(_) => None,
         }
     }
 }
