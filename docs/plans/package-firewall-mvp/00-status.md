@@ -1,9 +1,9 @@
 # Status: Package Firewall MVP
 
 - Gate 1 — Product: APPROVED 2026-11-02
-- Gate 2 — Architecture: APPROVED 2026-11-04
-- Gate 3 — Program Design: APPROVED 2026-11-04
-- Gate 4 — Slice plan: APPROVED 2026-11-04
+- Gate 2 — Architecture: APPROVED 2026-11-17
+- Gate 3 — Program Design: APPROVED 2026-11-17
+- Gate 4 — Slice plan: APPROVED 2026-11-17
 
 ## Factory settings
 
@@ -11,7 +11,7 @@
 
 ## Loop signal
 
-{"generation":36,"boundary":{"kind":"presentation","number":10},"reopened":false,"history":[],"presentedSlice":10}
+{"generation":41,"boundary":{"kind":"presentation","number":16},"reopened":false,"history":[],"presentedSlice":16}
 
 ## Gate 1 progress
 
@@ -44,14 +44,14 @@
   Result: sf-repo-view PARTIAL reports saved in evidence/design-local-client-grounding.md and evidence/design-service-policy-api.md. sf-research report saved in evidence/research-cluster-image-routing.md: documented explicit-server candidate; public routing/no-fallback/node connectivity require a pinned-runtime probe. The report does not select any new credential architecture; preserve existing package-manager credentials and publishing forwarding under C1015/C1024. The separate private-auth investigation was stopped at the user correction. No runtime proof is claimed.
 - [x] Save findings and resolve architecture decisions
   Result: FIX-16-A is row 16 alone with a synchronous publication gate, exact reference/registry/authority/config/OSV generation binding (C1029) and named matrix tests; shared-service row 28 owns the snapshot API, activation, durable refusal, peer admission and D2/D3/D5 (C1028 resolved by the user 2026-11-04); row 29 is the early native/cluster spike. Existing uncommitted prototype code is recorded as unreviewed work to verify, not delivered. The user, asked how to treat it, said they did not know the code; the main agent applied the non-destructive default (prototype to review, nothing deleted) and showed the user what it is; the user may overrule.
-- [x] Complete 02-architecture.md
-  Result: 02-architecture.md carries C1003, C1018-C1029, the responsibility split, scoped policy retrieval, deployment/failure cases, and cites threat-model-shared-service-r2.md; historical npm/PyPI details stay labelled baseline. Runtime routing remains a documented candidate until rows 29/26.
-- [x] Record architecture assumptions and review triggers
-  Result: Threat Model r2 MODELED (evidence/threat-model-shared-service-r2.md); Red Team NEEDS REVISION answered (rows 16/28/29/26/17, snapshot registry model, await placement, tests). Fresh Design QA required after these revisions.
-- [x] Complete architecture section of the combined design
-  Result: Architecture, deployment, platform and protocol sections are complete in 02/03 with explicit pending runtime evidence; no implementation or runtime proof is claimed.
-- [x] Carry contracts and obligations into program design
-  Result: 03-program-design.md carries the contracts, security coverage table (T1-T8, D1-D5), invariants dispositions and named tests; molecule-contracts.json re-anchored to synchronous order guards with bySlice 16/28; molecule-check PASS.
+- [ ] Complete 02-architecture.md
+  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.
+- [ ] Record architecture assumptions and review triggers
+  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.
+- [ ] Complete architecture section of the combined design
+  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.
+- [ ] Carry contracts and obligations into program design
+  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.
 
 ## Slices
 
@@ -86,9 +86,11 @@
 - [x] Slice 10 — delivery: real npm and pip installs, container image, operations README, benchmarks
   - proof: cargo clippy --all-targets -- -D warnings; cargo test; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored; cargo bench; docker build; docker run check-config; offline trust-store check; live TLS request from the running container -> clippy exit 0; cargo test 276 passed / 0 failed / 15 ignored DEBUG; e2e_npm ok 7 passed including npm_12_installs_without_allow_remote under real npm 12.0.2 on Node v24.19.0; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1; cargo bench exit 0, all nine SPEC 12 verdicts MET; podman build succeeded; check-config exit 0 from inside the image; offline trust-store check exit 0; a live request from a running container to the production npm origin returned 200 ALLOWED with no TLS error. Witness re-executed independently by the main agent, sf-code-review and sf-verification. THE BENCHMARK ACCEPTANCE TOOK THREE ROUNDS TO MAKE HONEST. Round 1 reported nine METs, but sf-code-review read the INSTRUMENT not its output and found benches/artifact_throughput.rs measured the firewall warm and the baseline COLD, biasing the ratio SPEC 12 requires under identical conditions. Round 2 made warmup symmetric and did NOT settle it: main-agent runs gave 145.7/148.8/120.6, 121.5/123.1/56.3 and 232.9/242.6/252.4 percent, a 4.5x swing WITH A BREACH of the 85 percent floor. Round 3 used PAIRED INTERLEAVED SAMPLING, baseline and firewall alternating in one loop so drift lands on both sides, and raised SAMPLES 150 to 1,000 per side. That settled it: 15 implementer shape-runs across loadavg 1.67-8.38 in 108.9-112.7 percent, plus 6 main-agent shape-runs in 108.8-114.7 percent. MAIN AGENT DIAGNOSIS FALSIFIED: the main agent blamed the 56 percent breach on its own subagents loading the host. The implementer disproved it, the band held across a 5x load range, so the cause was the instrument charging load drift to the firewall. THE RESIDUAL 110 PERCENT IS A CONSTANT, NOT NOISE, disclosed rather than corrected: src/artifacts/stream.rs::file_body reads chunk n+1 through a depth-1 channel while the client consumes chunk n, while the bench baseline reads only when polled - different pipelining, favouring the firewall, visible as baseline total p95 about 47 ms against about 5.4 ms. The implementer deliberately did NOT rewrite the baseline, because changing the instrument until it yields a liked number is the failure mode, with no reviewer left in the round. Named by file in docs/operations.md. ADDITIONAL TTFB is the load-bearing evidence: positive in all 21 shape-runs, +0.020 to +0.163 ms, 2-3 percent of the 5 ms budget. FOUR PRE-CHANGE BREACHES BECAME MET, the acceptance for slice 13: additional TTFB +6.232 ms at 1,000 versions and +37.903 ms at 5,000, and throughput 44.9 and 11.1 percent, all now inside the bands above. Unchanged and MET: warm metadata 120,178-144,006/s and p95 0.085-0.119 ms; policy denial p95 1.187-1.376 ms; blocklist replacement 4.96-5.03 s. The table records RANGES over five runs. SPEC 13: sf-verification walked all 14 rows and mapped each to a named passing test it re-ran itself; all MET. TWO OBLIGATIONS REMAIN OPEN, now in docs/operations.md as known gaps: no -D warnings gate in the repository, so a warning-level regression compiles clean under plain cargo clippy; and the suite has never been green in release, where --no-fail-fast gives 275 passed / 1 failed on artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh, whose 500 ms margin optimized code drains in 160-200 ms. Pre-existing, deliberately not fixed. docs/operations.md states in one line that the blocklist is supplied by the operator, who is accountable for its contents and provenance. The earlier Accountable owners subsection was REMOVED on the user's correction that a registry firewall cannot reach an already-installed package, the boundary of the product category rather than a risk awaiting a signature, replaced by a scope statement of what a block does and does not reach. LIMITATIONS: counts are DEBUG; the host carried unrelated user applications at about 200 percent CPU with swap exhausted throughout, which paired sampling tolerated.; reviews: code-review=SHIP, verification=VERIFIED
 
-- [ ] Slice 16 — FIX-16-A current managed authority before cached/downloaded artifact release on legacy and selected npm/PyPI routes; required before row 28
+- [x] Slice 16 — FIX-16-A current managed authority before cached/downloaded artifact release on legacy and selected npm/PyPI routes; required before row 28
+  - proof: cargo test --test managed_delivery_authority; authorization_read_once; blocklist_revocation; artifacts_verification; managed_release_wiring -> 5+4+8+16+6 passed; molecule-check PASS; reviews: code-review=SHIP, security=CLEAR, adversarial=PASS, qa=VERIFIED
 - [ ] Slice 28 — shared service policy API, enforcer activation, durable refusal, listener peer admission and login-free common route; required before new adapters
 - [ ] Slice 29 — early native-driver and containerd routing spike
+- [ ] Slice 30 — central OSV in managed and shared-service mode: server osv.dev-compatible querybatch and endpoint base-URL wiring (C1030); required before row 17
 
 ## Historical notes before approval 2026-11-04
 
@@ -158,8 +160,28 @@ Required for this plan.
 ## Gate 4 progress
 
 - [x] Present and record user approval
-  Result: APPROVED 2026-11-04; recorded by the canonical approval transition.
+  Result: APPROVED 2026-11-17; recorded by the canonical approval transition.
+  Historical result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.
+
+## Rework 2026-11-17: central OSV in managed mode
+
+Rework: Managed endpoints must not each call api.osv.dev. C1030 selects a server-hosted osv.dev-compatible querybatch with a shared cache; endpoints keep their OsvClient and change only the base URL. Affects 02/03/04 (C1029 binding stays client-side; rows 16 and 28; new server OSV endpoint and base-URL/auth seam) and amends osv-intel C2001/C13 and management-server C110/C83 in their own plans. Slices 1-15 are unaffected.
+Rework status: resolved; Gates: 2,3,4; Resolution: C1030/C1031 design revised in 02-04, Red Team and threat model findings closed, Design QA READY after seven passes (gate-4-qa.md), user approved 2026-11-17.
+
+## Historical notes before reopen
+
+Design approved 2026-11-04. Use router resume position for the current step. See the Gate documents and evidence for decisions and verification limits.
+
+## Approval history
+
+Historical approval: Gate 2 APPROVED 2026-11-04
+Historical approval: Gate 3 APPROVED 2026-11-04
+Historical approval: Gate 4 APPROVED 2026-11-04
+
+## Historical notes before approval 2026-11-17
+
+Gate 2 reopened. Use router resume position for the current step. Prior approvals and notes are historical; review and approval are required again.
 
 ## Notes for a fresh session
 
-Design approved 2026-11-04. Use router resume position for the current step. See the Gate documents and evidence for decisions and verification limits.
+Design approved 2026-11-17. Use router resume position for the current step. See the Gate documents and evidence for decisions and verification limits.

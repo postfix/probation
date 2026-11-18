@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gate 1 scope: Package Firewall MVP (version 2 successor)</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--mu:#59636e;--bd:#d0d7de;--ac:#0b5cad;--bx:#f6f8fa}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mu:#9198a1;--bd:#30363d;--ac:#58a6ff;--bx:#161b22}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:1rem 1.25rem 3rem;overflow-wrap:anywhere}
+h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:1.8rem;border-bottom:1px solid var(--bd);padding-bottom:.25rem}
+table{border-collapse:collapse;width:100%;font-size:.92rem}th,td{border:1px solid var(--bd);padding:.35rem .5rem;text-align:left;vertical-align:top}
+th{background:var(--bx)}code{background:var(--bx);padding:0 .25rem}
+.box{background:var(--bx);border:1px solid var(--bd);padding:.6rem .8rem;border-radius:6px}
+svg{max-width:100%;height:auto}svg text{fill:var(--fg);font:13px system-ui,sans-serif}svg rect{fill:var(--bx);stroke:var(--ac)}svg path{stroke:var(--ac);fill:none;stroke-width:1.5}
+a:focus,summary:focus{outline:3px solid var(--ac);outline-offset:2px}
+.q{font-weight:700;font-size:1.1rem;margin-top:2rem}
+</style></head><body><main>
+<h1>Gate 1 scope: Package Firewall MVP (version 2 successor)</h1>
+<p class="box"><strong>What you are approving:</strong> the same 13 remaining slices carried over from the version 1 plan. No scope change. Approving Gate 1 does not start implementation; design approval (Gate 2) comes next.</p>
+
+<h2>What problem do we have?</h2>
+<p>Teams install packages from public registries and cannot refuse a held or blocked release before it reaches a build. Version 1 delivered this for npm and PyPI. The remaining work extends protection to the other selected registries and a shared service, and closes a gap where cached or downloaded artifacts could be released after authority was revoked.</p>
+
+<h2>How will we solve it?</h2>
+<p>User action to outcome (product language of <code>01-product.md</code>):</p>
+<ul>
+<li>An operator installs one shared enforcer for the whole machine or one logical service for a Kubernetes/other orchestration cluster, and it selects one common effective policy from its configured policy key (C1019, C1020).</li>
+<li>Admitted package tools and node-runtime requests use that policy with no separate Probation login and no per-request policy choice (C1021).</li>
+<li>A request from an unapproved host or node is refused. Cluster access trusts approved nodes and every workload on them (C1022).</li>
+<li>A held, blocked or still-waiting release is refused before any bytes are released, including from the cache. An exact request is never swapped for other bytes (non-goals).</li>
+<li>Registry credentials stay in the package managers, never on the firewall. Publishing keeps the existing upstream authorization path (C1015, C1024, C1028).</li>
+<li>Standalone operation without a policy server keeps working (C1008). Clients run on Linux, macOS and Windows; the policy server is Linux only (C1016, C1017).</li>
+</ul>
+<svg viewBox="0 0 640 120" role="img" aria-labelledby="t d"><title id="t">Shared service flow</title><desc id="d">Package tools on the machine or approved cluster nodes send requests to the shared enforcing service. The configured policy key gives one effective policy to the service. The service reaches the requested upstream registry.</desc>
+<rect x="5" y="10" width="190" height="44" rx="6"/><text x="14" y="36">Package tools (machine / nodes)</text>
+<rect x="235" y="10" width="170" height="44" rx="6"/><text x="252" y="36">Shared enforcing service</text>
+<rect x="445" y="10" width="190" height="44" rx="6"/><text x="468" y="36">Requested upstream registry</text>
+<rect x="235" y="76" width="170" height="38" rx="6"/><text x="262" y="100">One effective policy</text>
+<rect x="5" y="76" width="190" height="38" rx="6"/><text x="38" y="100">Configured policy key</text>
+<path d="M195 32H235M405 32H445M195 95H235M320 76V54"/></svg>
+
+<p><strong>Scope: nine families</strong> (C1013, C1027): npm, PyPI, Maven, Go modules, Cargo, NuGet, RubyGems, Conan, Docker/OCI. CPAN, Terraform, Ansible Galaxy, APT, RPM, Hugging Face, Raw and Dart/Pub stay outside this release. No UI.</p>
+<table><caption class="sr">Remaining slices</caption><thead><tr><th>Source slice</th><th>Slice ID</th><th>Outcome</th></tr></thead><tbody>
+<tr><td>16</td><td><code>fix-16-a</code></td><td>Current managed authority before cached or downloaded artifact release on npm and PyPI routes</td></tr>
+<tr><td>28</td><td><code>service-policy</code></td><td>Shared service policy API, enforcer activation, durable refusal, peer admission, login-free route</td></tr>
+<tr><td>29</td><td><code>spike-native-cluster</code></td><td>Native-driver and containerd routing spike</td></tr>
+<tr><td>17</td><td><code>rubygems</code></td><td>RubyGems protection with shared nine-family identities</td></tr>
+<tr><td>18</td><td><code>cargo</code></td><td>Cargo sparse index and verified crate downloads</td></tr>
+<tr><td>19</td><td><code>go</code></td><td>Go module protection</td></tr>
+<tr><td>20</td><td><code>nuget</code></td><td>NuGet v3 protection</td></tr>
+<tr><td>21</td><td><code>maven</code></td><td>Maven protected resolution</td></tr>
+<tr><td>23</td><td><code>conan</code></td><td>Conan2 revision protection</td></tr>
+<tr><td>24</td><td><code>oci</code></td><td>OCI tag, digest, index and blob protection</td></tr>
+<tr><td>25</td><td><code>native-lifecycle</code></td><td>Machine-wide native lifecycle on three OSes</td></tr>
+<tr><td>26</td><td><code>cluster</code></td><td>One cluster endpoint with approved-node trust</td></tr>
+<tr><td>27</td><td><code>acceptance</code></td><td>Cross-plan portal, intelligence, decision and native-release acceptance</td></tr>
+</tbody></table>
+<p>There is no source slice 22. Slices 1 to 15 (npm and PyPI MVP) are the delivered baseline.</p>
+
+<h2>What differs from the version 1 plan</h2>
+<table><thead><tr><th>ID</th><th>Change</th></tr></thead><tbody>
+<tr><td>C1018</td><td>GitHub Actions verification on Windows and macOS (plus native Linux and Linux-only policy server) is deferred from Gate 1 to Gate 2 design. The requirement itself is unchanged; the source marked it resolved by its approved design.</td></tr>
+<tr><td>C2002</td><td>New, deferred to Gate 2: re-verify the delivered baseline (source slices 1 to 15) against current source before design approval. Version 1 proofs are historical, not version 2 publication receipts.</td></tr>
+<tr><td>C1003</td><td>Still deferred to Gate 2: scoped policy API, client identity, mode transition, transport and protocol contracts.</td></tr>
+<tr><td>C2001</td><td>This plan owns the remaining slices; the source plan stays unchanged as history.</td></tr>
+</tbody></table>
+
+<h2>How will we confirm it is solved?</h2>
+<table><thead><tr><th>Scenario</th><th>Expected result</th><th>Check (planned, none observed yet)</th></tr></thead><tbody>
+<tr><td>Allowed install or download per family, plus an allowed Docker image pull</td><td>Succeeds with harmless controlled artifacts</td><td>Real native-client acceptance witness per family</td></tr>
+<tr><td>Exact blocked artifact, or artifact still in its waiting period, including warm cache</td><td>Zero refused artifact bytes reach the native client</td><td>Release acceptance matrix; decision log for every delivered and refused file</td></tr>
+<tr><td>Two admitted callers, one unapproved host or node</td><td>Same policy for both, no package-request login; unapproved refused</td><td>Service acceptance; real node-runtime checks</td></tr>
+<tr><td>Linux, macOS, Windows installed client</td><td>Setup, startup, policy update, credential handling and protected requests work</td><td>Native GitHub Actions jobs; builds, mocks or cross-compilation do not count</td></tr>
+</tbody></table>
+
+<p><strong>Recommendation:</strong> approve. The scope is unchanged from the approved source plan, and the two changes (C1018, C2002) only move design-stage work to Gate 2.</p>
+<p><strong>Limits:</strong> No product evidence is observed yet; all checks are planned. Exact endpoints, service configuration, network enforcement and the baseline re-verification belong to design (C1003, C1018, C2002). QA notes N1 and N2 (non-blocking) ask that the C1018 status change be named in the source paragraph and that the domain model link be added. Render not inspected.</p>
+<p>Status: Gate 1 in progress, QA READY. New version 2 plan; scope and design await approval.</p>
+<p>Sources: <code>01-product.md</code>; <code>gate-1-qa.md</code> (READY); <code>molecule-flow.json</code> delivery.slices.</p>
+<p class="q">Approve Gate 1, or what should change?</p>
+</main></body></html>

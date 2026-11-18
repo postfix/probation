@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slice 16 (FIX-16-A) - current managed authority and OSV generation checked before artifact release</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--mut:#57606a;--line:#d0d7de;--warn:#9a6700;--wbg:#fff8c5;--code:#f6f8fa}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9da7b3;--line:#30363d;--warn:#e3b341;--wbg:#2b2310;--code:#161b22}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:1rem 1.25rem 3rem}
+h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+code,pre{background:var(--code);font:.88rem ui-monospace,monospace;overflow-wrap:anywhere}
+pre{padding:.7rem;white-space:pre-wrap}
+.warn{background:var(--wbg);border-left:4px solid var(--warn);padding:.5rem .8rem}
+a:focus,summary:focus,main:focus{outline:3px solid var(--warn);outline-offset:2px}
+.q{font-weight:700;font-size:1.1rem;margin-top:2rem}
+</style>
+</head>
+<body>
+<main tabindex="-1">
+<h1>Slice 16 (FIX-16-A): current managed authority and OSV generation checked before any artifact release</h1>
+
+<h2>Delivered</h2>
+<p>When a managed (service-policy) install asks for an npm or PyPI artifact, on the legacy and selected-registry routes, the release is now gated. Before bytes are released, the synchronous publication gate checks that managed authority is still current. It also checks that the OSV generation is the one the decision was made against. If OSV generation changed after the decision was prepared, the request is refused, and the refusal covers both cold and warm cache paths. The gate refuses on the first generation change; the design text allowed one re-evaluation first (C-S16-2, resolved: the design test table accepts "re-evaluated or refused"). Standalone mode (no managed/service policy) has no gate by design (C-S16-4, resolved).</p>
+<p>The evidence records that at HEAD 6c4b7fc a prototype gate already existed in <code>src/managed/service_policy.rs</code>. This slice moved it and completed it. The evidence does not describe the prior release behavior beyond that.</p>
+<p>Changes, each a new or changed declaration or file:</p>
+<ul>
+<li><code>src/managed/publication_gate.rs</code> (new file): the gate, moved out of <code>src/managed/service_policy.rs</code>, which re-exports it. It adds <code>respond_order</code> (the synchronous guard that refuses after publication and when poisoned), the barrier test hook, poison handling and pending-writer tests.</li>
+<li><code>src/osv/mod.rs</code>: <code>OsvCache.generation</code>, bumped in <code>put</code> only when the value is a match and there is no live match (C1029). This is the "osv_generation" the gate binds.</li>
+<li><code>src/artifacts/mod.rs</code> and <code>src/artifacts/stream.rs</code>: the wiring, including <code>authority.with_osv(..)</code>.</li>
+<li><code>src/managed/mod.rs</code>: changed in the working tree; its change is not detailed in the evidence.</li>
+<li><code>tests/managed_release_wiring.rs</code> (new, 6 tests).</li>
+</ul>
+<p>Row 16 lists <code>src/lib.rs</code>, <code>src/osv/batcher.rs</code> and the http route files, but they did not change. The generation counter lives in <code>OsvCache</code> (C-S16-3, resolved; plan text only). Mechanical churn: none recorded. No signature change outside the items above is claimed.</p>
+
+<h2>Proof</h2>
+<table>
+<thead><tr><th>Promise</th><th>Witness (command or test)</th><th>Observed result</th><th>Limit</th></tr></thead>
+<tbody>
+<tr><td>Generation advances only on a new match</td><td><code>osv::tests::generation_advances_only_on_a_new_match</code></td><td>Red: compile error E0599, no method <code>generation</code> on OsvCache. Green: 24/24 osv lib tests pass after the change.</td><td>Passes under the pre-existing <code>put</code> behavior, see C-S16-1.</td></tr>
+<tr><td>Gate refuses on OSV generation change, refuses after publication and when poisoned, drives cross-thread publication at the final boundary, and a pending writer does not deadlock read or handoff</td><td><code>publication_gate::tests::{osv_generation_change_refuses_before_release, respond_order_refuses_after_publication_and_when_poisoned, final_boundary_barrier_drives_cross_thread_publication, pending_writer_does_not_deadlock_read_or_handoff}</code></td><td>Red: compile errors E0425/E0599 (respond_order, AuthorityReceipt::new, with_osv, with_receipt, is_poisoned, set_barrier missing). Green: 5 new tests plus 2 moved pass, 7/7 in the standalone module; wired afterwards.</td><td>Gate-module level, before wiring.</td></tr>
+<tr><td>The wiring is real: OSV flip after prepare refuses cold and warm, on all methods</td><td><code>tests/managed_release_wiring.rs</code> (6 tests), incl. <code>osv_flip_after_prepare_refuses_cold_and_warm_all_methods</code></td><td>Mutation dropping <code>authority.with_osv(..)</code> in <code>src/artifacts/mod.rs</code> makes that test FAIL (file restored, cmp identical). With the real wiring: 6/6 pass.</td><td>Mutation shown for the OSV wiring only.</td></tr>
+<tr><td>Row 16 regression suites</td><td><code>cargo test --test</code> for the suites below</td><td>managed_delivery_authority 5/5; authorization_read_once 4/4; blocklist_revocation 8/8; artifacts_verification 16/16; managed_release_wiring 6/6; lib publication_tests 6/6; osv generation test 1/1; molecule-check PASS.</td><td>Evidence records pass counts; it does not list the commands for the lib and osv checks.</td></tr>
+<tr><td>Independent review</td><td>Reviews recorded in evidence</td><td>code-review=SHIP (4 MINOR; tautological assertion fixed, wiring test added); security=CLEAR; adversarial=PASS (6 tests kept as <code>tests/managed_release_wiring.rs</code>); qa=VERIFIED.</td><td>Reviews found C-S16-1 and did not close it.</td></tr>
+</tbody>
+</table>
+
+<h2>Limits</h2>
+<div class="warn">
+<p><strong>Open clarification C-S16-1 (unresolved, needs a decision).</strong> <code>OsvCache::put(key,false)</code> from a failed enqueue can overwrite a live match with no-match, which flips deny to allow. This is pre-existing. The security and adversarial reviews found it. The generation counter does not guard it. It needs its own fix, per the user's no-backlog ruling.</p>
+</div>
+<p><strong>Failures that also occur on a clean HEAD (not caused by this slice; identical on a clean HEAD worktree):</strong></p>
+<ul>
+<li><code>cargo test --lib</code> fails 7 tests: <code>managed::client::tests::redirects_are_not_followed_and_the_environment_proxy_is_ignored</code> and 6 <code>osv::tests::*</code>.</li>
+<li>Two osv tests hang for more than 60 seconds on a clean HEAD.</li>
+<li><code>clippy -D warnings</code> errors in <code>src/http/service_unpublish.rs</code> and <code>src/managed/cache.rs</code> on a clean HEAD.</li>
+</ul>
+<p>So no full green <code>cargo test --lib</code> or clippy run is claimed. The passing evidence above is the named suites only. Browser rendering of this page was not inspected (render: not inspected).</p>
+
+<h2>Next</h2>
+<p>The next approved slice is row 28, the shared service policy: scoped snapshot API, enforcer activation, durable refusal, listener peer admission and the login-free common-service route. Row 28 depends on row 16 and extends the FIX-16-A cases to the common route. Choosing "re-steer" is where you decide how to handle C-S16-1, for example a fix of its own before row 28.</p>
+
+<h2>Recommendation</h2>
+<p>Continue to slice 28, on the condition that you accept that C-S16-1 stays open for now. The row 16 evidence is complete for the gate and OSV wiring, with all reviews passing. C-S16-1 is a pre-existing deny-to-allow path outside what this slice's gate guards, and only you can choose to defer it or fix it first. Choose re-steer if you want it fixed before row 28.</p>
+
+<p>Status: Slice 16 is marked done in <code>00-status.md</code> (proof: managed_delivery_authority, authorization_read_once, blocklist_revocation, artifacts_verification and managed_release_wiring, 5+4+8+16+6 passed; molecule-check PASS). Row 28 is not started. This page is context only and records no approval.</p>
+<p>Sources: <code>docs/plans/package-firewall-mvp/evidence/slice-16.md</code>; <code>evidence/tdd-slice-16.md</code>; <code>04-slices.md</code> row 16; <code>00-status.md</code> slice 16 proof line.</p>
+
+<p class="q">Type "next" to continue to slice 28, or re-steer?</p>
+</main>
+</body>
+</html>

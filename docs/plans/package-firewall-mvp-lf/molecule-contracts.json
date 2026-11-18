@@ -1,0 +1,1409 @@
+{
+  "version": 1,
+  "contracts": [
+    {
+      "id": "npm-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "npm-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "npm-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "npm-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "npm-known-respond-order",
+      "operation": "respond",
+      "flow": "npm-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "npm-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "npm-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "npm-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "npm-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "npm-cold-respond-order",
+      "operation": "respond",
+      "flow": "npm-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "pypi-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "pypi-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-known-respond-order",
+      "operation": "respond",
+      "flow": "pypi-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "pypi-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "pypi-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pypi-cold-respond-order",
+      "operation": "respond",
+      "flow": "pypi-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "maven-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "maven-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-known-respond-order",
+      "operation": "respond",
+      "flow": "maven-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "maven-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "maven-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "maven-cold-respond-order",
+      "operation": "respond",
+      "flow": "maven-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "cargo-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "cargo-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-known-respond-order",
+      "operation": "respond",
+      "flow": "cargo-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "cargo-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "cargo-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cargo-cold-respond-order",
+      "operation": "respond",
+      "flow": "cargo-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "go-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "go-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-known-respond-order",
+      "operation": "respond",
+      "flow": "go-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "go-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "go-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "go-cold-respond-order",
+      "operation": "respond",
+      "flow": "go-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "nuget-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "nuget-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-known-respond-order",
+      "operation": "respond",
+      "flow": "nuget-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "nuget-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "nuget-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nuget-cold-respond-order",
+      "operation": "respond",
+      "flow": "nuget-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "rubygems-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "rubygems-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-known-respond-order",
+      "operation": "respond",
+      "flow": "rubygems-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "rubygems-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "rubygems-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rubygems-cold-respond-order",
+      "operation": "respond",
+      "flow": "rubygems-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "conan-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "conan-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-known-respond-order",
+      "operation": "respond",
+      "flow": "conan-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "conan-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "conan-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "conan-cold-respond-order",
+      "operation": "respond",
+      "flow": "conan-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-known-snapshot-order",
+      "operation": "snapshot",
+      "flow": "oci-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-known-activate_known-order",
+      "operation": "activate_known",
+      "flow": "oci-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-known-respond-order",
+      "operation": "respond",
+      "flow": "oci-known",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-cold-snapshot-order",
+      "operation": "snapshot",
+      "flow": "oci-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "crates/probation-server/src/order_guards.rs",
+      "symbol": "snapshot_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "crates/probation-server/src/order_guards.rs",
+              "from": "require_live_service_scope(&tx, &key)",
+              "to": "unchecked_service_scope_for_control(&tx, &key)"
+            }
+          ],
+          "expect": {
+            "file": "crates/probation-server/src/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-cold-activate_cold-order",
+      "operation": "activate_cold",
+      "flow": "oci-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/order_guards.rs",
+      "symbol": "activation_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "bySlice": 28,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/order_guards.rs",
+              "from": "validate_policy_snapshot(&reply, &binding)",
+              "to": "unchecked_snapshot_for_control(&reply, &binding)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/order_guards.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oci-cold-respond-order",
+      "operation": "respond",
+      "flow": "oci-cold",
+      "claim": "Supplementary call dominance only: required matched guard precedes matched operation. Does not prove same key/value, accepted result, atomicity or asynchronous semantics; those remain mandatory runtime/review obligations in program design.",
+      "source": "src/managed/publication_gate.rs",
+      "symbol": "respond_order",
+      "spec": "docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "bySlice": 16,
+      "controls": [
+        {
+          "id": "missing-required-guard",
+          "mutations": [
+            {
+              "source": "src/managed/publication_gate.rs",
+              "from": "authorize_current_policy(&gate, &prepared)",
+              "to": "unchecked_authorization_for_control(&gate, &prepared)"
+            }
+          ],
+          "expect": {
+            "file": "src/managed/publication_gate.rs",
+            "summaryIncludes": "lacks required guard"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,849 @@
+{
+  "version": 1,
+  "definitions": [
+    {
+      "id": "witness-fix-16-a",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test managed_delivery_authority && cargo test --test authorization_read_once && cargo test --test blocklist_revocation && cargo test --test artifacts_verification"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [
+        {
+          "kind": "operation-outcome",
+          "operationId": "respond",
+          "outcomeId": "allowed"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "respond",
+          "outcomeId": "denied"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "respond",
+          "outcomeId": "upstream_error"
+        }
+      ],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-service-policy",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test -p probation-server --test service_policy_api && cargo test --test service_policy_cache && cargo test --test shared_service && cargo test --test listener_admission && cargo test --test credential_bearing_reads && cargo test --test service_unpublish && cargo test --test pypi_service_upload && cargo test --test managed_delivery_authority && node tests/e2e/harness/run.mjs --only E2E-service-policy && node tests/e2e/harness/run.mjs --only E2E-publishing-python-service"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [
+        {
+          "kind": "operation-outcome",
+          "operationId": "snapshot",
+          "outcomeId": "granted"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "snapshot",
+          "outcomeId": "malformed"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "snapshot",
+          "outcomeId": "refused"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "snapshot",
+          "outcomeId": "unavailable"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_known",
+          "outcomeId": "active"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_known",
+          "outcomeId": "invalid"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_known",
+          "outcomeId": "refused"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_known",
+          "outcomeId": "cached"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_cold",
+          "outcomeId": "active"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_cold",
+          "outcomeId": "invalid"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_cold",
+          "outcomeId": "refused"
+        },
+        {
+          "kind": "operation-outcome",
+          "operationId": "activate_cold",
+          "outcomeId": "cold"
+        }
+      ],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-spike-native-cluster",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "node tests/e2e/harness/run.mjs --only E2E-service-native-smoke --client-host native && node tests/e2e/harness/run.mjs --only E2E-service-cluster-probe"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-rubygems",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --workspace && cargo test --test rubygems_registry && node tests/e2e/harness/run.mjs --only E2E-rubygems"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-cargo",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test cargo_registry && node tests/e2e/harness/run.mjs --only E2E-cargo"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-go",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test go_modules && node tests/e2e/harness/run.mjs --only E2E-go"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-nuget",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test nuget_registry && node tests/e2e/harness/run.mjs --only E2E-nuget"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-maven",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test maven_registry && node tests/e2e/harness/run.mjs --only E2E-maven"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-conan",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test conan_registry && node tests/e2e/harness/run.mjs --only E2E-conan"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-oci",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --test oci_registry && node tests/e2e/harness/run.mjs --only E2E-oci"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-native-lifecycle",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo test --workspace && node tests/e2e/harness/run.mjs --only E2E-service-native --client-host native"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-cluster",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "node tests/e2e/harness/run.mjs --only E2E-service-cluster"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "witness-acceptance",
+      "kind": "test",
+      "executable": "/bin/sh",
+      "args": [
+        "-ec",
+        "cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && node tests/e2e/harness/run.mjs --suite release && cargo bench"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 3600000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.cargo",
+          "/home/john/.rustup",
+          "/usr/lib",
+          "/usr/bin"
+        ],
+        "path": [
+          "/home/john/.cargo/bin",
+          "/usr/bin"
+        ]
+      },
+      "buildPaths": [
+        "target",
+        "node_modules"
+      ]
+    },
+    {
+      "id": "source-fix-16-a",
+      "kind": "source",
+      "executable": "/home/john/.local/share/software-factory/releases/a319c031a8d9f20ed2ba507d8b7a40999991a2e65f424a3bdbe6c824372d487e/skills-claude/sf-start/scripts/router",
+      "args": [
+        "molecule-verify",
+        "--plan-root",
+        "docs/plans/package-firewall-mvp-v2",
+        "--due-slices-json",
+        "[\"fix-16-a\"]"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 1800000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-cold-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-known-respond-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-cold-respond-order"
+        }
+      ],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.local/share/software-factory/releases/a319c031a8d9f20ed2ba507d8b7a40999991a2e65f424a3bdbe6c824372d487e/skills-claude/sf-start",
+          "/usr/bin"
+        ],
+        "path": [
+          "/usr/bin"
+        ]
+      }
+    },
+    {
+      "id": "source-service-policy",
+      "kind": "source",
+      "executable": "/home/john/.local/share/software-factory/releases/a319c031a8d9f20ed2ba507d8b7a40999991a2e65f424a3bdbe6c824372d487e/skills-claude/sf-start/scripts/router",
+      "args": [
+        "molecule-verify",
+        "--plan-root",
+        "docs/plans/package-firewall-mvp-v2",
+        "--due-slices-json",
+        "[\"service-policy\"]"
+      ],
+      "cwd": ".",
+      "inputRefs": [],
+      "environmentRefs": [],
+      "expectedResult": {
+        "exitCode": 0
+      },
+      "timeoutMs": 1800000,
+      "evidenceOutput": {
+        "kind": "none"
+      },
+      "mutableResources": [],
+      "guaranteeRefs": [
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "npm-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "pypi-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "maven-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "cargo-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "go-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "nuget-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "rubygems-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "conan-cold-activate_cold-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-known-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-known-activate_known-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-cold-snapshot-order"
+        },
+        {
+          "kind": "source-obligation",
+          "obligationId": "oci-cold-activate_cold-order"
+        }
+      ],
+      "runtime": {
+        "readOnlyPaths": [
+          "/home/john/.local/share/software-factory/releases/a319c031a8d9f20ed2ba507d8b7a40999991a2e65f424a3bdbe6c824372d487e/skills-claude/sf-start",
+          "/usr/bin"
+        ],
+        "path": [
+          "/usr/bin"
+        ]
+      }
+    }
+  ],
+  "alwaysRunRefs": [],
+  "baselineRefs": []
+}

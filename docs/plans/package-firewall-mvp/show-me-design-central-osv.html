@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Package Firewall MVP - design re-approval: central OSV (C1030, C1031, row 30)</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1c1f24;--mut:#59616b;--bd:#c9ced6;--ac:#0b57d0;--cd:#f3f5f8}
+@media(prefers-color-scheme:dark){:root{--bg:#14171b;--fg:#e6e9ed;--mut:#9aa3ad;--bd:#3a4048;--ac:#8ab4f8;--cd:#1d2127}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:70rem;margin:0 auto;padding:1rem 1.25rem 3rem}
+h1{font-size:1.4rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid var(--bd);padding-bottom:.2rem}
+h3{font-size:1rem;margin:1.2rem 0 .3rem}
+pre{background:var(--cd);border:1px solid var(--bd);padding:.7rem;overflow-x:auto;font-size:.85rem;white-space:pre-wrap;word-break:break-word}
+code{font-family:ui-monospace,monospace;font-size:.88em;word-break:break-word}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.88rem}
+th,td{border:1px solid var(--bd);padding:.3rem .5rem;text-align:left;vertical-align:top}th{background:var(--cd)}
+svg{max-width:100%;height:auto;background:var(--cd);border:1px solid var(--bd)}
+svg text{fill:var(--fg);font:12px system-ui,sans-serif}svg rect{fill:var(--bg);stroke:var(--ac)}svg path,svg line{stroke:var(--mut);fill:none}
+a:focus,summary:focus,.tw:focus{outline:3px solid var(--ac);outline-offset:2px}
+.q{font-weight:700;font-size:1.1rem;margin-top:2rem;padding:.7rem;border:2px solid var(--ac)}
+.mut{color:var(--mut)}
+</style></head><body><main>
+<h1>Package Firewall MVP: combined design re-approval after the central OSV re-steer</h1>
+<p class="mut">Topic: C1030, C1031, C1021 amendment, new Slice 30 (row 30). Approval target: design.</p>
+
+<h2>What problem do we have?</h2>
+<p>Today every running endpoint builds its own <code>OsvClient</code> (src/lib.rs <code>App::start</code>) and calls <code>https://api.osv.dev/v1/querybatch</code> itself. A fleet of thousands of managed endpoints would each hit api.osv.dev with cold caches (osv-intel C2001/C13, management-server C110/C83: "managed mode adds no OSV traffic" meant no extra calls, not fewer). A second risk surfaced in Red Team (C1031): once OSV goes through the policy server, a server outage must not silently remove the OSV protection endpoints have today.</p>
+
+<h2>How will we solve it?</h2>
+<h3>Purpose and caller outcome</h3>
+<p>In managed and shared-service mode the policy server is the only caller of api.osv.dev. It exposes an osv.dev-compatible <code>POST /osv/v1/querybatch</code> (same request and response shape) with one upstream client and one shared cache. A managed endpoint keeps its whole <code>OsvClient</code> and changes only its OSV base URL (server URL plus <code>/osv</code>), sending the credential it already uses for that server (firewall token or service key). Standalone is unchanged and still calls api.osv.dev directly. Managed mode never selects direct OSV: no configuration key, environment variable or retry does.</p>
+<p>Caller journey: a managed endpoint evaluates an OSV-blind Allow for npm <code>left-pad@1.3.0</code>; its batcher POSTs the osv.dev-shaped body to <code>&lt;server&gt;/osv/v1/querybatch</code>; the server answers from its cache or one coalesced upstream call; the endpoint stores the answer, and if the verdict newly matched, its <code>osv_generation</code> advances (C1029) and an in-flight response is re-evaluated or refused.</p>
+<p>C1029 stays client-side (the endpoint counts verdict changes it stores, now from server answers), so Slice 16 and Slice 28 are not delayed or changed.</p>
+
+<h3>Behaviour flow</h3>
+<svg role="img" aria-labelledby="ft fd" viewBox="0 0 900 330" width="900">
+<title id="ft">Central OSV lookup flow</title>
+<desc id="fd">A managed endpoint sends a batch to the policy server route. Unauthenticated callers get 401. Authenticated keys are answered from the shared cache or one coalesced upstream call to api.osv.dev. Upstream failure answers no-match marked degraded. The endpoint stores a non-degraded answer; a newly matched verdict advances osv_generation and refuses. If the server is unreachable, a retained matched entry keeps refusing for the stale window and a never-queried key fails open.</desc>
+<rect x="10" y="20" width="170" height="60" rx="6"/><text x="20" y="42">Endpoint OsvClient</text><text x="20" y="60">batch after OSV-blind Allow</text>
+<rect x="250" y="20" width="190" height="60" rx="6"/><text x="260" y="42">POST /osv/v1/querybatch</text><text x="260" y="60">auth: fwt_ token or service key</text>
+<rect x="250" y="130" width="190" height="50" rx="6"/><text x="260" y="152">Shared cache (ecosystem,</text><text x="260" y="168">name, version)</text>
+<rect x="520" y="130" width="190" height="50" rx="6"/><text x="530" y="152">One coalesced upstream</text><text x="530" y="168">call to api.osv.dev only</text>
+<rect x="520" y="20" width="190" height="50" rx="6"/><text x="530" y="42">401 / 413 / 429 / 400</text><text x="530" y="58">before cache or upstream</text>
+<rect x="10" y="130" width="190" height="60" rx="6"/><text x="20" y="152">Endpoint stores answer</text><text x="20" y="168">new match: osv_generation+1,</text><text x="20" y="184">refuse (C1029)</text>
+<rect x="10" y="250" width="420" height="60" rx="6"/><text x="20" y="272">Server unreachable (C1031): retained match keeps refusing</text><text x="20" y="290">for stale window; never-queried key: no-match, fail open C3/C14</text>
+<rect x="520" y="250" width="270" height="60" rx="6"/><text x="530" y="272">Upstream fail/timeout: {} + degraded</text><text x="530" y="290">header; never replaces a match</text>
+<line x1="180" y1="50" x2="250" y2="50"/><line x1="440" y1="50" x2="520" y2="45"/><line x1="345" y1="80" x2="345" y2="130"/><line x1="440" y1="155" x2="520" y2="155"/><line x1="250" y1="160" x2="200" y2="160"/><line x1="100" y1="80" x2="100" y2="130"/><line x1="100" y1="190" x2="100" y2="250"/><line x1="615" y1="180" x2="615" y2="250"/>
+<text x="190" y="44">1</text><text x="455" y="38">bad auth</text><text x="350" y="108">ok</text><text x="450" y="148">miss</text><text x="205" y="152">hit/answer</text><text x="105" y="225">outage</text><text x="620" y="220">fail</text>
+</svg>
+<p class="mut">Slice 30 owns the whole route (C1030). The OSV route is not in the molecule model: molecule-flow.json and molecule-contracts.json model the snapshot/activate/respond order guards and are unchanged. The route is a single-owner request/response contract whose witnesses are the named runtime tests below and security row T9. This is a stated model gap, not a proof.</p>
+
+<h3>Interfaces and contracts (proposed; exact Rust shape is the implementer's within these contracts)</h3>
+<pre><code>// crates/probation-server/src/osv.rs  (new, proposed)
+// Mounted at POST /osv/v1/querybatch. Request and response are the osv.dev /v1/querybatch JSON
+// (queries[], results[]; one result per query, in order).
+// Accepts a closed credential set: live firewall token (fwt_, with its allowed_source_cidrs) or live
+// service-kind key (listener allowlist admission). User-kind, revoked, wrong-kind or missing credentials: 401
+// before any cache read or upstream call (D-OSV1).
+// Effects: reads/writes the shared answer cache; at most one upstream call per key in flight; bounded batch
+// size and concurrency; per-credential rate limit on cache-missing keys.
+// Errors: 401 unauthenticated; 413 oversize body or batch; 429 over limit; 400 malformed envelope.
+// An invalid, unmapped-ecosystem or over-budget key gets {} for that query plus the degraded marker.
+// Upstream failure or timeout: {} (no vulns) for affected queries, never 5xx (fail-open C3/C14), health counter.
+pub fn router(state: OsvState) -> axum::Router;
+// Server state: upstream client (upstream-URL seam for a fake api.osv.dev), answer TTLs, limits (D-OSV3 tuning).
+pub struct OsvState { upstream: reqwest::Client, ttl: Duration, negative_ttl: Duration, limits: OsvLimits }
+
+// src/osv/batcher.rs  (changed, row 30)
+// Maps a package family to its exact OSV ecosystem string; None means OSV has no ecosystem for it.
+// Becomes public and Option-returning (today private and non-Option); the single mapping owner.
+pub fn osv_ecosystem(e: Ecosystem) -> Option&lt;&amp;'static str&gt;;
+// crates/probation-policy/src/lib.rs  (changed): families delivered so far; each of rows 17-24 adds its own entry.
+Ecosystem::ALL</code></pre>
+<div class="tw" tabindex="0"><table><caption class="mut">Operation / route, contract, status</caption>
+<tr><th>Operation/route</th><th>Contract</th><th>Evidence/status/limits</th></tr>
+<tr><td>Endpoint config (src/lib.rs, src/config.rs) <em>changed</em></td><td>With <code>[management]</code> or <code>[service_policy]</code>, base URL is <code>&lt;server url&gt;/osv</code>, https required, dedicated reqwest client, redirects disabled, credential attached per request in <code>batcher::send</code> only when origin equals the configured server origin. No key points a managed endpoint at api.osv.dev. <code>osv_request_timeout_ms</code> below 400 ms rejected (default 500). New key <code>osv_stale_match_seconds</code>: default 86400, min 3600, max 604800.</td><td>planned; <code>osv_credential_not_sent_on_redirect</code>, <code>osv_base_url_requires_https_in_managed_mode</code>, <code>osv_test_seam_never_carries_credential</code>, <code>managed_config_has_no_direct_osv_key</code>, <code>managed_config_rejects_osv_timeout_below_server_deadline</code>, <code>osv_stale_window_config_bounds</code></td></tr>
+<tr><td>Server route</td><td>Closed credential set; typed request with unknown fields denied (no commit, purl or page_token; version required); ecosystem allowlist equals <code>osv_ecosystem</code> Some set; batch cap at least client 256, at most 1000; body cap before parse; upstream reads size-capped; one shared cache keyed (ecosystem, name, version); a result is stored only when results.len() equals queries.len(); failures never cached as confirmed no-match; server upstream timeout plus coalescing wait strictly below client timeout (300 ms server deadline).</td><td>planned; <code>osv_route_requires_authentication</code>, <code>osv_batch_limits_refuse_oversize_and_rate_limited</code>, <code>osv_route_rejects_unknown_fields_commit_purl_page_token_and_versionless</code>, <code>osv_route_rejects_unlisted_ecosystem</code>, <code>osv_server_allowlist_equals_osv_ecosystem</code>, <code>osv_misaligned_upstream_response_stores_nothing</code>, <code>response_shape_matches_osv_dev_golden</code></td></tr>
+<tr><td>Coalescing and load</td><td>Identical concurrent keys make one upstream call; a cancelled waiter does not fail a coalesced peer; separate OSV budget so <code>/sync</code> is not starved; global upstream concurrency cap and 429/Retry-After breaker; bad key never fails batch mates.</td><td>planned; <code>server_coalesces_identical_concurrent_queries</code>, <code>osv_cancelled_waiter_does_not_fail_coalesced_peer</code>, <code>osv_flood_does_not_429_sync_routes</code>, <code>osv_saturating_load_leaves_sync_latency_within_bound</code>, <code>osv_upstream_429_opens_breaker</code>, <code>osv_bad_key_never_fails_batch_mates</code></td></tr>
+<tr><td>Outage (C1031) <em>changed</em>, <code>osv_generation</code> / OsvCache</td><td>Matched entries persist to a file in the endpoint data directory (atomic, owner-only, max 100000 entries and 16 MiB, loaded at startup, pruned at the stale ceiling), are exempt from LRU eviction (memory cap 100000) and stay past TTL for the stale window while the server call fails. A degraded marker, non-2xx or failed call never replaces a match; only a non-degraded 2xx can. A corrupt or oversize file loads empty with a health warning and never blocks startup. Standalone keeps osv-intel C7 (no persistence). Counters <code>osv_matches_file_degraded</code>, <code>osv_stale_matches_expired</code> in <code>UpstreamHealth</code>.</td><td>planned; <code>osv_degraded_answer_keeps_stale_match</code>, <code>managed_osv_survives_server_unavailable_per_C1031</code>, tests/osv_matches_file.rs: <code>osv_matches_survive_restart_and_eviction_during_server_outage</code>, <code>osv_matches_file_corrupt_loads_empty_and_does_not_block_startup</code>, <code>osv_matches_file_mode_owner_only_and_atomic_replace</code>, <code>osv_matches_file_bounds_on_load_and_write</code>, <code>osv_matches_pruned_at_configured_stale_window</code>, <code>osv_matched_entries_memory_cap</code></td></tr>
+<tr><td>Order and gate unchanged</td><td>OSV-blind-first ask, enforce/diagnostic/off, <code>would_block</code>, fail-open C3/C14 and C1029 generation stay; an OSV verdict never un-denies a producer-tier deny (osv-intel C1). Detection delay for a newly published malicious package about 60 s (client 30 s plus server at most 30 s no-match TTL).</td><td>existing <code>evaluate_skips_osv_when_producer_already_denies</code>; planned <code>server_verdict_flip_advances_endpoint_generation</code>, enforce/diagnostic/off regression through the server route; <code>standalone_still_queries_osv_dev_directly</code> is a regression guard</td></tr>
+</table></div>
+
+<h3>OSV mapping (single owner: row 30; evidence/research-osv-ecosystems.md)</h3>
+<div class="tw" tabindex="0"><table><tr><th>Family</th><th><code>osv_ecosystem</code> returns</th><th>package.name form sent</th></tr>
+<tr><td>npm</td><td>Some("npm")</td><td>registry name, <code>@scope/name</code> for scoped</td></tr>
+<tr><td>PyPI</td><td>Some("PyPI")</td><td>PEP 503 normalized name</td></tr>
+<tr><td>Maven</td><td>Some("Maven")</td><td>groupId:artifactId</td></tr>
+<tr><td>Go modules</td><td>Some("Go")</td><td>full module path</td></tr>
+<tr><td>Cargo</td><td>Some("crates.io")</td><td>crate name</td></tr>
+<tr><td>NuGet</td><td>Some("NuGet")</td><td>package name</td></tr>
+<tr><td>RubyGems</td><td>Some("RubyGems")</td><td>gem name</td></tr>
+<tr><td>Conan</td><td>Some("ConanCenter")</td><td>package name; only ConanCenter-origin packages are queried (<code>conan_osv_query_only_for_conancenter_origin</code>, row 23)</td></tr>
+<tr><td>Docker/OCI</td><td>None</td><td>not OSV-covered: OSV has no generic image ecosystem. Not a loss: OSV protection exists today only for npm and PyPI.</td></tr></table></div>
+<p class="mut">Each of rows 17-24 adds its own <code>Ecosystem</code> variant, tag, <code>Ecosystem::ALL</code> entry and mapping arm; <code>osv_ecosystem_mapping_per_family</code> names <code>Ecosystem::&lt;Variant&gt;</code> so it is red-first. A family not in <code>ALL</code> is not advertised as OSV-covered.</p>
+
+<h3>Security coverage (row T9, evidence/threat-model-central-osv.md)</h3>
+<div class="tw" tabindex="0"><table><tr><th>Threat</th><th>Spec / obligation</th><th>Status</th><th>Evidence / gap</th></tr>
+<tr><td>T9-1 wrong credential class on /osv (D-OSV1)</td><td>new: closed set firewall token or service key; C1021 amended: service key may also call this one read-only route</td><td>decided by user; planned</td><td><code>osv_route_requires_authentication</code> (401 for missing, user-kind, revoked, wrong-kind; no cache read, no upstream call; positive token and key cases)</td></tr>
+<tr><td>T9-2 credential to wrong host, plaintext or redirect</td><td>new: origin check in <code>batcher::send</code> (single attachment point), https, header marked sensitive, URL built by path segments</td><td>planned</td><td><code>osv_credential_not_sent_on_redirect</code>, <code>osv_base_url_requires_https_in_managed_mode</code>, <code>osv_test_seam_never_carries_credential</code>; one-off code review of the attachment point</td></tr>
+<tr><td>T9-3 relay, SSRF, query-shape abuse</td><td>new: typed request, ecosystem allowlist, field bounds, fixed host api.osv.dev; body cannot choose a host</td><td>planned</td><td>tests listed above</td></tr>
+<tr><td>T9-4 amplification, starvation, cache exhaustion</td><td>new: separate OSV budget, per-credential charge on cache-missing keys, breaker, bounded cache keeping matches</td><td>planned</td><td><code>osv_garbage_keys_do_not_evict_matched</code>, <code>osv_flood_does_not_429_sync_routes</code></td></tr>
+<tr><td>T9-5 poisoning, misaligned answer</td><td>new: store only when lengths align; split-retry per key; no-match TTL at most 30 s; cache filled only from upstream</td><td>planned</td><td><code>osv_misaligned_upstream_response_stores_nothing</code>, <code>osv_failure_not_cached_as_confirmed_no_match</code>, <code>osv_bad_key_in_mixed_batch_does_not_fail_other_keys</code>; residual: a compromised server can forge answers (same trust as policy; owner: the policy-server operator)</td></tr>
+<tr><td>T9-6 cross-tenant disclosure (D-OSV2)</td><td>decided by user: one shared cache, a hit showing that some user or org asked is not treated as a risk; kept: no per-key logs, aggregate counters only</td><td>decided; planned</td><td><code>osv_logs_contain_no_query_keys</code></td></tr>
+<tr><td>T9-7 invisible fail-open downgrade</td><td>new: only a non-degraded 2xx counts as OSV reached; degraded marker header, never 5xx</td><td>planned</td><td><code>osv_unauthorized_or_limited_marks_upstream_unreached</code>, <code>osv_server_batch_cap_not_below_client_batch</code></td></tr>
+<tr><td>T9-8 fallback to direct api.osv.dev</td><td>new: <code>None</code> base-URL arm unreachable in managed mode; fixed-host constructor has no managed caller</td><td>planned</td><td><code>managed_endpoint_sends_no_request_to_osv_dev</code> (server 401, 429, 500, refused connection, timeout); structural check added if the SMTC backend supports it, else code review of <code>App::start</code> plus the failure tests; <code>osv_derivation_path_runs_with_server_origin_override_and_credential</code></td></tr>
+</table></div>
+<p>Shared security baselines remain as already approved; the new coverage is the T9 row (slice 30). Gap stated in the design: server upstream outage and policy-server outage both degrade new-key protection to no-match (C3/C14); known matches persist.</p>
+
+<h3>Slice order</h3>
+<div class="tw" tabindex="0"><table><tr><th>Slice</th><th>Outcome</th><th>Depends on</th><th>Change</th></tr>
+<tr><td>Slice 16</td><td>FIX-16-A current managed authority before artifact release</td><td>15</td><td>unaffected (C1029 stays client-side)</td></tr>
+<tr><td>Slice 28</td><td>Shared service policy, authenticated server</td><td>16</td><td>unaffected</td></tr>
+<tr><td>Slice 30</td><td>Central OSV: server route, shared cache, managed endpoints make no api.osv.dev calls; owns <code>osv_ecosystem</code>, <code>Ecosystem::ALL</code>, persisted matches</td><td>28</td><td><strong>new</strong>; delivers C1030, C1031; gates row 17</td></tr>
+<tr><td>Slice 29</td><td>Native-driver and cluster routing spike</td><td>28</td><td>unchanged</td></tr>
+<tr><td>Slice 17</td><td>RubyGems plus shared identities; adds RubyGems mapping</td><td>28, 30</td><td>changed: now depends on 30</td></tr>
+<tr><td>Slices 18-24</td><td>Cargo, Go, NuGet, Maven, (22 removed, C1027), Conan, OCI; each adds its own variant, tag, <code>ALL</code> entry and mapping arm; OCI adds None</td><td>17</td><td>changed: OSV mapping lines and <code>cargo test --test osv_ecosystem_mapping</code> added; src/osv/batcher.rs and crates/probation-policy/src/lib.rs writable for those lines</td></tr>
+<tr><td>Slices 25, 26</td><td>Native lifecycle; cluster endpoint</td><td>25: 28, 29, 18-21, 23, 24; 26: 24, 25, 29</td><td>unchanged</td></tr>
+<tr><td>Slice 27</td><td>Cross-plan acceptance; portal OSV coverage view from the same mapping (<code>osv_coverage_view_matches_mapping</code>)</td><td>17-21, 23-26, 30</td><td>changed: depends on 30</td></tr>
+</table></div>
+<p class="mut">Delivery order: 16, 28, 30, 17, 18-24, 25/26, 27 (29 after 28), no cycle (gate-4-qa.md). Cross-plan amendments: osv-intel C2008 (amends C2001, C7, C13 for managed mode) and management-server C131 (amends C110, C83; <code>UpstreamHealth</code> <code>osv</code> now reports the endpoint-to-server call) both name row 30 as deliverer.</p>
+
+<h2>How will we confirm it is solved?</h2>
+<div class="tw" tabindex="0"><table><tr><th>Scenario</th><th>Expected result</th><th>Check</th><th>Status</th></tr>
+<tr><td>Managed endpoint queries OSV while server works</td><td>Zero api.osv.dev hits from the endpoint</td><td><code>managed_endpoint_sends_no_request_to_osv_dev</code></td><td>planned</td></tr>
+<tr><td>Same key from many callers</td><td>One upstream call; cache hit makes none; TTL expiry re-asks</td><td><code>server_coalesces_identical_concurrent_queries</code>, <code>server_cache_hit_makes_no_upstream_call</code></td><td>planned</td></tr>
+<tr><td>No or wrong credential</td><td>401, no cache read, no upstream call</td><td><code>osv_route_requires_authentication</code></td><td>planned</td></tr>
+<tr><td>Verdict flips from no-match to match in flight</td><td>Endpoint generation advances; response refused (C1029)</td><td><code>server_verdict_flip_advances_endpoint_generation</code></td><td>planned</td></tr>
+<tr><td>Server down, known matched package past TTL</td><td>Still refuses; survives restart and eviction</td><td><code>managed_osv_survives_server_unavailable_per_C1031</code>, <code>osv_matches_survive_restart_and_eviction_during_server_outage</code></td><td>planned</td></tr>
+<tr><td>Server down, package never queried</td><td>No-match within timeout, never deny, never hang (accepted reduction 1)</td><td><code>managed_osv_fails_open_within_timeout_when_server_down</code></td><td>planned</td></tr>
+<tr><td>Standalone</td><td>Still calls api.osv.dev directly; no managed OSV key</td><td><code>standalone_still_queries_osv_dev_directly</code>, <code>managed_config_has_no_direct_osv_key</code></td><td>regression guards</td></tr>
+<tr><td>Each family row</td><td>Mapping string exact; OCI None</td><td><code>osv_ecosystem_mapping_per_family</code>, <code>osv_coverage_view_matches_mapping</code></td><td>planned</td></tr>
+</table></div>
+<p>Design-level checks done: gate-4-qa.md (Design QA) verdict READY, seventh pass, no open findings; router check has no findings; molecule-check PASS.</p>
+
+<p><strong>Recommendation:</strong> approve the design. It removes the per-endpoint api.osv.dev fan-out without touching standalone, Slice 16 or Slice 28, and keeps known malicious matches through a server outage. Both accepted reductions are bounded and stated.</p>
+<p><strong>Limits:</strong></p>
+<ul>
+<li>Accepted reduction 1: packages never queried before a server outage are unchecked (fail open, C3/C14) until the server returns.</li>
+<li>Accepted reduction 2: an outage longer than the stale window (24 h default, 7 d maximum) ends protection for matched entries until the server returns. No direct api.osv.dev fallback in managed mode.</li>
+<li>Docker/OCI is not OSV-covered (no generic OSV image ecosystem); this is not a loss.</li>
+<li>The OSV route is outside the molecule model; the named runtime tests are its witnesses, not a model proof. All new tests are planned, none observed. Slice 28 source obligations are PENDING (order_guards.rs files do not exist yet). molecule-verify not run.</li>
+<li>Research evidence is fragment-based (scoped npm name form inferred); a live canary per ecosystem is an opt-in lane, not hermetic. Numeric budgets, TTLs and caps are set by the row 30 implementer (D-OSV3) and approved with the row. The domain view is version 1 (UnsupportedVersion), so this digest is document-grounded, with no generated correspondence claim.</li>
+<li>Rendering: render: not inspected.</li>
+</ul>
+<p><strong>Decisions made this session:</strong> D-OSV1 route accepts a live firewall token or a live service-kind key (user answer); D-OSV2 one shared cache, no per-org split, no per-key logging (user answer); C1031 persist matched entries (user answer 2026-11-17).</p>
+<p class="mut">Status: Gate QA design READY (gate-4-qa.md, Design QA, seventh pass). Sources: docs/plans/package-firewall-mvp/02-architecture.md (C1021, C1030, C1031, "Central OSV in managed and shared-service mode"), 03-program-design.md ("Central OSV lookup (C1030, row 30)", OSV mapping table, security table T9), 04-slices.md (rows 17-24, 27, 28, 30), gate-4-qa.md, evidence/threat-model-central-osv.md, evidence/research-osv-ecosystems.md, osv-intel/02-architecture.md C2008, management-server/03-program-design.md C131.</p>
+<p class="q">Approve the design, or what should change?</p>
+</main></body></html>

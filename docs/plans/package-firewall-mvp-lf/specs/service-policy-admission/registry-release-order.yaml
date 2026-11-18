@@ -1,0 +1,8 @@
+# Supplementary call dominance only; no accepted-result or concurrency claim.
+name: service-policy-registry-release-order
+kind: ordered_obligation
+severity: high
+evidence: full
+guard: {calls: {name: [authorize_current_policy]}}
+operation: {calls: {name: [release_verified_response]}}
+relation: {must_dominate: true, allow_caller_paths: false}
