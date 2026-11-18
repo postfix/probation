@@ -77,3 +77,12 @@ Documented behaviour (pre-auth throttle): a source with 10 or more real authenti
 
 Still with the user: the PyPI over-1024-byte hold and the standalone default timeout; nothing changed for either.
 Final checks (third round): clippy workspace clean with and without `--features probation/test-support`; every root `tests/*.rs` binary one by one, `cargo test -p probation-policy`, `cargo test --lib osv`, and every `probation-server` test binary at `--test-threads=4` against Postgres 16 (podman, data on disk, removed): all `test result: ok` (61 result lines, none failing). E2E not run.
+
+## Fourth review round (2026-11-18)
+
+Fixed: R4-1 (a valid `fwt_` token used from outside its allowed sources is refused and counted against its source only; it neither pops `known_good` nor records a failed tag, so the real firewall is not locked out), R4-2 (decision by the coordinator, the safe engineering default: every tenant floor draw also comes out of one shared floor pool, 10% of the global budget, so minting tenants cannot add floors beyond the global budget; each real tenant keeps its guaranteed floor while the pool lasts), R4-6 (a drop guard frees the rescue slot when its task dies).
+
+NOT done, flagged for row 27: an organisation-per-login cap. Tenant identity is the organisation, and organisations can be created per login (`add_org` in crates/probation-server/src/accounts.rs, outside row 30's files), so the cost of minting tenants is whatever sign-up costs. Row 30 now bounds the damage (the floor pool) but does not limit the minting.
+
+Accepted Low residuals (security-review-r4.md): R4-3 the source throttle is per /128 for IPv6 and per 10,000-entry LRU, so an attacker with many addresses evades the per-source count (it now only decides 401 versus 429 for failing requests); R4-4 a valid credential can still use the auth gate up to its per-tag limit (100 a second, burst 500), and a tenant with many keys multiplies that; R4-5 rescue permits (2) can be held by a slow upstream and a rescue that cannot be charged or served degrades fail-open.
+Final checks (fourth round): clippy workspace clean with and without `--features probation/test-support`; every root `tests/*.rs` binary one by one, `probation-policy`, `cargo test --lib osv` and every `probation-server` binary at `--test-threads=4` against Postgres 16 (on disk, removed): 61 result lines, all `test result: ok`. E2E not run.

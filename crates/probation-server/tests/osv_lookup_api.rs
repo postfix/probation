@@ -1188,6 +1188,7 @@ async fn osv_every_tenant_keeps_a_floor_when_the_shared_budget_is_spent() {
         l.global_reserve_percent = 25;
         l.tenant_floor_burst = 5;
         l.tenant_floor_per_minute = 1;
+        l.floor_pool_percent = 200;
     })
     .await;
     // Three tenants drain the shared budget down to its reserve.
@@ -1208,4 +1209,53 @@ async fn osv_every_tenant_keeps_a_floor_when_the_shared_budget_is_spent() {
         let ok = answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
         assert_eq!(ok, 5, "fresh tenant {i} kept its floor");
     }
+}
+
+/// R4-1: a holder of a valid firewall token who is outside its allowed sources must not be able
+/// to make the real firewall (from its allowed address) get 401 or skip the lookup.
+#[tokio::test]
+async fn osv_out_of_cidr_holder_cannot_lock_out_the_real_firewall() {
+    let rig = rig_proxied(|_| {}, vec!["127.0.0.1/32".parse().unwrap()]).await;
+    // The real firewall (the proxy peer, inside 127.0.0.0/8) authenticates once.
+    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK);
+    // The same token from outside its allowed sources: refused, however often.
+    for _ in 0..5 {
+        assert_eq!(post_with_forwarded(&rig, &rig.fw_token, "10.1.1.9").await.status(), StatusCode::UNAUTHORIZED);
+    }
+    let before = rig.osv.health().auth_lookups;
+    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK, "the real firewall is not locked out");
+    assert_eq!(rig.osv.health().auth_lookups - before, 1, "and it was looked up, not turned away from memory");
+}
+
+/// R4-2: the floors of many minted tenants together are bounded by one shared pool.
+#[tokio::test]
+async fn osv_floors_of_many_tenants_are_bounded_by_one_pool() {
+    let rig = rig_with(|l| {
+        l.global_key_burst = 40;
+        l.global_key_rate_per_minute = 1;
+        l.tenant_share_percent = 25;
+        l.global_reserve_percent = 25;
+        l.tenant_floor_burst = 5;
+        l.tenant_floor_per_minute = 1;
+        l.floor_pool_percent = 25;
+    })
+    .await;
+    for i in 0..3 {
+        let org = rig.db.org(&format!("Heavy {i}")).await;
+        let key = service_key_at(&rig, org).await;
+        let names: Vec<String> = (0..10).map(|j| format!("heavy-{i}-{j}")).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
+        rig.post(Some(&key), &refs).await;
+    }
+    let mut accepted = 0;
+    for i in 0..30 {
+        let org = rig.db.org(&format!("Minted {i}")).await;
+        let key = service_key_at(&rig, org).await;
+        let names: Vec<String> = (0..5).map(|j| format!("minted-{i}-{j}")).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
+        let answer = json(rig.post(Some(&key), &refs).await).await;
+        accepted += answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+    }
+    assert!(accepted <= 12, "30 minted tenants drew {accepted} keys beyond the shared budget (pool of 10)");
+    assert!(accepted >= 5, "the first tenants still got their floor from the pool: {accepted}");
 }

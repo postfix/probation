@@ -78,6 +78,9 @@ pub struct OsvLimits {
     /// down to its reserve (burst, and refill per minute).
     pub tenant_floor_burst: u32,
     pub tenant_floor_per_minute: u32,
+    /// All floors together draw from one pool of this share of the global burst and refill,
+    /// in percent, so minting tenants cannot add floors beyond the global budget.
+    pub floor_pool_percent: u32,
     /// Upstream permits kept for rescue calls, so slow chunks cannot starve them.
     pub rescue_permits: usize,
     pub match_ttl: Duration,
@@ -115,6 +118,7 @@ impl Default for OsvLimits {
             global_reserve_percent: 20,
             tenant_floor_burst: 30,
             tenant_floor_per_minute: 60,
+            floor_pool_percent: 10,
             rescue_permits: 2,
             match_ttl: Duration::from_secs(3600),
             nomatch_ttl: Duration::from_secs(30),
@@ -243,6 +247,7 @@ pub struct OsvState {
     tenants: Mutex<HashMap<Tenant, Bucket>>,
     /// Each tenant's floor (see `OsvLimits::tenant_floor_burst`).
     floors: Mutex<HashMap<Tenant, Bucket>>,
+    floor_pool: Mutex<Option<Bucket>>,
     /// One rescue call per key: followers of a hot key share it.
     rescue: Mutex<HashMap<OsvKey, watch::Receiver<Option<Answer>>>>,
     rescue_permits: Arc<Semaphore>,
@@ -295,6 +300,7 @@ impl OsvState {
             global: Mutex::new(None),
             tenants: Mutex::default(),
             floors: Mutex::default(),
+            floor_pool: Mutex::new(None),
             rescue: Mutex::default(),
             lookup_buckets: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
             failed_tags: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
@@ -483,7 +489,16 @@ impl OsvState {
         }
         let bucket = floors.entry(tenant).or_insert(Bucket { tokens: floor_burst, last: now });
         if OsvState::take(bucket, now, f64::from(self.limits.tenant_floor_per_minute) / 60.0, floor_burst, 1.0) {
-            return true;
+            // The floor is real only while the shared floor pool lasts.
+            let pool_share = f64::from(self.limits.floor_pool_percent) / 100.0;
+            let pool_burst = (global_burst * pool_share).max(1.0);
+            let mut pool = self.floor_pool.lock().expect("the floor pool");
+            let pool_bucket = pool.get_or_insert(Bucket { tokens: pool_burst, last: now });
+            if OsvState::take(pool_bucket, now, global_rate * pool_share, pool_burst, 1.0) {
+                return true;
+            }
+            drop(pool);
+            bucket.tokens += 1.0;
         }
         drop(floors);
         give_back(true);
@@ -588,9 +603,11 @@ async fn querybatch(
             }
             caller
         }
-        Err(SyncError::Unauthenticated | SyncError::SourceRefused) => {
-            // No longer exempt, and not looked up again for a moment.
-            if let Some(tag) = tag {
+        Err(refused @ (SyncError::Unauthenticated | SyncError::SourceRefused)) => {
+            // An unknown or revoked credential is no longer exempt and is not looked up again
+            // for a moment. A valid token from outside its allowed sources is not: the real
+            // firewall holds the same bearer (R4-1).
+            if let (Some(tag), SyncError::Unauthenticated) = (tag, &refused) {
                 state.known_good.lock().expect("the known credentials").pop(&tag);
                 state.failed_tags.lock().expect("the failed credentials").put(tag, now);
             }
@@ -824,6 +841,9 @@ impl OsvState {
         let state = Arc::clone(self);
         let key = key.clone();
         tokio::spawn(async move {
+            // However this task ends, the slot is freed and the sender dropped: a dead rescue
+            // must not leave later followers waiting on it.
+            let _slot = RescueGuard { state: Arc::clone(&state), key: key.clone() };
             let answers = tokio::time::timeout(state.limits.upstream_timeout, state.call_upstream_with(&[&key], &state.rescue_permits)).await;
             let answer = answers.ok().and_then(|a| a.into_iter().next()).unwrap_or(Answer::Failed);
             let now = state.now();
@@ -833,7 +853,6 @@ impl OsvState {
                 Answer::Failed => {}
             }
             let _ = tx.send(Some(answer));
-            state.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
         });
         Some(rx)
     }
@@ -999,6 +1018,17 @@ fn query_for(key: &OsvKey, page_token: Option<&str>) -> serde_json::Value {
     query
 }
 
+struct RescueGuard {
+    state: Arc<OsvState>,
+    key: OsvKey,
+}
+
+impl Drop for RescueGuard {
+    fn drop(&mut self) {
+        self.state.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.key);
+    }
+}
+
 struct InflightGuard {
     state: Arc<OsvState>,
     keys: Vec<OsvKey>,
@@ -1028,6 +1058,25 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:1/none").expect("a lazy pool");
         let sync = Arc::new(SyncState::new(pool, Vec::new(), None));
         Arc::new(OsvState::new(sync, url::Url::parse("http://127.0.0.1:1/v1/querybatch").unwrap()))
+    }
+
+    /// R4-6: a rescue task that dies leaves no entry behind, and its receiver sees the sender gone.
+    #[tokio::test]
+    async fn rescue_guard_frees_the_slot_when_the_task_panics() {
+        let state = state();
+        let key = osv_key(Ecosystem::Npm, "left-pad", "1.0.0").unwrap();
+        let (tx, mut rx) = watch::channel(None);
+        state.rescue.lock().unwrap().insert(key.clone(), rx.clone());
+        let (guard_state, guard_key) = (Arc::clone(&state), key.clone());
+        let died = tokio::spawn(async move {
+            let _slot = RescueGuard { state: guard_state, key: guard_key };
+            let _tx = tx;
+            panic!("the rescue task dies");
+        })
+        .await;
+        assert!(died.is_err());
+        assert!(!state.rescue.lock().unwrap().contains_key(&key), "the slot is free for the next follower");
+        assert!(rx.wait_for(Option::is_some).await.is_err(), "the waiting follower is released, not left on a dead sender");
     }
 
     /// A panicking fetch task, or any panic while the in-flight table is held, must not leave a
