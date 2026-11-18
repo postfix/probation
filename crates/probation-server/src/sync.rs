@@ -189,8 +189,23 @@ pub async fn after_restore(pool: &PgPool) -> Result<Raised, sqlx::Error> {
 /// Who an OSV lookup is charged to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum OsvCaller {
-    Firewall(i32),
-    Service(i64),
+    Firewall(i32, Tenant),
+    Service(i64, Tenant),
+}
+
+/// The place a credential belongs to (kind, id): the unit of the shared OSV budget's fair share.
+pub(crate) type Tenant = (u8, i32);
+
+impl OsvCaller {
+    pub(crate) fn tenant(self) -> Tenant {
+        match self {
+            OsvCaller::Firewall(_, tenant) | OsvCaller::Service(_, tenant) => tenant,
+        }
+    }
+}
+
+fn place_code(kind: &str) -> u8 {
+    ["platform", "org", "group", "user", "personal"].iter().position(|k| *k == kind).map_or(255, |i| i as u8)
 }
 
 pub struct SyncState {
@@ -215,7 +230,7 @@ impl SyncState {
     /// from one of its `allowed_source_cidrs` (403 `FIREWALL_SOURCE_REFUSED`), within its
     /// rate (429).
     async fn firewall(&self, headers: &HeaderMap, peer: IpAddr) -> Result<i32, SyncError> {
-        let firewall = self.firewall_identity(headers, peer).await?;
+        let (firewall, _) = self.firewall_identity(headers, peer).await?;
         if !self.within_rate(firewall) {
             return Err(SyncError::TooManyRequests);
         }
@@ -232,23 +247,24 @@ impl SyncState {
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or(SyncError::Unauthenticated)?;
         if bearer.starts_with("fwt_") {
-            return Ok(OsvCaller::Firewall(self.firewall_identity(headers, peer).await?));
+            let (id, tenant) = self.firewall_identity(headers, peer).await?;
+            return Ok(OsvCaller::Firewall(id, tenant));
         }
         match crate::service_policy::live_service_key_id(&self.pool, bearer).await? {
-            Some(id) => Ok(OsvCaller::Service(id)),
+            Some((id, kind, place)) => Ok(OsvCaller::Service(id, (place_code(&kind), place))),
             None => Err(SyncError::Unauthenticated),
         }
     }
 
-    async fn firewall_identity(&self, headers: &HeaderMap, peer: IpAddr) -> Result<i32, SyncError> {
+    async fn firewall_identity(&self, headers: &HeaderMap, peer: IpAddr) -> Result<(i32, Tenant), SyncError> {
         let token = headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .filter(|token| token.starts_with("fwt_"))
             .ok_or(SyncError::Unauthenticated)?;
-        let found: Option<(i32, Vec<IpNet>)> = sqlx::query_as(
-            "SELECT f.id, f.allowed_source_cidrs::inet[] FROM keys AS k
+        let found: Option<(i32, Vec<IpNet>, String, i32)> = sqlx::query_as(
+            "SELECT f.id, f.allowed_source_cidrs::inet[], k.place_kind, k.place_id FROM keys AS k
              JOIN firewalls AS f ON f.token_key_id = k.id
              WHERE k.hash = $1 AND k.kind = 'firewall' AND k.revoked_at IS NULL
                AND f.retired_at IS NULL",
@@ -256,12 +272,12 @@ impl SyncState {
         .bind(KeyHash::of(token).0.as_slice())
         .fetch_optional(&self.pool)
         .await?;
-        let (firewall, allowed) = found.ok_or(SyncError::Unauthenticated)?;
+        let (firewall, allowed, kind, place) = found.ok_or(SyncError::Unauthenticated)?;
         let source = source_address(peer, headers, &self.trusted_proxies);
         if !source.is_some_and(|source| allowed.iter().any(|range| range.contains(&source))) {
             return Err(SyncError::SourceRefused);
         }
-        Ok(firewall)
+        Ok((firewall, (place_code(&kind), place)))
     }
 
     /// The client address of a request: the peer, or behind a trusted proxy the address the

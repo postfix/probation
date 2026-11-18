@@ -31,7 +31,7 @@ use probation_policy::osv_wire::{EnvelopeError, RenderedResult, parse_request, r
 use serde::Deserialize;
 use tokio::sync::{Semaphore, watch};
 
-use crate::sync::{OsvCaller, SyncState, SyncError};
+use crate::sync::{OsvCaller, SyncError, SyncState, Tenant};
 
 pub const UPSTREAM_URL: &str = "https://api.osv.dev/v1/querybatch";
 
@@ -67,6 +67,13 @@ pub struct OsvLimits {
     pub preauth_table: usize,
     /// Pages followed for one query before it is degraded.
     pub max_pages: usize,
+    /// How long a request body may take to arrive (a dripping body holds nothing meanwhile).
+    pub body_read_timeout: Duration,
+    /// The most of the shared key budget (burst and refill) one tenant, the place a credential
+    /// belongs to, may use, in percent.
+    pub tenant_share_percent: u32,
+    /// Part of the shared burst kept for tenants that have barely used theirs, in percent.
+    pub global_reserve_percent: u32,
     pub match_ttl: Duration,
     pub nomatch_ttl: Duration,
     pub cache_entries: usize,
@@ -97,6 +104,9 @@ impl Default for OsvLimits {
             global_key_burst: 3_000,
             preauth_table: 10_000,
             max_pages: 10,
+            body_read_timeout: Duration::from_secs(2),
+            tenant_share_percent: 25,
+            global_reserve_percent: 20,
             match_ttl: Duration::from_secs(3600),
             nomatch_ttl: Duration::from_secs(30),
             cache_entries: 200_000,
@@ -217,8 +227,12 @@ pub struct OsvState {
     buckets: Mutex<HashMap<OsvCaller, Bucket>>,
     /// Requests per credential, cache hits included (SEC-4).
     request_buckets: Mutex<HashMap<OsvCaller, Bucket>>,
-    /// Keys across every credential (SEC-5).
+    /// Keys across every credential (SEC-5), and each tenant's share of them.
     global: Mutex<Option<Bucket>>,
+    tenants: Mutex<HashMap<Tenant, Bucket>>,
+    /// Credentials that authenticated recently (hash prefix only): a blocked source may still
+    /// use one, every other request from it is turned away without a lookup.
+    known_good: Mutex<LruCache<u64, ()>>,
     preauth: Mutex<LruCache<IpAddr, VecDeque<Instant>>>,
     breaker: Mutex<Option<Instant>>,
     permits: Arc<Semaphore>,
@@ -257,6 +271,8 @@ impl OsvState {
             buckets: Mutex::default(),
             request_buckets: Mutex::default(),
             global: Mutex::new(None),
+            tenants: Mutex::default(),
+            known_good: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
             breaker: Mutex::new(None),
             results_total: AtomicU64::new(0),
             results_degraded: AtomicU64::new(0),
@@ -380,21 +396,51 @@ impl OsvState {
         )
     }
 
-    /// One cache-missing key: the credential's own budget and the shared one.
+    /// One cache-missing key: the credential's own budget, its tenant's share, and the shared
+    /// budget (which keeps a reserve for tenants that have barely used theirs).
     fn charge(&self, caller: OsvCaller, now: Instant) -> bool {
         if !self.take_from(&self.buckets, caller, now, self.key_rate(), f64::from(self.limits.key_burst), 1.0) {
             return false;
         }
-        let burst = f64::from(self.limits.global_key_burst);
+        let refund_own = || {
+            if let Some(own) = self.buckets.lock().expect("the budgets").get_mut(&caller) {
+                own.tokens += 1.0;
+            }
+        };
+        let share = f64::from(self.limits.tenant_share_percent) / 100.0;
+        let global_burst = f64::from(self.limits.global_key_burst);
+        let global_rate = f64::from(self.limits.global_key_rate_per_minute) / 60.0;
+        let tenant_burst = (global_burst * share).max(1.0);
+        let tenant = caller.tenant();
+        let light_user = {
+            let mut tenants = self.tenants.lock().expect("the tenant budgets");
+            if tenants.len() > 10_000 {
+                tenants.retain(|_, b| b.tokens < tenant_burst);
+            }
+            let bucket = tenants.entry(tenant).or_insert(Bucket { tokens: tenant_burst, last: now });
+            if !OsvState::take(bucket, now, global_rate * share, tenant_burst, 1.0) {
+                drop(tenants);
+                refund_own();
+                return false;
+            }
+            bucket.tokens >= tenant_burst * 0.9
+        };
+        let reserve = global_burst * f64::from(self.limits.global_reserve_percent) / 100.0;
         let mut global = self.global.lock().expect("the global budget");
-        let bucket = global.get_or_insert(Bucket { tokens: burst, last: now });
-        if OsvState::take(bucket, now, f64::from(self.limits.global_key_rate_per_minute) / 60.0, burst, 1.0) {
+        let bucket = global.get_or_insert(Bucket { tokens: global_burst, last: now });
+        // Refill without taking, then decide against the reserve.
+        let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * global_rate).min(global_burst);
+        bucket.last = now;
+        if bucket.tokens - 1.0 >= reserve || (light_user && bucket.tokens >= 1.0) {
+            bucket.tokens -= 1.0;
             return true;
         }
         drop(global);
-        // Over the shared budget: give the credential its token back.
-        if let Some(own) = self.buckets.lock().expect("the budgets").get_mut(&caller) {
-            own.tokens += 1.0;
+        // Over the shared budget: give the tokens back.
+        refund_own();
+        if let Some(t) = self.tenants.lock().expect("the tenant budgets").get_mut(&tenant) {
+            t.tokens += 1.0;
         }
         false
     }
@@ -418,6 +464,15 @@ pub fn router(state: Arc<OsvState>) -> Router {
     Router::new().route("/osv/v1/querybatch", post(querybatch)).with_state(state)
 }
 
+/// A short, non-reversible tag of a bearer string: enough to recognise a credential that
+/// authenticated before, never the credential.
+fn bearer_tag(headers: &HeaderMap) -> Option<u64> {
+    use sha2::{Digest, Sha256};
+    let bearer = headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")?;
+    let digest = Sha256::digest(bearer.as_bytes());
+    Some(u64::from_le_bytes(digest[..8].try_into().expect("8 bytes")))
+}
+
 fn plain(status: StatusCode) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")]).into_response()
 }
@@ -432,6 +487,15 @@ async fn querybatch(
     // The same address derivation as `/sync`: behind a trusted proxy it is the client.
     let source = state.sync.source_of(peer, &headers);
     let now = state.now();
+    // A source that keeps failing is turned away before any lookup, unless the request
+    // carries a credential that authenticated before: a bad-token flood then cannot occupy
+    // the auth gate (NEW-1).
+    let tag = bearer_tag(&headers);
+    let known = tag.is_some_and(|t| state.known_good.lock().expect("the known credentials").get(&t).is_some());
+    if state.preauth_blocked(source, now) && !known {
+        state.preauth_failed(source, now);
+        return plain(StatusCode::TOO_MANY_REQUESTS);
+    }
     // Credential first: nothing is read, cached or sent upstream for a stranger. The lookup
     // uses the database through a bounded gate of its own, so a flood of OSV requests
     // cannot take the pool `/sync` needs.
@@ -441,25 +505,34 @@ async fn querybatch(
     let looked_up = state.sync.osv_caller(&headers, peer).await;
     drop(gate);
     let caller = match looked_up {
-        Ok(caller) => caller,
+        Ok(caller) => {
+            if let Some(tag) = tag {
+                state.known_good.lock().expect("the known credentials").put(tag, ());
+            }
+            caller
+        }
         Err(SyncError::Unauthenticated | SyncError::SourceRefused) => {
-            // A request that authenticates is never throttled; repeated failures from one
-            // source are.
-            let blocked = state.preauth_blocked(source, now);
             state.preauth_failed(source, now);
-            return plain(if blocked { StatusCode::TOO_MANY_REQUESTS } else { StatusCode::UNAUTHORIZED });
+            return plain(StatusCode::UNAUTHORIZED);
         }
         Err(_) => return plain(StatusCode::SERVICE_UNAVAILABLE),
     };
     if !state.admit_request(caller, now) || !state.admit(caller, now) {
         return plain(StatusCode::TOO_MANY_REQUESTS);
     }
+    // The body first, with a time limit and no permit held: a dripping body costs a socket,
+    // not a turn of anyone else's (NEW-2). The cap is bytes; the batch cap below is a count,
+    // and the byte cap wins when keys are large.
+    let read = match tokio::time::timeout(state.limits.body_read_timeout, axum::body::to_bytes(body, state.limits.body_cap)).await {
+        Ok(read) => read,
+        Err(_) => return plain(StatusCode::REQUEST_TIMEOUT),
+    };
+    let Ok(body) = read else {
+        return plain(StatusCode::PAYLOAD_TOO_LARGE);
+    };
     // Parsing a 1 MiB body is the one CPU cost cache hits still pay: bounded in flight.
     let Ok(parse_permit) = state.parse_permits.try_acquire() else {
         return plain(StatusCode::TOO_MANY_REQUESTS);
-    };
-    let Ok(body) = axum::body::to_bytes(body, state.limits.body_cap).await else {
-        return plain(StatusCode::PAYLOAD_TOO_LARGE);
     };
     let parsed = parse_request(&body);
     drop(parse_permit);
@@ -490,7 +563,7 @@ enum Slot {
 enum Pending {
     Done(Answer),
     /// Waiting on a leader: ours (`led`) or another request's.
-    Wait { rx: watch::Receiver<Option<Answer>>, led: bool },
+    Wait { rx: watch::Receiver<Option<Answer>>, led: bool, key: OsvKey },
     /// Over a remaining budget: degraded, not an upstream failure.
     Budget,
 }
@@ -508,7 +581,7 @@ impl OsvState {
         for key in keys {
             let mut inflight = self.inflight.lock().expect("the in-flight table");
             if let Some(rx) = inflight.get(key) {
-                pending.push(Pending::Wait { rx: rx.clone(), led: false });
+                pending.push(Pending::Wait { rx: rx.clone(), led: false, key: key.clone() });
                 continue;
             }
             if let Some(hit) = self.cache.lock().expect("the answer cache").get(key, now) {
@@ -522,7 +595,7 @@ impl OsvState {
             let (tx, rx) = watch::channel(None);
             inflight.insert(key.clone(), rx.clone());
             leaders.push((key.clone(), tx));
-            pending.push(Pending::Wait { rx, led: true });
+            pending.push(Pending::Wait { rx, led: true, key: key.clone() });
         }
         while !leaders.is_empty() {
             let rest = leaders.split_off(leaders.len().min(self.limits.leader_chunk));
@@ -557,7 +630,7 @@ impl OsvState {
 
         let pending = self.register(caller, &distinct);
         let led: Vec<bool> = pending.iter().map(|p| matches!(p, Pending::Wait { led: true, .. })).collect();
-        let mut resolved = Self::settle(pending, deadline_at).await;
+        let mut resolved = self.settle(caller, pending, started, deadline_at).await;
         // A follower that was handed a foreign leader's failure asks for itself, once, while
         // its own deadline still allows it (SEC-2).
         let retry: Vec<usize> = (0..distinct.len())
@@ -565,7 +638,7 @@ impl OsvState {
             .collect();
         if !retry.is_empty() {
             let keys: Vec<OsvKey> = retry.iter().map(|i| distinct[*i].clone()).collect();
-            let again = Self::settle(self.register(caller, &keys), deadline_at).await;
+            let again = self.settle(caller, self.register(caller, &keys), started, deadline_at).await;
             for (i, answer) in retry.into_iter().zip(again) {
                 resolved[i] = answer;
             }
@@ -588,18 +661,64 @@ impl OsvState {
         render_answer(&results, upstream_ok)
     }
 
-    async fn settle(pending: Vec<Pending>, deadline_at: tokio::time::Instant) -> Vec<Option<Answer>> {
+    /// Waits for each key. A follower of someone else's call that has waited half its
+    /// deadline asks for itself (its own budget, bypassing the in-flight table), so a slow
+    /// chunk it cannot influence does not decide its answer (SEC-2).
+    async fn settle(
+        self: &Arc<Self>,
+        caller: OsvCaller,
+        pending: Vec<Pending>,
+        started: tokio::time::Instant,
+        deadline_at: tokio::time::Instant,
+    ) -> Vec<Option<Answer>> {
+        let half = started + self.limits.deadline / 2;
         let mut resolved = Vec::with_capacity(pending.len());
         for item in pending {
             resolved.push(match item {
                 Pending::Done(answer) => Some(answer),
                 Pending::Budget => None,
-                Pending::Wait { mut rx, .. } => {
-                    let waited = tokio::time::timeout_at(deadline_at, rx.wait_for(Option::is_some)).await;
-                    Some(match waited {
-                        Ok(Ok(value)) => value.clone().unwrap_or(Answer::Failed),
-                        _ => Answer::Failed,
-                    })
+                Pending::Wait { mut rx, led, key } => {
+                    let first: Option<Answer> = if led {
+                        None
+                    } else {
+                        match tokio::time::timeout_at(half, rx.wait_for(Option::is_some)).await {
+                            Ok(Ok(value)) => Some(value.clone().unwrap_or(Answer::Failed)),
+                            Ok(Err(_)) => Some(Answer::Failed),
+                            Err(_) => None,
+                        }
+                    };
+                    let answer = match first {
+                        Some(answer) => answer,
+                        None if !led && self.charge(caller, self.now()) => {
+                            let own = async {
+                                let answers = self.call_upstream(&[&key]).await;
+                                let answer = answers.into_iter().next().unwrap_or(Answer::Failed);
+                                let now = self.now();
+                                match &answer {
+                                    Answer::Matched(_) => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.match_ttl, &self.limits),
+                                    Answer::NoMatch => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.nomatch_ttl, &self.limits),
+                                    Answer::Failed => {}
+                                }
+                                answer
+                            };
+                            let raced = tokio::time::timeout_at(deadline_at, async {
+                                tokio::select! {
+                                    waited = rx.wait_for(Option::is_some) => match waited {
+                                        Ok(value) => value.clone().unwrap_or(Answer::Failed),
+                                        Err(_) => Answer::Failed,
+                                    },
+                                    answer = own => answer,
+                                }
+                            })
+                            .await;
+                            raced.unwrap_or(Answer::Failed)
+                        }
+                        None => match tokio::time::timeout_at(deadline_at, rx.wait_for(Option::is_some)).await {
+                            Ok(Ok(value)) => value.clone().unwrap_or(Answer::Failed),
+                            _ => Answer::Failed,
+                        },
+                    };
+                    Some(answer)
                 }
             });
         }
@@ -611,6 +730,9 @@ impl OsvState {
     /// request's deadline, so a slow answer still reaches the cache.
     async fn fetch(self: Arc<Self>, leaders: Vec<Leader>) {
         let keys: Vec<&OsvKey> = leaders.iter().map(|(k, _)| k).collect();
+        // However this task ends, its keys leave the in-flight table (a panic must not leave
+        // followers waiting on a dead leader).
+        let _guard = InflightGuard { state: Arc::clone(&self), keys: keys.iter().map(|k| (*k).clone()).collect() };
         let answers = match tokio::time::timeout(self.limits.upstream_timeout, self.call_upstream(&keys)).await {
             Ok(answers) => answers,
             Err(_) => vec![Answer::Failed; keys.len()],
@@ -699,7 +821,8 @@ impl OsvState {
         let results = self.send_queries(queries).await?;
         let mut answers = Vec::with_capacity(keys.len());
         for (key, result) in keys.iter().zip(results) {
-            answers.push(self.answer_for(key, result).await?);
+            // One key's page error degrades that key only.
+            answers.push(self.answer_for(key, result).await.unwrap_or(Answer::Failed));
         }
         Ok(answers)
     }
@@ -757,6 +880,21 @@ fn query_for(key: &OsvKey, page_token: Option<&str>) -> serde_json::Value {
         query["page_token"] = serde_json::Value::from(token);
     }
     query
+}
+
+struct InflightGuard {
+    state: Arc<OsvState>,
+    keys: Vec<OsvKey>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self.state.inflight.lock() {
+            for key in &self.keys {
+                inflight.remove(key);
+            }
+        }
+    }
 }
 
 enum UpstreamError {

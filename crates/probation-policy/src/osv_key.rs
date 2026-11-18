@@ -42,7 +42,7 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
     }
 }
 
-/// Printable ASCII without spaces, 1 to 128 bytes.
+/// Printable ASCII without spaces, 1 to `MAX_VERSION` (1024) bytes.
 fn version_ok(version: &str) -> bool {
     !version.is_empty() && version.len() <= MAX_VERSION && version.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }

@@ -497,6 +497,22 @@ mod tests {
         (url, server, count)
     }
 
+    /// The server refuses a body over 1 MiB (`OsvLimits::body_cap`, LS-F7). A legal client batch
+    /// is `OSV_BATCH_RECORDS` keys, each at most 1024 bytes of name and of version, so it can
+    /// never reach that cap.
+    #[test]
+    fn a_maximum_size_client_batch_fits_the_server_body_cap() {
+        const SERVER_BODY_CAP: usize = 1 << 20;
+        let queries: Vec<Query> = (0..OSV_BATCH_RECORDS)
+            .map(|i| Query {
+                package: Package { name: format!("{i:04}{}", "n".repeat(1020)), ecosystem: "PyPI" },
+                version: "1".repeat(1024),
+            })
+            .collect();
+        let body = serde_json::to_vec(&QueryBatchRequest { queries }).unwrap();
+        assert!(body.len() < SERVER_BODY_CAP / 2 + SERVER_BODY_CAP / 8, "{} bytes", body.len());
+    }
+
     #[tokio::test]
     async fn batcher_flushes_on_record_count_cap() {
         let body = serde_json::json!({

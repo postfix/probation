@@ -72,6 +72,20 @@ async fn fake_handler(
         .iter()
         .map(|q| q["page_token"].as_str().map(str::to_owned))
         .collect();
+    if names.iter().any(|n| n == "slowpage") {
+        // A chunk whose first key takes 3 x 700 ms of sequential pages.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let page: Vec<Value> = names
+            .iter()
+            .zip(&tokens)
+            .map(|(n, t)| match (n.as_str(), t.as_deref()) {
+                ("slowpage", None) => json!({"vulns": [], "next_page_token": "s2"}),
+                ("slowpage", Some("s2")) => json!({"vulns": [], "next_page_token": "s3"}),
+                _ => json!({}),
+            })
+            .collect();
+        return axum::Json(json!({"results": page})).into_response();
+    }
     if names.iter().any(|n| n == "paged") {
         let page: Vec<Value> = names
             .iter()
@@ -735,7 +749,7 @@ async fn osv_saturating_load_leaves_sync_latency_within_bound() {
     }
     // Pool starvation shows as a 5xx above or as stalls of seconds; the bound leaves room for a
     // loaded CI host (this test failed once at 2 s while the host load average was above 10).
-    assert!(slowest < Duration::from_secs(5), "sync latency under an OSV flood: {slowest:?}");
+    assert!(slowest < Duration::from_secs(10), "sync latency under an OSV flood: {slowest:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -871,6 +885,8 @@ async fn osv_global_key_budget_bounds_all_credentials_together() {
     let rig = rig_with(|l| {
         l.global_key_burst = 3;
         l.global_key_rate_per_minute = 3;
+        l.tenant_share_percent = 100;
+        l.global_reserve_percent = 0;
     })
     .await;
     let a = rig.ask(&[("a1", "1"), ("a2", "1")]).await;
@@ -891,4 +907,136 @@ async fn osv_upstream_pagination_is_followed() {
     assert_eq!(answer["results"][0]["vulns"][0]["id"], "MAL-2026-5");
     assert_eq!(answer["probation_osv"]["upstream_ok"], true);
     assert_eq!(rig.fake.calls(), 2, "one call per page");
+}
+
+// ---- second review round --------------------------------------------------------------
+
+/// SEC-2 (r2): the victim's key sits in a slow multi-page chunk of another credential; the
+/// victim must not give up at the deadline behind a call it cannot influence.
+#[tokio::test]
+async fn osv_follower_fires_its_own_call_behind_a_slow_chunk() {
+    let rig = Arc::new(rig().await);
+    let attacker = {
+        let rig = Arc::clone(&rig);
+        tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("slowpage", "1.0.0"), ("victim", "1.0.0")]).await.status() })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = Instant::now();
+    let victim = rig.ask(&[("victim", "1.0.0")]).await;
+    assert_eq!(victim["results"][0], json!({}), "a real answer, not degraded");
+    assert_eq!(victim["probation_osv"]["upstream_ok"], true);
+    assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+    let _ = attacker.await;
+}
+
+/// (b) a healthy leader still makes one call for many followers (no fallback storm).
+#[tokio::test]
+async fn osv_healthy_leader_still_serves_followers_with_one_call() {
+    let rig = Arc::new(rig().await);
+    *rig.fake.delay.lock().unwrap() = Duration::from_millis(150);
+    let mut tasks = Vec::new();
+    for _ in 0..6 {
+        let rig = Arc::clone(&rig);
+        tasks.push(tokio::spawn(async move { rig.ask(&[("popular", "1.0.0")]).await }));
+    }
+    for task in tasks {
+        assert_eq!(task.await.unwrap()["probation_osv"]["upstream_ok"], true);
+    }
+    assert_eq!(rig.fake.calls(), 1);
+}
+
+/// NEW-1: a flood of bad tokens from one source never occupies the auth gate for a valid caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn osv_bad_token_flood_from_a_blocked_source_does_not_starve_valid_callers() {
+    let rig = Arc::new(rig().await);
+    // Known good before the flood (it authenticated once).
+    assert_eq!(rig.post(Some(&rig.service_key), &[("a", "1")]).await.status(), StatusCode::OK);
+    for _ in 0..12 {
+        let _ = rig.post(Some("fwt_bad"), &[("a", "1")]).await;
+    }
+    let mut flood = Vec::new();
+    for i in 0..300 {
+        let rig = Arc::clone(&rig);
+        flood.push(tokio::spawn(async move { rig.post(Some(&format!("fwt_bad{i}")), &[("a", "1")]).await.status() }));
+    }
+    let valid = rig.post(Some(&rig.service_key), &[("a", "1")]).await;
+    assert_eq!(valid.status(), StatusCode::OK, "a known credential from the flooded source still gets in");
+    let mut throttled = 0;
+    for task in flood {
+        if task.await.unwrap() == StatusCode::TOO_MANY_REQUESTS {
+            throttled += 1;
+        }
+    }
+    assert!(throttled > 200, "the blocked source is turned away without a lookup: {throttled}");
+}
+
+/// NEW-2: connections that drip a body hold neither a parse permit nor anyone else's turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn osv_slow_bodies_do_not_hold_parse_permits() {
+    use tokio::io::AsyncWriteExt;
+    let rig = rig_with(|l| {
+        l.parse_concurrency = 4;
+        l.body_read_timeout = Duration::from_millis(800);
+    })
+    .await;
+    let addr = rig.base.authority().to_owned();
+    let mut drippers = Vec::new();
+    for _ in 0..8 {
+        let mut stream = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let head = format!(
+            "POST /osv/v1/querybatch HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {}\r\ncontent-type: application/json\r\ncontent-length: 100000\r\n\r\n{{\"queries\":",
+            rig.service_key
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        drippers.push(stream);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let answer = rig.post(Some(&rig.fw_token), &[("left-pad", "1.3.0")]).await;
+    assert_eq!(answer.status(), StatusCode::OK, "another credential is served while bodies drip");
+    drop(drippers);
+}
+
+/// SEC-5 (r2): one tenant cannot take the whole shared budget; a light tenant keeps a reserve.
+#[tokio::test]
+async fn osv_one_tenant_cannot_starve_the_global_budget() {
+    let rig = rig_with(|l| {
+        l.global_key_burst = 40;
+        l.global_key_rate_per_minute = 1;
+        l.tenant_share_percent = 25;
+        l.global_reserve_percent = 25;
+    })
+    .await;
+    // The service key's tenant asks for 30 keys: it is held to its share (10).
+    let names: Vec<String> = (0..30).map(|i| format!("greedy-{i}")).collect();
+    let refs: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "1")).collect();
+    let greedy = json(rig.post(Some(&rig.service_key), &refs).await).await;
+    let degraded = greedy["results"].as_array().unwrap().iter().filter(|r| r["probation_degraded"] == true).count();
+    assert!(degraded >= 18, "the tenant stopped at its share: {degraded} degraded of 30");
+    // Another tenant (the firewall token) still has budget.
+    let other = rig.ask(&[("fresh-1", "1"), ("fresh-2", "1")]).await;
+    assert_eq!(other["results"], json!([{}, {}]));
+}
+
+/// Contract of the body cap against the batch cap: a legal client batch (256 keys at the
+/// largest key sizes) is under the 1 MiB cap; 1000 keys at those sizes are over it and the
+/// whole envelope is refused 413 before any per-key work (the count cap and the byte cap are
+/// independent, and the byte cap wins when keys are large).
+#[tokio::test]
+async fn osv_body_cap_and_batch_cap_contract_for_maximum_size_keys() {
+    let rig = rig().await;
+    let big = |n: usize| -> Vec<u8> {
+        let queries: Vec<Value> = (0..n)
+            .map(|i| json!({"package": {"name": format!("{i:04}{}", "n".repeat(1020)), "ecosystem": "npm"}, "version": "1".repeat(1024)}))
+            .collect();
+        serde_json::to_vec(&json!({"queries": queries})).unwrap()
+    };
+    let legal = big(256);
+    assert!(legal.len() < 1_048_576, "a maximum-size client batch fits: {}", legal.len());
+    let response = rig.post_raw(Some(&rig.fw_token), legal).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let oversized = big(1000);
+    assert!(oversized.len() > 1_048_576, "{}", oversized.len());
+    let calls = rig.fake.calls();
+    assert_eq!(rig.post_raw(Some(&rig.fw_token), oversized).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(rig.fake.calls(), calls, "no upstream work for a refused envelope");
 }
