@@ -74,6 +74,12 @@ pub struct OsvLimits {
     pub tenant_share_percent: u32,
     /// Part of the shared burst kept for tenants that have barely used theirs, in percent.
     pub global_reserve_percent: u32,
+    /// Each tenant's own floor, not shared: keys it may ask for even when the shared budget is
+    /// down to its reserve (burst, and refill per minute).
+    pub tenant_floor_burst: u32,
+    pub tenant_floor_per_minute: u32,
+    /// Upstream permits kept for rescue calls, so slow chunks cannot starve them.
+    pub rescue_permits: usize,
     pub match_ttl: Duration,
     pub nomatch_ttl: Duration,
     pub cache_entries: usize,
@@ -107,6 +113,9 @@ impl Default for OsvLimits {
             body_read_timeout: Duration::from_secs(2),
             tenant_share_percent: 25,
             global_reserve_percent: 20,
+            tenant_floor_burst: 30,
+            tenant_floor_per_minute: 60,
+            rescue_permits: 2,
             match_ttl: Duration::from_secs(3600),
             nomatch_ttl: Duration::from_secs(30),
             cache_entries: 200_000,
@@ -126,6 +135,8 @@ pub struct OsvHealth {
     pub upstream_failures: u64,
     /// Times the upstream breaker opened on a 429 (an alert input).
     pub breaker_openings: u64,
+    /// Credential lookups that reached the database.
+    pub auth_lookups: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +241,16 @@ pub struct OsvState {
     /// Keys across every credential (SEC-5), and each tenant's share of them.
     global: Mutex<Option<Bucket>>,
     tenants: Mutex<HashMap<Tenant, Bucket>>,
+    /// Each tenant's floor (see `OsvLimits::tenant_floor_burst`).
+    floors: Mutex<HashMap<Tenant, Bucket>>,
+    /// One rescue call per key: followers of a hot key share it.
+    rescue: Mutex<HashMap<OsvKey, watch::Receiver<Option<Answer>>>>,
+    rescue_permits: Arc<Semaphore>,
+    /// Lookups per credential tag, before the auth gate.
+    lookup_buckets: Mutex<LruCache<u64, Bucket>>,
+    /// Tags that just failed to authenticate: answered 401 without a lookup for a few seconds.
+    failed_tags: Mutex<LruCache<u64, Instant>>,
+    auth_lookups: AtomicU64,
     /// Credentials that authenticated recently (hash prefix only): a blocked source may still
     /// use one, every other request from it is turned away without a lookup.
     known_good: Mutex<LruCache<u64, ()>>,
@@ -264,6 +285,7 @@ impl OsvState {
             auth_permits: Semaphore::new(limits.auth_concurrency),
             parse_permits: Semaphore::new(limits.parse_concurrency),
             preauth: Mutex::new(LruCache::new(NonZeroUsize::new(limits.preauth_table.max(1)).expect("non-zero"))),
+            rescue_permits: Arc::new(Semaphore::new(limits.rescue_permits.max(1))),
             limits,
             clock: Arc::new(Instant::now),
             cache: Mutex::default(),
@@ -272,6 +294,11 @@ impl OsvState {
             request_buckets: Mutex::default(),
             global: Mutex::new(None),
             tenants: Mutex::default(),
+            floors: Mutex::default(),
+            rescue: Mutex::default(),
+            lookup_buckets: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
+            failed_tags: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
+            auth_lookups: AtomicU64::new(0),
             known_good: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).expect("non-zero"))),
             breaker: Mutex::new(None),
             results_total: AtomicU64::new(0),
@@ -306,6 +333,7 @@ impl OsvState {
             results_degraded: self.results_degraded.load(Ordering::Relaxed),
             upstream_failures: self.upstream_failures.load(Ordering::Relaxed),
             breaker_openings: self.breaker_openings.load(Ordering::Relaxed),
+            auth_lookups: self.auth_lookups.load(Ordering::Relaxed),
         }
     }
 
@@ -346,8 +374,15 @@ impl OsvState {
     fn preauth_failed(&self, source: IpAddr, now: Instant) {
         // Bounded by the LRU: the oldest source falls out, never a full scan under the lock.
         let mut table = self.preauth.lock().expect("the throttle");
+        // A window never holds more than twice the limit, so its memory does not follow the
+        // attacker's request rate.
+        let cap = self.limits.preauth_failures_per_minute * 2;
         match table.get_mut(&source) {
-            Some(window) => window.push_back(now),
+            Some(window) => {
+                if window.len() < cap {
+                    window.push_back(now);
+                }
+            }
             None => {
                 table.put(source, VecDeque::from([now]));
             }
@@ -396,23 +431,27 @@ impl OsvState {
         )
     }
 
-    /// One cache-missing key: the credential's own budget, its tenant's share, and the shared
-    /// budget (which keeps a reserve for tenants that have barely used theirs).
+    /// One cache-missing key: the credential's own budget, its tenant's (organisation's) share,
+    /// and the shared budget, which keeps a reserve. Below the reserve a tenant still has its
+    /// own floor, so a few busy tenants cannot leave another with nothing.
     fn charge(&self, caller: OsvCaller, now: Instant) -> bool {
         if !self.take_from(&self.buckets, caller, now, self.key_rate(), f64::from(self.limits.key_burst), 1.0) {
             return false;
         }
-        let refund_own = || {
+        let tenant = caller.tenant();
+        let give_back = |tenants: bool| {
             if let Some(own) = self.buckets.lock().expect("the budgets").get_mut(&caller) {
                 own.tokens += 1.0;
+            }
+            if tenants && let Some(t) = self.tenants.lock().expect("the tenant budgets").get_mut(&tenant) {
+                t.tokens += 1.0;
             }
         };
         let share = f64::from(self.limits.tenant_share_percent) / 100.0;
         let global_burst = f64::from(self.limits.global_key_burst);
         let global_rate = f64::from(self.limits.global_key_rate_per_minute) / 60.0;
         let tenant_burst = (global_burst * share).max(1.0);
-        let tenant = caller.tenant();
-        let light_user = {
+        {
             let mut tenants = self.tenants.lock().expect("the tenant budgets");
             if tenants.len() > 10_000 {
                 tenants.retain(|_, b| b.tokens < tenant_burst);
@@ -420,28 +459,34 @@ impl OsvState {
             let bucket = tenants.entry(tenant).or_insert(Bucket { tokens: tenant_burst, last: now });
             if !OsvState::take(bucket, now, global_rate * share, tenant_burst, 1.0) {
                 drop(tenants);
-                refund_own();
+                give_back(false);
                 return false;
             }
-            bucket.tokens >= tenant_burst * 0.9
-        };
+        }
         let reserve = global_burst * f64::from(self.limits.global_reserve_percent) / 100.0;
-        let mut global = self.global.lock().expect("the global budget");
-        let bucket = global.get_or_insert(Bucket { tokens: global_burst, last: now });
-        // Refill without taking, then decide against the reserve.
-        let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * global_rate).min(global_burst);
-        bucket.last = now;
-        if bucket.tokens - 1.0 >= reserve || (light_user && bucket.tokens >= 1.0) {
-            bucket.tokens -= 1.0;
+        {
+            let mut global = self.global.lock().expect("the global budget");
+            let bucket = global.get_or_insert(Bucket { tokens: global_burst, last: now });
+            let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
+            bucket.tokens = (bucket.tokens + elapsed * global_rate).min(global_burst);
+            bucket.last = now;
+            if bucket.tokens - 1.0 >= reserve {
+                bucket.tokens -= 1.0;
+                return true;
+            }
+        }
+        // The shared budget is down to its reserve: this tenant's own floor.
+        let floor_burst = f64::from(self.limits.tenant_floor_burst);
+        let mut floors = self.floors.lock().expect("the tenant floors");
+        if floors.len() > 10_000 {
+            floors.retain(|_, b| b.tokens < floor_burst);
+        }
+        let bucket = floors.entry(tenant).or_insert(Bucket { tokens: floor_burst, last: now });
+        if OsvState::take(bucket, now, f64::from(self.limits.tenant_floor_per_minute) / 60.0, floor_burst, 1.0) {
             return true;
         }
-        drop(global);
-        // Over the shared budget: give the tokens back.
-        refund_own();
-        if let Some(t) = self.tenants.lock().expect("the tenant budgets").get_mut(&tenant) {
-            t.tokens += 1.0;
-        }
+        drop(floors);
+        give_back(true);
         false
     }
 
@@ -492,9 +537,39 @@ async fn querybatch(
     // the auth gate (NEW-1).
     let tag = bearer_tag(&headers);
     let known = tag.is_some_and(|t| state.known_good.lock().expect("the known credentials").get(&t).is_some());
+    // A blocked source is turned away without a lookup unless the credential authenticated
+    // before. The rejection is not counted again: a block ends 60 s after the last real
+    // failure, and while it lasts a first-time credential from that source (every client
+    // behind a proxy missing from `trusted_proxies` shares one source) is turned away.
     if state.preauth_blocked(source, now) && !known {
-        state.preauth_failed(source, now);
         return plain(StatusCode::TOO_MANY_REQUESTS);
+    }
+    if let Some(tag) = tag {
+        // A credential that just failed is answered without another lookup.
+        let recently_failed = state
+            .failed_tags
+            .lock()
+            .expect("the failed credentials")
+            .get(&tag)
+            .is_some_and(|at| now.saturating_duration_since(*at) < Duration::from_secs(10));
+        if recently_failed {
+            // Still a failure from this source (counted, within the window's cap).
+            state.preauth_failed(source, now);
+            return plain(StatusCode::UNAUTHORIZED);
+        }
+    }
+    // Lookups per credential are limited before the gate, so even a valid or once-valid
+    // credential cannot keep it busy.
+    if let Some(tag) = tag {
+        let mut table = state.lookup_buckets.lock().expect("the lookup limits");
+        let burst = f64::from(state.limits.request_burst);
+        if table.get(&tag).is_none() {
+            table.put(tag, Bucket { tokens: burst, last: now });
+        }
+        let bucket = table.get_mut(&tag).expect("just inserted");
+        if !OsvState::take(bucket, now, f64::from(state.limits.request_rate_per_second), burst, 1.0) {
+            return plain(StatusCode::TOO_MANY_REQUESTS);
+        }
     }
     // Credential first: nothing is read, cached or sent upstream for a stranger. The lookup
     // uses the database through a bounded gate of its own, so a flood of OSV requests
@@ -502,16 +577,23 @@ async fn querybatch(
     let Ok(Ok(gate)) = tokio::time::timeout(Duration::from_secs(1), state.auth_permits.acquire()).await else {
         return plain(StatusCode::TOO_MANY_REQUESTS);
     };
+    state.auth_lookups.fetch_add(1, Ordering::Relaxed);
     let looked_up = state.sync.osv_caller(&headers, peer).await;
     drop(gate);
     let caller = match looked_up {
         Ok(caller) => {
             if let Some(tag) = tag {
                 state.known_good.lock().expect("the known credentials").put(tag, ());
+                state.failed_tags.lock().expect("the failed credentials").pop(&tag);
             }
             caller
         }
         Err(SyncError::Unauthenticated | SyncError::SourceRefused) => {
+            // No longer exempt, and not looked up again for a moment.
+            if let Some(tag) = tag {
+                state.known_good.lock().expect("the known credentials").pop(&tag);
+                state.failed_tags.lock().expect("the failed credentials").put(tag, now);
+            }
             state.preauth_failed(source, now);
             return plain(StatusCode::UNAUTHORIZED);
         }
@@ -579,7 +661,7 @@ impl OsvState {
         let mut pending = Vec::with_capacity(keys.len());
         let mut leaders: Vec<Leader> = Vec::new();
         for key in keys {
-            let mut inflight = self.inflight.lock().expect("the in-flight table");
+            let mut inflight = self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(rx) = inflight.get(key) {
                 pending.push(Pending::Wait { rx: rx.clone(), led: false, key: key.clone() });
                 continue;
@@ -689,25 +771,26 @@ impl OsvState {
                     };
                     let answer = match first {
                         Some(answer) => answer,
-                        None if !led && self.charge(caller, self.now()) => {
-                            let own = async {
-                                let answers = self.call_upstream(&[&key]).await;
-                                let answer = answers.into_iter().next().unwrap_or(Answer::Failed);
-                                let now = self.now();
-                                match &answer {
-                                    Answer::Matched(_) => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.match_ttl, &self.limits),
-                                    Answer::NoMatch => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.nomatch_ttl, &self.limits),
-                                    Answer::Failed => {}
-                                }
-                                answer
-                            };
+                        None if !led => {
+                            // One rescue call per key: the first follower to get here starts it,
+                            // the rest wait on it.
+                            let mut rescue_rx = self.rescue_for(caller, &key);
                             let raced = tokio::time::timeout_at(deadline_at, async {
-                                tokio::select! {
-                                    waited = rx.wait_for(Option::is_some) => match waited {
+                                match rescue_rx.as_mut() {
+                                    Some(rescue_rx) => tokio::select! {
+                                        waited = rx.wait_for(Option::is_some) => match waited {
+                                            Ok(value) => value.clone().unwrap_or(Answer::Failed),
+                                            Err(_) => Answer::Failed,
+                                        },
+                                        waited = rescue_rx.wait_for(Option::is_some) => match waited {
+                                            Ok(value) => value.clone().unwrap_or(Answer::Failed),
+                                            Err(_) => Answer::Failed,
+                                        },
+                                    },
+                                    None => match rx.wait_for(Option::is_some).await {
                                         Ok(value) => value.clone().unwrap_or(Answer::Failed),
                                         Err(_) => Answer::Failed,
                                     },
-                                    answer = own => answer,
                                 }
                             })
                             .await;
@@ -723,6 +806,36 @@ impl OsvState {
             });
         }
         resolved
+    }
+
+    /// The rescue slot of `key`: the receiver of the one call a follower fires for itself, started
+    /// here when no other follower has (charged to the starter), or `None` when the budget is
+    /// spent and the follower can only wait.
+    fn rescue_for(self: &Arc<Self>, caller: OsvCaller, key: &OsvKey) -> Option<watch::Receiver<Option<Answer>>> {
+        let mut rescue = self.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(rx) = rescue.get(key) {
+            return Some(rx.clone());
+        }
+        if !self.charge(caller, self.now()) {
+            return None;
+        }
+        let (tx, rx) = watch::channel(None);
+        rescue.insert(key.clone(), rx.clone());
+        let state = Arc::clone(self);
+        let key = key.clone();
+        tokio::spawn(async move {
+            let answers = tokio::time::timeout(state.limits.upstream_timeout, state.call_upstream_with(&[&key], &state.rescue_permits)).await;
+            let answer = answers.ok().and_then(|a| a.into_iter().next()).unwrap_or(Answer::Failed);
+            let now = state.now();
+            match &answer {
+                Answer::Matched(_) => state.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + state.limits.match_ttl, &state.limits),
+                Answer::NoMatch => state.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + state.limits.nomatch_ttl, &state.limits),
+                Answer::Failed => {}
+            }
+            let _ = tx.send(Some(answer));
+            state.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+        });
+        Some(rx)
     }
 
     /// The upstream half of one chunk of cache-missing keys: stores what is confirmed,
@@ -750,15 +863,19 @@ impl OsvState {
                 Answer::Failed => {}
             }
             let _ = tx.send(Some(answer));
-            self.inflight.lock().expect("the in-flight table").remove(&key);
+            self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
         }
     }
 
     async fn call_upstream(&self, keys: &[&OsvKey]) -> Vec<Answer> {
+        self.call_upstream_with(keys, &self.permits).await
+    }
+
+    async fn call_upstream_with(&self, keys: &[&OsvKey], permits: &Semaphore) -> Vec<Answer> {
         if self.breaker_open() {
             return vec![Answer::Failed; keys.len()];
         }
-        let Ok(_permit) = self.permits.acquire().await else {
+        let Ok(_permit) = permits.acquire().await else {
             return vec![Answer::Failed; keys.len()];
         };
         match self.post_batch(keys).await {
@@ -889,10 +1006,10 @@ struct InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        if let Ok(mut inflight) = self.state.inflight.lock() {
-            for key in &self.keys {
-                inflight.remove(key);
-            }
+        // A poisoned table is still cleaned: the guard exists for the failure paths.
+        let mut inflight = self.state.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for key in &self.keys {
+            inflight.remove(key);
         }
     }
 }
@@ -900,4 +1017,36 @@ impl Drop for InflightGuard {
 enum UpstreamError {
     Failed,
     Rejected,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A state that never connects to a database (the pool is lazy).
+    fn state() -> Arc<OsvState> {
+        let pool = sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:1/none").expect("a lazy pool");
+        let sync = Arc::new(SyncState::new(pool, Vec::new(), None));
+        Arc::new(OsvState::new(sync, url::Url::parse("http://127.0.0.1:1/v1/querybatch").unwrap()))
+    }
+
+    /// A panicking fetch task, or any panic while the in-flight table is held, must not leave a
+    /// key stuck: the guard cleans even a poisoned table.
+    #[tokio::test]
+    async fn inflight_guard_cleans_a_poisoned_table() {
+        let state = state();
+        let key = osv_key(Ecosystem::Npm, "left-pad", "1.0.0").unwrap();
+        let (_tx, rx) = watch::channel(None);
+        state.inflight.lock().unwrap().insert(key.clone(), rx);
+        let poisoner = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.inflight.lock().unwrap();
+            panic!("a panic while the table is held");
+        })
+        .join();
+        assert!(state.inflight.is_poisoned());
+        drop(InflightGuard { state: Arc::clone(&state), keys: vec![key.clone()] });
+        let table = state.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!table.contains_key(&key), "the guard removed the key from the poisoned table");
+    }
 }

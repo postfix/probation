@@ -409,6 +409,11 @@ unreachable server never selects it: the lookup fails open, as above.
   burst 500), and all credentials together share one key budget (12000 a minute) so the
   single api.osv.dev connection cannot be exhausted by many tenants at once. Upstream
   429 answers open a breaker for at most 60 s; breaker openings are counted.
+- The OSV route throttles sources that fail to authenticate: 10 failures a minute from one source
+  turn that source away without a lookup, except for credentials that authenticated before, and the
+  block ends 60 s after the last failure. Behind a proxy that is not in `[server] trusted_proxies`
+  every client shares the proxy's address, so list the proxy there. The shared key budget is
+  divided per organisation (25% each), and every organisation keeps a small floor of its own.
 - Names and versions are asked about up to 1024 bytes each; a key refused beyond that is
   never sent and is counted in `osv_keys_refused` (sync report and readiness detail).
 - A registry's `osv_scope` (portal registry page) decides whether its package names are

@@ -72,15 +72,15 @@ async fn fake_handler(
         .iter()
         .map(|q| q["page_token"].as_str().map(str::to_owned))
         .collect();
-    if names.iter().any(|n| n == "slowpage") {
+    if names.iter().any(|n| n.starts_with("slowpage")) {
         // A chunk whose first key takes 3 x 700 ms of sequential pages.
         tokio::time::sleep(Duration::from_millis(700)).await;
         let page: Vec<Value> = names
             .iter()
             .zip(&tokens)
             .map(|(n, t)| match (n.as_str(), t.as_deref()) {
-                ("slowpage", None) => json!({"vulns": [], "next_page_token": "s2"}),
-                ("slowpage", Some("s2")) => json!({"vulns": [], "next_page_token": "s3"}),
+                (n, None) if n.starts_with("slowpage") => json!({"vulns": [], "next_page_token": "s2"}),
+                (n, Some("s2")) if n.starts_with("slowpage") => json!({"vulns": [], "next_page_token": "s3"}),
                 _ => json!({}),
             })
             .collect();
@@ -887,6 +887,7 @@ async fn osv_global_key_budget_bounds_all_credentials_together() {
         l.global_key_rate_per_minute = 3;
         l.tenant_share_percent = 100;
         l.global_reserve_percent = 0;
+        l.tenant_floor_burst = 0;
     })
     .await;
     let a = rig.ask(&[("a1", "1"), ("a2", "1")]).await;
@@ -1039,4 +1040,172 @@ async fn osv_body_cap_and_batch_cap_contract_for_maximum_size_keys() {
     let calls = rig.fake.calls();
     assert_eq!(rig.post_raw(Some(&rig.fw_token), oversized).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(rig.fake.calls(), calls, "no upstream work for a refused envelope");
+}
+
+// ---- third review round ------------------------------------------------------------------
+
+/// A service key on a fresh organisation or on a group of `org`.
+async fn service_key_at(rig: &Rig, place: probation_policy::PlaceRef) -> String {
+    let admin = rig.db.global_admin().await;
+    let (actor, authorized) = rig.db.as_admin(admin, place).await;
+    keys::create(&rig.db.app, &actor, &authorized, "tenant").await.unwrap().secret
+}
+
+/// NEW-1: a credential that stops authenticating (revoked, deleted) stops being exempt and
+/// is rejected without another lookup.
+#[tokio::test]
+async fn osv_revoked_credential_is_rejected_without_a_lookup_after_the_first_401() {
+    let rig = rig().await;
+    let org = rig.db.org("Departing").await;
+    let admin = rig.db.global_admin().await;
+    let (actor, place) = rig.db.as_admin(admin, org).await;
+    let key = keys::create(&rig.db.app, &actor, &place, "leaver").await.unwrap();
+    assert_eq!(rig.post(Some(&key.secret), &[("a", "1")]).await.status(), StatusCode::OK);
+    keys::revoke_as_operator(&rig.db.app, key.id).await.unwrap();
+    let before = rig.osv.health().auth_lookups;
+    for i in 0..50 {
+        let status = rig.post(Some(&key.secret), &[("a", "1")]).await.status();
+        // 401 while the source is counted, 429 once it is blocked; never 200.
+        assert!(status == StatusCode::UNAUTHORIZED || (i >= 10 && status == StatusCode::TOO_MANY_REQUESTS), "{i}: {status}");
+    }
+    assert_eq!(rig.osv.health().auth_lookups - before, 1, "one lookup found it revoked; the rest were not looked up");
+}
+
+/// NEW-1: even a valid credential cannot occupy the auth gate: lookups are limited per
+/// credential before the gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn osv_valid_credential_flood_is_limited_before_the_auth_gate() {
+    let rig = Arc::new(rig_with(|l| {
+        l.request_burst = 40;
+        l.request_rate_per_second = 1;
+    })
+    .await);
+    let before = rig.osv.health().auth_lookups;
+    let mut tasks = Vec::new();
+    for _ in 0..400 {
+        let rig = Arc::clone(&rig);
+        tasks.push(tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("left-pad", "1")]).await.status() }));
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
+    let lookups = rig.osv.health().auth_lookups - before;
+    assert!(lookups <= 45, "400 requests of one credential cost {lookups} lookups");
+    assert_eq!(rig.post(Some(&rig.fw_token), &[("left-pad", "1")]).await.status(), StatusCode::OK, "another credential is unaffected");
+}
+
+/// NEW-1: blocked requests are rejected without extending the block, so it ends 60 s after the
+/// last real failure; a first-time credential from a blocked source (for example every client
+/// behind a proxy that is not in `trusted_proxies` shares one source) is turned away while the
+/// block lasts and recovers after it. Documented behaviour of the pre-auth throttle.
+#[tokio::test]
+async fn osv_blocked_requests_do_not_extend_the_block() {
+    let rig = rig().await;
+    for _ in 0..10 {
+        assert_eq!(rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(), StatusCode::UNAUTHORIZED);
+    }
+    // A client retrying every second for 12 s: all cheaply turned away, none extends the block.
+    for _ in 0..12 {
+        rig.advance(Duration::from_secs(1));
+        assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::TOO_MANY_REQUESTS, "a first-time credential is turned away while blocked");
+    }
+    // 60 s after the last real failure (all ten were at second 0) the block is over.
+    rig.advance(Duration::from_secs(48));
+    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK, "recovered 60 s after the last real failure");
+}
+
+/// SEC-2: followers of a hot key share one rescue call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn osv_followers_of_a_hot_key_share_one_rescue_call() {
+    let rig = Arc::new(rig_with(|l| l.deadline = Duration::from_secs(2)).await);
+    *rig.fake.delay.lock().unwrap() = Duration::from_millis(1500);
+    let mut tasks = Vec::new();
+    for _ in 0..50 {
+        let rig = Arc::clone(&rig);
+        tasks.push(tokio::spawn(async move { rig.ask(&[("hot", "1.0.0")]).await }));
+    }
+    for task in tasks {
+        let answer = task.await.unwrap();
+        assert_eq!(answer["probation_osv"]["upstream_ok"], true);
+    }
+    assert!(rig.fake.calls() <= 2, "50 followers made {} upstream calls", rig.fake.calls());
+}
+
+/// SEC-2: slow chunks that hold every ordinary upstream permit cannot starve a rescue call.
+#[tokio::test]
+async fn osv_slow_chunks_cannot_starve_a_rescue_call() {
+    let rig = Arc::new(rig_with(|l| l.upstream_concurrency = 2).await);
+    let a = {
+        let rig = Arc::clone(&rig);
+        tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("slowpage-1", "1.0.0"), ("victim", "1.0.0")]).await.status() })
+    };
+    let org = rig.db.org("Second attacker").await;
+    let second = service_key_at(&rig, org).await;
+    let b = {
+        let rig = Arc::clone(&rig);
+        tokio::spawn(async move { rig.post(Some(&second), &[("slowpage-2", "1.0.0"), ("other", "1.0.0")]).await.status() })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let victim = rig.ask(&[("victim", "1.0.0")]).await;
+    assert_eq!(victim["results"][0], json!({}));
+    assert_eq!(victim["probation_osv"]["upstream_ok"], true);
+    let _ = (a.await, b.await);
+}
+
+/// SEC-5: the share is per organisation, not per place: groups of one organisation are one tenant.
+#[tokio::test]
+async fn osv_share_is_per_organisation_not_per_place() {
+    let rig = rig_with(|l| {
+        l.global_key_burst = 40;
+        l.global_key_rate_per_minute = 1;
+        l.tenant_share_percent = 25;
+        l.global_reserve_percent = 0;
+    })
+    .await;
+    let org = rig.db.org("Many groups").await;
+    let mut keys_of_org = vec![service_key_at(&rig, org).await];
+    for i in 0..3 {
+        let group = rig.db.group(org, &format!("g{i}")).await;
+        keys_of_org.push(service_key_at(&rig, group).await);
+    }
+    let mut accepted = 0;
+    for (n, key) in keys_of_org.iter().enumerate() {
+        let names: Vec<String> = (0..10).map(|i| format!("org-{n}-{i}")).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
+        let answer = json(rig.post(Some(key), &refs).await).await;
+        accepted += answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+    }
+    assert!(accepted <= 10, "four places of one organisation got {accepted} of a 10-key share");
+}
+
+/// SEC-5: with the shared budget down to its reserve, every tenant keeps its own floor.
+#[tokio::test]
+async fn osv_every_tenant_keeps_a_floor_when_the_shared_budget_is_spent() {
+    let rig = rig_with(|l| {
+        l.global_key_burst = 40;
+        l.global_key_rate_per_minute = 1;
+        l.tenant_share_percent = 25;
+        l.global_reserve_percent = 25;
+        l.tenant_floor_burst = 5;
+        l.tenant_floor_per_minute = 1;
+    })
+    .await;
+    // Three tenants drain the shared budget down to its reserve.
+    for i in 0..3 {
+        let org = rig.db.org(&format!("Heavy {i}")).await;
+        let key = service_key_at(&rig, org).await;
+        let names: Vec<String> = (0..10).map(|j| format!("heavy-{i}-{j}")).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
+        rig.post(Some(&key), &refs).await;
+    }
+    // A fifth tenant, and then eight more fresh ones, still get their floor of 5 each.
+    for i in 0..9 {
+        let org = rig.db.org(&format!("Fresh {i}")).await;
+        let key = service_key_at(&rig, org).await;
+        let names: Vec<String> = (0..5).map(|j| format!("fresh-{i}-{j}")).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
+        let answer = json(rig.post(Some(&key), &refs).await).await;
+        let ok = answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+        assert_eq!(ok, 5, "fresh tenant {i} kept its floor");
+    }
 }

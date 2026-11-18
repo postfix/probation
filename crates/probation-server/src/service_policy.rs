@@ -216,11 +216,16 @@ pub async fn set_osv_scope(
 
 /// The id of a live service-kind key (`prb_`, not revoked), for the OSV route's closed
 /// credential set. User-kind, firewall-kind, revoked and unknown keys are `None`.
-pub(crate) async fn live_service_key_id(pool: &PgPool, key: &str) -> Result<Option<(i64, String, i32)>, sqlx::Error> {
+pub(crate) async fn live_service_key_id(pool: &PgPool, key: &str) -> Result<Option<(i64, String, Option<i32>)>, sqlx::Error> {
     if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Ok(None);
     }
-    sqlx::query_as("SELECT id::bigint, place_kind, place_id FROM keys WHERE hash = $1 AND kind = 'service' AND revoked_at IS NULL")
+    sqlx::query_as("SELECT id::bigint, place_kind,
+            (CASE place_kind
+                WHEN 'org' THEN place_id
+                WHEN 'group' THEN (SELECT org_id FROM groups WHERE groups.id = keys.place_id)
+                WHEN 'user' THEN (SELECT org_id FROM memberships WHERE memberships.id = keys.place_id)
+                ELSE place_id END)::int FROM keys WHERE hash = $1 AND kind = 'service' AND revoked_at IS NULL")
         .bind(KeyHash::of(key).0.as_slice())
         .fetch_optional(pool)
         .await

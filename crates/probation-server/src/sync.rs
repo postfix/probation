@@ -251,7 +251,11 @@ impl SyncState {
             return Ok(OsvCaller::Firewall(id, tenant));
         }
         match crate::service_policy::live_service_key_id(&self.pool, bearer).await? {
-            Some((id, kind, place)) => Ok(OsvCaller::Service(id, (place_code(&kind), place))),
+            Some((id, kind, root)) => {
+                // Org, group and user keys share their organisation's tenant.
+                let code = if matches!(kind.as_str(), "org" | "group" | "user") { 1 } else { place_code(&kind) };
+                Ok(OsvCaller::Service(id, (code, root.unwrap_or(0))))
+            }
             None => Err(SyncError::Unauthenticated),
         }
     }
@@ -277,7 +281,9 @@ impl SyncState {
         if !source.is_some_and(|source| allowed.iter().any(|range| range.contains(&source))) {
             return Err(SyncError::SourceRefused);
         }
-        Ok((firewall, (place_code(&kind), place)))
+        // A firewall is its own tenant: only a global admin registers one (C4).
+        let _ = (kind, place);
+        Ok((firewall, (10, firewall)))
     }
 
     /// The client address of a request: the peer, or behind a trusted proxy the address the

@@ -6,7 +6,13 @@ use crate::Ecosystem;
 
 /// The ecosystems' real maxima, not tighter: a publisher must not be able to pick a name or
 /// version this function refuses and so skip the OSV check (SEC-1; npm names 214, npm
-/// versions 256, PyPI has no practical cap).
+/// versions 256). PyPI (pypi/warehouse, researched 2026-11-18): `MAX_VERSION_LENGTH` is 128 after
+/// PEP 440 normalisation in forklift/metadata.py, enforced for new uploads only (the database
+/// column is `Text`, so older or backfilled releases may exceed 128); project names have no
+/// explicit length limit in code (only the `projects_valid_name` regex and a `Text` column),
+/// but an upload with a name in its filename is bounded by the filesystem ("Filename is too
+/// long" is rejected). 1024 therefore covers every new upload; a key beyond it is counted and
+/// visible (`osv_keys_refused`), not held.
 pub const MAX_NAME: usize = 1024;
 pub const MAX_VERSION: usize = 1024;
 pub const MAX_ECOSYSTEM: usize = 32;
