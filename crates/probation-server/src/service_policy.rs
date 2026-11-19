@@ -159,6 +159,7 @@ async fn load_policy_snapshot(
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
+            "rubygems" => Ecosystem::RubyGems,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {

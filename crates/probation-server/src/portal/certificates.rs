@@ -502,6 +502,9 @@ async fn issue(
     let pypi_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'pypi' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let rubygems_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'rubygems' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
 
     let aad = format!("registry issuer org {org}");
     let (issuer_key, issuer_pem, issuer_fingerprint) = match (key_enc, root_pem, root_fingerprint) {
@@ -574,13 +577,17 @@ async fn issue(
         .transpose().map_err(|_| IssueError::Crypto)?;
     let pypi_url = pypi_registry_id.map(|id| firewall.join(&format!("registry/pypi/{id}/")))
         .transpose().map_err(|_| IssueError::Crypto)?;
-    Ok(Some(render_bundle(
+    let rubygems_url = rubygems_registry_id.map(|id| firewall.join(&format!("registry/rubygems/{id}/")))
+        .transpose().map_err(|_| IssueError::Crypto)?;
+    let mut script = render_bundle(
         npm_url.as_ref(),
         pypi_url.as_ref(),
         &cert.pem(),
         &issuer_pem,
         &client_key.serialize_pem(),
-    )))
+    );
+    script.push_str(&render_rubygems(rubygems_url.as_ref()));
+    Ok(Some(script))
 }
 
 fn serial_bytes() -> Result<[u8; 16], getrandom::Error> {
@@ -590,6 +597,25 @@ fn serial_bytes() -> Result<[u8; 16], getrandom::Error> {
     // stored bytes identical to the certificate's canonical serial representation.
     serial[0] = (serial[0] & 0x7f) | 1;
     Ok(serial)
+}
+
+/// The RubyGems client setup: `gem` and Bundler read the source and the client certificate from
+/// `~/.gemrc` and `BUNDLE_SSL_CLIENT_CERT`. Empty when the organisation has no RubyGems registry.
+fn render_rubygems(url: Option<&url::Url>) -> String {
+    url.map(|url| format!(r#"cat "$base/client-cert.pem" "$base/client-key.pem" >"$base/client.pem"
+cat >"$HOME/.gemrc" <<PROBATION_GEMRC
+---
+:sources:
+- {url}
+:ssl_client_cert: $base/client.pem
+PROBATION_GEMRC
+cat >"$base/ruby-env.sh" <<'PROBATION_RUBY'
+export BUNDLE_SSL_CLIENT_CERT=$HOME/.config/probation/client.pem
+PROBATION_RUBY
+if ! grep -Fq 'probation/ruby-env.sh' "$HOME/.profile" 2>/dev/null; then
+    printf '%s\n' '. "$HOME/.config/probation/ruby-env.sh"' >>"$HOME/.profile"
+fi
+"#)).unwrap_or_default()
 }
 
 fn render_bundle(npm_url: Option<&url::Url>, pypi_url: Option<&url::Url>, cert: &str, ca: &str, key: &str) -> String {
@@ -660,6 +686,16 @@ mod tests {
         assert!(bundle.contains("client_cert = $base/client.pem"));
         assert!(bundle.contains("SSL_CLIENT_CERT=$HOME/.config/probation/client.pem"));
         assert!(!bundle.contains("TWINE_PASSWORD="));
+    }
+
+    #[test]
+    fn rubygems_setup_names_the_selected_registry_and_the_client_certificate() {
+        let url = url::Url::parse("https://fw.test/registry/rubygems/9/").unwrap();
+        let script = render_rubygems(Some(&url));
+        assert!(script.contains("- https://fw.test/registry/rubygems/9/"));
+        assert!(script.contains(":ssl_client_cert: $base/client.pem"));
+        assert!(script.contains("BUNDLE_SSL_CLIENT_CERT"));
+        assert_eq!(render_rubygems(None), "");
     }
 
     #[test]

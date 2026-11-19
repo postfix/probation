@@ -57,17 +57,19 @@ pub struct PlaceRef {
 pub enum Ecosystem {
     Npm,
     PyPi,
+    RubyGems,
 }
 
 impl Ecosystem {
     /// Every delivered family. Each row that adds a family adds its entry here.
-    pub const ALL: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPi];
+    pub const ALL: [Ecosystem; 3] = [Ecosystem::Npm, Ecosystem::PyPi, Ecosystem::RubyGems];
 
     /// The spelling used in the blocklist file (SPEC §8) and in log lines.
     pub const fn as_tag(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
             Ecosystem::PyPi => "pypi",
+            Ecosystem::RubyGems => "rubygems",
         }
     }
 
@@ -75,6 +77,7 @@ impl Ecosystem {
         match tag {
             "npm" => Some(Ecosystem::Npm),
             "pypi" => Some(Ecosystem::PyPi),
+            "rubygems" => Some(Ecosystem::RubyGems),
             _ => None,
         }
     }

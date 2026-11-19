@@ -643,6 +643,8 @@ pub async fn start_unready(
 pub enum FakeAnswer {
     /// A `200` with this body.
     Body(String),
+    /// A `200` with these raw bytes (a gzip or zlib RubyGems document, a binary gem).
+    Bytes(Vec<u8>),
     /// Upstream `404`/`410`.
     Missing,
     Fail(UpstreamError),
@@ -824,12 +826,20 @@ impl FakeRegistry {
                 "the upstream registry is unreachable".to_owned(),
             ));
         }
-        self.answers
-            .lock()
-            .expect("the fake registry's answers")
-            .get(url.path())
-            .cloned()
-            .unwrap_or(FakeAnswer::Missing)
+        let answers = self.answers.lock().expect("the fake registry's answers");
+        // A paged API (RubyGems `timeframe_versions`): `{path}?page=N` answers page N and
+        // `{path}?page=*` every page; with only the plain path registered it is page 1 and any
+        // later page is the empty list rubygems.org answers past the end.
+        if let Some((_, page)) = url.query_pairs().find(|(key, _)| key == "page") {
+            let path = url.path();
+            if let Some(answer) = answers.get(&format!("{path}?page={page}")).or_else(|| answers.get(&format!("{path}?page=*"))) {
+                return answer.clone();
+            }
+            if page != "1" && answers.contains_key(path) {
+                return FakeAnswer::Body("[]".to_owned());
+            }
+        }
+        answers.get(url.path()).cloned().unwrap_or(FakeAnswer::Missing)
     }
 }
 
@@ -847,6 +857,12 @@ impl Transport for FakeRegistry {
         }
 
         match self.record(&req.url) {
+            FakeAnswer::Bytes(body) => {
+                if body.len() as u64 > req.max_bytes {
+                    return Err(UpstreamError::TooLarge { limit: req.max_bytes });
+                }
+                Ok(MetadataResponse::Fresh { body: body.into(), validators: UpstreamValidators::default() })
+            }
             FakeAnswer::Body(body) => {
                 if body.len() as u64 > req.max_bytes {
                     return Err(UpstreamError::TooLarge {
@@ -942,6 +958,16 @@ impl Transport for FakeRegistry {
         };
 
         match self.record(&req.url) {
+            FakeAnswer::Bytes(body) => {
+                let declared = body.len() as u64;
+                Ok(ArtifactBody {
+                    declared_length: Some(declared),
+                    stream: probation::upstream::capped(
+                        Box::pin(futures_util::stream::once(async move { Ok(bytes::Bytes::from(body)) })),
+                        req.max_bytes,
+                    ),
+                })
+            }
             FakeAnswer::Body(body) => {
                 let declared = body.len() as u64;
                 Ok(capped(body, Some(declared)))

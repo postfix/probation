@@ -198,6 +198,9 @@ impl Transport for ReqwestTransport {
             request = request.header(header::CONTENT_TYPE,
                 HeaderValue::from_str(&content_type).map_err(|_| UpstreamError::Status(400))?);
         }
+        if let Some(otp) = req.otp {
+            request = request.header("OTP", HeaderValue::from_str(&otp).map_err(|_| UpstreamError::Status(400))?);
+        }
         let body = futures_util::stream::try_unfold(req.body, |mut file| async move {
             let mut chunk = [0u8; 64 * 1024];
             let count = file.read(&mut chunk).await?;

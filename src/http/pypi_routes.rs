@@ -377,7 +377,7 @@ pub async fn selected_upload(
     }
     let result = app.transport.send_action(crate::upstream::ActionRequest {
         url: origin.clone(), origin, private_cidrs: principal.registry_private_cidrs.clone(),
-        method: axum::http::Method::POST, authorization: Some(auth), content_type: Some(content_type),
+        method: axum::http::Method::POST, authorization: Some(auth), content_type: Some(content_type), otp: None,
         body: file, body_len: length, max_bytes: app.config.max_metadata_bytes.get(),
     }).await.map_err(|error| match error {
         crate::upstream::UpstreamError::Timeout => ApiError::UpstreamTimeout,

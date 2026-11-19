@@ -10,6 +10,7 @@ fn osv_key_valid_names_pass_for_every_family() {
         let (name, version) = match eco {
             Ecosystem::Npm => ("@scope/left-pad", "1.3.0-beta.1+build.5"),
             Ecosystem::PyPi => ("requests-oauthlib", "2.0.post1"),
+            Ecosystem::RubyGems => ("Rack_Test.rb-2", "7.1.0.rc1"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));
@@ -78,4 +79,15 @@ fn osv_key_accepts_real_world_maxima_and_legacy_npm_names() {
         assert!(osv_key(Ecosystem::Npm, name, "1.0.0").is_ok(), "{name}");
     }
     assert!(osv_key(Ecosystem::Npm, "a b", "1.0.0").is_err());
+}
+
+#[test]
+fn osv_key_rubygems_charset_is_ls_f6() {
+    // LS-F6: gem name [A-Za-z0-9._-], case kept; the platform suffix is removed by the caller.
+    assert!(osv_key(Ecosystem::RubyGems, "nokogiri", "1.16.5").is_ok());
+    assert!(osv_key(Ecosystem::RubyGems, "Rails.Gem_x-1", "7.0.0.pre").is_ok(), "validate, never normalise");
+    for bad in ["", "rack/x", "rack x", "ra:ck", "@scope/rack", "räck", "rack\n"] {
+        assert_eq!(osv_key(Ecosystem::RubyGems, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
+    }
+    assert_eq!(osv_key(Ecosystem::RubyGems, "rack", ""), Err(OsvKeyError::Version));
 }

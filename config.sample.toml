@@ -135,6 +135,8 @@ osv_mode = "enforce"
 # npm_upstream_url = "https://npm-mirror.example.org"
 # pypi_upstream_url = "https://pypi-mirror.example.org"
 # pypi_artifacts_url = "https://pypi-files.example.org"
+# RubyGems (indexes, quick gemspecs and gems; default https://rubygems.org), same rules.
+# rubygems_upstream_url = "https://rubygems-mirror.example.org"
 
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this

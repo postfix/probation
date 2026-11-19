@@ -885,6 +885,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             let url = match ecosystem {
                 Ecosystem::Npm => h.server.url("/npm/racy-widget"),
                 Ecosystem::PyPi => h.server.url("/pypi/simple/racy-alpha/"),
+                Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
             };
             client
                 .get(url)
@@ -924,10 +925,12 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 assert_eq!(listed(&listing).len(), 1, "the refreshed PyPI listing");
                 pypi(&key_a()).await
             }
+            Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
             Ecosystem::PyPi => assert_eq!(listed(&again).len(), 1, "and the next one"),
+            Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
         }
     }
 }
@@ -1149,4 +1152,30 @@ async fn t_pypi_root_index_empty() {
     assert_eq!(response.status(), 200);
     let index = json_of(standalone.get_with_headers("/pypi/simple/", &json).await).await;
     assert_eq!(index["projects"], json!([{"name": ALPHA}]));
+}
+
+/// Row 17 (CR F4): in managed mode a RubyGems `/info` listing with nothing left is the family's
+/// refusal and leaves one decision record with no version, as a refused PyPI listing does; a key
+/// whose policy keeps a line is served it and leaves none; and the refused key sees an empty index.
+#[tokio::test]
+async fn rubygems_fully_refused_listing_records_one_decision() {
+    let gem = "gemx";
+    let h = harness(
+        vec![Block::Package { ecosystem: Ecosystem::RubyGems, name: gem.to_owned(), reason: None }],
+        |_| {},
+    )
+    .await;
+    let path = fake_origins().url_for(probation::upstream::OriginKind::RubygemsMetadata, &["info", gem]).unwrap().path().to_owned();
+    h.registry.answer(&path, FakeAnswer::Body(format!("---\n1.0.0 |checksum:{},created_at:2025-01-01T00:00:00Z\n", "ab".repeat(32))));
+    let refused = h.get(&format!("/rubygems/info/{gem}"), &key_a()).await;
+    assert_eq!(refused.status(), StatusCode::OK);
+    assert_eq!(refused.text().await.unwrap(), "---\n", "Globex blocks the gem");
+    let served = h.get(&format!("/rubygems/info/{gem}"), &key_b()).await;
+    assert!(served.text().await.unwrap().contains("1.0.0"), "Acme's policy keeps the line");
+    // The queue is read directly: no sync round is needed to see what the request recorded.
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::RubyGems)).collect();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(gem), None));
+    h.server.shutdown().await;
 }

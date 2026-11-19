@@ -17,10 +17,12 @@
 //    Activity shows "Would have blocked (log only)" from the artifact path, for npm and
 //    PyPI.
 // 4. Outage: OSV slow, then refusing connections. Installs keep working (fail open,
-//    even a MAL version firewall-2 never saw), firewall-2 logs the failures, the fleet
-//    page shows "cannot reach OSV", and it is Healthy again after OSV recovers.
+//    even a MAL version firewall-2 never saw). The firewall asks the management server,
+//    not OSV, and logs nothing for it: the evidence is that only the server's address
+//    reached the OSV fake, the fake's `delay` and `reset` fault rows, the fleet page
+//    showing "cannot reach OSV", and Healthy (with at most the OSV warning) afterwards.
 
-import { browserAs, errorOf, fleetHealth } from "../harness/ops.mjs";
+import { addressOf, browserAs, errorOf, fleetHealth } from "../harness/ops.mjs";
 
 export const meta = {
   id: "E2E-003",
@@ -195,15 +197,23 @@ export default async function osv(h) {
   }
   await context.close();
 
-  // 4. Outage, on firewall-2, which has never asked OSV about this package.
-  for (const ecosystem of ["npm", "PyPI"]) await h.fakes.osvFlag({ ecosystem, name, version: "1.3.0", ids: MAL(3) });
-  await h.fakes.faults([{ host: "api.osv.dev", mode: "delay", ms: 5000 }]);
+  // 4. Outage, on firewall-2, with a package nobody has asked OSV about. (The version 1.3.0 of
+  // `name` is no longer such a package: a listing asks about every version, and the answers are
+  // remembered by the firewall and the management server, so it would be served from memory.
+  // Before: `name`@1.3.0 flagged MAL here.)
+  const slowName = h.unique("osv-slow");
+  await h.fakes.publishNpm({ name: slowName, version: "1.0.0", ageSeconds: OLD });
+  await h.fakes.osvFlag({ ecosystem: "npm", name: slowName, version: "1.0.0", ids: MAL(3) });
+  // The delay outlasts the whole step: the management server answers "degraded" at its own
+  // deadline and keeps the late upstream answer for later lookups, which a 5 s delay would
+  // deliver in the middle of the install below. (Before: ms: 5000.)
+  await h.fakes.faults([{ host: "api.osv.dev", mode: "delay", ms: 20_000 }]);
   let started = performance.now();
-  answer = await h.request(`${h.firewalls.fw2}/npm/${name}/1.3.0`, asKey(a.key));
+  answer = await h.request(`${h.firewalls.fw2}/npm/${slowName}/1.0.0`, asKey(a.key));
   const slow = performance.now() - started;
   expect(answer.status === 200, `OSV slow: the never-checked MAL version is served (fail open): ${answer.status} ${answer.body}`);
   expect(slow < 4000, `OSV slow: the answer did not wait for OSV (${slow.toFixed(0)} ms)`);
-  run = npm(`install ${name}@1.3.0`, a);
+  run = npm(`install ${slowName}@1.0.0`, a);
   expect(run.status === 0, `OSV slow: npm install works: ${show(run)}`);
 
   await h.fakes.faults([{ host: "api.osv.dev", mode: "reset" }]);
@@ -221,17 +231,32 @@ export default async function osv(h) {
     timeout: 3 * interval * 1000,
     every: 2000,
   });
-  const logs = h.stack.logs("firewall-2");
-  expect(/OSV lookup batch timed out/.test(logs), "firewall-2 logs the OSV timeout");
-  expect(/OSV lookups could not be sent/.test(logs), "firewall-2 logs the refused OSV connection");
+  // Since the central OSV lookup (rows 28 and 30) a managed firewall asks the management
+  // server, which asks api.osv.dev: the firewall itself never talks to OSV and logs nothing for
+  // a slow or refused one. The same two facts are observable where they now happen: the fake
+  // OSV saw the server (and only the server) receive the slow answer and the refused
+  // connection, and the firewall reports the lookups as degraded, which the fleet page shows.
+  // (Before: `firewall-2 logs the OSV timeout` and `... the refused OSV connection`.)
+  const peers = new Set((await h.fakes.requests("api.osv.dev")).map((row) => row.peer.replace(/^::ffff:/, "")));
+  const serverAddress = addressOf(h.stack, "server");
+  expect([...peers].every((peer) => peer === serverAddress), `only the management server (${serverAddress}) asked OSV, not a firewall: ${[...peers]}`);
+  const osvRows = await h.fakes.requests("api.osv.dev");
+  expect(osvRows.some((row) => row.fault === "delay"), "the server's lookup met the slow OSV (the fake delayed it)");
+  expect(osvRows.some((row) => row.fault === "reset"), "the server's lookup met the refused OSV connection (the fake reset it)");
 
   await h.fakes.faults([]);
   const fresh = h.unique("osv-back");
   await h.fakes.publishNpm({ name: fresh, version: "1.0.0", ageSeconds: OLD });
   answer = await h.request(`${h.firewalls.fw2}/npm/${fresh}`, asKey(a.key));
   expect(answer.status === 200, `after recovery: ${answer.status}`);
-  await h.waitFor("firewall-2 is Healthy again", async () => (await fleetHealth(h.operator.portal, "firewall-2")) === "Healthy", {
+  // Healthy again, with the degraded-lookup warning of the last five minutes shown beside it
+  // (LS-F7: readiness is unchanged, the warning is the visible trace of the outage; it clears
+  // five minutes after the last degraded lookup, so the exact text "Healthy" is no longer
+  // expected right after recovery). Before: `=== "Healthy"`.
+  let recovered = "";
+  await h.waitFor("firewall-2 is Healthy again", async () => (recovered = await fleetHealth(h.operator.portal, "firewall-2")).startsWith("Healthy"), {
     timeout: 3 * interval * 1000,
     every: 2000,
   });
+  expect(/^Healthy(; OSV warning: more than 5% of OSV lookups degraded)?$/.test(recovered), `Healthy, and nothing but the degraded-lookup warning beside it: ${recovered}`);
 }

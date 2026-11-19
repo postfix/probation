@@ -103,6 +103,8 @@ tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 turso = "0.7.2"
 url = "2.5.8"
 percent-encoding = "=2.3.2"
+# The RubyGems index and quick-gemspec inflater (LS-F7); already in the lockfile through reqwest.
+flate2 = "1.1.10"
 
 [dev-dependencies]
 # No `criterion`. The Gate 3 dependency table named it for the SPEC §12 benchmarks,

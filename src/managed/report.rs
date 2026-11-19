@@ -15,6 +15,7 @@ pub enum Call {
     PypiMetadata,
     PypiArtifacts,
     Osv,
+    Rubygems,
 }
 
 const ANSWERED: u8 = 1;
@@ -27,6 +28,8 @@ const FAILED: u8 = 2;
 struct Tracker {
     period: AtomicU8,
     unreachable: AtomicBool,
+    /// Set by the first call ever recorded (a firewall that never calls a registry never reports it).
+    touched: AtomicBool,
 }
 
 impl Tracker {
@@ -43,7 +46,7 @@ impl Tracker {
 
 #[derive(Default)]
 pub struct UpstreamHealth {
-    trackers: [Tracker; 4],
+    trackers: [Tracker; 5],
     /// LS-F3: layer rules of the active snapshot skipped for an unknown ecosystem tag.
     policy_rules_skipped_unknown_ecosystem: std::sync::atomic::AtomicU64,
     /// Central OSV (row 30): counters that travel in the sync report (`osv_report`) and the
@@ -156,6 +159,7 @@ impl UpstreamHealth {
 
     /// One call's outcome: one atomic update.
     pub fn record(&self, call: Call, answered: bool) {
+        self.trackers[call as usize].touched.store(true, Ordering::Release);
         let bit = if answered { ANSWERED } else { FAILED };
         self.trackers[call as usize]
             .period
@@ -177,7 +181,9 @@ impl UpstreamHealth {
     /// Closes the period and reports it. `pypi` is unreachable when either of its
     /// trackers is, so a files outage shows even while metadata refreshes succeed.
     pub fn take_period(&self) -> Upstreams {
-        let [npm, metadata, artifacts, osv] = &self.trackers;
+        let [npm, metadata, artifacts, osv, rubygems] = &self.trackers;
+        // Reported only once RubyGems has been called, so a firewall that serves none never names it.
+        let rubygems_down = rubygems.close_period();
         let state = |down| {
             if down {
                 Reachability::Unreachable
@@ -190,6 +196,7 @@ impl UpstreamHealth {
             npm: state(npm.close_period()),
             pypi: state(pypi),
             osv: state(osv.close_period()),
+            rubygems: rubygems.touched.load(Ordering::Acquire).then(|| state(rubygems_down)),
         }
     }
 }
@@ -204,7 +211,7 @@ mod tests {
         let ok = Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok,
+            osv: Reachability::Ok, rubygems: None,
         };
         assert_eq!(health.take_period(), ok, "no calls yet");
         health.record_upstream::<()>(Call::Npm, &Err(UpstreamError::Status(503)));

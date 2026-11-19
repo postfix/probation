@@ -15,7 +15,7 @@ export const OPERATOR_EMAIL = "ops@example.com";
 /// The managed firewalls' sync interval: short, so waits for propagation stay short.
 export const SYNC_INTERVAL = 10;
 const CORE = ["postgres", "gateway", "mail", "bridge"];
-const CLIENTS = ["client-npm", "client-pip", "client-uv", "client-twine"];
+const CLIENTS = ["client-npm", "client-pip", "client-uv", "client-twine", "client-ruby"];
 const NIGHTLY_CLIENTS = [
   "client-npm10",
   "client-npm11",

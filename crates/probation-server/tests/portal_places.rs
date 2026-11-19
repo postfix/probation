@@ -1550,7 +1550,7 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm or PyPI"), "{}", refused.body);
+        assert!(refused.has("Choose npm, PyPI or RubyGems"), "{}", refused.body);
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);

@@ -174,7 +174,7 @@ pub(crate) async fn add(
     let Ok(target) = url::Url::parse(&form.target_url) else {
         return refused("A valid HTTPS registry target is required.");
     };
-    if !matches!(form.ecosystem.as_str(), "npm" | "pypi")
+    if !matches!(form.ecosystem.as_str(), "npm" | "pypi" | "rubygems")
         || form.name.trim().is_empty()
         || form.name.len() > 200
         || target.scheme() != "https"

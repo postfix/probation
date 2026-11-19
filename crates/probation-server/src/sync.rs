@@ -394,6 +394,7 @@ impl From<StoreError> for SyncError {
                 tracing::error!(?place, "a place in the store has no layer row");
                 SyncError::Store(sqlx::Error::RowNotFound)
             }
+            StoreError::UnknownEcosystem(tag) => SyncError::Store(StoreError::unknown_ecosystem_as_db(tag)),
         }
     }
 }

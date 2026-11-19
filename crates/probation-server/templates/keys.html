@@ -21,6 +21,10 @@
 <h3>Point pip at Probation: add to <code>pip.conf</code></h3>
 <pre>[global]
 index-url = {{ scheme }}://key:{{ secret }}@{{ host }}/pypi/simple/</pre>
+<h3>Point RubyGems and Bundler at Probation</h3>
+<pre># Gemfile
+source "{{ scheme }}://key:{{ secret }}@{{ host }}/rubygems/"
+# gem install: gem install NAME --clear-sources --source {{ scheme }}://key:{{ secret }}@{{ host }}/rubygems/</pre>
 <p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}uv and Poetry use the same index URL.</p>
 </section>
 {% endif %}

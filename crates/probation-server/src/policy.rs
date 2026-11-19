@@ -28,6 +28,17 @@ pub enum StoreError {
     /// A place of the chain has no layer row: the store is inconsistent.
     MissingLayer(PlaceRef),
     Db(sqlx::Error),
+    /// A stored ecosystem tag this binary has no variant for (a family a newer server
+    /// wrote). Never read as another family: the request fails instead.
+    UnknownEcosystem(String),
+}
+
+impl StoreError {
+    /// An unknown tag surfaces where a database failure does: the request is refused with
+    /// the store-unavailable answer, and nothing is guessed.
+    pub(crate) fn unknown_ecosystem_as_db(tag: String) -> sqlx::Error {
+        sqlx::Error::Decode(format!("unknown ecosystem tag `{tag}`").into())
+    }
 }
 
 impl From<sqlx::Error> for StoreError {
@@ -145,6 +156,7 @@ async fn update_layer(
         .map_err(|err| match err {
             StoreError::Db(err) => SaveError::Db(err),
             StoreError::MissingLayer(_) => SaveError::Conflict,
+            StoreError::UnknownEcosystem(tag) => SaveError::Db(StoreError::unknown_ecosystem_as_db(tag)),
         })?
         .ok_or(SaveError::Conflict)?;
     let without_blocks = |layer: &Layer| Layer {
@@ -335,16 +347,18 @@ pub(crate) async fn load_layer(
         kind: place.kind,
         freeze_seconds: freeze.map(|seconds| seconds as u64),
         osv: osv.as_deref().map(osv_of),
-        blocks: blocks.into_iter().map(block_of).collect(),
+        blocks: blocks.into_iter().map(block_of).collect::<Result<_, _>>()?,
         exceptions: lifted
             .into_iter()
-            .map(|(ecosystem, name, version, block, freeze, osv)| Exception {
-                ecosystem: ecosystem_of(&ecosystem),
-                name,
-                version,
-                lifts: Lifts { block, freeze, osv },
+            .map(|(ecosystem, name, version, block, freeze, osv)| {
+                Ok(Exception {
+                    ecosystem: ecosystem_of(&ecosystem)?,
+                    name,
+                    version,
+                    lifts: Lifts { block, freeze, osv },
+                })
             })
-            .collect(),
+            .collect::<Result<_, StoreError>>()?,
         allow: Switches {
             exceptions,
             osv_off,
@@ -382,8 +396,8 @@ fn osv_of(text: &str) -> OsvSetting {
     }
 }
 
-fn ecosystem_of(text: &str) -> Ecosystem {
-    Ecosystem::from_tag(text).unwrap_or(Ecosystem::Npm)
+fn ecosystem_of(text: &str) -> Result<Ecosystem, StoreError> {
+    Ecosystem::from_tag(text).ok_or_else(|| StoreError::UnknownEcosystem(text.to_owned()))
 }
 
 fn algorithm_str(algorithm: DigestAlgorithm) -> &'static str {
@@ -393,17 +407,17 @@ fn algorithm_str(algorithm: DigestAlgorithm) -> &'static str {
     }
 }
 
-fn block_of((ecosystem, name, version, algorithm, digest, reason): BlockRow) -> Block {
-    match (ecosystem, name, digest) {
+fn block_of((ecosystem, name, version, algorithm, digest, reason): BlockRow) -> Result<Block, StoreError> {
+    Ok(match (ecosystem, name, digest) {
         (Some(ecosystem), Some(name), None) => match version {
             Some(version) => Block::Version {
-                ecosystem: ecosystem_of(&ecosystem),
+                ecosystem: ecosystem_of(&ecosystem)?,
                 name,
                 version,
                 reason,
             },
             None => Block::Package {
-                ecosystem: ecosystem_of(&ecosystem),
+                ecosystem: ecosystem_of(&ecosystem)?,
                 name,
                 reason,
             },
@@ -417,7 +431,7 @@ fn block_of((ecosystem, name, version, algorithm, digest, reason): BlockRow) -> 
             digest: digest.unwrap_or_default(),
             reason,
         },
-    }
+    })
 }
 
 // ---- Blocklist import, export and the automation push (C80, C86) ----------------------

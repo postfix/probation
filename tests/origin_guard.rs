@@ -451,6 +451,7 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         "npm_upstream_url",
         "pypi_upstream_url",
         "pypi_artifacts_url",
+        "rubygems_upstream_url",
     ] {
         for refused in [
             "http://127.0.0.1:1",

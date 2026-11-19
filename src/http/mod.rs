@@ -11,6 +11,7 @@ pub mod limits;
 pub mod logging;
 pub mod npm_routes;
 pub mod pypi_routes;
+pub mod rubygems_routes;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
@@ -86,6 +87,20 @@ fn package_router(app: Arc<App>) -> Router {
         .route("/registry/pypi/{registry}/simple/", get(pypi_routes::selected_index))
         .route("/registry/pypi/{registry}/simple/{project}/", get(pypi_routes::selected_project))
         .route("/registry/pypi/{registry}/simple/{project}", get(pypi_routes::selected_project_without_slash))
+        .route("/rubygems/info/{gem}", get(rubygems_routes::info))
+        .route("/rubygems/versions", get(rubygems_routes::versions))
+        .route("/rubygems/names", get(rubygems_routes::names))
+        .route("/rubygems/specs.4.8.gz", get(rubygems_routes::specs))
+        .route("/rubygems/latest_specs.4.8.gz", get(rubygems_routes::latest_specs))
+        .route("/rubygems/prerelease_specs.4.8.gz", get(rubygems_routes::prerelease_specs))
+        .route("/registry/rubygems/{registry}/specs.4.8.gz", get(rubygems_routes::selected_specs))
+        .route("/registry/rubygems/{registry}/latest_specs.4.8.gz", get(rubygems_routes::selected_latest_specs))
+        .route("/registry/rubygems/{registry}/prerelease_specs.4.8.gz", get(rubygems_routes::selected_prerelease_specs))
+        .route("/rubygems/quick/Marshal.4.8/{file}", get(rubygems_routes::quick))
+        .route("/registry/rubygems/{registry}/info/{gem}", get(rubygems_routes::selected_info))
+        .route("/registry/rubygems/{registry}/versions", get(rubygems_routes::selected_versions))
+        .route("/registry/rubygems/{registry}/names", get(rubygems_routes::selected_names))
+        .route("/registry/rubygems/{registry}/quick/Marshal.4.8/{file}", get(rubygems_routes::selected_quick))
         .route("/pypi/simple/", get(pypi_routes::index))
         .route("/pypi/simple/{project}/", get(pypi_routes::project))
         .route(
@@ -96,6 +111,8 @@ fn package_router(app: Arc<App>) -> Router {
         // lists it.
         .route_layer(middleware::from_fn(get_only))
         .route("/registry/pypi/{registry}/", axum::routing::post(pypi_routes::selected_upload))
+        .route("/registry/rubygems/{registry}/api/v1/gems", axum::routing::post(rubygems_routes::selected_push))
+        .route("/registry/rubygems/{registry}/api/v1/gems/yank", axum::routing::delete(rubygems_routes::selected_yank))
         .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
         .route("/registry/npm/{registry}/-/npm/v1/security/audits/quick", axum::routing::post(registry_routes::audit_quick))
         .route("/registry/npm/{registry}/-/{*rest}", axum::routing::any(registry_routes::action))
@@ -117,6 +134,12 @@ fn package_router(app: Arc<App>) -> Router {
         .route(
             "/pypi/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_pypi).head(artifact_routes::serve_pypi),
+        )
+        // A gem file: the name is the identity, the reference is looked up from the index.
+        .route("/rubygems/gems/{file}", get(rubygems_routes::gem).head(rubygems_routes::gem))
+        .route(
+            "/registry/rubygems/{registry}/gems/{file}",
+            get(rubygems_routes::selected_gem).head(rubygems_routes::selected_gem),
         )
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(

@@ -48,6 +48,8 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ("src/http/token_packument.rs", "fn check_canonical_token_packument", "get(header::AUTHORIZATION)", 1),
     ("src/http/registry_action.rs", "fn admit_publish_request", "get(header::AUTHORIZATION)", 2),
     ("src/http/pypi_routes.rs", "fn selected_upload", "get(header::AUTHORIZATION)", 1),
+    // Row 17: `gem push` / `gem yank` forward the caller's own API key, as the PyPI upload does.
+    ("src/http/rubygems_routes.rs", "fn forward_write", "get(header::AUTHORIZATION)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_named_read", "header(header::AUTHORIZATION,value)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_token_packument", "header(header::AUTHORIZATION,authorization)", 1),
     ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),

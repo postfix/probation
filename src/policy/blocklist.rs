@@ -57,7 +57,7 @@ pub struct BlocklistSnapshot {
     source: Option<BlockSet>,
 }
 
-const ECOSYSTEMS: usize = 2;
+const ECOSYSTEMS: usize = 3;
 
 /// A blocked version keeps its upstream spelling for an exact match and, where the
 /// ecosystem's rules allow it, the parsed form. SPEC §7 requires PyPI blocks to match
@@ -150,6 +150,8 @@ impl BlocklistSnapshot {
             let name = match ecosystem {
                 Ecosystem::Npm => record.name.clone(),
                 Ecosystem::PyPi => crate::pypi::name::normalize(&record.name),
+                // rubygems.org's index is case-insensitive (`/info/Rack` is `rack`).
+                Ecosystem::RubyGems => record.name.to_ascii_lowercase(),
             };
             entry_count += 1;
             match &record.version {

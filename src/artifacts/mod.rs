@@ -208,6 +208,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
     let advertised = match row.reference.ecosystem {
         Ecosystem::Npm => npm::ensure_fresh_project_at(app, &row.reference.name, row.registry_id, origin, private_cidrs, read_authorization).await?,
         Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
+        Ecosystem::RubyGems => crate::rubygems::serve::ensure_fresh_project_in(app, &row.reference.name, &row.reference.filename, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {

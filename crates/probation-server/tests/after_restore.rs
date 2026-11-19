@@ -241,7 +241,7 @@ async fn changes_reporting(
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok,
+                osv: Reachability::Ok, rubygems: None,
             },
         },
         effective_period_seconds: 2,

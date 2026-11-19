@@ -35,6 +35,7 @@ pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
     match ecosystem {
         Ecosystem::Npm => Some("npm"),
         Ecosystem::PyPi => Some("PyPI"),
+        Ecosystem::RubyGems => Some("RubyGems"),
     }
 }
 

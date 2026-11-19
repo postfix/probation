@@ -45,6 +45,8 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
             }
         }
         Ecosystem::PyPi => name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')),
+        // LS-F6: gem name `[A-Za-z0-9._-]`, case kept (validated, never normalised).
+        Ecosystem::RubyGems => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
     }
 }
 

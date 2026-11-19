@@ -49,6 +49,8 @@ pub async fn respond(
     if matches!(*request.method(), Method::GET | Method::HEAD) {
         let rules = if request.uri().path().starts_with("/pypi/") || request.uri().path().starts_with("/registry/pypi/") {
             &super::credential_read::FamilyReadRules::PYPI
+        } else if request.uri().path().starts_with("/rubygems/") || request.uri().path().starts_with("/registry/rubygems/") {
+            &super::credential_read::FamilyReadRules::RUBYGEMS
         } else {
             &super::credential_read::FamilyReadRules::NPM
         };
@@ -57,7 +59,8 @@ pub async fn respond(
             logging::record_request_scoped();
         }
     }
-    if request.method() == Method::DELETE {
+    // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -94,6 +97,7 @@ fn classify_selected_registry(
         let ecosystem = match parts.next() {
             Some("npm") => Ecosystem::Npm,
             Some("pypi") => Ecosystem::PyPi,
+            Some("rubygems") => Ecosystem::RubyGems,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
@@ -103,6 +107,8 @@ fn classify_selected_registry(
             (Ecosystem::Npm, rest)
         } else if let Some(rest) = path.strip_prefix("/pypi/") {
             (Ecosystem::PyPi, rest)
+        } else if let Some(rest) = path.strip_prefix("/rubygems/") {
+            (Ecosystem::RubyGems, rest)
         } else {
             return Err(ApiError::NotFound);
         };
@@ -134,6 +140,14 @@ fn classify_selected_registry(
         && !pypi_upload
     {
         return Err(ApiError::MethodNotAllowed);
+    }
+    // RubyGems is read-only through the shared service: writes (`gem push`, `gem yank`) are
+    // not forwarded by this family, and the read routes take no query string.
+    // Class W: `gem push` (POST api/v1/gems) and `gem yank` (DELETE api/v1/gems/yank) only.
+    let rubygems_write = ecosystem == Ecosystem::RubyGems
+        && ((*request.method() == Method::POST && rest == "api/v1/gems") || (*request.method() == Method::DELETE && rest == "api/v1/gems/yank"));
+    if ecosystem == Ecosystem::RubyGems && !rubygems_write && (!matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().query().is_some()) {
+        return Err(if request.uri().query().is_some() { ApiError::NotFound } else { ApiError::MethodNotAllowed });
     }
     let search = ecosystem == Ecosystem::Npm && rest == "-/v1/search";
     let named_action = ecosystem == Ecosystem::Npm && rest.starts_with("-/")

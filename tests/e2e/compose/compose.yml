@@ -117,6 +117,7 @@ services:
           - ocsp-a.e2e.test
           - ocsp-b.e2e.test
           - pypi.org
+          - rubygems.org
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -294,6 +295,20 @@ services:
       args:
         PIP_VERSION: "26.1.2"
     image: localhost/probation-e2e-client:pip26.1
+
+  # RubyGems 3.5 and Bundler 2.5 (the Ruby 3.3 image). SSL_CERT_FILE already points Ruby's
+  # OpenSSL at the e2e CA; Bundler is told the same explicitly.
+  client-ruby:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: ruby.Dockerfile
+    image: localhost/probation-e2e-client:ruby3.3
+    environment:
+      <<: *client-env
+      BUNDLE_SSL_CA_CERT: /e2e/ca/ca.pem
+      GEM_HOME: /work/.gems
+      BUNDLE_PATH: /work/.bundle-gems
 
   client-uv:
     <<: *client

@@ -162,6 +162,7 @@ async fn shared_service_final_handoff_orders_publication() {
                             common::pypi_upstream_path("final-package"),
                             "/packages/final_package-1.0.0-py3-none-any.whl".into(),
                         ),
+                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -398,6 +399,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                             }),
                             "/packages/race_package-1.0.0-py3-none-any.whl".into(),
                         ),
+                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -430,6 +432,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                     let artifact = match ecosystem {
                         Ecosystem::Npm => &listing["versions"]["1.0.0"]["dist"]["tarball"],
                         Ecosystem::PyPi => &listing["files"][0]["url"],
+                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()

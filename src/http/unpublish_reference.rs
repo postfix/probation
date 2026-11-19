@@ -183,7 +183,7 @@ pub async fn send_unpublish_delete(app: &Arc<App>, principal: &Principal, regist
     let marker = check_removal_marker(app, &reference, revision);
     marker.await?;
     let action = ActionRequest { url, origin, private_cidrs: principal.registry_private_cidrs.clone(), method: Method::DELETE,
-        authorization: bearer.then_some(authorization), content_type: None, body: tokio::fs::File::from_std(file), body_len: 0,
+        authorization: bearer.then_some(authorization), content_type: None, otp: None, body: tokio::fs::File::from_std(file), body_len: 0,
         max_bytes: app.config.max_metadata_bytes.get() };
     let result = app.transport.send_action(action).await.map_err(|error| match error { UpstreamError::Timeout => ApiError::UpstreamTimeout, _ => ApiError::UpstreamFailure })?;
     let status = axum::http::StatusCode::from_u16(result.status).map_err(|_| ApiError::UpstreamInvalid)?;

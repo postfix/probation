@@ -55,6 +55,9 @@ impl FamilyReadRules {
     };
     /// PyPI clients send only common headers.
     pub const PYPI: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    /// RubyGems (`gem`, Bundler) sends only the common headers on a plain read; a credential
+    /// travels as `Authorization` or URL userinfo, both request-scoped. No path or query token.
+    pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 
 /// Header names every family may send without credential meaning (LS-F4).

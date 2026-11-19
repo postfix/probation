@@ -25,7 +25,7 @@ async fn sync_now(server: &TestServer) {
         report: managed.report(Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok,
+            osv: Reachability::Ok, rubygems: None,
         }),
         activity: vec![],
         activity_dropped: vec![],
@@ -172,6 +172,7 @@ async fn prepared_boundary(
             );
             ("/pypi/simple/authority-check/", filename)
         }
+        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
     };
     let dir = tempfile::tempdir().unwrap();
     let mut config = management.managed(config_with_open_blocklist(dir.path()));
@@ -200,6 +201,7 @@ async fn prepared_boundary(
     let url = match ecosystem {
         Ecosystem::Npm => &listing["versions"]["1.0.0"]["dist"]["tarball"],
         Ecosystem::PyPi => &listing["files"][0]["url"],
+        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
     };
     let url: reqwest::Url = url.as_str().unwrap().parse().unwrap();
     let id =
@@ -218,6 +220,7 @@ async fn prepared_boundary(
         let upstream = match ecosystem {
             Ecosystem::Npm => npm_upstream_path("authority-check"),
             Ecosystem::PyPi => common::pypi_upstream_path("authority-check"),
+            Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         };
         let raw = match ecosystem {
             Ecosystem::Npm => {
@@ -226,6 +229,7 @@ async fn prepared_boundary(
             Ecosystem::PyPi => {
                 serde_json::json!({"meta":{"api-version":"1.1"},"name":"authority-check","files":[{"filename":filename,"url":format!("https://files.invalid/packages/{filename}"),"hashes":{"sha256":hex::encode(Sha256::digest(bytes.as_bytes()))},"upload-time":"2026-01-01T00:00:00Z"}]})
             }
+            Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         };
         let gate = Gate::new();
         registry.answer(

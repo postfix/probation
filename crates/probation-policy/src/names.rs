@@ -33,6 +33,9 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
     match ecosystem {
         Ecosystem::Npm => name.to_owned(),
         Ecosystem::PyPi => normalize(name),
+        // rubygems.org answers `/info/Rack` with the index of `rack` (checked 2026-11-19), so
+        // the registry namespace is case-insensitive and policy must be too.
+        Ecosystem::RubyGems => name.to_ascii_lowercase(),
     }
 }
 
@@ -54,6 +57,10 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         }
+        // The charset of LS-F6 for RubyGems: one validator for what is judged and what is queried.
+        Ecosystem::RubyGems => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')),
     }
 }
 
@@ -63,6 +70,15 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
 pub enum CanonicalVersion {
     Npm(Box<nodejs_semver::Version>),
     PyPi(Box<pep440_rs::Version>),
+    RubyGems(Vec<GemSegment>),
+}
+
+/// One segment of a `Gem::Version` (`Gem::Version#canonical_segments`). Numbers are kept as
+/// digit strings without leading zeros, so no segment length is out of range.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GemSegment {
+    Num(String),
+    Str(String),
 }
 
 /// A version the ecosystem's parser rejects has no canonical form and keeps only its
@@ -75,7 +91,66 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
         Ecosystem::PyPi => pep440_rs::Version::from_str(version)
             .ok()
             .map(|parsed| CanonicalVersion::PyPi(Box::new(parsed))),
+        Ecosystem::RubyGems => gem_segments(version).map(CanonicalVersion::RubyGems),
     }
+}
+
+/// Ruby's own `Gem::Version.correct?` pattern
+/// `\A\s*([0-9]+(?>\.[0-9a-zA-Z]+)*(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)?\s*\z`, an empty
+/// string excluded (it is not a version a rule can name).
+fn gem_version_correct(text: &str) -> bool {
+    let alnum = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric());
+    let (head, tail) = match text.split_once('-') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (text, None),
+    };
+    let mut parts = head.split('.');
+    let first = parts.next().unwrap_or("");
+    let head_ok = !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) && parts.all(alnum);
+    let tail_ok = tail.is_none_or(|t| t.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')));
+    head_ok && tail_ok
+}
+
+/// `Gem::Version#canonical_segments`: every `-` becomes `.pre.`, segments are the runs of
+/// digits or letters (letters keep their case, as Ruby compares them), and trailing zeros
+/// are dropped from the numeric part and from the part after the first letter segment.
+fn gem_segments(version: &str) -> Option<Vec<GemSegment>> {
+    let text = version.trim();
+    if !gem_version_correct(text) {
+        return None;
+    }
+    let text = text.replace('-', ".pre.");
+    let mut numeric: Vec<GemSegment> = Vec::new();
+    let mut rest: Vec<GemSegment> = Vec::new();
+    for piece in text.split('.') {
+        let mut remaining = piece;
+        while !remaining.is_empty() {
+            let digits = remaining.starts_with(|c: char| c.is_ascii_digit());
+            let end = remaining.find(|c: char| c.is_ascii_digit() != digits).unwrap_or(remaining.len());
+            let (head, tail) = remaining.split_at(end);
+            let seg = if digits {
+                let trimmed = head.trim_start_matches('0');
+                GemSegment::Num(if trimmed.is_empty() { "0".to_owned() } else { trimmed.to_owned() })
+            } else {
+                GemSegment::Str(head.to_owned())
+            };
+            if !rest.is_empty() || matches!(seg, GemSegment::Str(_)) {
+                rest.push(seg);
+            } else {
+                numeric.push(seg);
+            }
+            remaining = tail;
+        }
+    }
+    let zero = |s: &GemSegment| matches!(s, GemSegment::Num(n) if n == "0");
+    while numeric.last().is_some_and(zero) {
+        numeric.pop();
+    }
+    while rest.last().is_some_and(zero) {
+        rest.pop();
+    }
+    numeric.extend(rest);
+    Some(numeric)
 }
 
 /// The same release: an identical spelling, or equal canonical forms.

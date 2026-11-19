@@ -122,7 +122,7 @@ fn snapshot() -> ServicePolicySnapshot {
             revision: 1,
         }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
-        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi)],
+        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems)],
     }
 }
 
@@ -234,6 +234,24 @@ const ROUTE_TABLE: &[(&str, &str, char)] = &[
     ("/registry/pypi/{registry}/simple/", "get", 'R'),
     ("/registry/pypi/{registry}/simple/{project}/", "get", 'R'),
     ("/registry/pypi/{registry}/simple/{project}", "get", 'R'),
+    ("/rubygems/info/{gem}", "get", 'R'),
+    ("/rubygems/versions", "get", 'R'),
+    ("/rubygems/names", "get", 'R'),
+    ("/rubygems/specs.4.8.gz", "get", 'R'),
+    ("/rubygems/latest_specs.4.8.gz", "get", 'R'),
+    ("/rubygems/prerelease_specs.4.8.gz", "get", 'R'),
+    ("/registry/rubygems/{registry}/specs.4.8.gz", "get", 'R'),
+    ("/registry/rubygems/{registry}/latest_specs.4.8.gz", "get", 'R'),
+    ("/registry/rubygems/{registry}/prerelease_specs.4.8.gz", "get", 'R'),
+    ("/rubygems/quick/Marshal.4.8/{file}", "get", 'R'),
+    ("/registry/rubygems/{registry}/info/{gem}", "get", 'R'),
+    ("/registry/rubygems/{registry}/versions", "get", 'R'),
+    ("/registry/rubygems/{registry}/names", "get", 'R'),
+    ("/registry/rubygems/{registry}/quick/Marshal.4.8/{file}", "get", 'R'),
+    ("/rubygems/gems/{file}", "get head", 'R'),
+    ("/registry/rubygems/{registry}/gems/{file}", "get head", 'R'),
+    ("/registry/rubygems/{registry}/api/v1/gems", "post", 'W'),
+    ("/registry/rubygems/{registry}/api/v1/gems/yank", "delete", 'W'),
     ("/pypi/simple/", "get", 'R'),
     ("/pypi/simple/{project}/", "get", 'R'),
     ("/pypi/simple/{project}", "get", 'R'),
@@ -324,7 +342,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
     let (server, registry, _policy) = service(&["10.1.0.0/16"]).await;
     let before = registry.calls().len();
     let concrete = |template: &str| {
-        let eco_registry = if template.contains("/pypi/") { "4" } else { "3" };
+        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else { "3" };
         template
             .replace("{registry}", eco_registry)
             .replace("{package}", "left-pad")

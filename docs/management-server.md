@@ -222,7 +222,7 @@ one.
 
 Settings that belong to one machine cannot be pushed: `management`, `listen`,
 `data_dir`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url`,
-`siem_auth_header`. `npm_upstream_url`, `pypi_upstream_url` and `pypi_artifacts_url`
+`siem_auth_header`. `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url` and `rubygems_upstream_url`
 must be `https://`. Such a push is refused before it is saved. A pushed path must lie
 under the firewall's `data_dir`; the firewall checks that itself.
 

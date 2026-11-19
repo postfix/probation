@@ -127,6 +127,7 @@ struct RequestContext {
 /// The codes [`RequestContext::ecosystem`] holds. Zero is "nothing recorded".
 const ECOSYSTEM_NPM: u8 = 1;
 const ECOSYSTEM_PYPI: u8 = 2;
+const ECOSYSTEM_RUBYGEMS: u8 = 3;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -155,6 +156,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
     let code = match ecosystem {
         Ecosystem::Npm => ECOSYSTEM_NPM,
         Ecosystem::PyPi => ECOSYSTEM_PYPI,
+        Ecosystem::RubyGems => ECOSYSTEM_RUBYGEMS,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -298,6 +300,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
     let ecosystem = match context.ecosystem.load(Ordering::Relaxed) {
         ECOSYSTEM_NPM => Ecosystem::Npm.as_tag(),
         ECOSYSTEM_PYPI => Ecosystem::PyPi.as_tag(),
+        ECOSYSTEM_RUBYGEMS => Ecosystem::RubyGems.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -414,6 +417,7 @@ impl Target {
         let root = match segments.next() {
             Some("npm") => "npm",
             Some("pypi") => "pypi",
+            Some("rubygems") => "rubygems",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -478,6 +482,13 @@ impl Target {
             ("pypi", _, project, ..) => Target {
                 ecosystem: root,
                 package: loggable(project),
+                version: None,
+            },
+            // `/rubygems/gems/{file}.gem`, `/rubygems/info/{gem}`, `/rubygems/quick/Marshal.4.8/{file}`:
+            // the segment after the family root names the route, the last names the subject.
+            ("rubygems", Some(_), ..) => Target {
+                ecosystem: root,
+                package: loggable(path.rsplit('/').next()),
                 version: None,
             },
             (_, package, version, ..) => Target {

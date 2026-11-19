@@ -53,7 +53,10 @@ export function helpers(stack, { log = console.log } = {}) {
       enterpriseStatusMode: (issuer, mode) => call("POST", `${FAKES}/issuer/mode`, { issuer, mode }),
       /// Pypi.publish: {name, version, ageSeconds | uploadedAt, kinds, requiresPython}.
       publishPypi: (spec) => call("POST", `${FAKES}/pypi/publish`, spec),
-      /// {ecosystem: "npm" | "PyPI", name, version, ids: ["MAL-..."]}; [] clears.
+      /// RubyGems.publish: {name, version, platform, ageSeconds | createdAt}.
+      publishRubygems: (spec) => call("POST", `${FAKES}/rubygems/publish`, spec),
+      rubygemsWrites: () => call("GET", `${FAKES}/rubygems/writes`),
+      /// {ecosystem: "npm" | "PyPI" | "RubyGems", name, version, ids: ["MAL-..."]}; [] clears.
       osvFlag: (spec) => call("POST", `${FAKES}/osv/flag`, spec),
       osvQueries: () => call("GET", `${FAKES}/osv/queries`),
       /// Replaces the fault list; see fixtures/fakes/main.mjs. faults([]) clears.

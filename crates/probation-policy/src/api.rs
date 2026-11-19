@@ -344,6 +344,10 @@ pub struct Upstreams {
     pub npm: Reachability,
     pub pypi: Reachability,
     pub osv: Reachability,
+    /// Additive (row 17): absent from a report an older firewall wrote and left out when
+    /// unknown, so older readers never see the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubygems: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -558,7 +562,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok,
+                        osv: Reachability::Ok, rubygems: None,
                     },
                 },
                 effective_period_seconds: 55,

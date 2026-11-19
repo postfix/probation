@@ -192,6 +192,7 @@ async fn page(
         Ok(page) => render(status, &page),
         Err(StoreError::Db(err)) => unavailable(err),
         Err(StoreError::MissingLayer(_)) => not_found(),
+        Err(StoreError::UnknownEcosystem(tag)) => unavailable(StoreError::unknown_ecosystem_as_db(tag)),
     }
 }
 
@@ -450,6 +451,7 @@ fn ecosystem_label(ecosystem: Ecosystem) -> String {
     match ecosystem {
         Ecosystem::Npm => "npm",
         Ecosystem::PyPi => "PyPI",
+        Ecosystem::RubyGems => "RubyGems",
     }
     .to_owned()
 }
@@ -571,6 +573,7 @@ pub(crate) async fn edit(
         Ok(found) => found,
         Err(StoreError::Db(err)) => return unavailable(err),
         Err(StoreError::MissingLayer(_)) => return not_found(),
+        Err(StoreError::UnknownEcosystem(tag)) => return unavailable(StoreError::unknown_ecosystem_as_db(tag)),
     };
     let refuse = |message: String| {
         page(
@@ -696,7 +699,7 @@ fn freeze(value: &str, unit: &str) -> Result<Option<u64>, String> {
 
 /// Blocks and exceptions on a package always name their ecosystem (C31).
 fn ecosystem(value: &str) -> Result<Ecosystem, String> {
-    Ecosystem::from_tag(value).ok_or_else(|| "Choose npm or PyPI.".to_owned())
+    Ecosystem::from_tag(value).ok_or_else(|| "Choose npm, PyPI or RubyGems.".to_owned())
 }
 
 fn new_block(form: &PolicyForm) -> Result<Block, String> {

@@ -117,6 +117,7 @@ pub async fn forward_registry_action(
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
+        otp: None,
         body: file,
         body_len,
         max_bytes: app.config.max_metadata_bytes.get(),

@@ -38,10 +38,10 @@ and openssl. `tests/e2e/signup_to_install.sh` runs the release witness alone.
 | `gateway` | nginx, terminates TLS (the documented topology) | `portal.e2e.test`, `sync.e2e.test`, `fw1.e2e.test`, `fw2.e2e.test`, `fw-standalone.e2e.test` |
 | `firewall-1`, `firewall-2` | managed firewalls, sync interval 10 s | via the gateway |
 | `firewall-standalone` | no `[management]`; producer file in `$E2E_WORK/producer/blocklist.json` | via the gateway |
-| `fakes` | `fixtures/fakes/`: npm, PyPI, OSV, range API, OIDC IdP | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.osv.dev`, `api.pwnedpasswords.com`, `accounts.google.com`, `idp.e2e.test`; control API `http://fakes.e2e.test:8080` |
+| `fakes` | `fixtures/fakes/`: npm, PyPI, RubyGems (`rubygems.org`: compact index, tuple indexes, quick gemspecs, real `.gem` archives, the paged `timeframe_versions` API), OSV, range API, OIDC IdP | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.osv.dev`, `api.pwnedpasswords.com`, `accounts.google.com`, `idp.e2e.test`; control API `http://fakes.e2e.test:8080` |
 | `mail` | mailpit, STARTTLS required | `mail.e2e.test` (SMTP 1025, API 8025) |
 | `bridge` | `fixtures/bridge.mjs`, the host's CONNECT proxy into the network | `127.0.0.1:$E2E_BRIDGE_PORT` |
-| `client-*` | pinned client containers (`sleep infinity`) | |
+| `client-*` | pinned client containers (`sleep infinity`); `client-ruby` is Ruby 3.3 with RubyGems 3.5 and Bundler 2.5 | |
 
 How the stack stays offline and still tests the shipped binary (D1):
 
@@ -324,3 +324,5 @@ Estimate for the PR suite on a hosted 4-vCPU runner:
 That leaves 10 to 12 min for the other PR scenarios on a warm cache, and 6 to 8 min on a
 cold one.
 
+
+- `E2E-rubygems`: Bundler and `gem` through firewall-1 under a 7-day freeze (old version locked and installed, exact pin of the young one fails, a never-indexed gem installs through the dated legacy index, young platform builds withheld), OSV on RubyGems, a mixed-case gem (index case-insensitive, files case-exact, a lowercase block hides every spelling) and `gem push` through a managed firewall. `node tests/e2e/harness/run.mjs --only E2E-rubygems`. The fake's own builders are checked by `native/rubygems-fake.test.mjs`.

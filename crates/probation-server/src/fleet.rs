@@ -169,6 +169,7 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "npm_upstream_url",
         "pypi_upstream_url",
         "pypi_artifacts_url",
+        "rubygems_upstream_url",
     ] {
         if table
             .get(key)

@@ -36,19 +36,23 @@ use url::Url;
 const NPM_METADATA: &str = "https://registry.npmjs.org";
 const PYPI_METADATA: &str = "https://pypi.org";
 const PYPI_ARTIFACTS: &str = "https://files.pythonhosted.org";
+/// RubyGems serves its indexes, quick gemspecs and gems from one host.
+const RUBYGEMS: &str = "https://rubygems.org";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
     NpmMetadata,
     PypiMetadata,
     PypiArtifacts,
+    RubygemsMetadata,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 3] = [
+    pub const ALL: [OriginKind; 4] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
+        OriginKind::RubygemsMetadata,
     ];
 }
 
@@ -82,6 +86,7 @@ pub struct OriginSet {
     npm_metadata: Url,
     pypi_metadata: Url,
     pypi_artifacts: Url,
+    rubygems: Url,
     allow_private_addresses: bool,
     private_cidrs: Vec<IpNet>,
     /// LS-F9: absolute denylist of a snapshot-sourced registry; its own private CIDRs
@@ -127,6 +132,7 @@ impl OriginSet {
             npm_metadata: parse_origin(NPM_METADATA),
             pypi_metadata: parse_origin(PYPI_METADATA),
             pypi_artifacts: parse_origin(PYPI_ARTIFACTS),
+            rubygems: parse_origin(RUBYGEMS),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -144,6 +150,7 @@ impl OriginSet {
             npm_metadata: pick(&config.npm_upstream_url, production.npm_metadata),
             pypi_metadata: pick(&config.pypi_upstream_url, production.pypi_metadata),
             pypi_artifacts: pick(&config.pypi_artifacts_url, production.pypi_artifacts),
+            rubygems: pick(&config.rubygems_upstream_url, production.rubygems),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -160,10 +167,17 @@ impl OriginSet {
             npm_metadata: npm,
             pypi_metadata: pypi,
             pypi_artifacts: artifacts,
+            rubygems: parse_origin(RUBYGEMS),
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
             deny: None,
         }
+    }
+
+    /// Tests only: where this set sends RubyGems calls (the upstream fake).
+    pub fn with_rubygems(mut self, rubygems: Url) -> OriginSet {
+        self.rubygems = rubygems;
+        self
     }
 
     /// The same origins with both gates closed again: `https` only, and a DNS answer
@@ -190,6 +204,7 @@ impl OriginSet {
             OriginKind::NpmMetadata => &self.npm_metadata,
             OriginKind::PypiMetadata => &self.pypi_metadata,
             OriginKind::PypiArtifacts => &self.pypi_artifacts,
+            OriginKind::RubygemsMetadata => &self.rubygems,
         }
     }
 

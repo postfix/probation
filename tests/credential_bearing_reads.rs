@@ -58,10 +58,51 @@ fn credential_bearing_read_never_enters_shared_caches() {
     assert!(eligible("https://registry.example.test/npm/left-pad", &[]), "absolute form without userinfo is ordinary");
 }
 
+/// Row 17, the RubyGems case of the same contract. RubyGems clients carry a credential as
+/// `Authorization` (an API key or Basic from a source URL's userinfo) and registries such as
+/// Gemfury take a token as URL userinfo; none uses a token in the path or the query string.
+/// The family adds no header beyond the common allow-list (the real-client witness is
+/// `rubygems_native_clients_send_only_allow_listed_headers` in tests/rubygems_registry.rs).
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_rubygems() {
+    let rubygems = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::RUBYGEMS), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "rubygems_0123456789abcdef"),
+        ("authorization", "Basic dXNlcjpwdw=="),
+        ("Authorization", "Bearer x"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-jfrog-art-api", "key"),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!rubygems("/rubygems/info/rack", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!rubygems("/rubygems/versions?token=abc", &[]));
+    assert!(!rubygems("/rubygems/gems/rack-3.0.0.gem?api_key=abc", &[]));
+    assert!(!rubygems("https://TOKEN:@gem.example.test/rubygems/info/rack", &[]), "URL userinfo");
+    assert!(!rubygems("https://token@gem.example.test/rubygems/info/rack", &[]), "URL userinfo");
+    // Control: the headers `gem` and Bundler send for plain reads keep the read cache-eligible.
+    assert!(rubygems(
+        "/rubygems/info/rack",
+        &[("host", "x"), ("accept", "*/*"), ("accept-encoding", "gzip"), ("user-agent", "bundler/2.6"), ("if-none-match", "\"a\""), ("range", "bytes=10-"), ("if-modified-since", "Mon, 01 Jan 2026 00:00:00 GMT")]
+    ));
+}
+
 // ---- C1028 end to end: bytes fetched under credential A are never served without it ----
 
 /// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
 struct PrivateArtifacts(Arc<FakeRegistry>, Mutex<Vec<Option<String>>>);
+
+/// How many recent-versions fetches of the slow registry have started, and their release.
+static SLOW_ARRIVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SLOW_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
 
 #[async_trait::async_trait]
 impl Transport for PrivateArtifacts {
@@ -70,6 +111,10 @@ impl Transport for PrivateArtifacts {
         self.fetch_metadata(request).await
     }
     async fn fetch_metadata(&self, request: MetadataRequest) -> Result<MetadataResponse, UpstreamError> {
+        if request.url.host_str() == Some("slow.invalid") && request.url.path().ends_with("timeframe_versions.json") {
+            SLOW_ARRIVED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = SLOW_GATE.acquire().await;
+        }
         if request.url.path().contains("login-meta") {
             return Err(UpstreamError::Status(401));
         }
@@ -98,13 +143,17 @@ impl Transport for PrivateArtifacts {
 }
 
 fn service_snapshot() -> ServicePolicySnapshot {
+    service_snapshot_with(0, false)
+}
+
+fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
     let places = [PlaceRef { kind: LayerKind::Platform, id: 1 }, PlaceRef { kind: LayerKind::Org, id: 10 }];
-    ServicePolicySnapshot {
+    let mut snapshot = ServicePolicySnapshot {
         version: 1, key_id: KeyId(7), org: OrgId(10), account: places[1], revision: 1,
         place_chain: places.iter().map(|place| ChainLink { place: *place, layer_revision: 1 }).collect(),
         layers: places.iter().map(|place| PlaceLayer {
             place: *place,
-            layer: Layer { freeze_seconds: Some(0), osv: Some(OsvSetting::Off), ..Layer::empty(place.kind) },
+            layer: Layer { freeze_seconds: Some(freeze), osv: Some(OsvSetting::Off), ..Layer::empty(place.kind) },
             revision: 1,
         }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
@@ -114,8 +163,20 @@ fn service_snapshot() -> ServicePolicySnapshot {
         }, RegistryDescriptor {
             registry: RegistryId(4), ecosystem: probation_policy::Ecosystem::PyPi, target_url: None, trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(5), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
         }],
+    };
+    if slow {
+        // A second RubyGems registry whose recent-versions API never answers until released (N3).
+        // Only this test has it: two RubyGems registries make the unqualified `/rubygems` root ambiguous.
+        snapshot.registries.push(RegistryDescriptor {
+            registry: RegistryId(6), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: Some("https://slow.invalid/".into()), trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+        });
     }
+    snapshot
 }
 
 fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -216,9 +277,17 @@ async fn credential_bearing_artifact_never_enters_the_shared_content_cache() {
 
 /// A server in shared-service mode over the two-registry fixture above.
 async fn service_server() -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
+    service_server_with(0).await
+}
+
+async fn service_server_with(freeze: u64) -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
+    service_server_full(freeze, false).await
+}
+
+async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
     let policy_server = MockServer::start().await;
     Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(service_snapshot()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(service_snapshot_with(freeze, slow)))
         .mount(&policy_server).await;
     let registry = FakeRegistry::new();
     registry.answer(&npm_upstream_path("open-pkg"), FakeAnswer::Body(serde_json::json!({
@@ -233,6 +302,17 @@ async fn service_server() -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
             "hashes":{"sha256": hex::encode(Sha256::digest(b"w"))}, "upload-time":"2026-01-01T00:00:00Z"
         }]
     }).to_string()));
+    registry.answer("/specs.4.8.gz", FakeAnswer::Bytes(std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/rubygems/full-index-slice.4.8.gz")).unwrap()));
+    registry.answer("/api/v1/timeframe_versions.json", FakeAnswer::Body("[]".to_owned()));
+    registry.answer("/gems/open-gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
+    // A gem whose real name has capitals: files are case-exact upstream (N2).
+    registry.answer("/gems/Open-Gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
+    registry.answer("/info/Open-Gem", FakeAnswer::Body(format!(
+        "---\n1.0.0 |checksum:{},created_at:2025-01-01T00:00:00Z\n", hex::encode(Sha256::digest(b"g"))
+    )));
+    registry.answer("/info/open-gem", FakeAnswer::Body(format!(
+        "---\n1.0.0 |checksum:{},created_at:2025-01-01T00:00:00Z\n", hex::encode(Sha256::digest(b"g"))
+    )));
     let dir = tempfile::tempdir().unwrap();
     let mut config = config_with_open_blocklist(dir.path());
     config.service_policy = Some(ServicePolicyConfig {
@@ -247,6 +327,63 @@ async fn service_server() -> (TestServer, Arc<PrivateArtifacts>, MockServer) {
         Arc::clone(&transport) as Arc<dyn Transport>, fake_origins(),
     ).await;
     (server, transport, policy_server)
+}
+
+/// Row 17, the RubyGems case of S28-1 through the same seam (C1028): the compact index of a
+/// gem read under any credential carrier leaves no entry in a shared cache, and the same
+/// read without one is served (and the control: it does populate the cache).
+#[tokio::test]
+async fn credential_bearing_read_never_enters_shared_caches_rubygems_end_to_end() {
+    use probation::store::cache::ProjectKey;
+    let carriers: &[(&str, &[(&str, &str)])] = &[
+        ("authorization", &[("authorization", "Bearer allowed")]),
+        ("basic", &[("authorization", "Basic dXNlcjpwdw==")]),
+        ("cookie", &[("cookie", "session=1")]),
+        ("x-jfrog-art-api", &[("x-jfrog-art-api", "k")]),
+        ("unknown header", &[("x-probe-unknown", "1")]),
+    ];
+    for (carrier, headers) in carriers {
+        let (server, _transport, _policy) = service_server().await;
+        let key = ProjectKey::in_registry(5, probation_policy::Ecosystem::RubyGems, "open-gem");
+        let response = server.get_with_headers("/registry/rubygems/5/info/open-gem", headers).await;
+        assert_eq!(response.status(), StatusCode::OK, "{carrier}");
+        assert!(response.text().await.unwrap().contains("1.0.0"), "{carrier}");
+        let caches = server.app();
+        let store = caches.store().caches();
+        assert!(store.projects.get(&key).is_none(), "{carrier}: project snapshot cache is empty");
+        assert!(store.absent.get(&key).is_none(), "{carrier}: refusal cache is empty");
+    }
+    // Control: the same read with only allow-listed headers is served too (the shared-service
+    // path refreshes per request and never reuses one caller's snapshot, so for every carrier
+    // the cache stays empty; the allow-list decision itself is witnessed by
+    // `credential_bearing_read_never_enters_shared_caches_rubygems`).
+    let (server, _transport, _policy) = service_server().await;
+    assert_eq!(server.get_with_headers("/rubygems/info/open-gem", &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    // The gem file through the shared service (the root `/rubygems` is rewritten to the selected
+    // registry): delivered verified, and a credential-bearing read of it stays out of the shared store.
+    let data = server.app().config.data_dir.clone();
+    let before = files_under(&data.join("content")).len();
+    let gem = server.get_with_headers("/rubygems/gems/open-gem-1.0.0.gem", &[("authorization", "Bearer allowed")]).await;
+    assert_eq!((gem.status(), gem.bytes().await.unwrap().as_ref()), (StatusCode::OK, b"g".as_slice()));
+    assert_eq!(files_under(&data.join("content")).len(), before, "no credential-bearing gem body in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+    // Positive control for the metadata caches, which the per-gem snapshot cannot give in service
+    // mode (it never caches there): the filtered tuple index IS cached, for an allow-listed read
+    // and only for one. Two plain reads cost one upstream fetch; two credential-bearing reads two.
+    let fetches = |transport: &PrivateArtifacts| transport.0.calls().iter().filter(|u| u.path() == "/specs.4.8.gz").count();
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers("/rubygems/specs.4.8.gz", &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(fetches(&_transport), 1, "an allow-listed index read is served from the shared cache");
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers("/rubygems/specs.4.8.gz", &[("authorization", "Bearer allowed")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(fetches(&_transport), 3, "a credential-bearing index read never reads or fills the shared cache");
+    // And a read that carries only what RubyGems clients send (the family allow-list adds
+    // `keep-alive`) is cache-eligible: its verified body enters the shared content store.
+    let eligible = server.get_with_headers("/rubygems/gems/open-gem-1.0.0.gem", &[("keep-alive", "30")]).await;
+    assert_eq!(eligible.status(), StatusCode::OK);
+    assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
 }
 
 /// S28-1: one case per carrier on the metadata routes: afterwards no shared metadata,
@@ -342,4 +479,73 @@ async fn cache_token_fails_closed_without_a_request_context_in_service_mode() {
     assert!(probation::http::credential_read::cache_token(&server.app()).is_none());
     let standalone = TestServer::start().await;
     assert!(probation::http::credential_read::cache_token(&standalone.app()).is_some(), "standalone has no caller credential on reads");
+}
+
+/// N2 in shared-service mode: a gem with capitals is delivered under the client's spelling.
+#[tokio::test]
+async fn rubygems_mixed_case_gem_is_delivered_in_service_mode() {
+    let (server, _transport, _policy) = service_server().await;
+    let info = server.get("/rubygems/info/Open-Gem").await;
+    assert_eq!(info.status(), StatusCode::OK);
+    assert!(info.text().await.unwrap().contains("1.0.0"));
+    let gem = server.get("/rubygems/gems/Open-Gem-1.0.0.gem").await;
+    assert_eq!((gem.status(), gem.bytes().await.unwrap().as_ref()), (StatusCode::OK, b"g".as_slice()));
+}
+
+/// N5 (C1028): the recent-versions list obeys the credential rule of the index cache: a
+/// credential-bearing index read neither reads nor fills it; two plain reads of two index files
+/// share one list (the positive control).
+#[tokio::test]
+async fn rubygems_recent_versions_cache_is_never_read_or_filled_by_a_credential_bearing_read() {
+    let timeframe = |transport: &PrivateArtifacts| transport.0.calls().iter().filter(|u| u.path() == "/api/v1/timeframe_versions.json").count();
+    for (headers, expected) in [(&[("accept", "*/*")][..], 1usize), (&[("authorization", "Bearer allowed")][..], 2)] {
+        let (server, transport, _policy) = service_server_with(7 * 86_400).await;
+        for file in ["specs.4.8.gz", "latest_specs.4.8.gz"] {
+            transport.0.answer(&format!("/{file}"), FakeAnswer::Bytes(std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/rubygems/full-index-slice.4.8.gz")).unwrap()));
+            assert_eq!(server.get_with_headers(&format!("/rubygems/{file}"), headers).await.status(), StatusCode::OK);
+        }
+        assert_eq!(timeframe(&transport), expected, "{headers:?}");
+    }
+}
+
+/// N3: one registry's slow recent-versions API stalls only that registry's index builds.
+#[tokio::test]
+async fn rubygems_slow_recent_list_of_one_registry_does_not_stall_another() {
+    let (server, transport, _policy) = service_server_full(7 * 86_400, true).await;
+    transport.0.answer("/specs.4.8.gz", FakeAnswer::Bytes(std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/rubygems/full-index-slice.4.8.gz")).unwrap()));
+    let slow_url = server.url("/registry/rubygems/6/specs.4.8.gz");
+    let slow = tokio::spawn(async move { reqwest::get(slow_url).await.unwrap().status() });
+    while SLOW_ARRIVED.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let other = tokio::time::timeout(std::time::Duration::from_secs(20), server.get("/registry/rubygems/5/specs.4.8.gz")).await;
+    SLOW_GATE.add_permits(64);
+    assert_eq!(other.expect("the other registry is not stalled behind the slow one").status(), StatusCode::OK);
+    let _ = slow.await;
+}
+
+/// R3: credential-bearing index reads (which never read or fill the shared caches) queue behind a
+/// small per-registry limit instead of each crawling the recent list at once.
+#[tokio::test]
+async fn rubygems_credential_bearing_index_reads_crawl_at_most_two_at_a_time() {
+    let (server, transport, _policy) = service_server_with(7 * 86_400).await;
+    transport.0.answer("/specs.4.8.gz", FakeAnswer::Bytes(std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/rubygems/full-index-slice.4.8.gz")).unwrap()));
+    let gate = common::Gate::new();
+    transport.0.answer("/api/v1/timeframe_versions.json", FakeAnswer::GatedMetadata { body: "[]".to_owned(), gate: Arc::clone(&gate) });
+    let url = server.url("/rubygems/specs.4.8.gz");
+    let mut tasks = Vec::new();
+    for _ in 0..5 {
+        let url = url.clone();
+        tasks.push(tokio::spawn(async move { reqwest::Client::new().get(url).header("authorization", "Bearer allowed").send().await.unwrap().status() }));
+    }
+    gate.wait_until_reached().await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let crawling = transport.0.calls().iter().filter(|u| u.path() == "/api/v1/timeframe_versions.json").count();
+    assert_eq!(crawling, 2, "five credential-bearing reads, two crawls in flight");
+    for _ in 0..16 {
+        gate.release();
+    }
+    for task in tasks {
+        assert_eq!(task.await.unwrap(), StatusCode::OK);
+    }
 }

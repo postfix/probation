@@ -751,7 +751,7 @@ To close the NAT64 gap at the network level, restrict the firewall's outbound
 connections to the hosts it needs:
 
 - `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`, or the hosts in
-  `npm_upstream_url`, `pypi_upstream_url` and `pypi_artifacts_url` if you set them
+  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url` and `rubygems_upstream_url` if you set them
 - `api.osv.dev`, unless `osv_mode = "off"`
 - in managed mode, the server's address from `[management] url`
 
@@ -1335,6 +1335,7 @@ Every size and count above must not be zero.
 | `npm_upstream_url` | `https://registry.npmjs.org` | `https`, no user, query, path or private address. |
 | `pypi_upstream_url` | `https://pypi.org` | Same rules. |
 | `pypi_artifacts_url` | `https://files.pythonhosted.org` | Same rules. |
+| `rubygems_upstream_url` | `https://rubygems.org` | Same rules. One origin serves the compact index, tuple indexes, quick gemspecs and gems. Point a Bundler `source` or `gem --source` at `/rubygems/` of this firewall. |
 | `sync_interval_seconds` | `60` | Managed mode only. From 1 to 86400. How long a change on the server may take to reach this firewall. |
 
 The environment variable `PROBATION_SIEM_AUTH` holds the SIEM credential (section
@@ -1525,3 +1526,7 @@ curl -s https://index.crates.io/pr/ob/probation-policy \
 The owners must be the project's own, and the two checksums must be equal. If
 either check fails, publish nothing: someone else controls what `probation` would
 depend on.
+
+### RubyGems clients
+
+Point `gem` and Bundler at `/rubygems/` of the firewall (or `/registry/rubygems/{id}/` of a selected registry): `gem install NAME --clear-sources --source https://firewall.example/rubygems/`, or `source "https://firewall.example/rubygems/"` in the Gemfile. Bundler uses the compact index and sees only eligible versions of each gem. The legacy `specs.4.8.gz` indexes `gem` reads are filtered with the registry's own publication dates (rubygems.org's `timeframe_versions` API, at most 42 days back); a registry without that API lists no gem it has not indexed, and Bundler is unaffected. Through the shared service `gem push` and `gem yank` are forwarded only with the caller's own API key to the selected registry's own origin. Bundler may re-download an info file on each run: upstream's `versions` checksum is the MD5 of the unfiltered file.

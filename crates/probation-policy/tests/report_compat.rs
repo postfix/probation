@@ -23,3 +23,25 @@ fn a_new_report_with_an_older_osv_object_and_unknown_fields_parses() {
     assert!(osv.degraded_warning);
     assert_eq!(osv.keys_refused, 0, "a field added later defaults");
 }
+
+/// Row 17: the RubyGems upstream state is additive. A report without it parses (an old firewall),
+/// a firewall that never calls RubyGems leaves the key out, and an older server's struct, which
+/// has no such field, still reads a report that carries it.
+#[test]
+fn rubygems_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok"}"#).unwrap();
+    assert_eq!(old.rubygems, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("rubygems"), "an unknown state is not written");
+    let new = Upstreams { rubygems: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""rubygems":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        pypi: Reachability,
+        osv: Reachability,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.pypi, older.osv), (Reachability::Ok, Reachability::Ok, Reachability::Ok));
+}

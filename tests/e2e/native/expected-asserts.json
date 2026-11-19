@@ -15,6 +15,7 @@
   "pf.test.mjs": 35,
   "rendezvous-cli.test.mjs": 80,
   "rendezvous.test.mjs": 89,
+  "rubygems-fake.test.mjs": 32,
   "run-ids.test.mjs": 6,
   "run_tests.test.py": 11,
   "scope.test.mjs": 3,

@@ -8,6 +8,8 @@
 //   POST /faults {faults: [...]}      replace the fault list ([] clears); see `fault` below
 //   POST /npm/publish {...}           Npm.publish; answers the version's dist
 //   POST /pypi/publish {...}          Pypi.publish; answers the files made
+//   POST /rubygems/publish {...}      RubyGems.publish; answers the gem made
+//   GET  /rubygems/writes             every `gem push`/`gem yank` the fake received
 //   POST /osv/flag {...}              Osv.flag
 //   GET  /osv/queries                 every querybatch query received
 //   POST /hibp/leak {password}        add a leaked password
@@ -41,16 +43,18 @@ import { Npm } from "./npm.mjs";
 import { Oidc } from "./oidc.mjs";
 import { Osv } from "./osv.mjs";
 import { Pypi } from "./pypi.mjs";
+import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
   "registry-b.e2e.test": fakes.npmB,
   "private-registry.e2e.test": fakes.npmB,
   "pypi.org": fakes.pypi,
+  "rubygems.org": fakes.rubygems,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -207,6 +211,8 @@ const control = {
   "POST /issuer/revoke": (body) => issuers[body.issuer]?.revoke(body.id) ?? (() => { throw new Error("unknown issuer"); })(),
   "POST /issuer/mode": (body) => issuers[body.issuer]?.mode(body.mode) ?? (() => { throw new Error("unknown issuer"); })(),
   "POST /pypi/publish": (body) => fakes.pypi.publish(body),
+  "POST /rubygems/publish": (body) => fakes.rubygems.publish(body),
+  "GET /rubygems/writes": () => fakes.rubygems.writes,
   "POST /osv/flag": (body) => (fakes.osv.flag(body), { ok: true }),
   "GET /osv/queries": () => fakes.osv.queries,
   "POST /hibp/leak": (body) => (fakes.hibp.leak(body.password), { ok: true }),

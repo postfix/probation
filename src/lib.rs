@@ -17,6 +17,7 @@ pub mod npm;
 pub mod osv;
 pub mod policy;
 pub mod pypi;
+pub mod rubygems;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -166,6 +167,8 @@ pub struct App {
     /// the two response deadlines.
     pub limits: Limits,
     pub(crate) login_rates: http::registry_action::LoginRates,
+    /// RubyGems: cached tuple indexes, recent-version dates and the heavy-path limiter.
+    pub(crate) rubygems: rubygems::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -188,6 +191,12 @@ pub struct App {
 }
 
 impl App {
+    /// Shortens the RubyGems recent-versions crawl deadline. **Compiled only under `test-support`.**
+    #[cfg(feature = "test-support")]
+    pub fn set_rubygems_recent_deadline(&self, deadline: std::time::Duration) {
+        self.rubygems.set_recent_deadline(deadline);
+    }
+
     /// The blocklist currently in force, whether or not it is still valid. Callers
     /// that judge a package go through `policy::evaluate`, which checks the window
     /// against the same `now` it decides with.
@@ -416,6 +425,7 @@ impl App {
             downloads: DownloadCoordinator::new(),
             limits,
             login_rates: http::registry_action::LoginRates::default(),
+            rubygems: rubygems::serve::Shared::default(),
             delivery,
             osv,
             managed,

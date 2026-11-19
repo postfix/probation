@@ -102,7 +102,7 @@ pub(super) async fn consume_service_marker_then_send(app: &Arc<App>, registry: u
     if !marker { return Err(ApiError::NotFound); }
     let result = app.transport.send_action(ActionRequest {
         url, origin: reference.origin, private_cidrs: reference.private_cidrs, method: Method::DELETE,
-        authorization: Some(authorization), content_type: None, body: tokio::fs::File::from_std(file), body_len: 0,
+        authorization: Some(authorization), content_type: None, otp: None, body: tokio::fs::File::from_std(file), body_len: 0,
         max_bytes: app.config.max_metadata_bytes.get(),
     }).await.map_err(|error| match error { UpstreamError::Timeout => ApiError::UpstreamTimeout, _ => ApiError::UpstreamFailure })?;
     Ok((StatusCode::from_u16(result.status).map_err(|_| ApiError::UpstreamInvalid)?, result.body).into_response())

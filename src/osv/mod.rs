@@ -431,6 +431,7 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
     let fixed: &[&str] = match ecosystem {
         Ecosystem::Npm => &["registry.npmjs.org"],
         Ecosystem::PyPi => &["pypi.org", "files.pythonhosted.org"],
+        Ecosystem::RubyGems => &["rubygems.org", "index.rubygems.org"],
     };
     let public_source = target_url
         .and_then(|text| Url::parse(text).ok())
@@ -951,6 +952,47 @@ mod tests {
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), asked, "{scope:?}");
             assert_eq!(matches!(decision, Decision::Allow), scope == OsvScope::Private, "{scope:?}: {decision:?}");
+        }
+    }
+
+    fn gem_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
+        Candidate { ecosystem: Ecosystem::RubyGems, ..candidate(name, version) }
+    }
+
+    /// Row 17, LS-F12: a RubyGems registry the operator sets Private is never asked about
+    /// (its gem names reach nothing), and the effective scope is what decides.
+    #[tokio::test]
+    async fn osv_skipped_for_private_registry_in_rubygems() {
+        let mirror = "https://gems.corp.example/";
+        let scope = effective_scope(Ecosystem::RubyGems, Some(mirror), Some(OsvScope::Private));
+        assert_eq!(scope, OsvScope::Private);
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &gem_candidate("internal-gem", "1.0.0"), scope).await;
+        shutdown.cancel();
+        let _ = handle.await;
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's gem name reaches no OSV server");
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+        // The fixed public source ignores the field: rubygems.org is always Public.
+        assert_eq!(effective_scope(Ecosystem::RubyGems, Some("https://rubygems.org/"), Some(OsvScope::Private)), OsvScope::Public);
+        assert_eq!(effective_scope(Ecosystem::RubyGems, Some("https://index.rubygems.org/"), Some(OsvScope::Private)), OsvScope::Public);
+    }
+
+    /// Row 17, LS-F12: a public mirror whose operator says Public (and a custom mirror
+    /// with no field, the user decision of 2026-11-18) is queried, and a MAL match denies.
+    #[tokio::test]
+    async fn osv_public_mirror_with_explicit_scope_is_queried() {
+        let mirror = "https://mirror.example/rubygems/";
+        for explicit in [Some(OsvScope::Public), None] {
+            let scope = effective_scope(Ecosystem::RubyGems, Some(mirror), explicit);
+            assert_eq!(scope, OsvScope::Public, "{explicit:?}");
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &gem_candidate("rack", "9.9.9"), scope).await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
+            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
         }
     }
 
