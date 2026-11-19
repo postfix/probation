@@ -75,6 +75,10 @@ impl FamilyReadRules {
         headers: &["x-nuget-session-id", "x-nuget-client-version"],
         query_keys: &["q", "id", "skip", "take", "prerelease", "semVerLevel", "packageType", "supportedFramework"],
     };
+    /// Maven reads carry no query and no non-secret header beyond the common ones (`mvn` sends `User-Agent`, `Accept`,
+    /// `Accept-Encoding`, `Host` and conditional headers on a metadata read, all common); a credential travels as
+    /// `Authorization` (Basic from `settings.xml`, or a bearer token), request-scoped, and no route takes one in its path.
+    pub const MAVEN: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

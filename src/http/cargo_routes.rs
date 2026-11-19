@@ -319,7 +319,7 @@ async fn forward_api(
         .and_then(|value| value.to_str().ok())
         .filter(|value| value.len() <= 256)
         .map(str::to_owned);
-    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, principal.key_id.0, headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
+    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, super::spool::owner_of(&app, &principal, &headers), headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
         return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
     };
     // The spool's place and bytes are held until this request is done with the file.

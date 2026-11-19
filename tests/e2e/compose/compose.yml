@@ -126,6 +126,7 @@ services:
           - api.nuget.org
           - azuresearch-usnc.nuget.org
           - www.nuget.org
+          - repo.maven.apache.org
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -354,6 +355,17 @@ services:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
       DOTNET_CLI_USE_MSBUILD_SERVER: "0"
       MSBUILDDISABLENODEREUSE: "1"
+
+  # Maven 3.9.16 on Java 21.0.12.1 (the Maven image) with the dependency and deploy plugins already in /opt/seed-m2 (the image build
+  # fetched them; the stack itself is offline). Java reads its own trust store: the scenarios import the CA into one under /work.
+  client-maven:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: maven.Dockerfile
+    image: localhost/probation-e2e-client:maven3.9.16
+    environment:
+      <<: *client-env
 
   client-uv:
     <<: *client

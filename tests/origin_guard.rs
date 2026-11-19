@@ -1754,3 +1754,37 @@ fn a_declared_nuget_archive_origin_is_the_one_other_origin_a_selected_registry_r
     let production = OriginSet::production();
     assert!(!production.admits_archive_redirect(OriginKind::NugetIndex, &parse("https://storage.example/x.nupkg")), "api.nuget.org answers a package directly: no redirect is followed");
 }
+
+/// Row 21: the Maven repository origin is an origin AND a path prefix (Central's tree is `maven2`), a URL built below it
+/// stays below it, the deploy URL has no default, and a selected Maven registry's archive origin works as NuGet's.
+#[test]
+fn the_maven_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
+    use probation::config::Config;
+    let origins = OriginSet::production();
+    assert_eq!(origins.origin(OriginKind::MavenRepo).as_str(), "https://repo.maven.apache.org/maven2");
+    assert!(!origins.maven_publish_configured(), "Central has no deploy endpoint: there is none until an operator names one");
+    assert_eq!(
+        origins.url_for(OriginKind::MavenRepo, &["org", "apache", "maven", "maven-core", "3.9.0", "maven-core-3.9.0.jar"]).unwrap().as_str(),
+        "https://repo.maven.apache.org/maven2/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.jar"
+    );
+    assert!(origins.url_for(OriginKind::MavenRepo, &["..", "x"]).is_err());
+    assert!(origins.url_for(OriginKind::MavenRepo, &[".", "x"]).is_err());
+    // A segment is data: a slash or a scheme in it is one encoded segment of the tree.
+    assert_eq!(origins.url_for(OriginKind::MavenRepo, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://repo.maven.apache.org/maven2/a%2Fb/https:%2F%2Fevil.example%2Fx");
+    assert!(origins.admit(&parse("https://repo.maven.apache.org/other/x.jar"), OriginKind::MavenRepo).is_err(), "outside the configured path prefix");
+    assert!(origins.admit(&parse("https://repo.maven.apache.org/maven2x/x.jar"), OriginKind::MavenRepo).is_err(), "whole segments");
+    assert!(origins.admit(&parse("https://repo.maven.apache.org/maven2/a/b.jar"), OriginKind::MavenRepo).is_ok());
+    // Configuration: a mirror's origin and prefix are accepted, a userinfo, a query, a dot segment and http are not.
+    let sample = std::fs::read_to_string("config.sample.toml").unwrap();
+    assert!(Config::from_toml_str(&format!("{sample}\nmaven_upstream_url = \"https://nexus.example/repository/maven-central\"\n")).is_ok());
+    for bad in ["http://nexus.example/repo", "https://u:p@nexus.example/repo", "https://nexus.example/repo?x=1", "https://127.0.0.1/repo"] {
+        assert!(Config::from_toml_str(&format!("{sample}\nmaven_upstream_url = \"{bad}\"\n")).is_err(), "{bad}");
+    }
+    // A selected Maven registry's archive origin is its own unless it declares one.
+    let selected = OriginSet::selected_npm_with_private(parse("https://nexus.corp.example/repository/releases/"), Vec::new()).unwrap();
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.jar")));
+    let selected = selected.with_selected_archive(parse("https://blobs.corp.example/store"));
+    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.jar?sig=s")));
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.jar")));
+    assert!(!origins.admits_archive_redirect(OriginKind::MavenRepo, &parse("https://storage.example/x.jar")), "Central answers a file directly: no redirect is followed");
+}

@@ -670,7 +670,7 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
         if let Some(archive) = &registry.archive_origin {
             // Only a Cargo registry (archives apart from its index) or a Go registry (zip redirects to its
             // storage) has an archive origin, and one needs a target of its own.
-            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet) || registry.target_url.is_none() {
+            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet | probation_policy::Ecosystem::Maven) || registry.target_url.is_none() {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;

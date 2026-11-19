@@ -1550,7 +1550,7 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo, Go or NuGet"), "{}", refused.body);
+        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo, Go, NuGet or Maven"), "{}", refused.body);
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);
@@ -4600,4 +4600,43 @@ async fn t_registry_form_adds_a_nuget_registry_with_an_optional_archive_origin_a
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
     assert_eq!(policy.body.matches(r#"<option value="nuget">NuGet</option>"#).count(), 2, "the block and exception forms offer NuGet: {}", policy.body);
+}
+
+/// Row 21: the registry add form lists Maven and takes it, a Maven registry is stored under the tag `maven` (migration 0014
+/// already carries it), takes the optional archive origin (a repository that redirects an artifact to its storage; migration 0020
+/// widened who may hold one) with the same shape rules as the other families, takes no NuGet-only resource path prefix, and the
+/// block and exception forms offer Maven.
+#[tokio::test]
+async fn t_registry_form_adds_a_maven_registry_with_an_optional_archive_origin_and_the_block_form_offers_maven() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let page = admin.get(&catalog).await;
+    assert!(page.body.contains(r#"<option value="maven">Maven</option>"#), "the add form lists Maven: {}", page.body);
+    let added = admin.submit(&catalog, &catalog, &[("name", "Corp Maven"), ("ecosystem", "maven"), ("target_url", "https://nexus.example.test/repository/releases/")]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Maven'")
+        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!((tag.as_str(), target.as_deref()), ("maven", Some("https://nexus.example.test/repository/releases/")));
+    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Maven'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    assert_eq!(stored().await, None);
+    let page = admin.get(&catalog).await;
+    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a Maven registry has the archive origin field");
+    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 0, "the resource path prefix is NuGet's alone");
+    let action = format!("{catalog}/{id}/archive-origin");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
+    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
+        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    }
+    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
+    let prefix_action = format!("{catalog}/{id}/resource-prefix");
+    assert_ne!(admin.submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")]).await.status, StatusCode::SEE_OTHER, "no resource path prefix on a Maven registry");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None, "cleared");
+    let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
+    assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
+    assert_eq!(policy.body.matches(r#"<option value="maven">Maven</option>"#).count(), 2, "the block and exception forms offer Maven: {}", policy.body);
 }

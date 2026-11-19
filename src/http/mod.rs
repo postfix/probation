@@ -15,6 +15,7 @@ pub mod rubygems_routes;
 pub mod cargo_routes;
 pub mod go_routes;
 pub mod nuget_routes;
+pub mod maven_routes;
 pub mod readmit;
 pub mod registry_read;
 pub mod registry_action;
@@ -182,6 +183,10 @@ fn package_router(app: Arc<App>) -> Router {
         // signature documents and the four files of a version, one catch-all parsed strictly by the handler.
         .route("/nuget/{*path}", get(nuget_routes::legacy).head(nuget_routes::legacy))
         .route("/registry/nuget/{registry}/{*path}", get(nuget_routes::selected).head(nuget_routes::selected))
+        // Maven: the repository layout (metadata, files, checksums, signatures, the archetype catalog) behind one
+        // catch-all parsed strictly by the handler; a selected registry's `PUT` and `DELETE` are the class-W deploy routes.
+        .route("/maven/{*path}", get(maven_routes::legacy).head(maven_routes::legacy))
+        .route("/registry/maven/{registry}/{*path}", get(maven_routes::selected).head(maven_routes::selected).put(maven_routes::selected).delete(maven_routes::selected))
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",

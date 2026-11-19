@@ -39,6 +39,7 @@ pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
         Ecosystem::Cargo => Some("crates.io"),
         Ecosystem::Go => Some("Go"),
         Ecosystem::NuGet => Some("NuGet"),
+        Ecosystem::Maven => Some("Maven"),
     }
 }
 

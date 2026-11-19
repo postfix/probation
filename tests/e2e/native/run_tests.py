@@ -78,7 +78,18 @@ def judge_canary():
     return [what for findings, what in cases if not findings]
 
 
+def default_scratch():
+    """The host-state assertions of several tests need a scratch directory on disk (/tmp is RAM here and is never used): next to the
+    repository, `<parent>/.<repository>-scratch/native`, unless NATIVE_TEST_SCRATCH names one."""
+    if not os.environ.get("NATIVE_TEST_SCRATCH"):
+        root = here.parents[2]
+        scratch = root.parent / f".{root.name}-scratch" / "native"
+        scratch.mkdir(parents=True, exist_ok=True)
+        os.environ["NATIVE_TEST_SCRATCH"] = str(scratch)
+
+
 def main(directory=here):
+    default_scratch()
     skipped = SKIP_ON.get(sys.platform, set())
     if not stub_checker_canary():
         print("FAIL canary: check_workflow.test.py passed against a checker that always exits 0")

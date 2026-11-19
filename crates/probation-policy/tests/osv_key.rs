@@ -14,6 +14,7 @@ fn osv_key_valid_names_pass_for_every_family() {
             Ecosystem::Cargo => ("serde_json-2", "1.0.0-rc.1"),
             Ecosystem::Go => ("github.com/Azure/x~1", "1.2.3+incompatible"),
             Ecosystem::NuGet => ("Newtonsoft.Json_2-x", "13.0.3-beta.1"),
+            Ecosystem::Maven => ("org.example:Lib_2-x", "1.0.0.Final"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));
@@ -122,5 +123,15 @@ fn osv_key_nuget_charset_is_ls_f6() {
     assert!(osv_key(Ecosystem::NuGet, "newtonsoft.json", "12.0.3-Beta.1").is_ok());
     for bad in ["new/tonsoft", "a b", "a:b", "ü", "a@1", ""] {
         assert_eq!(osv_key(Ecosystem::NuGet, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
+    }
+}
+
+/// Row 21, LS-F6: a Maven key is `groupId:artifactId`, each part `[A-Za-z0-9._-]`, exactly one `:`, case kept.
+#[test]
+fn maven_keys_are_group_and_artifact_with_one_colon() {
+    assert!(osv_key(Ecosystem::Maven, "org.apache.maven:maven-core", "3.9.0").is_ok());
+    assert!(osv_key(Ecosystem::Maven, "Org.Example:Lib_2", "1.0-SNAPSHOT").is_ok());
+    for bad in ["maven-core", "a:b:c", ":b", "a:", "a b:c", "a:b/c", "a..b:c", ".a:c", "a:.c", "a:c\n"] {
+        assert_eq!(osv_key(Ecosystem::Maven, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
     }
 }

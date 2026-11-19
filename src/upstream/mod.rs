@@ -45,6 +45,19 @@ pub trait Transport: Send + Sync + 'static {
         Err(UpstreamError::Status(501))
     }
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError>;
+    /// Whether the file at `req.url` exists, and the validators it carries, without reading its body (a Maven file's own
+    /// `Last-Modified`). `None` is the repository's 404 or 410. The default reads at most one byte through `fetch_metadata`: a
+    /// body over it is "exists" with no validators.
+    async fn probe_file(&self, mut req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+        req.max_bytes = 1;
+        match self.fetch_metadata(req).await {
+            Ok(MetadataResponse::Fresh { validators, .. }) => Ok(Some(validators)),
+            Err(UpstreamError::TooLarge { .. }) => Ok(Some(UpstreamValidators::default())),
+            Ok(MetadataResponse::Missing) => Ok(None),
+            Ok(MetadataResponse::NotModified { .. }) => Err(UpstreamError::Status(304)),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// `ETag` and `Last-Modified` as upstream spelled them. Kept for the conditional
@@ -246,6 +259,11 @@ impl Transport for Limited {
     async fn fetch_named_read(&self, req: NamedReadRequest) -> Result<Bytes, UpstreamError> {
         let _slot = self.slot().await;
         self.inner.fetch_named_read(req).await
+    }
+
+    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.probe_file(req).await
     }
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {

@@ -136,6 +136,11 @@ pub struct Config {
     pub nuget_upstream_url: Option<Url>,
     pub nuget_search_url: Option<Url>,
     pub nuget_publish_url: Option<Url>,
+    /// Maven: the public repository (https://repo.maven.apache.org/maven2 by default; an origin AND a path prefix, as a
+    /// mirror lays it out) and the one URL `mvn deploy` is forwarded to for the public registry (none by default: Maven
+    /// Central has no deploy endpoint of its own, a registry with a target of its own is deployed to at that target).
+    pub maven_upstream_url: Option<Url>,
+    pub maven_publish_url: Option<Url>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -194,6 +199,8 @@ pub struct ServicePolicyConfig {
     pub service_key_file: PathBuf,
     pub service_key: FirewallToken,
     pub sync_interval_seconds: NonZeroU64,
+    /// Peers whose `X-Forwarded-For` names the client address an upload's spool place is counted against.
+    pub trusted_proxies: Vec<Cidr>,
 }
 
 /// The firewall's credential for the sync API. Its `Debug` prints nothing, because
@@ -386,6 +393,8 @@ struct RawConfig {
     nuget_upstream_url: Option<String>,
     nuget_search_url: Option<String>,
     nuget_publish_url: Option<String>,
+    maven_upstream_url: Option<String>,
+    maven_publish_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -411,6 +420,8 @@ struct RawServicePolicy {
     server_url: String,
     service_key_file: PathBuf,
     sync_interval_seconds: Option<u64>,
+    #[serde(default)]
+    trusted_proxies: Vec<String>,
 }
 
 fn default_download_wait_seconds() -> u64 {
@@ -491,6 +502,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "nuget_upstream_url",
     "nuget_search_url",
     "nuget_publish_url",
+    "maven_upstream_url",
+    "maven_publish_url",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -585,6 +598,8 @@ impl RawConfig {
         let nuget_upstream_url = upstream_origin("nuget_upstream_url", self.nuget_upstream_url)?;
         let nuget_search_url = upstream_origin("nuget_search_url", self.nuget_search_url)?;
         let nuget_publish_url = upstream_origin("nuget_publish_url", self.nuget_publish_url)?;
+        let maven_upstream_url = upstream_origin_with("maven_upstream_url", self.maven_upstream_url, true)?;
+        let maven_publish_url = upstream_origin_with("maven_publish_url", self.maven_publish_url, true)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -879,6 +894,8 @@ impl RawConfig {
             nuget_upstream_url,
             nuget_search_url,
             nuget_publish_url,
+            maven_upstream_url,
+            maven_publish_url,
             local: LocalText::default(),
         })
     }
@@ -970,6 +987,11 @@ impl RawServicePolicy {
         Ok(ServicePolicyConfig {
             server_url, service_key_file: self.service_key_file, service_key: FirewallToken::new(key.to_owned()),
             sync_interval_seconds: bounded_seconds("service_policy.sync_interval_seconds", self.sync_interval_seconds.unwrap_or(60))?,
+            trusted_proxies: self
+                .trusted_proxies
+                .iter()
+                .map(|text| Cidr::parse(text).ok_or_else(|| invalid("service_policy.trusted_proxies", format!("{text:?} is not an address range"))))
+                .collect::<Result<_, _>>()?,
         })
     }
 }

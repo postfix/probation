@@ -222,7 +222,7 @@ one.
 
 Settings that belong to one machine cannot be pushed: `management`, `listen`,
 `data_dir`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url`,
-`siem_auth_header`. `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url` and `nuget_publish_url`
+`siem_auth_header`. `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url`, `nuget_publish_url`, `maven_upstream_url` and `maven_publish_url`
 must be `https://`. Such a push is refused before it is saved. A pushed path must lie
 under the firewall's `data_dir`; the firewall checks that itself.
 

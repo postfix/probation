@@ -28,46 +28,117 @@ pub const SMALL_DOWNLOADS: usize = 64;
 
 /// Concurrent upload spools (every publish forwarder), and the floor of the bytes they may hold together.
 pub const SPOOLS: usize = 8;
-/// Of those, the most one key (owner) may hold, so one valid key cannot take them all.
-pub const SPOOLS_PER_OWNER: usize = 4;
+/// The most of the places, and of the bytes, one owner may hold: half. An owner is counted under two identities, each
+/// capped apart ([`Owner`]), so neither one account, one client address nor one presented credential can take them all.
+pub const SPOOLS_PER_OWNER: usize = SPOOLS / 2;
+
+/// Who an upload's place and bytes are counted against, always a REAL identity and never an unvalidated credential alone:
+/// `key` is the caller's account (certificate and managed mode, where the firewall has authenticated it) or the client
+/// network address (shared-service mode, where the credential is forwarded to the registry unvalidated), and `credential`
+/// is a hash of what the caller presented (also capped, so one credential spread over many addresses does not take them
+/// either). Callers behind one NAT share an address, hence a share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Owner {
+    pub key: u64,
+    pub credential: u64,
+}
+
+impl From<u64> for Owner {
+    /// A bare number is an identity and its only credential (tests and callers that present none).
+    fn from(value: u64) -> Owner {
+        Owner { key: value, credential: value }
+    }
+}
 /// How long an upload that has run out of budget waits for another to give bytes back before it is refused.
 pub const SPOOL_BUDGET_WAIT: Duration = Duration::from_secs(30);
 const SPOOL_BUDGET_FLOOR: u64 = 64 << 20;
 
-/// Bytes reserved from the shared spool budget; returned when dropped.
+/// What one owner dimension holds: places and bytes.
+#[derive(Default)]
+struct Held {
+    seats: usize,
+    bytes: u64,
+}
+
+type Turns = Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<Semaphore>>>>;
+
+/// One owner's turn for a big upload: an owner's big uploads go one at a time (returned when dropped).
+pub struct SpoolTurn {
+    permit: Option<OwnedSemaphorePermit>,
+    key: u64,
+    turns: Turns,
+}
+
+impl Drop for SpoolTurn {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        let mut turns = self.turns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if turns.get(&self.key).is_some_and(|turn| Arc::strong_count(turn) == 1) {
+            turns.remove(&self.key);
+        }
+    }
+}
+
+type Owners = Arc<std::sync::Mutex<std::collections::HashMap<(bool, u64), Held>>>;
+
+fn counted(owner: Owner) -> [(bool, u64); 2] {
+    [(false, owner.key), (true, owner.credential)]
+}
+
+fn release(owners: &Owners, owner: Owner, seats: usize, bytes: u64) {
+    let mut owners = owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for key in counted(owner) {
+        if let Some(held) = owners.get_mut(&key) {
+            held.seats -= seats;
+            held.bytes -= bytes;
+            if held.seats == 0 && held.bytes == 0 {
+                owners.remove(&key);
+            }
+        }
+    }
+}
+
+/// Bytes reserved from the shared spool budget (and from its owner's half of it); returned when dropped.
 pub struct SpoolReservation {
     budget: Arc<AtomicU64>,
     freed: Arc<tokio::sync::Notify>,
+    owners: Owners,
+    owner: Owner,
+    share: u64,
     held: u64,
 }
 
 /// One upload's place, counted against its owner as well; returned when dropped.
 pub struct SpoolSeat {
     _permit: OwnedSemaphorePermit,
-    owner: u64,
-    owners: Arc<std::sync::Mutex<std::collections::HashMap<u64, usize>>>,
+    owner: Owner,
+    owners: Owners,
 }
 
 impl Drop for SpoolSeat {
     fn drop(&mut self) {
-        let mut owners = self.owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = owners.get_mut(&self.owner) {
-            *count -= 1;
-            if *count == 0 {
-                owners.remove(&self.owner);
-            }
-        }
+        release(&self.owners, self.owner, 1, 0);
     }
 }
 
 impl SpoolReservation {
-    /// Takes `more` bytes of the budget; `false` (and nothing taken) when it is not there.
+    /// Takes `more` bytes of the budget; `false` (and nothing taken) when it is not there or the owner already holds its
+    /// half of it.
     pub fn grow(&mut self, more: u64) -> bool {
-        let taken = self.budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| free.checked_sub(more)).is_ok();
-        if taken {
-            self.held += more;
+        let mut owners = self.owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if counted(self.owner).iter().any(|key| owners.get(key).is_some_and(|held| held.bytes.saturating_add(more) > self.share))
+            || more > self.share
+        {
+            return false;
         }
-        taken
+        if self.budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| free.checked_sub(more)).is_err() {
+            return false;
+        }
+        for key in counted(self.owner) {
+            owners.entry(key).or_default().bytes += more;
+        }
+        self.held += more;
+        true
     }
 
     /// Like `grow`, but an upload that finds the budget taken waits (up to `wait`) for another to give bytes back: two
@@ -91,6 +162,8 @@ impl SpoolReservation {
 
 impl Drop for SpoolReservation {
     fn drop(&mut self) {
+        // Bytes back to the owner's count first, then to the budget, then the waiters are woken.
+        release(&self.owners, self.owner, 0, self.held);
         self.budget.fetch_add(self.held, Ordering::AcqRel);
         self.freed.notify_waiters();
     }
@@ -103,7 +176,8 @@ pub struct Limits {
     spool_budget: Arc<AtomicU64>,
     spool_total: u64,
     spool_freed: Arc<tokio::sync::Notify>,
-    spool_owners: Arc<std::sync::Mutex<std::collections::HashMap<u64, usize>>>,
+    spool_owners: Owners,
+    spool_turns: Turns,
     downloads: Arc<Semaphore>,
     /// Places for the transfer of a tiny metadata file (a Go `.info` or `.mod`), apart from the large-transfer places:
     /// a handful of multi-megabyte zips must not make the few hundred bytes that precede them wait and fail.
@@ -125,10 +199,11 @@ impl Limits {
         let active_permits = config.max_active_requests.get() as usize;
         Limits {
             spool_slots: Arc::new(Semaphore::new(SPOOLS)),
-            spool_total: config.max_artifact_bytes.get().saturating_mul(2).max(SPOOL_BUDGET_FLOOR),
+            spool_total: config.max_artifact_bytes.get().saturating_mul(4).max(SPOOL_BUDGET_FLOOR),
             spool_freed: Arc::default(),
             spool_owners: Arc::default(),
-            spool_budget: Arc::new(AtomicU64::new(config.max_artifact_bytes.get().saturating_mul(2).max(SPOOL_BUDGET_FLOOR))),
+            spool_turns: Arc::default(),
+            spool_budget: Arc::new(AtomicU64::new(config.max_artifact_bytes.get().saturating_mul(4).max(SPOOL_BUDGET_FLOOR))),
             downloads: Arc::new(Semaphore::new(config.max_artifact_downloads.get() as usize)),
             small_downloads: Arc::new(Semaphore::new(SMALL_DOWNLOADS)),
             download_waiters: Arc::new(Semaphore::new(config.max_download_waiters as usize)),
@@ -153,28 +228,52 @@ impl Limits {
         Arc::clone(&self.active).try_acquire_owned().ok()
     }
 
+    /// How many spool places are free.
+    pub fn spool_places_free(&self) -> usize {
+        self.spool_slots.available_permits()
+    }
+
     /// A place to spool an upload: `None` (a `503`) when all are taken, never a wait.
     pub fn spool_slot(&self) -> Option<OwnedSemaphorePermit> {
         Arc::clone(&self.spool_slots).try_acquire_owned().ok()
     }
 
-    /// A place for `owner` (a key): `None` (a `503`) when all are taken or the owner already holds its share.
-    pub fn spool_seat(&self, owner: u64) -> Option<SpoolSeat> {
+    /// A place for `owner`: `None` (a `503`) when all are taken or either of its identities already holds its half of them.
+    pub fn spool_seat(&self, owner: impl Into<Owner>) -> Option<SpoolSeat> {
+        let owner = owner.into();
         let mut owners = self.spool_owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners.get(&owner).is_some_and(|held| *held >= SPOOLS_PER_OWNER) {
+        if counted(owner).iter().any(|key| owners.get(key).is_some_and(|held| held.seats >= SPOOLS_PER_OWNER)) {
             return None;
         }
         let permit = self.spool_slot()?;
-        *owners.entry(owner).or_default() += 1;
+        for key in counted(owner) {
+            owners.entry(key).or_default().seats += 1;
+        }
         Some(SpoolSeat { _permit: permit, owner, owners: Arc::clone(&self.spool_owners) })
     }
 
-    /// An empty reservation on the shared spool budget, to `grow` as bytes are accepted.
-    pub fn spool_reservation(&self) -> SpoolReservation {
-        SpoolReservation { budget: Arc::clone(&self.spool_budget), freed: Arc::clone(&self.spool_freed), held: 0 }
+    /// The owner's turn for a big upload, waiting up to `wait` for the owner's other big upload to finish; `None` when it does not.
+    pub async fn spool_turn(&self, owner: impl Into<Owner>, wait: Duration) -> Option<SpoolTurn> {
+        let key = owner.into().key;
+        let turn = Arc::clone(self.spool_turns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(key).or_insert_with(|| Arc::new(Semaphore::new(1))));
+        let permit = tokio::time::timeout(wait, turn.acquire_owned()).await.ok().and_then(Result::ok);
+        let held = SpoolTurn { permit, key, turns: Arc::clone(&self.spool_turns) };
+        if held.permit.is_none() { None } else { Some(held) }
     }
 
-    /// The whole budget: the most any one upload may hold (at least the largest cap a forwarder passes, twice an artifact).
+    /// An empty reservation on the shared spool budget for `owner`, to `grow` as bytes are accepted (never past the owner's half).
+    pub fn spool_reservation(&self, owner: impl Into<Owner>) -> SpoolReservation {
+        SpoolReservation {
+            budget: Arc::clone(&self.spool_budget),
+            freed: Arc::clone(&self.spool_freed),
+            owners: Arc::clone(&self.spool_owners),
+            owner: owner.into(),
+            share: self.spool_total / 2,
+            held: 0,
+        }
+    }
+
+    /// The whole budget; one owner may hold half of it (at least one artifact cap, since the budget is twice an artifact).
     pub fn spool_budget_total(&self) -> u64 {
         self.spool_total
     }
@@ -298,14 +397,17 @@ mod tests {
         assert!(limits.active_permit().is_some());
     }
 
-    /// R3: the budget holds the largest upload any forwarder accepts (twice an artifact), whatever the artifact cap.
+    /// R3: one owner's half of the budget holds the largest upload any forwarder accepts (twice an artifact, the artifact plus its envelope), whatever the artifact cap.
     #[test]
-    fn the_spool_budget_holds_twice_the_artifact_cap() {
+    fn the_spool_budget_holds_four_times_the_artifact_cap_so_an_owners_half_takes_a_body_with_its_envelope() {
         let mut config = config();
         config.max_artifact_bytes = std::num::NonZeroU64::new(200 << 20).expect("200 MiB");
         let limits = Limits::new(&config);
-        assert_eq!(limits.spool_budget_total(), 400 << 20);
-        assert_eq!(limits.spool_budget_free(), 400 << 20);
+        assert_eq!(limits.spool_budget_total(), 800 << 20);
+        assert_eq!(limits.spool_budget_free(), 800 << 20);
+        // R3-3: cargo, NuGet and Maven accept a body of twice the artifact cap (the artifact plus its envelope); one owner's half takes it.
+        assert!(limits.spool_reservation(1).grow((200 << 20) + 1024), "an artifact plus its envelope is accepted");
+        assert!(limits.spool_reservation(1).grow(400 << 20), "and so is the whole 2 x cap a forwarder passes");
     }
 
     /// Spooled uploads share one budget and a few places, and give both back when dropped.
@@ -320,13 +422,19 @@ mod tests {
         assert!(limits.spool_slot().is_none(), "the ninth upload is refused, not queued");
         drop(places);
         assert!(limits.spool_slot().is_some());
-        let mut first = limits.spool_reservation();
-        assert!(first.grow(free - 10));
-        let mut second = limits.spool_reservation();
-        assert!(!second.grow(11), "past the budget nothing is taken");
-        assert_eq!(limits.spool_budget_free(), 10);
-        assert!(second.grow(10));
+        let half = free / 2;
+        let mut first = limits.spool_reservation(1);
+        assert!(first.grow(half - 10));
+        assert!(!first.grow(11), "one owner never holds more than half of the budget");
+        let mut second = limits.spool_reservation(2);
+        assert!(second.grow(half));
+        assert!(first.grow(10));
+        let mut third = limits.spool_reservation(3);
+        assert!(!third.grow(1), "past the budget nothing is taken");
+        assert_eq!(limits.spool_budget_free(), 0);
         drop(first);
+        assert!(third.grow(1), "bytes returned are available to the next owner");
+        drop(third);
         drop(second);
         assert_eq!(limits.spool_budget_free(), free, "every byte is returned");
     }

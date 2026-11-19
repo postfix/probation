@@ -163,6 +163,7 @@ async fn load_policy_snapshot(
             "cargo" => Ecosystem::Cargo,
             "go" => Ecosystem::Go,
             "nuget" => Ecosystem::NuGet,
+            "maven" => Ecosystem::Maven,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {
@@ -234,14 +235,14 @@ pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
 }
 
 /// Sets (`Some`) or clears (`None`) a registry's archive origin. False when the registry is not this
-/// organisation's live Cargo, Go or NuGet registry with a target (the column only exists for those).
+/// organisation's live Cargo, Go, NuGet or Maven registry with a target (the column only exists for those).
 pub async fn set_archive_origin(
     pool: &sqlx::PgPool,
     org: i32,
     registry: i64,
     origin: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go', 'nuget') AND target_url IS NOT NULL AND removed_at IS NULL")
+    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go', 'nuget', 'maven') AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
         .bind(registry)
         .bind(org)

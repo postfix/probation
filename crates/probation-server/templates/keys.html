@@ -48,6 +48,13 @@ dotnet nuget add source {{ scheme }}://{{ host }}/nuget/v3/index.json --name pro
   --username key --password {{ secret }} --store-password-in-clear-text
 dotnet nuget disable source nuget.org</pre>
 <p class="mut">Or in <code>nuget.config</code>: a <code>&lt;clear /&gt;</code> and one <code>&lt;add key="probation" value="{{ scheme }}://{{ host }}/nuget/v3/index.json" /&gt;</code> with the key as the <code>ClearTextPassword</code> of <code>packageSourceCredentials</code>.</p>
+<h3>Point Maven and Gradle at Probation</h3>
+<pre># ~/.m2/settings.xml: one mirror of everything, so every repository (Central included) goes through Probation
+&lt;settings&gt;
+  &lt;mirrors&gt;&lt;mirror&gt;&lt;id&gt;probation&lt;/id&gt;&lt;mirrorOf&gt;*&lt;/mirrorOf&gt;&lt;url&gt;{{ scheme }}://{{ host }}/maven/&lt;/url&gt;&lt;/mirror&gt;&lt;/mirrors&gt;
+  &lt;servers&gt;&lt;server&gt;&lt;id&gt;probation&lt;/id&gt;&lt;username&gt;key&lt;/username&gt;&lt;password&gt;{{ secret }}&lt;/password&gt;&lt;/server&gt;&lt;/servers&gt;
+&lt;/settings&gt;</pre>
+<p class="mut">Gradle: <code>maven { url = uri("{{ scheme }}://{{ host }}/maven/"); credentials { username = "key"; password = "{{ secret }}" } }</code> as the only repository.</p>
 <p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}</p>
 </section>
 {% endif %}

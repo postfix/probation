@@ -64,6 +64,7 @@ async fn refusal_remains_closed_when_storage_fails_during_the_request() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     };
     let dir = tempfile::tempdir().unwrap();
     Mock::given(method("GET"))
@@ -129,6 +130,7 @@ async fn service_policy_fetches_and_remembers_only_its_configured_binding() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     };
     let dir = tempfile::tempdir().unwrap();
     let policy = ServicePolicy::load(&config, dir.path());
@@ -162,6 +164,7 @@ async fn explicit_refusal_survives_restart_and_previous_file_recovery() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     };
     let dir = tempfile::tempdir().unwrap();
     Mock::given(method("GET"))
@@ -250,6 +253,7 @@ async fn malformed_snapshots_cannot_replace_remembered_authority() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     };
     let dir = tempfile::tempdir().unwrap();
     let policy = ServicePolicy::load(&config, dir.path());
@@ -302,6 +306,7 @@ async fn rotation_cannot_resurrect_a_refused_key_from_previous_snapshot() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     };
     let dir = tempfile::tempdir().unwrap();
     Mock::given(method("GET"))
@@ -367,6 +372,9 @@ fn explicit_service_policy_config_accepts_private_key_and_refuses_unsafe_binding
         .is_err()
     );
     assert!(Config::from_toml_str(&format!("{text}sync_interval_seconds = 0\n")).is_err());
+    let proxied = Config::from_toml_str(&format!("{text}trusted_proxies = [\"192.0.2.0/24\"]\n")).expect("a listed proxy range loads");
+    assert_eq!(proxied.service_policy.unwrap().trusted_proxies.len(), 1);
+    assert!(Config::from_toml_str(&format!("{text}trusted_proxies = [\"nonsense\"]\n")).is_err(), "a proxy that is no address range is refused");
     assert!(Config::from_toml_str(&text.replace("127.0.0.1:8080", "0.0.0.0:8080")).is_err());
     // Windows has no mode bits: the key file's ACL is the operator's to restrict.
     #[cfg(unix)]
@@ -387,6 +395,7 @@ fn config_for(server: &MockServer) -> ServicePolicyConfig {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     }
 }
 
@@ -843,7 +852,7 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 
 #[tokio::test]
 async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
-    use probation_policy::Ecosystem::{Cargo, Go, Npm, NuGet};
+    use probation_policy::Ecosystem::{Cargo, Go, Maven, Npm, NuGet};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
         ("http://files.example.test/crates", Cargo, target, "not https"),
@@ -857,6 +866,8 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
         ("https://files.example.test/go", Go, None, "a Go registry needs a target of its own"),
         ("https://127.0.0.1/go", Go, Some("https://goproxy.example.test/repo/"), "loopback"),
         ("https://files.example.test/nuget", NuGet, None, "a NuGet registry needs a target of its own"),
+        ("https://files.example.test/maven", Maven, None, "a Maven registry needs a target of its own"),
+        ("https://169.254.169.254/maven", Maven, Some("https://nexus.example.test/repository/releases/"), "metadata address"),
         ("https://169.254.169.254/nuget", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"), "metadata address"),
         ("https://files.example.test/crates", Cargo, None, "no target"),
         ("not a url", Cargo, target, "not a URL"),
@@ -872,6 +883,9 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
     // A NuGet registry with a target may declare where its packages are redirected to (row 20).
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"))).unwrap()).await;
     result.expect("a NuGet registry's archive origin is accepted");
+    // A Maven registry with a target may declare where its artifacts are redirected to (row 21).
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Maven, Some("https://nexus.example.test/repository/releases/"))).unwrap()).await;
+    result.expect("a Maven registry's archive origin is accepted");
 }
 
 /// Row 20 (security review F3): a resource path prefix is whole path segments, and only a NuGet registry with a target may carry one.

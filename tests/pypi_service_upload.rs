@@ -127,6 +127,7 @@ async fn local_service_forwards_selected_pypi_upload_and_upstream_denial() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = Arc::new(Registry::default());
     let server = TestServer::start_with_upstream(

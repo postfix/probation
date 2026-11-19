@@ -57,7 +57,8 @@ pub struct BlocklistSnapshot {
     source: Option<BlockSet>,
 }
 
-const ECOSYSTEMS: usize = 6;
+/// One table slot per delivered family, so a family added to `Ecosystem::ALL` cannot index past the tables.
+const ECOSYSTEMS: usize = Ecosystem::ALL.len();
 
 /// A blocked version keeps its upstream spelling for an exact match and, where the
 /// ecosystem's rules allow it, the parsed form. SPEC §7 requires PyPI blocks to match
@@ -158,6 +159,8 @@ impl BlocklistSnapshot {
                 Ecosystem::Go => record.name.clone(),
                 // nuget.org ids are case-insensitive: judged under the lower-cased id.
                 Ecosystem::NuGet => probation_policy::names::canonical_name(Ecosystem::NuGet, &record.name),
+                // `groupId:artifactId` is case-sensitive: kept exactly as the blocklist spells it.
+                Ecosystem::Maven => record.name.clone(),
             };
             entry_count += 1;
             match &record.version {
@@ -681,7 +684,7 @@ mod tests {
         let mixed = parse(&document(
             1,
             r#"{"ecosystem":"npm","name":"good","version":null,"reason":"malware"},
-               {"ecosystem":"maven","name":"bad","version":null,"reason":"malware"}"#,
+               {"ecosystem":"conan","name":"bad","version":null,"reason":"malware"}"#,
             "",
         ));
         assert!(matches!(

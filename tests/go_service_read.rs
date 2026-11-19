@@ -71,6 +71,7 @@ async fn start_with(freeze: u64, target: Option<&str>, archive: Option<&str>, re
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     let clock = TestClock::at_rfc3339("2026-04-06T12:00:00Z");
@@ -295,6 +296,7 @@ async fn a_block_published_while_a_go_file_is_in_flight_wins() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(3600).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     registry.answer("/mid.example/m/@v/v1.0.0.info", FakeAnswer::Body(info("v1.0.0", Some(OLD))));

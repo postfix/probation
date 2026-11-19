@@ -166,6 +166,7 @@ async fn shared_service_final_handoff_orders_publication() {
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                         Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -176,6 +177,7 @@ async fn shared_service_final_handoff_orders_publication() {
                     service_key_file: "/test/key".into(),
                     service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
                     sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+                    trusted_proxies: vec![],
                 });
                 let server = TestServer::start_with_upstream(
                     config,
@@ -324,6 +326,7 @@ async fn shared_raw_scoped_tarball_preserves_selected_registry() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let server = TestServer::start_with_upstream(
         config,
@@ -406,6 +409,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                         Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -418,6 +422,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                             "prb_01234567890123456789012345678901".into(),
                         ),
                         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+                        trusted_proxies: vec![],
                     });
                     let server = TestServer::start_with_upstream(
                         config,
@@ -442,6 +447,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                         Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()
@@ -588,6 +594,7 @@ async fn shared_service_applies_one_policy_without_downstream_login() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let transport = Arc::new(CredentialRegistry(
         registry,
@@ -1021,6 +1028,7 @@ async fn readiness_reports_policy_gate_and_degraded_registries() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let server = TestServer::start_with_upstream(
         config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),

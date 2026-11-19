@@ -178,6 +178,8 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "nuget_upstream_url",
         "nuget_search_url",
         "nuget_publish_url",
+        "maven_upstream_url",
+        "maven_publish_url",
     ] {
         if table
             .get(key)

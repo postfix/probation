@@ -54,6 +54,7 @@ async fn start_with(freeze: u64, dl: &str, archive_origin: Option<&str>) -> Fixt
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     registry.answer(&format!("{PREFIX}/config.json"), FakeAnswer::Body(format!(r#"{{"dl":"{dl}"}}"#)));
@@ -261,6 +262,7 @@ async fn a_download_in_flight_when_the_archive_origin_changes_is_not_delivered()
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(3600).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     registry.answer(&format!("{PREFIX}/config.json"), FakeAnswer::Body(format!(r#"{{"dl":"{archive}"}}"#)));
@@ -302,6 +304,7 @@ async fn a_block_published_while_a_download_is_in_flight_wins() {
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(3600).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     registry.answer(&format!("{PREFIX}/config.json"), FakeAnswer::Body(format!(r#"{{"dl":"{archive}"}}"#)));

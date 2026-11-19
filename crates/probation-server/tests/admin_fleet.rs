@@ -657,7 +657,7 @@ fn report(settings_revision: u64, error: Option<&str>, period: u64) -> FirewallR
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None,
+                osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None,
             },
         },
         effective_period_seconds: period,

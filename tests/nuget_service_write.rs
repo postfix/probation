@@ -115,6 +115,7 @@ async fn start_at(target: Option<&str>, publish: &str) -> (TestServer, Arc<Regis
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let flat = if target.is_some_and(|t| t.contains("nuget-reg")) { "https://nuget-reg.invalid" } else { "https://nuget-pub.invalid" };
     let registry = Arc::new(Registry { publish: publish.to_owned(), flat: flat.to_owned(), calls: Mutex::default(), indexes: Default::default(), odd: Mutex::new((200, "text/plain", "")) });
@@ -354,7 +355,7 @@ async fn a_stalled_declaration_holds_little_and_times_out_giving_its_place_back(
     use probation::http::spool::{Spooled, spool_with};
     let (server, _registry, _policy) = start("https://nuget-reg.invalid").await;
     let app = server.app();
-    let total = app.limits.spool_budget_total();
+    let total = app.limits.spool_budget_total() / 2; // one owner's half of the budget
     let began = std::time::Instant::now();
     let stalled = {
         let app = app.clone();
@@ -367,14 +368,14 @@ async fn a_stalled_declaration_holds_little_and_times_out_giving_its_place_back(
     drop(second);
     assert!(stalled.await.unwrap().is_err(), "the idle limit refuses it");
     assert!(began.elapsed() < secs(10), "after the idle limit, not the total deadline");
-    assert_eq!(app.limits.spool_budget_free(), total);
+    assert_eq!(app.limits.spool_budget_free(), total * 2);
     // total deadline: chunks keep arriving but never finish
     let slow = axum::body::Body::from_stream(futures_util::stream::unfold((), |()| async {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         Some((Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"x")), ()))
     }));
     assert!(spool_with(&app, 0, None, total, slow, secs(5), std::time::Duration::from_millis(400)).await.is_err());
-    assert_eq!(app.limits.spool_budget_free(), total, "the deadline returns the bytes");
+    assert_eq!(app.limits.spool_budget_free(), total * 2, "the deadline returns the bytes");
     for _ in 0..probation::http::limits::SPOOLS {
         assert!(app.limits.spool_slot().is_some());
     }
@@ -415,14 +416,14 @@ async fn two_large_uploads_in_parallel_are_not_serialised_into_a_503() {
     let (server, _registry, _policy) = start("https://nuget-reg.invalid").await;
     let app = server.app();
     let each = app.limits.spool_budget_total() / 2 - (1 << 20);
-    let run = |app: Arc<probation::App>| async move {
+    let run = |app: Arc<probation::App>, owner: u64| async move {
         let n = (each >> 20) as usize;
-        match spool_with(&app, 0, Some(n as u64 * (1 << 20)), u64::MAX, chunks(n, 1 << 20), secs(30), secs(60)).await {
+        match spool_with(&app, owner, Some(n as u64 * (1 << 20)), u64::MAX, chunks(n, 1 << 20), secs(30), secs(60)).await {
             Ok(Spooled::Body(spool)) => { tokio::time::sleep(std::time::Duration::from_millis(200)).await; spool.length }
             _ => 0,
         }
     };
-    let (a, b) = tokio::join!(run(app.clone()), run(app.clone()));
+    let (a, b) = tokio::join!(run(app.clone(), 1), run(app.clone(), 2));
     assert!(a > 0 && b > 0, "both uploads fit: {a} {b}");
     drop(app);
     server.shutdown().await;
@@ -454,14 +455,24 @@ async fn one_key_cannot_hold_all_the_spool_places() {
     server.shutdown().await;
 }
 
-/// Two uploads that together are more than the budget are not a 503 for the second while places are free: it waits for the
-/// first to finish and then goes through.
+/// Uploads that together are more than the budget are not a 503 for the second while places are free: it waits for another to
+/// finish and then goes through (each owner holds at most half of the budget).
 #[tokio::test]
 async fn two_uploads_over_the_budget_together_go_one_after_the_other() {
     use probation::http::spool::{Spooled, spool_with};
     let (server, _registry, _policy) = start("https://nuget-reg.invalid").await;
     let app = server.app();
-    let each = ((app.limits.spool_budget_total() * 6 / 10) >> 20) as usize;
+    let total = app.limits.spool_budget_total();
+    let each = ((total * 45 / 100) >> 20) as usize;
+    let small = ((total * 20 / 100) >> 20) as usize;
+    let third = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let body = futures_util::stream::iter((0..small).map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![0u8; 1 << 20])))).chain(futures_util::stream::pending());
+            let _ = spool_with(&app, 3, None, u64::MAX, axum::body::Body::from_stream(body), secs(60), secs(60)).await;
+        })
+    };
     let first = {
         let app = app.clone();
         tokio::spawn(async move {
@@ -476,6 +487,7 @@ async fn two_uploads_over_the_budget_together_go_one_after_the_other() {
         _ => 0,
     };
     assert!(first.await.unwrap() > 0 && second > 0, "both fit one after the other");
+    third.abort();
     drop(app);
     server.shutdown().await;
 }

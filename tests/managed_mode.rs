@@ -889,6 +889,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                 Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                 Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+                Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
             };
             client
                 .get(url)
@@ -932,6 +933,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+            Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
@@ -940,6 +942,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
+            Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
         }
     }
 }
@@ -1304,6 +1307,39 @@ async fn nuget_key_route_authenticates_every_read_and_refuses_a_blocked_package_
     let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::NuGet)).collect();
     assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
     assert!(events.iter().all(|e| e.package.as_deref() == Some("evil.pkg")), "{events:#?}");
+    h.server.shutdown().await;
+}
+
+/// Row 21: a managed firewall authenticates every Maven read with the key (the Basic password of `settings.xml`, or a
+/// Bearer), refuses an unknown key with the same 401, and the key's policy decides: one organisation's block refuses the
+/// coordinate for its keys (case-exact) and leaves another's served. The refusal is local (no upstream call) and leaves one
+/// decision record per refusal; the key route serves no deploy endpoint.
+#[tokio::test]
+async fn maven_key_route_authenticates_every_read_and_refuses_a_blocked_coordinate_locally() {
+    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Maven, name: "org.evil:Bad".to_owned(), reason: None }], |_| {}).await;
+    h.registry.answer("/maven2/org/evil/Bad/maven-metadata.xml", FakeAnswer::Body(common::maven::metadata("org.evil", "Bad", "1.0", "1.0", &["1.0"])));
+    h.registry.answer("/maven2/org/evil/Bad/1.0/Bad-1.0.pom", FakeAnswer::Dated { body: common::maven::pom("org.evil", "Bad", "1.0").into_bytes(), last_modified: common::maven::http_date("2025-01-01T00:00:00Z") });
+    h.registry.answer("/maven2/org/evil/Bad/1.0/Bad-1.0.jar", FakeAnswer::Dated { body: common::maven::jar("Bad", "1.0"), last_modified: common::maven::http_date("2025-01-01T00:00:00Z") });
+    let paths = ["/maven/org/evil/Bad/maven-metadata.xml", "/maven/org/evil/Bad/maven-metadata.xml.sha1", "/maven/org/evil/Bad/1.0/Bad-1.0.jar", "/maven/org/evil/Bad/1.0/Bad-1.0.pom.sha1"];
+    for path in paths {
+        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    assert_eq!(h.get(paths[0], "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    for path in paths {
+        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the coordinate: {path}");
+    }
+    assert!(h.registry.calls().is_empty(), "a blocked coordinate reaches no upstream call");
+    let served = h.get("/maven/org/evil/Bad/maven-metadata.xml", &key_b()).await;
+    assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps the version");
+    assert!(served.text().await.unwrap().contains("<version>1.0</version>"));
+    assert_eq!(h.get("/maven/org/evil/Bad/1.0/Bad-1.0.jar", &key_b()).await.status(), StatusCode::OK);
+    let put = reqwest::Client::new().put(h.server.url("/maven/org/evil/Bad/1.0/Bad-1.0.jar")).header("authorization", "Basic dTpw").body("x").send().await.unwrap();
+    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Maven)).collect();
+    assert_eq!(events.len(), 4, "one decision record per refusal: {events:#?}");
+    assert!(events.iter().all(|e| e.package.as_deref() == Some("org.evil:Bad")), "{events:#?}");
     h.server.shutdown().await;
 }
 

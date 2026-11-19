@@ -19,6 +19,7 @@ pub enum Call {
     Cargo,
     Go,
     Nuget,
+    Maven,
 }
 
 const ANSWERED: u8 = 1;
@@ -49,7 +50,7 @@ impl Tracker {
 
 #[derive(Default)]
 pub struct UpstreamHealth {
-    trackers: [Tracker; 8],
+    trackers: [Tracker; 9],
     /// LS-F3: layer rules of the active snapshot skipped for an unknown ecosystem tag.
     policy_rules_skipped_unknown_ecosystem: std::sync::atomic::AtomicU64,
     /// Central OSV (row 30): counters that travel in the sync report (`osv_report`) and the
@@ -184,12 +185,13 @@ impl UpstreamHealth {
     /// Closes the period and reports it. `pypi` is unreachable when either of its
     /// trackers is, so a files outage shows even while metadata refreshes succeed.
     pub fn take_period(&self) -> Upstreams {
-        let [npm, metadata, artifacts, osv, rubygems, cargo, go, nuget] = &self.trackers;
+        let [npm, metadata, artifacts, osv, rubygems, cargo, go, nuget, maven] = &self.trackers;
         // Reported only once RubyGems has been called, so a firewall that serves none never names it.
         let rubygems_down = rubygems.close_period();
         let cargo_down = cargo.close_period();
         let go_down = go.close_period();
         let nuget_down = nuget.close_period();
+        let maven_down = maven.close_period();
         let state = |down| {
             if down {
                 Reachability::Unreachable
@@ -206,6 +208,7 @@ impl UpstreamHealth {
             cargo: cargo.touched.load(Ordering::Acquire).then(|| state(cargo_down)),
             go: go.touched.load(Ordering::Acquire).then(|| state(go_down)),
             nuget: nuget.touched.load(Ordering::Acquire).then(|| state(nuget_down)),
+            maven: maven.touched.load(Ordering::Acquire).then(|| state(maven_down)),
         }
     }
 }
@@ -220,7 +223,7 @@ mod tests {
         let ok = Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None,
+            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None,
         };
         assert_eq!(health.take_period(), ok, "no calls yet");
         health.record_upstream::<()>(Call::Npm, &Err(UpstreamError::Status(503)));
@@ -239,6 +242,19 @@ mod tests {
         health.record(Call::Npm, true);
         health.record(Call::PypiArtifacts, true);
         assert_eq!(health.take_period(), ok, "one success is enough");
+    }
+
+    /// Row 21: Maven is reported only once a Maven call was made, and follows the same rule as every family before it.
+    #[test]
+    fn a_maven_tracker_is_reported_only_after_its_first_call_and_follows_the_same_rule() {
+        let health = UpstreamHealth::default();
+        assert_eq!(health.take_period().maven, None, "no call, no entry");
+        health.record_upstream::<()>(Call::Maven, &Err(UpstreamError::Status(503)));
+        assert_eq!(health.take_period().maven, Some(Reachability::Unreachable));
+        assert_eq!(health.take_period().maven, Some(Reachability::Unreachable), "a period with no calls keeps it");
+        health.record_upstream::<()>(Call::Maven, &Err(UpstreamError::Status(404)));
+        assert_eq!(health.take_period().maven, Some(Reachability::Ok), "a 404 means the repository answered");
+        assert_eq!(health.take_period().nuget, None, "another family's entry stays absent");
     }
 
     /// Row 20: NuGet is reported only once a NuGet call was made (a firewall that serves none never names it),

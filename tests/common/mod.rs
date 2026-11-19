@@ -645,6 +645,8 @@ pub enum FakeAnswer {
     Body(String),
     /// A `200` with these raw bytes (a gzip or zlib RubyGems document, a binary gem).
     Bytes(Vec<u8>),
+    /// A `200` with these raw bytes and a `Last-Modified` (a Maven repository dates a file by it).
+    Dated { body: Vec<u8>, last_modified: String },
     /// Upstream `404`/`410`.
     Missing,
     Fail(UpstreamError),
@@ -863,6 +865,12 @@ impl Transport for FakeRegistry {
                 }
                 Ok(MetadataResponse::Fresh { body: body.into(), validators: UpstreamValidators::default() })
             }
+            FakeAnswer::Dated { body, last_modified } => {
+                if body.len() as u64 > req.max_bytes {
+                    return Err(UpstreamError::TooLarge { limit: req.max_bytes });
+                }
+                Ok(MetadataResponse::Fresh { body: body.into(), validators: UpstreamValidators { etag: None, last_modified: Some(last_modified) } })
+            }
             FakeAnswer::Body(body) => {
                 if body.len() as u64 > req.max_bytes {
                     return Err(UpstreamError::TooLarge {
@@ -946,6 +954,15 @@ impl Transport for FakeRegistry {
         }
     }
 
+    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+        match self.record(&req.url) {
+            FakeAnswer::Dated { last_modified, .. } => Ok(Some(UpstreamValidators { etag: None, last_modified: Some(last_modified) })),
+            FakeAnswer::Missing => Ok(None),
+            FakeAnswer::Fail(error) => Err(error),
+            _ => Ok(Some(UpstreamValidators::default())),
+        }
+    }
+
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let capped = |body: String, declared: Option<u64>| ArtifactBody {
             declared_length: declared,
@@ -966,6 +983,13 @@ impl Transport for FakeRegistry {
                         Box::pin(futures_util::stream::once(async move { Ok(bytes::Bytes::from(body)) })),
                         req.max_bytes,
                     ),
+                })
+            }
+            FakeAnswer::Dated { body, .. } => {
+                let declared = body.len() as u64;
+                Ok(ArtifactBody {
+                    declared_length: Some(declared),
+                    stream: probation::upstream::capped(Box::pin(futures_util::stream::once(async move { Ok(bytes::Bytes::from(body)) })), req.max_bytes),
                 })
             }
             FakeAnswer::Body(body) => {
@@ -1177,6 +1201,7 @@ pub fn run<T>(body: impl Future<Output = T>) -> T {
 /// select their own lines by the temp path they were given, which is unique per test.
 pub mod go;
 pub mod nuget;
+pub mod maven;
 
 pub mod logs {
     use std::io;

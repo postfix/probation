@@ -14,6 +14,7 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
     (Ecosystem::Cargo, Some("crates.io")),
     (Ecosystem::Go, Some("Go")),
     (Ecosystem::NuGet, Some("NuGet")),
+    (Ecosystem::Maven, Some("Maven")),
 ];
 
 #[test]
@@ -67,4 +68,14 @@ fn osv_ecosystem_mapping_per_family_nuget() {
     assert_eq!(Ecosystem::NuGet.as_tag(), "nuget");
     assert_eq!(Ecosystem::from_tag("nuget"), Some(Ecosystem::NuGet));
     assert!(Ecosystem::ALL.contains(&Ecosystem::NuGet));
+}
+
+/// Row 21: names `Ecosystem::Maven`, so it does not compile before this row adds the variant. OSV spells the ecosystem
+/// `Maven` and keys it `groupId:artifactId`; the blocklist tag is `maven`.
+#[test]
+fn osv_ecosystem_mapping_per_family_maven() {
+    assert_eq!(osv_ecosystem(Ecosystem::Maven), Some("Maven"));
+    assert_eq!(Ecosystem::Maven.as_tag(), "maven");
+    assert_eq!(Ecosystem::from_tag("maven"), Some(Ecosystem::Maven));
+    assert!(Ecosystem::ALL.contains(&Ecosystem::Maven));
 }

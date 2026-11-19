@@ -751,7 +751,7 @@ To close the NAT64 gap at the network level, restrict the firewall's outbound
 connections to the hosts it needs:
 
 - `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`, or the hosts in
-  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url` and `nuget_publish_url` if you set them
+  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url`, `nuget_publish_url`, `maven_upstream_url` and `maven_publish_url` if you set them
 - `api.osv.dev`, unless `osv_mode = "off"`
 - in managed mode, the server's address from `[management] url`
 
@@ -1344,6 +1344,8 @@ Every size and count above must not be zero.
 | `nuget_upstream_url` | `https://api.nuget.org` | Same rules. The origin of the service index, flat container, registration, vulnerability and signature documents; a resource of the registry's service index on any other origin is not used. |
 | `nuget_search_url` | `https://azuresearch-usnc.nuget.org` | Same rules. The origin of the search and autocomplete services. |
 | `nuget_publish_url` | `https://www.nuget.org` | Same rules. The origin of the publish endpoints the shared service forwards to. |
+| `maven_upstream_url` | `https://repo.maven.apache.org/maven2` | Same rules, except that it is an origin AND the path prefix of the repository tree (Central's is `maven2`; a mirror's is whatever it publishes, whole segments, no dot or encoded segment). The one public Maven repository: `maven-metadata.xml`, the files of every version, their checksums and signatures, the archetype catalog. Artifacts are read from it only; a selected registry has its own `target_url` instead. |
+| `maven_publish_url` | none | Same rules as `maven_upstream_url`. Where the shared service forwards `mvn deploy` for the PUBLIC registry (one with no `target_url`). There is no default, because Maven Central has no deploy endpoint of its own: with the key absent a deploy to the public registry is a 404. A registry with a `target_url` is deployed to at that URL. |
 | `sync_interval_seconds` | `60` | Managed mode only. From 1 to 86400. How long a change on the server may take to reach this firewall. |
 
 The environment variable `PROBATION_SIEM_AUTH` holds the SIEM credential (section
@@ -1696,9 +1698,9 @@ certificate is served only when its bytes hash to the SHA-256 fingerprint the re
 
 Uploads. Every publish forwarder (npm publish, PyPI upload, `gem push`, `cargo publish`, `dotnet nuget push`) spools the body to
 an unnamed file before forwarding so the policy can be rechecked first. That spool is bounded in one place (src/http/spool.rs): at
-most 8 uploads at once, at most 4 of them one key's (the ninth, or a key's fifth, is a 503, not a queue), all of them together within one byte budget (twice `max_artifact_bytes`, at
-least 64 MiB: the largest upload any forwarder accepts), taken as the bytes arrive and not as a declared length (a declaration that
-never delivers holds a place and nothing else; an upload that finds the budget taken waits up to 30 s for the others to finish instead of being refused), a body that stalls for 60 s or does not arrive within 15 minutes is refused, a write
+most 8 uploads at once, at most 4 of them one owner's (the ninth, or an owner's fifth, is a 503, not a queue; the owner is defined in "Who a spool share belongs to" below), all of them together within one byte budget (four times `max_artifact_bytes`, at
+least 64 MiB: one owner's half is then the largest upload any forwarder accepts, an artifact plus its envelope), taken as the bytes arrive and not as a declared length (a declaration that
+never delivers holds a place and nothing else; an upload that finds the budget taken waits up to 30 s for the others to finish instead of being refused), a body that stalls for 15 s (60 s for its first chunk) or does not arrive within 15 minutes is refused, a write
 with no credential is 401 before anything is read, an empty body (unlist, relist) takes no place, and a declared or received length
 over the cap is 413 before a place is held for it. The credential's value is not validated here (the registry does that), so a
 junk key can occupy the places for at most a minute of silence and never more than the budget.
@@ -1729,3 +1731,88 @@ service key; a write with neither is refused locally with 401 before any lookup,
 (the spool above bounds the rest), and the registry's answer comes back as plain text or JSON with `X-Content-Type-Options: nosniff`
 (a status that is no publish answer is a 502). A standalone or managed firewall has no write route: any non-read verb on `/nuget/`
 is 405 and reaches nothing.
+
+### Maven and Gradle clients
+
+Point Maven at the firewall as the one mirror of every repository, with the key as the password of the matching server
+(`~/.m2/settings.xml`):
+
+```xml
+<settings>
+  <mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://firewall.example/maven/</url></mirror></mirrors>
+  <servers><server><id>probation</id><username>key</username><password>prb_...</password></server></servers>
+</settings>
+```
+
+(`/registry/maven/{id}/` of a selected registry.) Gradle: `maven { url = uri("https://firewall.example/maven/"); credentials { username = "key"; password = "prb_..." } }` as the only repository, in
+the project and in `pluginManagement`. One mirror with `mirrorOf *` is the one protected source: a second repository would offer what this
+one refuses. Maven refuses an `http` mirror unless it is declared (it is, by this mirror); use https beyond a development machine.
+
+What is served. The repository layout under `/maven/`: `{group as directories}/{artifact}/maven-metadata.xml`,
+`{group}/{artifact}/{version}/maven-metadata.xml` of a `-SNAPSHOT` version, `{group}/maven-metadata.xml` of a plugin group,
+`{group}/{artifact}/{version}/{artifact}-{version}[-{classifier}].{ext}` (POM, JAR, sources, javadoc, `.module`, distributions)
+and every `.md5`, `.sha1`, `.sha256`, `.sha512` and `.asc` of them, and `archetype-catalog.xml`; `HEAD` and ranges on the files.
+A coordinate, version and file name have one spelling (group directories carry no dot; the file name is the artifact id and the version
+the directory names); anything else is a 404 and asks the repository nothing. The identity is `groupId:artifactId` as the layout spells it
+and case is identity (`Foo` and `foo` are two artifacts, as on every repository). Directory listings and files that are no part of the layout
+are not served.
+
+What is applied. A version's publication time is the `Last-Modified` of its POM (the repository's own, set when the file was uploaded or
+synced); a version whose POM has none, or none that parses, waits on the time this firewall first saw it (held for a whole cooldown), and no
+directory listing time, cache age or build time is ever used. The metadata lists only the versions that pass (the
+age, a block, OSV on `groupId:artifactId` and the version directory verbatim, a pinned digest), in the repository's order; `latest` and
+`release` name the newest allowed (the element goes when none is left); everything else the document says is passed on byte for byte. Its
+`.md5`, `.sha1`, `.sha256` and `.sha512` are the checksums of what was served, and its `.asc` is the repository's own only when nothing was
+removed (a signature of other bytes would not verify, so it is a 404 then). The dating of a long listing is bounded per request (2,048 POMs
+newest first, 16 at a time, committed as they are read; the largest artifact measured on Central has 1,956 versions): a version still undated is withheld, and the next request settles more.
+Every file of a version is refused (403, with the hold's deadline when it is a hold) when the version is, and a refused version's files are
+never fetched; a file the repository does not have makes no reference and is a 404. A snapshot build (`1.0-20260101.120000-3`) is its own unit:
+it is aged by its own POM, the version-level metadata keeps the builds that pass and points at the newest of them (403 with the hold when
+there is none), and a block or an exception written for `1.0-SNAPSHOT` applies to every build. The artifact-level listing names a snapshot directory
+unless a block names it. A POM may name repositories of its own (`<repositories>`); `mirrorOf *` sends every one of them through this firewall, so that mirror is what makes it the one source (Gradle ignores a POM's repositories unless told otherwise). A plugin group's metadata lists no plugin whose package a block names; the archetype catalog lists no archetype whose
+package or version a block names and carries no `<repository>` URL of its own. The documents are read by a strict scanner (no document type or entity declaration, no processing
+instruction, no entity other than the five predefined and numeric references, nesting at most 24 deep, at most 16 MiB for a metadata document and
+128 MiB for the archetype catalog, which is 18.6 MB on Maven Central): anything else is a 502, never expanded or fetched.
+
+What is shared. Credential-free reads share a fetched metadata document for 5 s, the dates of an artifact's versions in a bounded table (128
+artifacts), and one refresh at a time per artifact; a read that carries the caller's own credential reads and fills none of it (the committed
+reference identity, first-seen times and pins are the only memory that outlives a request). Refreshes are bounded process-wide (16) and per
+registry (4), the archetype catalog is read one at a time, and a project may hold at most five times `max_references_per_project` reference rows.
+A POM, checksum, signature or `.module` is a small file (up to 16 MiB, its own pool of places) and never queues behind a large download.
+
+Through the shared service. A registry with a `target_url` is read at that URL (its repository root, path included) with the caller's own
+`Authorization` (Basic or Bearer; a bare key is not accepted); its `401` carries the `Basic` challenge Maven needs; a repository that redirects
+a download to storage declares that origin on its registry page (an archive origin: only a large file's transfer follows it, never a
+POM or checksum, and the credential is not sent there). `mvn deploy` (and `deploy:deploy-file`) is forwarded: a `PUT` of each file, checksum,
+signature and metadata document, and a `DELETE`, to the registry's own origin (for the public registry, `maven_publish_url`, and a 404 when it is not
+set) with the caller's own `Authorization` and never a credential of this service. Maven sends no credential until it is challenged: a write
+with none is answered `401` with `WWW-Authenticate: Basic` before anything is read or asked, a body over twice `max_artifact_bytes` is `413`,
+a path that is no layout path is `404`, and the registry's answer is relayed only with a status a deploy endpoint gives (otherwise 502), as
+plain text that no browser sniffs. Every upload shares the one bounded spool of the other forwarders. A standalone or certificate-managed firewall has
+no deploy route (405). The certificate script writes no Maven configuration (the JVM's trust store is a system matter and `mvn` signs in
+with the key) and points at the Keys page.
+
+Maven, fix round of review 21 (what changed in the paragraphs above).
+- Rows: the per-project row bound (five times `max_references_per_project`) is hard: a unit's POM anchor is also refused with a 503 past it (nothing is committed first), and a listing is dated only up to the room the bound leaves.
+- A version listed with no POM at all (a bare jar on a private repository) is not cut for ever: it is held for one cooldown from the time this firewall first listed it and then served (its files are confirmed to exist when one is asked for).
+- Documents: a comment may hold an ampersand; a document that declares `ISO-8859-1` is read as such (served as the repository wrote it when nothing is removed, as UTF-8 with the declaration changed when something is); any other non-UTF-8 document is a 502. A document that could be read two ways is a 502 and is never filtered and passed on: a repeated `latest`, `release`, `lastUpdated`, `snapshot`, `versions` or `plugins`, a `version`, `latest`, `release` or build with markup inside, `plugins` beside `versions`, or a prefixed element name.
+- `DELETE` of a whole artifact or version directory (`.../lib/1.0/`, as Nexus and Artifactory take it) is forwarded to the registry's own directory URL; `PUT` still names a file.
+- Files: a file's own `Last-Modified` counts as well as its POM's: a classifier or module file added later to an old version waits its own cooldown (the probe reads headers only, never the body). A Gradle `.module` file that names a location by absolute URL (`files[].url`, `available-at.url`) is refused (403) because the client would be sent outside this repository; relative URLs, the normal form, are served. The first download of a file is compared with the `.sha1` the repository publishes next to it (when it publishes one) before its digests are pinned; a mismatch is a 502 and nothing is stored or pinned.
+- The archetype catalog waits for one slot BEFORE it takes a refresh place (a queue of catalog requests holds nothing another document needs) and credential-free reads share the fetched copy for 5 s; a read that carries the caller's credential fetches its own and keeps none.
+- Uploads: the spool places of every forwarder (npm, PyPI, RubyGems, Cargo, NuGet, Maven) are counted per credential PRESENTED (a hash of `Authorization`, `X-NuGet-ApiKey` and the like together with the service key), at most four per credential of the eight, an upload that stalls is cut after 15 s (it was 60 s), and after 20 s a body must average at least 1 KiB/s: a trickle can no longer hold a place for the whole 15-minute deadline, and one caller's open uploads do not use up another's places. A caller can still present many distinct credentials; the eight places and the byte budget bound that, and the rate floor ends it in seconds.
+- Hosted registries that let a depositor choose the stored modification time (some Artifactory and GitHub Packages style feeds, imports, checksum deploys) can back-date a POM and skip the cooldown for that unit: the same accepted residual as Go's first list and NuGet's `published`. A block or an exception entry is the way through; the operator decides which hosted registries to register.
+- A snapshot whose newest build is held, on a repository that lists only the newest build per extension in its metadata, resolves to a 403 with the hold until the build is old enough (an older build is still downloadable by its exact name): that is the cooldown applied to the newest build, stated here so it is not mistaken for a defect.
+
+Maven, recheck of review 21 (changes to the paragraphs above).
+- Uploads: the first chunk of a body may take up to 60 s to arrive; once it has started a stall of 15 s cuts it. A body must average 16 KiB/s after a 20 s grace; a body with no declared length may take 5 minutes at most, a declared one 20 s plus twice its length at that rate (never more than 15 minutes). Who a place is counted against is described in the recheck-2 paragraph below (it replaces the earlier per-service-key counting).
+- A checksum file the registry does not have may be answered 403 as well as 404 (a bucket that does not list absent keys): that is "no sidecar", not a failed download; a sidecar that is there and disagrees still blocks the pin.
+- The row bound and the rows a listing makes are counted and committed under one gate per project, so simultaneous first requests cannot pass the bound together.
+- A catalog read that carries the caller's credential takes its own registry's slot (and one of four process-wide private ones), never the slot the public registry's reads wait for.
+- `python3 tests/e2e/native/run_tests.py` defaults its scratch directory to `<repository parent>/.<repository>-scratch/native` on disk (several tests assert on the host's file systems and /tmp is RAM here); `NATIVE_TEST_SCRATCH` overrides it.
+
+Maven, recheck-2 of review 21: who a spool share belongs to (one rule for all six forwarders: npm, PyPI, RubyGems, Cargo, NuGet, Maven).
+- A place and the bytes of an upload are counted against REAL identities only, never an unvalidated credential alone. Certificate-managed firewall: the caller's ACCOUNT (the firewall has authenticated it; every principal there carries key id 0, so the key id counts nothing). Shared-service mode: the CLIENT ADDRESS, because the firewall cannot tell a valid credential from junk (the registry decides): the peer address of the connection, or, when the peer is listed in `[service_policy] trusted_proxies` (address ranges, default none), the rightmost `X-Forwarded-For` entry that is not itself a listed proxy (the same reading as `[management] trusted_proxies`; an entry that is not an address counts as the proxy's own address). `X-Forwarded-For` from any other peer is never read, so a forged header buys no share. The credential presented (`Authorization`, `X-NuGet-ApiKey`, cookies and the like) is the second, separately capped count in every mode.
+- No owner (account, address or credential) holds more than half of the places (4 of 8) or half of the byte budget. A byte is reserved as it arrives (never the declared length), so a burst followed by a trickle cannot hold the whole budget; an upload past its owner's half waits up to 30 s for its own bytes to come back, then is a 503. One account (or address) at its share never keeps another's deploy out; the other 4 places stay reachable.
+- Trickles: the rate clock starts at the FIRST chunk (the 20 s grace and the 16 KiB/s average are measured from it, so a small first chunk that takes up to the 60 s first-chunk wait is accepted), and the rate is also held over each 20 s window, so a body that bursts early and then trickles is cut within about one window and 15 s rather than after its credit (minutes) or the 15-minute deadline. An owner BELOW the floor therefore holds a seat for roughly 35 s at most; a body AT the floor still holds its seat for its deadline (5 minutes undeclared, up to 15 minutes declared). The time an upload spends waiting for its own bytes is not counted against its rate.
+- Limits. Callers behind one NAT or an unlisted proxy share one address and so one share; an IPv6 client is counted by its /64 (one machine holds a whole /64), and an IPv4-mapped address as IPv4. The share rule stops ONE identity, not a caller that controls several: two source addresses with different credentials, each sending a body at the floor rate, can hold all 8 places and the whole byte budget for 5 to 15 minutes, and repeat, so publishes (never reads) are 503 meanwhile. The firewall cannot do better in shared-service mode, where the credential is validated only by the registry; put the listener behind the allowed peers (`allowed_peer_cidrs`) and the proxy's own limits. Behind a reverse proxy list it in `[service_policy] trusted_proxies`, or every caller counts as the proxy's address (one share for the whole deployment); the firewall logs one warning when an unlisted peer sends `X-Forwarded-For`.
+- One owner's uploads larger than a quarter of the budget take turns (a second waits up to 30 s for the first), so two big uploads of one account do not hold each other's bytes; one body of the full accepted size (artifact plus envelope, up to twice `max_artifact_bytes`) always fits one owner's half.

@@ -156,6 +156,22 @@ osv_mode = "enforce"
 # nuget_upstream_url = "https://nuget-mirror.example.org"
 # nuget_search_url = "https://nuget-search.example.org"
 # nuget_publish_url = "https://nuget-push.example.org"
+# Maven: the public repository, an origin AND the path prefix of its tree (default https://repo.maven.apache.org/maven2;
+# a mirror's own prefix goes here), and the deploy URL `mvn deploy` is forwarded to for the public registry through the
+# shared service (no default: Maven Central has none, so without it a deploy to the public registry is a 404).
+# maven_upstream_url = "https://nexus.example.org/repository/maven-central"
+# maven_publish_url = "https://nexus.example.org/repository/maven-releases"
+
+# Shared-service mode ([service_policy], see docs/configuration.md) only: the load
+# balancers in front of this firewall. From these peers `X-Forwarded-For` names the
+# client whose upload places are counted (docs/operations.md, "who a spool share
+# belongs to"). Without it every caller behind one counts as the balancer's address
+# and shares four places; the firewall logs a warning when an unlisted peer sends the
+# header. Optional, empty if left out.
+# [service_policy]
+# server_url = "https://policy.example.com"
+# service_key_file = "/etc/probation/service.key"
+# trusted_proxies = ["10.0.0.0/8"]
 
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this
@@ -191,3 +207,4 @@ osv_mode = "enforce"
 # the network lock and the per-client lookup allowance. Empty: the peer address is
 # the client (docs/operations.md §13).
 # trusted_proxies = []
+

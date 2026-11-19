@@ -240,6 +240,7 @@ async fn transfer(
 
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
+    let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
             app.transport
@@ -264,6 +265,7 @@ async fn transfer(
         Ecosystem::Cargo => Call::Cargo,
         Ecosystem::Go => Call::Go,
         Ecosystem::NuGet => Call::Nuget,
+        Ecosystem::Maven => Call::Maven,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -325,6 +327,7 @@ async fn transfer(
     }
 
     verify_advertised(&row.reference.expected, &computed)?;
+    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
 
     // STATE-01. This runs before the policy re-check on purpose: SPEC §9 says
     // "persist computed digests, even when policy now blocks them", so a block
@@ -455,8 +458,9 @@ async fn transfer(
 /// The most a transfer may read: the configured artifact cap, and for a Go `.info` (a few hundred bytes) 256 KiB and for a
 /// `.mod` 16 MiB (what `go` itself accepts), so the small places cannot be held by a hostile upstream's large "tiny" file.
 fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
-    if is_nuget_small(row) {
-        // A nuspec, a readme and an icon are kilobytes; nuget.org limits an icon to 1 MB.
+    if is_nuget_small(row) || is_maven_small(row) {
+        // A nuspec, a readme and an icon are kilobytes; nuget.org limits an icon to 1 MB. A POM, a module file, a checksum
+        // and a signature are kilobytes too (the largest real POM sampled is under 1 MB).
         return configured.min(16 << 20);
     }
     if row.reference.ecosystem != Ecosystem::Go {
@@ -473,7 +477,7 @@ fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
 
 /// A Go `.info` or `.mod`: a few hundred bytes that precede every zip and must not queue behind the large transfers.
 fn is_small_metadata(row: &ReferenceRow) -> bool {
-    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row)
+    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row) || is_maven_small(row)
 }
 
 /// A NuGet `.nuspec`, `readme` or `icon`: the small files that accompany every `.nupkg`.
@@ -481,10 +485,19 @@ fn is_nuget_small(row: &ReferenceRow) -> bool {
     row.reference.ecosystem == Ecosystem::NuGet && !row.reference.filename.ends_with(".nupkg")
 }
 
+/// A Maven POM, Gradle module file, checksum or signature: the small files that accompany every artifact and that must not
+/// queue behind the large transfers (a jar or a distribution archive is everything else).
+fn is_maven_small(row: &ReferenceRow) -> bool {
+    row.reference.ecosystem == Ecosystem::Maven
+        && [".pom", ".module", ".sha1", ".md5", ".sha256", ".sha512", ".asc", ".xml"].iter().any(|ext| row.reference.filename.ends_with(ext))
+}
+
 /// A Go `.zip` is the one transfer whose redirect may land on an archive origin (the proxy's bucket or
 /// the registry's declared one); `.info` and `.mod` never follow it.
 fn allows_archive_redirect(row: &ReferenceRow) -> bool {
     (row.reference.ecosystem == Ecosystem::Go && row.reference.filename.ends_with(".zip")) || (row.reference.ecosystem == Ecosystem::NuGet && row.reference.filename.ends_with(".nupkg"))
+        // A registry's jar or archive may be answered with a redirect to its storage; its small files never are.
+        || (row.reference.ecosystem == Ecosystem::Maven && !is_maven_small(row))
 }
 
 fn selected_catalog_authorization(
@@ -501,6 +514,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::Cargo => OriginKind::CargoIndex,
             crate::policy::Ecosystem::Go => OriginKind::GoProxy,
             crate::policy::Ecosystem::NuGet => OriginKind::NugetIndex,
+            crate::policy::Ecosystem::Maven => OriginKind::MavenRepo,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -534,6 +548,7 @@ pub async fn fetch_request_scoped(
     let _permit = permit;
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
+    let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
             app.transport
@@ -557,6 +572,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::Cargo => Call::Cargo,
         Ecosystem::Go => Call::Go,
         Ecosystem::NuGet => Call::Nuget,
+        Ecosystem::Maven => Call::Maven,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -587,6 +603,7 @@ pub async fn fetch_request_scoped(
     let computed = Computed { sha256: sha256.finalize().into(), sha512: sha512.finalize().into(), sha1: sha1.finalize().into(), size };
     let (sha256, sha512) = (computed.sha256, computed.sha512);
     verify_advertised(&row.reference.expected, &computed)?;
+    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
     match app.store().pin_computed_digests(row.id, sha256, sha512, size).await.map_err(DownloadError::Storage)? {
         PinOutcome::Established => {
             app.store().caches().projects.remove(&ProjectKey::in_registry(
@@ -630,6 +647,8 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         Ecosystem::Go => &[OriginKind::GoProxy, OriginKind::NpmMetadata],
         // The flat container is on the index host; a selected registry travels in the npm slot.
         Ecosystem::NuGet => &[OriginKind::NugetIndex, OriginKind::NpmMetadata],
+        // Every file of a version is in the repository's own tree; a selected registry travels in the npm slot.
+        Ecosystem::Maven => &[OriginKind::MavenRepo, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the
@@ -674,6 +693,56 @@ async fn bump_digest_generation(app: &App, registry_id: u64, ecosystem: Ecosyste
 /// `Integrity::to_hex` unwraps and its parser does not check digest length, and
 /// checking with it would mean holding the whole artifact in memory, which the
 /// streaming download above exists to avoid.
+/// A Maven file is checked against the `.sha1` the registry publishes next to it before its digests are pinned, when it publishes one:
+/// corruption in transit or in a mirror's cache is then a refusal, not a permanent pin. A missing (404) or unreadable (not hex) sidecar
+/// is no check; any other failure to read it fails closed. A sidecar, a signature and a metadata document have no sidecar of their own.
+async fn verify_maven_sidecar(
+    app: &App,
+    row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<String>,
+    computed: &Computed,
+) -> Result<(), DownloadError> {
+    let name = row.reference.filename.as_str();
+    if row.reference.ecosystem != Ecosystem::Maven || [".sha1", ".md5", ".sha256", ".sha512", ".asc", "maven-metadata.xml"].iter().any(|suffix| name.ends_with(suffix)) {
+        return Ok(());
+    }
+    let mut url = row.reference.upstream_url.clone();
+    let path = format!("{}.sha1", url.path());
+    url.set_path(&path);
+    let fetched = app
+        .transport
+        .fetch_metadata(crate::upstream::MetadataRequest {
+            url,
+            origin: origin.cloned(),
+            private_cidrs: private_cidrs.to_vec(),
+            read_authorization,
+            accept: "text/plain",
+            validators: None,
+            max_bytes: 4096,
+        })
+        .await;
+    app.upstreams.record_upstream(Call::Maven, &fetched);
+    let body = match fetched {
+        Ok(crate::upstream::MetadataResponse::Fresh { body, .. }) => body,
+        Ok(crate::upstream::MetadataResponse::Missing) => return Ok(()),
+        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => return Err(DownloadError::Upstream(UpstreamError::Status(304))),
+        // A registry that has no such file may answer 403 (a bucket that does not list what is absent) as well as 404: the sidecar is
+        // absent, not a failure of the file.
+        Err(UpstreamError::Status(403)) => return Ok(()),
+        Err(error) => return Err(DownloadError::Upstream(error)),
+    };
+    let Some(published) = std::str::from_utf8(&body).ok().and_then(|text| text.split_whitespace().next()).and_then(|token| Digest::parse_hex(HashAlgorithm::Sha1, &token.to_ascii_lowercase()).ok()) else {
+        return Ok(());
+    };
+    let ours = computed.digest(HashAlgorithm::Sha1);
+    if published == ours {
+        return Ok(());
+    }
+    Err(DownloadError::IntegrityMismatch { expected: published, computed: ours })
+}
+
 fn verify_advertised(expected: &[Digest], computed: &Computed) -> Result<(), DownloadError> {
     let strongest = [
         HashAlgorithm::Sha512,

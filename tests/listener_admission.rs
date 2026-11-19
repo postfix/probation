@@ -122,7 +122,7 @@ fn snapshot() -> ServicePolicySnapshot {
             revision: 1,
         }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
-        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems), RegistryDescriptor { target_url: Some("https://cargo-reg.invalid/".into()), ..descriptor(7, probation_policy::Ecosystem::Cargo) }, RegistryDescriptor { target_url: Some("https://nuget-reg.invalid/v3/index.json".into()), ..descriptor(8, probation_policy::Ecosystem::NuGet) }],
+        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems), RegistryDescriptor { target_url: Some("https://cargo-reg.invalid/".into()), ..descriptor(7, probation_policy::Ecosystem::Cargo) }, RegistryDescriptor { target_url: Some("https://nuget-reg.invalid/v3/index.json".into()), ..descriptor(8, probation_policy::Ecosystem::NuGet) }, RegistryDescriptor { target_url: Some("https://maven-reg.invalid/repo/".into()), ..descriptor(9, probation_policy::Ecosystem::Maven) }],
     }
 }
 
@@ -139,6 +139,7 @@ async fn service(allowed: &[&str]) -> (TestServer, Arc<FakeRegistry>, MockServer
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     let server = TestServer::start_with_upstream(
@@ -276,6 +277,8 @@ const ROUTE_TABLE: &[(&str, &str, char)] = &[
     ("/registry/nuget/{registry}/api/v2/symbolpackage", "put", 'W'),
     ("/registry/nuget/{registry}/api/v2/symbolpackage/", "put", 'W'),
     ("/registry/nuget/{registry}/api/v2/package/{id}/{version}", "delete post", 'W'),
+    ("/maven/{*path}", "get head", 'R'),
+    ("/registry/maven/{registry}/{*path}", "delete get head put", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems", "post", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems/yank", "delete", 'W'),
     ("/pypi/simple/", "get", 'R'),
@@ -368,7 +371,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
     let (server, registry, _policy) = service(&["10.1.0.0/16"]).await;
     let before = registry.calls().len();
     let concrete = |template: &str| {
-        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else if template.contains("/cargo/") { "7" } else if template.contains("/nuget/") { "8" } else { "3" };
+        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else if template.contains("/cargo/") { "7" } else if template.contains("/nuget/") { "8" } else if template.contains("/maven/") { "9" } else { "3" };
         template
             .replace("{registry}", eco_registry)
             .replace("{package}", "left-pad")
@@ -379,6 +382,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
             .replace("{version}", "1.0.0")
             .replace("{name}", "demo")
             .replace("{id}", "demo.pkg")
+            .replace("{*path}", "org/demo/lib/1.0/lib-1.0.jar")
     };
     let mut driven = 0;
     for (template, verbs, class) in ROUTE_TABLE {
@@ -404,7 +408,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
             }
         }
     }
-    assert!(driven >= 18, "every W row was driven ({driven})");
+    assert!(driven >= 22, "every W row was driven ({driven})");
     assert_eq!(registry.calls().len(), before, "no upstream request was made");
 }
 

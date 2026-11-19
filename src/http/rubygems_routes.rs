@@ -193,7 +193,7 @@ async fn forward_write(
     if headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()).is_some_and(|length| length > cap) {
         return Ok(axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response());
     }
-    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, principal.key_id.0, headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
+    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, super::spool::owner_of(&app, &principal, &headers), headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
         return Ok(axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response());
     };
     // The spool's place and bytes are held until this request is done with the file.

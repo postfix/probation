@@ -103,3 +103,22 @@ fn nuget_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.go), (Reachability::Ok, Some(Reachability::Ok)));
 }
+
+/// Row 21: the Maven upstream state is additive in the same way as the families before it.
+#[test]
+fn maven_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","nuget":"ok"}"#).unwrap();
+    assert_eq!(old.maven, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("maven"));
+    let new = Upstreams { maven: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""maven":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        nuget: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.nuget), (Reachability::Ok, Some(Reachability::Ok)));
+}

@@ -243,7 +243,7 @@ async fn forward_write(app: Arc<App>, peer: Peer, headers: HeaderMap, registry: 
     let tail: Vec<&str> = package.as_ref().map(|(id, version)| vec![id.as_str(), version.as_str()]).unwrap_or_default();
     let target = serve::publish_target(&app, &principal, registry.0, matches!(write, Write::SymbolPush), &tail).await?;
     let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).filter(|value| value.len() <= 256).map(str::to_owned);
-    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, principal.key_id.0, headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
+    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, super::spool::owner_of(&app, &principal, &headers), headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
         return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
     };
     // The spool's place and bytes are held until this request is done with the file.

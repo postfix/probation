@@ -8,6 +8,14 @@ All notable changes to this project are listed here. The format follows
 
 The next release must have a version above 0.2.2.
 
+### Changed
+
+- Upload spool fairness (every publish forwarder: npm, PyPI, RubyGems, Cargo, NuGet, Maven):
+  places and bytes are counted per real identity (the account in certificate mode, the
+  client address in shared-service mode, plus the presented credential), at most half of
+  the places and of the byte budget each; the rate clock starts at the first chunk and a
+  burst no longer licenses a trickle. New optional `[service_policy] trusted_proxies`.
+
 ### Added
 
 - **RubyGems and Cargo** through the firewall (docs/operations.md "RubyGems clients" and
@@ -18,6 +26,18 @@ The next release must have a version above 0.2.2.
   the index `cksum`. Through the shared service `cargo publish`, `yank`, `unyank` and
   `owner` are forwarded with the caller's own token only; the owner list and search are
   forwarded as reads.
+- **Maven** through the firewall (docs/operations.md "Maven and Gradle clients"). `maven_upstream_url` (an origin and the path
+  prefix of the repository tree, default Maven Central's `maven2`) and `maven_publish_url` (the deploy URL of the public
+  registry through the shared service; none by default). `maven-metadata.xml` at artifact, plugin-group and snapshot-version
+  level and `archetype-catalog.xml` are filtered by age, blocklist and OSV (`Maven`, key `groupId:artifactId`, case is
+  identity) with `latest`, `release` and the snapshot pointer moved to the newest allowed entry and every checksum file
+  (`.md5`, `.sha1`, `.sha256`, `.sha512`) rebuilt for what is served; every file of a version (POM, JAR, classifier files,
+  `.module`, signatures and checksum sidecars) is gated by the decision of its version or snapshot build, dated by the
+  repository's `Last-Modified` of its POM (otherwise by first-seen), and delivered exactly as the repository sent it. Metadata is
+  read by a strict bounded XML scanner (no document type, no entity, bounded depth and size). Through the shared service
+  `mvn deploy` (`PUT` of each file, checksum, signature and metadata, and `DELETE`) is forwarded with the caller's own
+  `Authorization` to the registry's own origin after the `Basic` challenge Maven waits for. A Maven registry may declare an
+  archive origin like a Cargo, Go or NuGet one (migration 0020).
 - **NuGet** through the firewall (docs/operations.md "NuGet clients"). `nuget_upstream_url`,
   `nuget_search_url` and `nuget_publish_url` name the index, search and publish hosts of the registry (api.nuget.org,
   azuresearch-usnc.nuget.org and www.nuget.org) like the other origin keys; a resource a service index names on any

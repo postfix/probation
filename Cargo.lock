@@ -3064,6 +3064,7 @@ dependencies = [
  "ipnet",
  "jiff",
  "lru 0.18.4",
+ "md-5",
  "nodejs-semver",
  "pep440_rs",
  "percent-encoding",

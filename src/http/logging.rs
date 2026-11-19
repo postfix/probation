@@ -131,6 +131,7 @@ const ECOSYSTEM_RUBYGEMS: u8 = 3;
 const ECOSYSTEM_CARGO: u8 = 4;
 const ECOSYSTEM_GO: u8 = 5;
 const ECOSYSTEM_NUGET: u8 = 6;
+const ECOSYSTEM_MAVEN: u8 = 7;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -163,6 +164,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::Cargo => ECOSYSTEM_CARGO,
         Ecosystem::Go => ECOSYSTEM_GO,
         Ecosystem::NuGet => ECOSYSTEM_NUGET,
+        Ecosystem::Maven => ECOSYSTEM_MAVEN,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -310,6 +312,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_CARGO => Ecosystem::Cargo.as_tag(),
         ECOSYSTEM_GO => Ecosystem::Go.as_tag(),
         ECOSYSTEM_NUGET => Ecosystem::NuGet.as_tag(),
+        ECOSYSTEM_MAVEN => Ecosystem::Maven.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -430,6 +433,7 @@ impl Target {
             Some("cargo") => "cargo",
             Some("go") => "go",
             Some("nuget") => "nuget",
+            Some("maven") => "maven",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -451,6 +455,9 @@ impl Target {
         }
         if root == "nuget" {
             return nuget_target(path);
+        }
+        if root == "maven" {
+            return maven_target(path);
         }
         let first = segments.next();
         let second = segments.next();
@@ -562,6 +569,19 @@ fn nuget_target(path: &str) -> Target {
         _ => (None, None),
     };
     Target { ecosystem: "nuget", package: loggable(package), version: loggable(version) }
+}
+
+/// `/maven/{group dirs}/{artifact}/{version}/{file}` (also under `/registry/maven/{id}/`): the coordinate and the version
+/// directory; a metadata document names its artifact and has no version, every other route has no subject.
+fn maven_target(path: &str) -> Target {
+    let below = path.strip_prefix("/maven/").unwrap_or("");
+    let (package, version) = match crate::maven::coords::parse(below) {
+        Some(crate::maven::coords::Parsed::File(file)) => (Some(file.name()), Some(file.version)),
+        Some(crate::maven::coords::Parsed::Metadata { dirs, level: crate::maven::coords::Level::Artifact, .. }) => (crate::maven::coords::artifact_of(&dirs).map(|(group, artifact)| format!("{group}:{artifact}")), None),
+        Some(crate::maven::coords::Parsed::Metadata { dirs, level: crate::maven::coords::Level::Snapshot, .. }) => crate::maven::coords::snapshot_of(&dirs).map_or((None, None), |(group, artifact, version)| (Some(format!("{group}:{artifact}")), Some(version))),
+        _ => (None, None),
+    };
+    Target { ecosystem: "maven", package: loggable(package.as_deref()), version: loggable(version.as_deref()) }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -806,6 +826,25 @@ mod tests {
         ] {
             let target = Target::of(path);
             assert_eq!(target.ecosystem, "nuget", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
+        }
+    }
+
+    /// Row 21: a Maven request names its coordinate and version directory (a file, a snapshot's metadata), an artifact's metadata
+    /// names its coordinate only, and every other route has no subject; the ecosystem is `maven`.
+    #[test]
+    fn maven_paths_log_their_coordinate_and_version() {
+        for (path, package, version) in [
+            ("/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.jar", Some("org.apache.maven:maven-core"), Some("3.9.0")),
+            ("/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.pom.sha1", Some("org.apache.maven:maven-core"), Some("3.9.0")),
+            ("/maven/org/apache/maven/maven-core/maven-metadata.xml", Some("org.apache.maven:maven-core"), None),
+            ("/maven/com/foo/lib/1.0-SNAPSHOT/maven-metadata.xml", Some("com.foo:lib"), Some("1.0-SNAPSHOT")),
+            ("/maven/archetype-catalog.xml", None, None),
+            ("/maven/not/a/layout", None, None),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.ecosystem, "maven", "{path}");
             assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
             assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }

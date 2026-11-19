@@ -440,7 +440,7 @@ first firewall; at each `changes` call of the firewall that has the push:
 The server refuses to store a push that is not TOML, sets a local-only setting
 (`management`, `listen`, `data_dir`, `tls_cert_path`, `tls_key_path`, `public_url`,
 `siem_url`, `siem_auth_header`), or sets `npm_upstream_url`, `pypi_upstream_url` or
-`pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url` or `nuget_publish_url` to anything but an `https://` address. The firewall applies a
+`pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url`, `nuget_publish_url`, `maven_upstream_url` or `maven_publish_url` to anything but an `https://` address. The firewall applies a
 push by writing it to `<data_dir>/managed-settings.toml` and exiting with code 75
 (management-server.md §6).
 

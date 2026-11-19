@@ -53,6 +53,10 @@ const GO_ARCHIVES: &str = "https://storage.googleapis.com/proxy-golang-org-prod"
 const NUGET_INDEX: &str = "https://api.nuget.org";
 const NUGET_SEARCH: &str = "https://azuresearch-usnc.nuget.org";
 const NUGET_PUBLISH: &str = "https://www.nuget.org";
+/// Maven Central, as the repository layout is rooted (the directory `maven2`; repo1.maven.org serves the same tree).
+const MAVEN_REPO: &str = "https://repo.maven.apache.org/maven2";
+/// Where a deploy to the public registry goes when the operator names one (there is no default: Central has none).
+const MAVEN_PUBLISH: &str = "https://maven-publish.invalid";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -68,10 +72,12 @@ pub enum OriginKind {
     NugetIndex,
     NugetSearch,
     NugetPublish,
+    MavenRepo,
+    MavenPublish,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 12] = [
+    pub const ALL: [OriginKind; 14] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
@@ -84,6 +90,8 @@ impl OriginKind {
         OriginKind::NugetIndex,
         OriginKind::NugetSearch,
         OriginKind::NugetPublish,
+        OriginKind::MavenRepo,
+        OriginKind::MavenPublish,
     ];
 }
 
@@ -126,6 +134,8 @@ pub struct OriginSet {
     nuget_index: Url,
     nuget_search: Url,
     nuget_publish: Url,
+    maven_repo: Url,
+    maven_publish: Url,
     /// A selected Go registry that declared an archive origin: redirects from its own origin may land there.
     go_selected: bool,
     allow_private_addresses: bool,
@@ -184,6 +194,8 @@ impl OriginSet {
             nuget_index: parse_origin(NUGET_INDEX),
             nuget_search: parse_origin(NUGET_SEARCH),
             nuget_publish: parse_origin(NUGET_PUBLISH),
+            maven_repo: parse_origin(MAVEN_REPO),
+            maven_publish: parse_origin(MAVEN_PUBLISH),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -211,6 +223,8 @@ impl OriginSet {
             nuget_index: pick(&config.nuget_upstream_url, production.nuget_index),
             nuget_search: pick(&config.nuget_search_url, production.nuget_search),
             nuget_publish: pick(&config.nuget_publish_url, production.nuget_publish),
+            maven_repo: pick(&config.maven_upstream_url, production.maven_repo),
+            maven_publish: pick(&config.maven_publish_url, production.maven_publish),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -237,6 +251,8 @@ impl OriginSet {
             nuget_index: parse_origin(NUGET_INDEX),
             nuget_search: parse_origin(NUGET_SEARCH),
             nuget_publish: parse_origin(NUGET_PUBLISH),
+            maven_repo: parse_origin(MAVEN_REPO),
+            maven_publish: parse_origin(MAVEN_PUBLISH),
             go_selected: false,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
@@ -265,6 +281,13 @@ impl OriginSet {
         self
     }
 
+    /// Tests only: where this set sends Maven repository and deploy calls (the upstream fake).
+    pub fn with_maven(mut self, repo: Url, publish: Url) -> OriginSet {
+        self.maven_repo = repo;
+        self.maven_publish = publish;
+        self
+    }
+
     /// Tests only: the origin a Go proxy's archive redirects may land on.
     pub fn with_go_archives(mut self, archives: Url) -> OriginSet {
         self.go_archives = archives;
@@ -277,7 +300,7 @@ impl OriginSet {
         (from == OriginKind::GoProxy || (self.go_selected && from == OriginKind::NpmMetadata)) && self.admit(to, OriginKind::GoArchives).is_ok()
     }
 
-    /// A selected Go or NuGet registry's declared archive origin (a snapshot descriptor field, already checked at
+    /// A selected Go, NuGet or Maven registry's declared archive origin (a snapshot descriptor field, already checked at
     /// activation): a redirect of its zip or nupkg may land there, and nowhere else.
     pub fn with_selected_archive(mut self, archive: Url) -> OriginSet {
         self.go_archives = archive;
@@ -325,7 +348,14 @@ impl OriginSet {
             OriginKind::NugetIndex => &self.nuget_index,
             OriginKind::NugetSearch => &self.nuget_search,
             OriginKind::NugetPublish => &self.nuget_publish,
+            OriginKind::MavenRepo => &self.maven_repo,
+            OriginKind::MavenPublish => &self.maven_publish,
         }
+    }
+
+    /// Whether a deploy URL for the public registry is configured (there is no default: Maven Central has no deploy endpoint).
+    pub fn maven_publish_configured(&self) -> bool {
+        self.maven_publish.host_str() != Some("maven-publish.invalid")
     }
 
     /// Read by the resolver and by the admission check. There is no setter.

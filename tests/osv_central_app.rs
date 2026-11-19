@@ -156,6 +156,7 @@ async fn endpoint_with(policy: &MockServer, registry: Arc<FakeRegistry>, osv_cli
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new(KEY.into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     // The configured server cannot be reached; the override stands in for it and the
     // snapshot comes from the same fake.

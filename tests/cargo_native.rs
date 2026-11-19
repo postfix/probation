@@ -149,6 +149,7 @@ async fn start_in(service: bool, yanked_old: bool) -> Native {
             service_key_file: "/test/key".into(),
             service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
             sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+            trusted_proxies: vec![],
         });
         policy_server = Some(mock);
     }
@@ -386,6 +387,7 @@ async fn native_cargo_publish_yank_owner_and_search_reach_the_registry_with_the_
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: std::num::NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&recording) as Arc<dyn Transport>, origins()).await;
     let krate = dir.path().join("pub");

@@ -53,6 +53,8 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::Go => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/')),
         // LS-F6: package id `[A-Za-z0-9._-]`, validated and never normalised (OSV answers any case).
         Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
+        // LS-F6: `groupId:artifactId`, each part `[A-Za-z0-9._-]`, exactly one `:`, case kept.
+        Ecosystem::Maven => crate::names::valid_maven_name(name),
     }
 }
 

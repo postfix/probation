@@ -47,7 +47,9 @@ pub async fn respond(
     // C1028 / LS-F4: a read is cache-eligible only on the allow-list; anything else is
     // request-scoped and never touches a shared cache.
     if matches!(*request.method(), Method::GET | Method::HEAD) {
-        let rules = if request.uri().path().starts_with("/nuget/") || request.uri().path().starts_with("/registry/nuget/") {
+        let rules = if request.uri().path().starts_with("/maven/") || request.uri().path().starts_with("/registry/maven/") {
+            &super::credential_read::FamilyReadRules::MAVEN
+        } else if request.uri().path().starts_with("/nuget/") || request.uri().path().starts_with("/registry/nuget/") {
             &super::credential_read::FamilyReadRules::NUGET
         } else if request.uri().path().starts_with("/pypi/") || request.uri().path().starts_with("/registry/pypi/") {
             &super::credential_read::FamilyReadRules::PYPI
@@ -66,7 +68,7 @@ pub async fn respond(
         }
     }
     // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
-    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") {
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") && !request.uri().path().starts_with("/registry/maven/") && !request.uri().path().starts_with("/maven/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -108,6 +110,7 @@ fn classify_selected_registry(
             Some("cargo") => Ecosystem::Cargo,
             Some("go") => Ecosystem::Go,
             Some("nuget") => Ecosystem::NuGet,
+            Some("maven") => Ecosystem::Maven,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
@@ -125,6 +128,8 @@ fn classify_selected_registry(
             (Ecosystem::Go, rest)
         } else if let Some(rest) = path.strip_prefix("/nuget/") {
             (Ecosystem::NuGet, rest)
+        } else if let Some(rest) = path.strip_prefix("/maven/") {
+            (Ecosystem::Maven, rest)
         } else {
             return Err(ApiError::NotFound);
         };
@@ -186,6 +191,11 @@ fn classify_selected_registry(
             _ => false,
         };
     if ecosystem == Ecosystem::NuGet && !nuget_write && !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return Err(ApiError::MethodNotAllowed);
+    }
+    // Maven's deploy (`PUT` of a file, a checksum, a signature or a metadata document) and its clean-up (`DELETE`) are class-W
+    // routes the family handler forwards (with the caller's own credential); any other non-read is refused here.
+    if ecosystem == Ecosystem::Maven && !matches!(*request.method(), Method::GET | Method::HEAD | Method::PUT | Method::DELETE) {
         return Err(ApiError::MethodNotAllowed);
     }
     // NuGet's search and autocomplete are the two reads with a query string (the handler keeps the known keys only).

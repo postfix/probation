@@ -346,6 +346,26 @@ impl Transport for ReqwestTransport {
         }
     }
 
+    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
+        Self::admitted(&origins, &req.url)?;
+        let mut request = client.get(req.url.clone()).header(header::ACCEPT, req.accept);
+        if let Some(authorization) = req.read_authorization {
+            request = request.header(header::AUTHORIZATION, HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+        }
+        // Only the headers are read: the response (and its body) is dropped, closing the transfer.
+        let response = request.send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
+        match response.status().as_u16() {
+            200 => Ok(Some(validators_of(&response))),
+            404 | 410 => Ok(None),
+            code => match refused_redirect(&response) {
+                Some(rejected) => Err(rejected),
+                None => Err(UpstreamError::Status(code)),
+            },
+        }
+    }
+
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let credentialed = req.read_authorization.is_some();
         let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, true, !credentialed, METADATA_TOTAL_TIMEOUT, req.archive_origin.as_ref().filter(|_| req.allow_archive_redirect), req.allow_archive_redirect)?;

@@ -43,6 +43,7 @@ service key and serve every admitted caller without a Probation login.
 |---|---|
 | `[service_policy] server_url` | `https://` origin of the policy server (no path, userinfo, query or fragment). |
 | `[service_policy] service_key_file` | Absolute path of a private file holding the service key (one trailing newline is trimmed; printable ASCII, at most 512 bytes). |
+| `[service_policy] trusted_proxies` | Optional list of address ranges, default none. Only from these peers is `X-Forwarded-For` read, and only to count an upload's spool share per client address (docs/operations.md "who a spool share belongs to"). |
 | `allowed_peer_cidrs` | CIDRs of peers admitted by their actual TCP address (at least /8 IPv4, /32 IPv6). Required for a non-loopback listener, which also needs TLS. Forwarding headers are never read. |
 | `control_plane_cidrs` | Cluster control-plane ranges a registry descriptor may never name or dial. |
 | `credential_temp_max_request_bytes` | Optional. Largest credential-bearing response held in a request-owned temporary file; above it the request gets `413`. Unset by default (the disk is the limit). |

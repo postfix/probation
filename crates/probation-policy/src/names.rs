@@ -16,6 +16,8 @@ const MAX_GO_NAME_LENGTH: usize = 1024;
 const MAX_NUGET_NAME_LENGTH: usize = 128;
 /// A NuGet version string longer than this is refused (the real maximum is far below).
 const MAX_NUGET_VERSION_LENGTH: usize = 256;
+/// `groupId:artifactId` together (each part is bounded by what a repository path can carry).
+const MAX_MAVEN_NAME_LENGTH: usize = 512;
 
 /// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
 pub fn normalize(raw: &str) -> String {
@@ -52,6 +54,8 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
         Ecosystem::Go => name.to_owned(),
         // nuget.org ids are case-insensitive; the flat container and registration URLs are lower-case.
         Ecosystem::NuGet => name.to_ascii_lowercase(),
+        // `groupId:artifactId` is case-sensitive on every Maven repository (the path is the identity) and OSV's own key.
+        Ecosystem::Maven => name.to_owned(),
     }
 }
 
@@ -64,6 +68,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::Cargo => MAX_CARGO_NAME_LENGTH,
         Ecosystem::Go => MAX_GO_NAME_LENGTH,
         Ecosystem::NuGet => MAX_NUGET_NAME_LENGTH,
+        Ecosystem::Maven => MAX_MAVEN_NAME_LENGTH,
         _ => MAX_NAME_LENGTH,
     };
     if name.is_empty() || name.len() > limit {
@@ -91,6 +96,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         // LS-F6 for NuGet: `[A-Za-z0-9._-]`.
         // A dot-only id and an id that starts or ends with a dot are refused (nuget.org refuses them too).
         Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) && !name.starts_with('.') && !name.ends_with('.'),
+        Ecosystem::Maven => valid_maven_name(name),
     }
 }
 
@@ -152,6 +158,9 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
             CanonicalVersion::Go(Box::new(parsed))
         }),
         Ecosystem::NuGet => parse_nuget(version).map(CanonicalVersion::NuGet),
+        // A Maven version keeps its native spelling: the repository's directory name is the identity and the build
+        // tool decides ordering, so only the exact text matches.
+        Ecosystem::Maven => None,
     }
 }
 
@@ -266,4 +275,17 @@ pub fn same_version(ecosystem: Ecosystem, a: &str, b: &str) -> bool {
             (canonical_version(ecosystem, a), canonical_version(ecosystem, b)),
             (Some(a), Some(b)) if a == b
         )
+}
+
+/// One part of a Maven coordinate (a group, an artifact id): `[A-Za-z0-9._-]`, not empty, not a dot-only part, no leading
+/// dot (a path element of the repository layout).
+fn maven_part_ok(part: &str) -> bool {
+    !part.is_empty() && !part.starts_with('.') && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// LS-F6 for Maven: `groupId:artifactId`, exactly one `:`, each part `[A-Za-z0-9._-]`, a group with no empty dotted
+/// element (`a..b` would name the empty directory of the layout), case kept.
+pub fn valid_maven_name(name: &str) -> bool {
+    let Some((group, artifact)) = name.split_once(':') else { return false };
+    name.len() <= MAX_MAVEN_NAME_LENGTH && maven_part_ok(group) && maven_part_ok(artifact) && group.split('.').all(|element| !element.is_empty())
 }

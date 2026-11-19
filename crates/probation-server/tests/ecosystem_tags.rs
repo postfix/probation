@@ -67,7 +67,7 @@ async fn snapshot_names_a_rubygems_registry() {
 }
 
 /// An old server binary decodes only the tags it knows. A row of a selected tag that this
-/// binary has no variant for (here `maven`) is refused with 503, never read as an npm
+/// binary has no variant for (here `conan`) is refused with 503, never read as an npm
 /// registry or an npm block.
 #[tokio::test]
 async fn unknown_tag_rows_are_an_explicit_decode_refusal_never_npm() {
@@ -80,10 +80,10 @@ async fn unknown_tag_rows_are_an_explicit_decode_refusal_never_npm() {
     let http = client();
     let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
         .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
-    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name) VALUES ($1, 'maven', 'org.example:evil')")
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name) VALUES ($1, 'conan', 'evil/1.0')")
         .bind(layer).execute(&db.owner).await.unwrap();
     let response = http.get(url).bearer_auth(&key.secret).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "a maven block must not decode as an npm block");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "a conan block must not decode as an npm block");
 }
 
 /// Row 18: a Cargo registry and a Cargo block travel in the snapshot under the wire spelling
@@ -317,4 +317,72 @@ async fn snapshot_carries_the_resource_path_prefix_of_a_nuget_registry_and_the_c
     let without = nuget.iter().find(|r| r["target_url"] == "https://pkgs2.example/v3/index.json").unwrap();
     assert_eq!(with["resource_path_prefix"], "/org-a");
     assert!(without.get("resource_path_prefix").is_none(), "absent, never null: {without}");
+}
+
+/// Row 21: a Maven registry and a Maven block travel in the snapshot under the wire spelling `Maven` (the tag in the database is
+/// `maven`, already carried by migration 0014), and the block keeps the coordinate's case (`groupId:artifactId` is case-exact).
+#[tokio::test]
+async fn snapshot_names_a_maven_registry_and_a_maven_block() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Javaers").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name) VALUES ($1, 'maven', 'Central')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
+        .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name, version) VALUES ($1, 'maven', 'org.Example:Lib', '1.0-SNAPSHOT')")
+        .bind(layer).execute(&db.owner).await.unwrap();
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(snapshot["registries"].as_array().unwrap().iter().any(|r| r["ecosystem"] == "Maven"), "{snapshot}");
+    let text = snapshot.to_string();
+    assert!(text.contains(r#""ecosystem":"Maven""#) && text.contains("org.Example:Lib") && text.contains("1.0-SNAPSHOT"), "the block decodes as a Maven block: {snapshot}");
+}
+
+/// Row 21: a settings push may set the two Maven origins (an origin and a path prefix), and only to an https address.
+#[test]
+fn settings_push_accepts_https_maven_origins_and_refuses_the_rest() {
+    use probation_server::fleet::check_settings;
+    for key in ["maven_upstream_url", "maven_publish_url"] {
+        assert!(check_settings(&format!("{key} = \"https://maven.mirror.example/maven2\"\n")).is_ok(), "{key}");
+        for refused in ["http://maven.mirror.example", "ftp://x", "mirror"] {
+            assert!(check_settings(&format!("{key} = \"{refused}\"\n")).is_err(), "{key} = {refused}");
+        }
+        assert!(check_settings(&format!("{key} = 7\n")).is_err(), "{key} must be a string");
+    }
+}
+
+/// Row 21 (migration 0020): the database lets a Maven registry with a target hold an archive origin (a repository that redirects an
+/// artifact to its storage) and still refuses one on any other kind of registry, or without a target; the snapshot carries it for
+/// the Maven registry that has one and omits it for the one that has none.
+#[tokio::test]
+async fn snapshot_carries_the_archive_origin_of_a_maven_registry_and_the_constraint_still_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Mavenarchives").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'maven', 'With', 'https://nexus.example/repository/releases/', 'https://blobs.example/store')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'maven', 'Without', 'https://nexus2.example/repository/releases/')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'rubygems', 'Gems', 'https://n.example/', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'maven', 'NoTarget', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, target_url, resource_path_prefix) VALUES ($1, 'maven', 'Prefix', 'https://m.example/', '/x')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let maven: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "Maven").collect();
+    assert_eq!(maven.len(), 2);
+    let with = maven.iter().find(|r| r["target_url"] == "https://nexus.example/repository/releases/").unwrap();
+    let without = maven.iter().find(|r| r["target_url"] == "https://nexus2.example/repository/releases/").unwrap();
+    assert_eq!(with["archive_origin"], "https://blobs.example/store");
+    assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
 }

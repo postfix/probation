@@ -54,6 +54,12 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ("src/http/cargo_routes.rs", "fn forward_api", "get(header::AUTHORIZATION)", 1),
     // Row 20: NuGet's publish endpoints forward the caller's own `Authorization` (and `X-NuGet-ApiKey`) to the publish endpoint the registry's service index names.
     ("src/http/nuget_routes.rs", "fn forward_write", "credential(&headers,\"authorization\")", 1),
+    // Row 21: Maven's deploy endpoints forward the caller's own `Authorization` (Basic from `settings.xml`) to the registry's own origin.
+    ("src/http/maven_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    // Fix round of row 21: the spool counts its places per credential presented (a hash of the header name and value, never sent or stored) ...
+    ("src/http/spool.rs", "fn owner_in", "\"authorization\"", 1),
+    // ... and `probe_file` reads a Maven file's headers with the caller's own read credential, as `fetch_metadata` does.
+    ("src/upstream/reqwest_transport.rs", "fn probe_file", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_named_read", "header(header::AUTHORIZATION,value)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_token_packument", "header(header::AUTHORIZATION,authorization)", 1),
     ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),

@@ -86,7 +86,7 @@ pub async fn forward_registry_action(
     }
     let super::spool::Spooled::Body(spool) = super::spool::spool(
         app,
-        principal.key_id.0,
+        super::spool::owner_of(app, principal, &request.headers),
         request.headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()),
         cap,
         request.body,

@@ -89,6 +89,7 @@ async fn start_full(freeze: u64, target: Option<&str>, archive: Option<&str>, pr
         service_key_file: "/test/key".into(),
         service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
         sync_interval_seconds: NonZeroU64::new(60).unwrap(),
+        trusted_proxies: vec![],
     });
     let registry = FakeRegistry::new();
     let clock = TestClock::at_rfc3339("2026-04-06T12:00:00Z");

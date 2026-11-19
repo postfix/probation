@@ -88,4 +88,4 @@ assert.equal(fake.handle({ method: "DELETE", headers: { "x-nuget-apikey": "e2e-o
 assert.equal(fake.handle({ method: "POST", headers: { "x-nuget-apikey": "e2e-owner-key" } }, "/api/v2/package/demo.pkg/1.0.0", "www.nuget.org", Buffer.alloc(0)).status, 200);
 assert.equal(fake.writes.length, 7);
 assert.deepEqual(fake.writes[0], { method: "PUT", path: "/api/v2/package", apiKey: "e2e-owner-key", authorization: null, contentType: "multipart/form-data; boundary=b", bytes: 7, sha256: fake.writes[0].sha256 });
-console.log("nuget-fake ok");
+console.log("nuget-fake.test: ok");

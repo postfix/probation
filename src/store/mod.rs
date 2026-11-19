@@ -1266,7 +1266,7 @@ async fn carried_forward(
         pinned_size: optional_unsigned(&row, 3, "artifact_references.pinned_size")?
             .map(|size| size as i64),
         content_key: optional_digest(&row, 4, "artifact_references.content_key")?,
-        publication_micros: if upsert.reference.ecosystem == crate::policy::Ecosystem::Go {
+        publication_micros: if matches!(upsert.reference.ecosystem, crate::policy::Ecosystem::Go | crate::policy::Ecosystem::Maven) {
             // A Go date only gets later: the larger of the stored and the new one (the store task commits one
             // transaction at a time, so reading it here is the whole race).
             upsert.publication_micros.into_iter().chain(optional_integer(&row, 5, "artifact_references.publication_micros")?).max()

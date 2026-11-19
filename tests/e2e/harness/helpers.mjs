@@ -66,12 +66,18 @@ export function helpers(stack, { log = console.log } = {}) {
       nugetVulnerability: (spec) => call("POST", `${FAKES}/nuget/vulnerability`, spec),
       /// Every publish-endpoint call the fake www.nuget.org got: [{method, path, apiKey, authorization, contentType, bytes}].
       nugetWrites: () => call("GET", `${FAKES}/nuget/writes`),
+      /// Maven.publish: {group, artifact, version, ageSeconds | publishedAt, undated, build, dependencies: [[g, a, v]]}.
+      publishMaven: (spec) => call("POST", `${FAKES}/maven/publish`, spec),
+      /// A plugin the fake serves in its group's `maven-metadata.xml`: {group, name, prefix, artifact}.
+      mavenPlugin: (spec) => call("POST", `${FAKES}/maven/plugin`, spec),
+      /// Every deploy-endpoint call the fake repo.maven.apache.org got: [{method, path, authorization, contentType, bytes}].
+      mavenWrites: () => call("GET", `${FAKES}/maven/writes`),
       /// Every request the fake checksum database (sum.golang.org) got: [{path, authorization}].
       goSumdb: () => call("GET", `${FAKES}/go/sumdb`),
       /// The index file the fake serves for a crate: {index: text | null}.
       cargoWrites: () => call("GET", `${FAKES}/cargo/writes`),
       cargoIndex: (name) => call("POST", `${FAKES}/cargo/index`, { name }),
-      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io" | "Go" | "NuGet", name, version, ids: ["MAL-..."]}; [] clears.
+      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io" | "Go" | "NuGet" | "Maven", name, version, ids: ["MAL-..."]}; [] clears.
       osvFlag: (spec) => call("POST", `${FAKES}/osv/flag`, spec),
       osvQueries: () => call("GET", `${FAKES}/osv/queries`),
       /// Replaces the fault list; see fixtures/fakes/main.mjs. faults([]) clears.

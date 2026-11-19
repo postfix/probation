@@ -106,7 +106,7 @@ async fn setup_named(mode: &'static str, name: &str) -> (TestServer, Arc<Registr
     let mut config = config_with_open_blocklist(dir.path());
     config.service_policy = Some(ServicePolicyConfig { server_url: policy.uri().parse().unwrap(),
         service_key_file: "/test/key".into(), service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
-        sync_interval_seconds: NonZeroU64::new(60).unwrap() });
+        sync_interval_seconds: NonZeroU64::new(60).unwrap(), trusted_proxies: vec![] });
     let registry = Arc::new(Registry::new(registry, mode));
     let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
         registry.clone(), fake_origins()).await;

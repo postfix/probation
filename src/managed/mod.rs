@@ -41,7 +41,8 @@ use self::cache::{
     Budget, Insert, KeyCache, KnownRefusal, Policies, Snapshot, Standing, UNKNOWN_FOR, Unresolved,
 };
 use self::client::{CallError, SyncClient};
-use self::lock::{NetworkLock, TrustedProxies};
+use self::lock::NetworkLock;
+pub(crate) use self::lock::TrustedProxies;
 use self::sync::KeySync;
 use crate::clock::Clock;
 use crate::concurrency::{Resolution, SingleFlight};
