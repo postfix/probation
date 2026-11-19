@@ -11,6 +11,9 @@
 //   POST /rubygems/publish {...}      RubyGems.publish; answers the gem made
 //   POST /go/publish {...}            Go.publish; answers the module version made
 //   GET  /go/sumdb                    every request the fake checksum database (sum.golang.org) got
+//   POST /nuget/publish {...}         NuGet.publish; answers the package version made
+//   POST /nuget/vulnerability {...}   a vulnerable range the fake vulnerability database reports
+//   GET  /nuget/writes                every publish-endpoint call the fake www.nuget.org received (key, authorization, size)
 //   POST /cargo/publish {...}         Cargo.publish; answers the crate made
 //   GET  /cargo/writes                every registry-API call the fake crates.io received (publish, yank, owners, search)
 //   POST /cargo/index {name}          the index file the fake serves for a crate (text)
@@ -44,6 +47,7 @@ import https from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cargo } from "./cargo.mjs";
 import { Go } from "./go.mjs";
+import { NuGet } from "./nuget.mjs";
 import { Hibp } from "./hibp.mjs";
 import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
@@ -54,7 +58,7 @@ import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), nuget: new NuGet(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
@@ -67,6 +71,9 @@ const hosts = {
   "crates.io": fakes.cargo,
   "proxy.golang.org": fakes.go,
   "sum.golang.org": fakes.go,
+  "api.nuget.org": fakes.nuget,
+  "azuresearch-usnc.nuget.org": fakes.nuget,
+  "www.nuget.org": fakes.nuget,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -227,6 +234,9 @@ const control = {
   "GET /rubygems/writes": () => fakes.rubygems.writes,
   "POST /go/publish": (body) => fakes.go.publish(body),
   "GET /go/sumdb": () => fakes.go.sumdb,
+  "POST /nuget/publish": (body) => fakes.nuget.publish(body),
+  "POST /nuget/vulnerability": (body) => fakes.nuget.vulnerability(body),
+  "GET /nuget/writes": () => fakes.nuget.writes,
   "POST /cargo/publish": (body) => fakes.cargo.publish(body),
   "GET /cargo/writes": () => fakes.cargo.writes,
   "POST /cargo/index": (body) => ({ index: fakes.cargo.index(body.name) }),

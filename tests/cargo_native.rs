@@ -138,7 +138,7 @@ async fn start_in(service: bool, yanked_old: bool) -> Native {
             rate_limit: None, rate_limit_source: LimitSource::Default,
             registries: vec![RegistryDescriptor {
                 registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: None, trusted: false,
-                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
             }],
         };
         let mock = wiremock::MockServer::start().await;
@@ -368,7 +368,7 @@ async fn native_cargo_publish_yank_owner_and_search_reach_the_registry_with_the_
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: Some("https://cargo-index.invalid/".into()),
-            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }],
     };
     let mock = wiremock::MockServer::start().await;

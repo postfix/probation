@@ -25,7 +25,7 @@ async fn sync_now(server: &TestServer) {
         report: managed.report(Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok, rubygems: None, cargo: None, go: None,
+            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None,
         }),
         activity: vec![],
         activity_dropped: vec![],
@@ -175,6 +175,7 @@ async fn prepared_boundary(
         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
         Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+        Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
     };
     let dir = tempfile::tempdir().unwrap();
     let mut config = management.managed(config_with_open_blocklist(dir.path()));
@@ -206,6 +207,7 @@ async fn prepared_boundary(
         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
         Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+        Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
     };
     let url: reqwest::Url = url.as_str().unwrap().parse().unwrap();
     let id =
@@ -227,6 +229,7 @@ async fn prepared_boundary(
             Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
         };
         let raw = match ecosystem {
             Ecosystem::Npm => {
@@ -238,6 +241,7 @@ async fn prepared_boundary(
             Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
         };
         let gate = Gate::new();
         registry.answer(
@@ -470,7 +474,7 @@ async fn common_route_policy_change_refuses_before_release() {
             rate_limit: None, rate_limit_source: LimitSource::Default,
             registries: vec![RegistryDescriptor {
                 registry: RegistryId(3), ecosystem: Ecosystem::Npm, target_url: None, trusted: false,
-                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
             }],
         };
         let policy_server = MockServer::start().await;

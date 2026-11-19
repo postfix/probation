@@ -111,7 +111,7 @@ fn snapshot() -> ServicePolicySnapshot {
     let places = [PlaceRef { kind: LayerKind::Platform, id: 1 }, PlaceRef { kind: LayerKind::Org, id: 10 }];
     let descriptor = |id, ecosystem| RegistryDescriptor {
         registry: RegistryId(id), ecosystem, target_url: None, trusted: false,
-        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
     };
     ServicePolicySnapshot {
         version: 1, key_id: KeyId(7), org: OrgId(10), account: places[1], revision: 1,
@@ -122,7 +122,7 @@ fn snapshot() -> ServicePolicySnapshot {
             revision: 1,
         }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
-        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems), RegistryDescriptor { target_url: Some("https://cargo-reg.invalid/".into()), ..descriptor(7, probation_policy::Ecosystem::Cargo) }],
+        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems), RegistryDescriptor { target_url: Some("https://cargo-reg.invalid/".into()), ..descriptor(7, probation_policy::Ecosystem::Cargo) }, RegistryDescriptor { target_url: Some("https://nuget-reg.invalid/v3/index.json".into()), ..descriptor(8, probation_policy::Ecosystem::NuGet) }],
     }
 }
 
@@ -269,6 +269,13 @@ const ROUTE_TABLE: &[(&str, &str, char)] = &[
     ("/registry/cargo/{registry}/api/v1/crates", "get", 'R'),
     ("/go/{*path}", "get head", 'R'),
     ("/registry/go/{registry}/{*path}", "get head", 'R'),
+    ("/nuget/{*path}", "get head", 'R'),
+    ("/registry/nuget/{registry}/{*path}", "get head", 'R'),
+    ("/registry/nuget/{registry}/api/v2/package", "put", 'W'),
+    ("/registry/nuget/{registry}/api/v2/package/", "put", 'W'),
+    ("/registry/nuget/{registry}/api/v2/symbolpackage", "put", 'W'),
+    ("/registry/nuget/{registry}/api/v2/symbolpackage/", "put", 'W'),
+    ("/registry/nuget/{registry}/api/v2/package/{id}/{version}", "delete post", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems", "post", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems/yank", "delete", 'W'),
     ("/pypi/simple/", "get", 'R'),
@@ -361,7 +368,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
     let (server, registry, _policy) = service(&["10.1.0.0/16"]).await;
     let before = registry.calls().len();
     let concrete = |template: &str| {
-        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else if template.contains("/cargo/") { "7" } else { "3" };
+        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else if template.contains("/cargo/") { "7" } else if template.contains("/nuget/") { "8" } else { "3" };
         template
             .replace("{registry}", eco_registry)
             .replace("{package}", "left-pad")
@@ -371,6 +378,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
             .replace("{*rest}", "unpublish")
             .replace("{version}", "1.0.0")
             .replace("{name}", "demo")
+            .replace("{id}", "demo.pkg")
     };
     let mut driven = 0;
     for (template, verbs, class) in ROUTE_TABLE {
@@ -396,7 +404,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
             }
         }
     }
-    assert!(driven >= 14, "every W row was driven ({driven})");
+    assert!(driven >= 18, "every W row was driven ({driven})");
     assert_eq!(registry.calls().len(), before, "no upstream request was made");
 }
 

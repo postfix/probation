@@ -49,7 +49,7 @@ fn snapshot(osv: OsvSetting) -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }],
     }
 }
@@ -391,7 +391,7 @@ async fn drive_all_paths(scope: Option<OsvScope>) -> Vec<usize> {
         registry_private_cidrs: vec![],
         deletion_scopes: vec![],
         osv_scope: scope,
-        archive_origin: None,
+        archive_origin: None, resource_path_prefix: None,
     });
     Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(snap)).mount(&policy).await;
     let hits: Arc<Mutex<usize>> = Arc::default();

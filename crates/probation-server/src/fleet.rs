@@ -175,6 +175,9 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "go_upstream_url",
         "go_sumdb_url",
         "go_artifacts_url",
+        "nuget_upstream_url",
+        "nuget_search_url",
+        "nuget_publish_url",
     ] {
         if table
             .get(key)

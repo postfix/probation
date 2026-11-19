@@ -267,6 +267,12 @@ enum StoreCommand {
         name: String,
         reply: oneshot::Sender<StoreResult<HashMap<ReferenceId, i64>>>,
     },
+    CountProjectReferences {
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: String,
+        reply: oneshot::Sender<StoreResult<u64>>,
+    },
     ListProjectPublications {
         registry_id: u64,
         ecosystem: Ecosystem,
@@ -469,6 +475,12 @@ impl StoreHandle {
             reply,
         })
         .await
+    }
+
+    /// How many reference rows one project has (a NuGet project's lazily made rows are bounded by it).
+    pub async fn count_project_references_in(&self, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<u64> {
+        let name = name.to_owned();
+        self.critical(|reply| StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply }).await
     }
 
     /// The upstream publication time of every reference of one project that has one, in one query (a Go list seeds
@@ -853,6 +865,10 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = list_project_first_seen(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
+        StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply } => {
+            let result = count_project_references(connection, registry_id, ecosystem, &name).await;
+            answer(healthy, READ, reply, result);
+        }
         StoreCommand::ListProjectPublications { registry_id, ecosystem, name, reply } => {
             let result = list_project_publications(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
@@ -978,6 +994,16 @@ async fn get_reference(
     match rows.next().await? {
         Some(row) => ReferenceRow::from_row(&row).map(Some),
         None => Ok(None),
+    }
+}
+
+async fn count_project_references(connection: &mut Connection, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<u64> {
+    let mut rows = connection
+        .query("SELECT COUNT(*) FROM artifact_references WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3", (registry_id as i64, ecosystem.as_tag(), name))
+        .await?;
+    match rows.next().await? {
+        Some(row) => unsigned(&row, 0, "count(artifact_references)"),
+        None => Ok(0),
     }
 }
 

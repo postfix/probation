@@ -18,6 +18,19 @@ The next release must have a version above 0.2.2.
   the index `cksum`. Through the shared service `cargo publish`, `yank`, `unyank` and
   `owner` are forwarded with the caller's own token only; the owner list and search are
   forwarded as reads.
+- **NuGet** through the firewall (docs/operations.md "NuGet clients"). `nuget_upstream_url`,
+  `nuget_search_url` and `nuget_publish_url` name the index, search and publish hosts of the registry (api.nuget.org,
+  azuresearch-usnc.nuget.org and www.nuget.org) like the other origin keys; a resource a service index names on any
+  other origin is not used. The service index, the flat container (`index.json`, `.nupkg`, `.nuspec`, readme, icon),
+  registration (pages the registry inlined stay inline, linked pages are re-linked to the firewall, young leaves removed; every version of a project is kept, judged and listed, with its reference rows made when a file of it is asked for), search, autocomplete, the vulnerability database and the
+  repository signature index are filtered or forwarded by age, blocklist and OSV (`NuGet`); the four files of a version are
+  gated together and delivered exactly as the registry sent them, ids are case-insensitive (one lower-case identity)
+  and versions are NuGet's own (`1.0` is `1.0.0`). Through the shared service `dotnet nuget push`, its symbol package,
+  `dotnet nuget delete` and relist are forwarded with the caller's own key to the publish endpoint the registry's
+  service index names. A NuGet registry may declare an archive origin like a Cargo or Go one (migration 0018) and a resource path
+  prefix (migration 0019). Every upload forwarder (npm, PyPI, RubyGems, Cargo, NuGet) now spools through one bounded place
+  (8 uploads, a byte budget of twice the artifact cap taken as bytes arrive, a 60 s idle limit and a 15-minute body deadline). Registration, search and the vulnerability/signature documents are
+  shared for a few seconds, bounded per process and per request.
 - **Go modules** through the firewall (docs/operations.md "Go clients"). `go_upstream_url`,
   `go_sumdb_url` and `go_artifacts_url` name the proxy, the checksum database and the origin a zip redirect may land on
   (proxy.golang.org redirects large zips to its signed bucket) like the other origin keys. `@v/list` and

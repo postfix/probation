@@ -163,6 +163,13 @@ pub struct RegistryDescriptor {
     /// such archives. Only a Cargo registry may carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_origin: Option<String>,
+    /// Additive and optional (row 20): narrows a NuGet registry's resources (the flat container, registration,
+    /// search, vulnerability, signature and publish URLs its service index names) to a path prefix of its own
+    /// host, in whole segments (`/org-a/_packaging`). Absent: anywhere on the host (Azure Artifacts,
+    /// Artifactory, GitHub Packages and BaGet name resources beside, not below, the index). An older enforcer
+    /// ignores the field and keeps the host-wide rule. Only a NuGet registry with a target may carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_path_prefix: Option<String>,
 }
 
 /// One package request's transport-owned TLS chain and selected URL registry.
@@ -361,6 +368,9 @@ pub struct Upstreams {
     /// Additive (row 19), same rule as `cargo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub go: Option<Reachability>,
+    /// Additive (row 20), same rule as `go`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nuget: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -575,7 +585,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None,
+                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None,
                     },
                 },
                 effective_period_seconds: 55,

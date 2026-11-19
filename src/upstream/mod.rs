@@ -93,6 +93,8 @@ pub struct ActionRequest {
     pub content_type: Option<String>,
     /// RubyGems' MFA one-time password (`OTP` header), forwarded as the caller sent it.
     pub otp: Option<String>,
+    /// NuGet's `X-NuGet-ApiKey`, forwarded as the caller sent it.
+    pub api_key: Option<String>,
     pub body: tokio::fs::File,
     pub body_len: u64,
     pub max_bytes: u64,

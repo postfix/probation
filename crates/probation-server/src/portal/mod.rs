@@ -234,6 +234,10 @@ fn routes() -> Routes {
         post(registries::set_archive_origin),
     )
     .post(
+        "/org/{org}/registries/{registry}/resource-prefix",
+        post(registries::set_resource_prefix),
+    )
+    .post(
         "/org/{org}/registries/{registry}/read-credential",
         post(registries::set_read_credential),
     )

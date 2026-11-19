@@ -456,6 +456,9 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         "cargo_artifacts_url",
         "go_upstream_url",
         "go_sumdb_url",
+        "nuget_upstream_url",
+        "nuget_search_url",
+        "nuget_publish_url",
     ] {
         for refused in [
             "http://127.0.0.1:1",
@@ -1641,7 +1644,7 @@ fn a_selected_go_registry_admits_no_archive_origin_but_its_own() {
 fn a_declared_go_archive_origin_is_the_one_other_origin_a_selected_registry_redirects_to() {
     let declared = parse("https://corp-modules.s3.example/zips");
     let selected = OriginSet::selected_npm_with_private(parse("https://goproxy.corp.example/artifactory/api/go/repo/"), Vec::new()).unwrap()
-        .with_selected_go_archive(declared.clone());
+        .with_selected_archive(declared.clone());
     assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://corp-modules.s3.example/zips/abc.zip?X-Amz-Signature=s")));
     for refused in [
         "https://corp-modules.s3.example/other/abc.zip",
@@ -1706,4 +1709,48 @@ fn go_artifacts_url_carries_a_path_prefix_and_the_others_do_not() {
         assert!(Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"{refused}\"\n")).is_err(), "{refused}");
     }
     assert!(Config::from_toml_str(&format!("{sample}\ngo_upstream_url = \"https://goproxy.example/prefix\"\n")).is_err(), "the module host stays an origin");
+}
+
+/// Row 20: a URL below a resource base a registry's own document named is admitted only when the base itself is
+/// on the origin the resource kind belongs to, and the segments appended cannot leave it.
+#[test]
+fn url_below_admits_only_a_base_on_the_origin_of_its_kind_and_cannot_walk_out_of_it() {
+    let origins = OriginSet::production();
+    let flat = parse("https://api.nuget.org/v3-flatcontainer/");
+    assert_eq!(
+        origins.url_below(OriginKind::NugetIndex, &flat, &["newtonsoft.json", "13.0.3", "newtonsoft.json.13.0.3.nupkg"]).unwrap().as_str(),
+        "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg"
+    );
+    // A segment is data: a slash or a scheme in it is one encoded segment, a dot segment is refused.
+    assert_eq!(origins.url_below(OriginKind::NugetIndex, &flat, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://api.nuget.org/v3-flatcontainer/a%2Fb/https:%2F%2Fevil.example%2Fx");
+    assert!(origins.url_below(OriginKind::NugetIndex, &flat, &["..", "x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetIndex, &flat, &[".", "x"]).is_err());
+    // The base must be on the kind's origin: the search host is not the index host, another host is no origin.
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://azuresearch-usnc.nuget.org/query"), &["x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetSearch, &flat, &["x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org.evil.example/v3-flatcontainer/"), &["x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("http://api.nuget.org/v3-flatcontainer/"), &["x"]).is_err(), "https only");
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org:8443/v3-flatcontainer/"), &["x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://u:p@api.nuget.org/v3-flatcontainer/"), &["x"]).is_err());
+    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org/v3-flatcontainer/?x=1"), &["x"]).is_err());
+    // The three NuGet kinds default to the public hosts and are configurable like every other origin.
+    assert_eq!(origins.origin(OriginKind::NugetIndex).as_str(), "https://api.nuget.org/");
+    assert_eq!(origins.origin(OriginKind::NugetSearch).as_str(), "https://azuresearch-usnc.nuget.org/");
+    assert_eq!(origins.origin(OriginKind::NugetPublish).as_str(), "https://www.nuget.org/");
+}
+
+/// Row 20: a selected NuGet registry's archive origin is its own unless it declares one (GitHub Packages and Azure
+/// Artifacts redirect a `.nupkg` to their storage); the public registry has no archive redirect at all.
+#[test]
+fn a_declared_nuget_archive_origin_is_the_one_other_origin_a_selected_registry_redirects_to() {
+    let selected = OriginSet::selected_npm_with_private(parse("https://pkgs.corp.example/"), Vec::new()).unwrap();
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.nupkg")), "no declared archive origin: no cross-origin redirect");
+    let declared = parse("https://blobs.corp.example/store");
+    let selected = selected.with_selected_archive(declared);
+    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.nupkg?sig=s")));
+    for refused in ["https://blobs.corp.example/other/abc.nupkg", "https://blobs.corp.example:8443/store/abc.nupkg", "http://blobs.corp.example/store/abc.nupkg", "https://evil.example/store/abc.nupkg", "https://api.nuget.org/v3-flatcontainer/x"] {
+        assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)), "{refused}");
+    }
+    let production = OriginSet::production();
+    assert!(!production.admits_archive_redirect(OriginKind::NugetIndex, &parse("https://storage.example/x.nupkg")), "api.nuget.org answers a package directly: no redirect is followed");
 }

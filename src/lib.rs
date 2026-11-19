@@ -20,6 +20,7 @@ pub mod pypi;
 pub mod rubygems;
 pub mod cargo_registry;
 pub mod go_modules;
+pub mod nuget;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -175,6 +176,8 @@ pub struct App {
     pub(crate) cargo: cargo_registry::serve::Shared,
     /// Go modules: the in-memory per-module version tables (dates, existence checks), process-owned.
     pub(crate) go: go_modules::serve::Shared,
+    /// NuGet: the per-registry service index and the credential-free project share, process-owned.
+    pub(crate) nuget: nuget::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -434,6 +437,7 @@ impl App {
             rubygems: rubygems::serve::Shared::default(),
             cargo: cargo_registry::serve::Shared::default(),
             go: go_modules::serve::Shared::default(),
+            nuget: nuget::serve::Shared::default(),
             delivery,
             osv,
             managed,

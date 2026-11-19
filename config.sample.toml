@@ -149,6 +149,13 @@ osv_mode = "enforce"
 # go_upstream_url = "https://gomirror.example.org"
 # go_sumdb_url = "https://sumdb.example.org"
 # go_artifacts_url = "https://gofiles.example.org"
+# NuGet: the host of the v3 service index, flat container and registration (default https://api.nuget.org),
+# the search host (default https://azuresearch-usnc.nuget.org) and the package publish host used through the
+# shared service (default https://www.nuget.org). A resource a service index names on any other origin is
+# not used (a mirror sets all three).
+# nuget_upstream_url = "https://nuget-mirror.example.org"
+# nuget_search_url = "https://nuget-search.example.org"
+# nuget_publish_url = "https://nuget-push.example.org"
 
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this

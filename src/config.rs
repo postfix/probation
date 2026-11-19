@@ -129,6 +129,13 @@ pub struct Config {
     pub go_sumdb_url: Option<Url>,
     /// The origin a Go proxy's zip redirect may land on (https://storage.googleapis.com/proxy-golang-org-prod by default).
     pub go_artifacts_url: Option<Url>,
+    /// NuGet: the host of the service index, flat container, registration and vulnerability/signature
+    /// documents (api.nuget.org by default), the search host (azuresearch-usnc.nuget.org) and the publish
+    /// host (www.nuget.org), same rules as the origins above. A resource the registry's service index
+    /// names on any other origin is not used.
+    pub nuget_upstream_url: Option<Url>,
+    pub nuget_search_url: Option<Url>,
+    pub nuget_publish_url: Option<Url>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -376,6 +383,9 @@ struct RawConfig {
     go_upstream_url: Option<String>,
     go_sumdb_url: Option<String>,
     go_artifacts_url: Option<String>,
+    nuget_upstream_url: Option<String>,
+    nuget_search_url: Option<String>,
+    nuget_publish_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -478,6 +488,9 @@ const OPTIONAL_KEYS: &[&str] = &[
     "go_upstream_url",
     "go_sumdb_url",
     "go_artifacts_url",
+    "nuget_upstream_url",
+    "nuget_search_url",
+    "nuget_publish_url",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -569,6 +582,9 @@ impl RawConfig {
         let go_upstream_url = upstream_origin("go_upstream_url", self.go_upstream_url)?;
         let go_sumdb_url = upstream_origin("go_sumdb_url", self.go_sumdb_url)?;
         let go_artifacts_url = upstream_origin_with("go_artifacts_url", self.go_artifacts_url, true)?;
+        let nuget_upstream_url = upstream_origin("nuget_upstream_url", self.nuget_upstream_url)?;
+        let nuget_search_url = upstream_origin("nuget_search_url", self.nuget_search_url)?;
+        let nuget_publish_url = upstream_origin("nuget_publish_url", self.nuget_publish_url)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -860,6 +876,9 @@ impl RawConfig {
             go_upstream_url,
             go_sumdb_url,
             go_artifacts_url,
+            nuget_upstream_url,
+            nuget_search_url,
+            nuget_publish_url,
             local: LocalText::default(),
         })
     }

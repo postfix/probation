@@ -12,6 +12,10 @@ const MAX_NAME_LENGTH: usize = 214;
 const MAX_CARGO_NAME_LENGTH: usize = 128;
 /// Go module paths are bounded by the OSV key bound (LS-F6), the real maximum of the family.
 const MAX_GO_NAME_LENGTH: usize = 1024;
+/// nuget.org allows 128 characters for an id.
+const MAX_NUGET_NAME_LENGTH: usize = 128;
+/// A NuGet version string longer than this is refused (the real maximum is far below).
+const MAX_NUGET_VERSION_LENGTH: usize = 256;
 
 /// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
 pub fn normalize(raw: &str) -> String {
@@ -46,6 +50,8 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
         // A module path is case-sensitive (`github.com/Azure/x` and `github.com/azure/x` are two
         // modules) and is the decoded path, never the `!`-escaped proxy spelling.
         Ecosystem::Go => name.to_owned(),
+        // nuget.org ids are case-insensitive; the flat container and registration URLs are lower-case.
+        Ecosystem::NuGet => name.to_ascii_lowercase(),
     }
 }
 
@@ -57,6 +63,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
     let limit = match ecosystem {
         Ecosystem::Cargo => MAX_CARGO_NAME_LENGTH,
         Ecosystem::Go => MAX_GO_NAME_LENGTH,
+        Ecosystem::NuGet => MAX_NUGET_NAME_LENGTH,
         _ => MAX_NAME_LENGTH,
     };
     if name.is_empty() || name.len() > limit {
@@ -81,6 +88,9 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::Cargo => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
         // LS-F6 for Go: the decoded path `[A-Za-z0-9._~/-]`, no empty or dot-only element.
         Ecosystem::Go => valid_go_path(name),
+        // LS-F6 for NuGet: `[A-Za-z0-9._-]`.
+        // A dot-only id and an id that starts or ends with a dot are refused (nuget.org refuses them too).
+        Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) && !name.starts_with('.') && !name.ends_with('.'),
     }
 }
 
@@ -102,6 +112,16 @@ pub enum CanonicalVersion {
     /// SemVer 2 of a Go version without its leading `v` and without its `+incompatible` (the proxy serves a
     /// non-modular major only under that suffix, advisories and operators write it without: one match both ways).
     Go(Box<semver::Version>),
+    /// A NuGet version as `NuGet.Versioning` compares it: four numbers (missing parts zero), the release
+    /// label lower-cased, the build metadata dropped.
+    NuGet(NuGetVersion),
+}
+
+/// The comparable form of a NuGet version (see [`nuget_version`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct NuGetVersion {
+    pub parts: [u32; 4],
+    pub release: Option<String>,
 }
 
 /// One segment of a `Gem::Version` (`Gem::Version#canonical_segments`). Numbers are kept as
@@ -131,7 +151,54 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
             parsed.build = semver::BuildMetadata::EMPTY;
             CanonicalVersion::Go(Box::new(parsed))
         }),
+        Ecosystem::NuGet => parse_nuget(version).map(CanonicalVersion::NuGet),
     }
+}
+
+/// `NuGetVersion.TryParse`: one to four numeric parts (each an Int32, leading zeros allowed), an optional
+/// `-release` of dot-separated non-empty `[0-9A-Za-z-]` labels, an optional `+metadata` of dot-separated
+/// non-empty `[0-9A-Za-z-]` labels. No `v`, no whitespace, no empty part.
+fn parse_nuget(version: &str) -> Option<NuGetVersion> {
+    if version.is_empty() || version.len() > MAX_NUGET_VERSION_LENGTH {
+        return None;
+    }
+    let (rest, metadata) = match version.split_once('+') {
+        Some((rest, metadata)) => (rest, Some(metadata)),
+        None => (version, None),
+    };
+    let (numbers, release) = match rest.split_once('-') {
+        Some((numbers, release)) => (numbers, Some(release)),
+        None => (rest, None),
+    };
+    let labels = |text: &str| !text.is_empty() && text.split('.').all(|label| !label.is_empty() && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+    if release.is_some_and(|release| !labels(release)) || metadata.is_some_and(|metadata| !labels(metadata)) {
+        return None;
+    }
+    let mut parts = [0u32; 4];
+    for (count, part) in numbers.split('.').enumerate() {
+        if count == 4 || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        parts[count] = part.parse().ok().filter(|value| *value <= i32::MAX as u32)?;
+    }
+    Some(NuGetVersion { parts, release: release.map(str::to_ascii_lowercase) })
+}
+
+/// The one spelling of a NuGet version policy, the blocklist and OSV use: `NuGetVersion.ToNormalizedString`
+/// lower-cased (the flat container's own spelling) with the build metadata dropped: `Major.Minor.Patch`, a
+/// fourth part only when it is not zero, then `-release`. `None` when the text is no NuGet version.
+pub fn nuget_version(version: &str) -> Option<String> {
+    let parsed = parse_nuget(version)?;
+    let [major, minor, patch, revision] = parsed.parts;
+    let mut text = format!("{major}.{minor}.{patch}");
+    if revision != 0 {
+        text.push_str(&format!(".{revision}"));
+    }
+    if let Some(release) = parsed.release {
+        text.push('-');
+        text.push_str(&release);
+    }
+    Some(text)
 }
 
 /// Ruby's own `Gem::Version.correct?` pattern

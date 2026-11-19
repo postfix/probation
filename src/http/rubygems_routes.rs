@@ -168,8 +168,6 @@ async fn forward_write(
     rest: &[&str],
     body: axum::body::Body,
 ) -> Result<Response, ApiError> {
-    use futures_util::StreamExt;
-    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
     // A write without the caller's own credential is refused locally with 401 before admission,
     // a permit or any registry lookup.
     let auth = headers
@@ -195,20 +193,11 @@ async fn forward_write(
     if headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()).is_some_and(|length| length > cap) {
         return Ok(axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response());
     }
-    let file = tempfile::tempfile_in(&app.config.data_dir).map_err(|_| ApiError::StorageUnusable)?;
-    let mut file = tokio::fs::File::from_std(file);
-    let mut length = 0u64;
-    let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| ApiError::InvalidInput("upload is incomplete"))?;
-        length = length.saturating_add(chunk.len() as u64);
-        if length > cap {
-            return Ok(axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response());
-        }
-        file.write_all(&chunk).await.map_err(|_| ApiError::StorageUnusable)?;
-    }
-    file.flush().await.map_err(|_| ApiError::StorageUnusable)?;
-    file.seek(std::io::SeekFrom::Start(0)).await.map_err(|_| ApiError::StorageUnusable)?;
+    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, principal.key_id.0, headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
+        return Ok(axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response());
+    };
+    // The spool's place and bytes are held until this request is done with the file.
+    let (file, length) = (spool.file, spool.length);
     let current = super::registry_read::recheck_rubygems(&app, peer, registry, &headers).await?;
     if current.registry_origin != principal.registry_origin
         || current.registry_private_cidrs != principal.registry_private_cidrs
@@ -226,6 +215,7 @@ async fn forward_write(
             authorization: Some(auth),
             content_type,
             otp,
+            api_key: None,
             body: file,
             body_len: length,
             max_bytes: app.config.max_metadata_bytes.get(),

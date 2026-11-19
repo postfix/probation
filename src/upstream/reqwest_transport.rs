@@ -133,7 +133,7 @@ impl ReqwestTransport {
                 let selected = OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
                     .map_err(UpstreamError::RejectedUrl)?;
                 let selected = match archive {
-                    Some(archive) => selected.with_selected_go_archive(archive.clone()),
+                    Some(archive) => selected.with_selected_archive(archive.clone()),
                     None => selected,
                 };
                 match &self.service_deny {
@@ -224,6 +224,11 @@ impl Transport for ReqwestTransport {
         }
         if let Some(otp) = req.otp {
             request = request.header("OTP", HeaderValue::from_str(&otp).map_err(|_| UpstreamError::Status(400))?);
+        }
+        if let Some(api_key) = req.api_key {
+            let mut value = HeaderValue::from_str(&api_key).map_err(|_| UpstreamError::Status(400))?;
+            value.set_sensitive(true);
+            request = request.header("X-NuGet-ApiKey", value);
         }
         let body = futures_util::stream::try_unfold(req.body, |mut file| async move {
             let mut chunk = [0u8; 64 * 1024];

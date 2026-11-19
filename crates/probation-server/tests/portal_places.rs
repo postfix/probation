@@ -1550,7 +1550,7 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo or Go"), "{}", refused.body);
+        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo, Go or NuGet"), "{}", refused.body);
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);
@@ -4551,4 +4551,53 @@ async fn t_registry_form_adds_a_go_registry_with_an_optional_archive_origin_and_
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
     assert_eq!(policy.body.matches(r#"<option value="go">Go</option>"#).count(), 2, "the block and exception forms offer Go: {}", policy.body);
+}
+
+/// Row 20: the registry add form lists NuGet and takes it, a NuGet registry is stored under the tag `nuget`
+/// (migration 0014 already carries it), takes the optional archive origin (a feed that redirects a package to its
+/// storage; migration 0018 widened who may hold one) with the same shape rules as a Cargo registry's, and the
+/// block and exception forms offer NuGet.
+#[tokio::test]
+async fn t_registry_form_adds_a_nuget_registry_with_an_optional_archive_origin_and_the_block_form_offers_nuget() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let page = admin.get(&catalog).await;
+    assert!(page.body.contains(r#"<option value="nuget">NuGet</option>"#), "the add form lists NuGet: {}", page.body);
+    let added = admin.submit(&catalog, &catalog, &[("name", "Corp NuGet"), ("ecosystem", "nuget"), ("target_url", "https://pkgs.example.test/nuget/v3/index.json")]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'")
+        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!((tag.as_str(), target.as_deref()), ("nuget", Some("https://pkgs.example.test/nuget/v3/index.json")));
+    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    assert_eq!(stored().await, None);
+    let page = admin.get(&catalog).await;
+    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a NuGet registry has the archive origin field");
+    let action = format!("{catalog}/{id}/archive-origin");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
+    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
+        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    }
+    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None, "cleared");
+    // The resource path prefix (security review F3): whole segments, NuGet registries only, empty keeps the whole host.
+    let prefix = || async { sqlx::query_scalar::<_, Option<String>>("SELECT resource_path_prefix FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let page = admin.get(&catalog).await;
+    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 1, "a NuGet registry has the prefix field");
+    let action = format!("{catalog}/{id}/resource-prefix");
+    assert_eq!(admin.submit(&catalog, &action, &[("resource_path_prefix", "/org-a/_packaging")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(prefix().await.as_deref(), Some("/org-a/_packaging"));
+    for refused in ["org-a", "/org-a/", "/a/../b", "/a b", "/", "https://x/y"] {
+        assert_ne!(admin.submit(&catalog, &action, &[("resource_path_prefix", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    }
+    assert_eq!(prefix().await.as_deref(), Some("/org-a/_packaging"), "a refused value changes nothing");
+    assert_eq!(admin.submit(&catalog, &action, &[("resource_path_prefix", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(prefix().await, None, "cleared");
+    let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
+    assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
+    assert_eq!(policy.body.matches(r#"<option value="nuget">NuGet</option>"#).count(), 2, "the block and exception forms offer NuGet: {}", policy.body);
 }

@@ -123,6 +123,9 @@ services:
           - crates.io
           - proxy.golang.org
           - sum.golang.org
+          - api.nuget.org
+          - azuresearch-usnc.nuget.org
+          - www.nuget.org
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -336,6 +339,21 @@ services:
     environment:
       <<: *client-env
       GOTOOLCHAIN: local
+
+  # .NET SDK 8.0.416 (NuGet 6.11). The SDK reads the CA from SSL_CERT_FILE; packages, caches and home stay under /work.
+  client-nuget:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: nuget.Dockerfile
+    image: localhost/probation-e2e-client:dotnet8.0.416
+    environment:
+      <<: *client-env
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      DOTNET_CLI_USE_MSBUILD_SERVER: "0"
+      MSBUILDDISABLENODEREUSE: "1"
 
   client-uv:
     <<: *client

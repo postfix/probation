@@ -751,7 +751,7 @@ To close the NAT64 gap at the network level, restrict the firewall's outbound
 connections to the hosts it needs:
 
 - `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`, or the hosts in
-  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url` and `go_artifacts_url` if you set them
+  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url` and `nuget_publish_url` if you set them
 - `api.osv.dev`, unless `osv_mode = "off"`
 - in managed mode, the server's address from `[management] url`
 
@@ -1341,6 +1341,9 @@ Every size and count above must not be zero.
 | `go_upstream_url` | `https://proxy.golang.org` | Same rules. The one Go module proxy: `@v/list`, `@latest`, `.info`, `.mod` and `.zip` (the proxy serves its own zips; a zip served from another origin is refused). |
 | `go_artifacts_url` | `https://storage.googleapis.com/proxy-golang-org-prod` | Same rules, except that it may carry a path prefix (a bucket's name; whole segments, no dot or encoded segment). The one origin a zip redirect of the module host may land on: proxy.golang.org answers a large module's `.zip` with a 302 to this signed bucket (measured 18.6 MB for k8s.io/kubernetes v1.30.0; small zips are direct). Only a `.zip` transfer follows it, never a list, an `.info` or a `.mod`, and the registry credential is not sent there. A selected registry has no such origin unless it declares an archive origin on its registry page (below); a redirect away from it is refused (502). |
 | `go_sumdb_url` | `https://sum.golang.org` | Same rules. The one checksum database the `/go/sumdb/{host}/` route forwards to (its host is the database name). |
+| `nuget_upstream_url` | `https://api.nuget.org` | Same rules. The origin of the service index, flat container, registration, vulnerability and signature documents; a resource of the registry's service index on any other origin is not used. |
+| `nuget_search_url` | `https://azuresearch-usnc.nuget.org` | Same rules. The origin of the search and autocomplete services. |
+| `nuget_publish_url` | `https://www.nuget.org` | Same rules. The origin of the publish endpoints the shared service forwards to. |
 | `sync_interval_seconds` | `60` | Managed mode only. From 1 to 86400. How long a change on the server may take to reach this firewall. |
 
 The environment variable `PROBATION_SIEM_AUTH` holds the SIEM credential (section
@@ -1617,3 +1620,112 @@ certificate script writes no Go configuration and points at the Keys page. Throu
 own credential is the caller's `Authorization` (Basic or Bearer); such a request is request-scoped (nothing of it is cached or
 shared, and its zip is held in a request-owned file). Go has no write protocol: a module is published by pushing to its
 repository, never to a proxy, so every non-read request is refused and nothing is forwarded.
+
+### NuGet clients
+
+Point the client at the firewall's service index and at nothing else:
+
+```sh
+dotnet nuget add source https://firewall.example/nuget/v3/index.json --name probation \
+  --username key --password prb_... --store-password-in-clear-text
+dotnet nuget disable source nuget.org      # one protected source: a second source would offer what this one refuses
+```
+
+(`/registry/nuget/{id}/v3/index.json` of a selected registry; in `nuget.config`, a `<clear />` and one `<add>`.) The key is
+the password of HTTP Basic. The firewall serves the NuGet v3 protocol: `GET v3/index.json` (the service index), the flat
+container (`v3-flatcontainer/{id}/index.json` and `{id}/{version}/{id}.{version}.nupkg`, `{id}.nuspec`, `readme`, `icon`; HEAD
+and ranges on the files), registration (`v3/registration/{id}/index.json` and `{id}/{version}.json`), `v3/query` and
+`v3/autocomplete`, `v3/vulnerabilities/...` and `v3/repository-signatures/...`. The id is the one lower-case spelling and the
+version the one normalised lower-case spelling (`1.0.0.0` is `1.0.0`; `1.0.0-Beta` is `1.0.0-beta`), as every URL of the
+protocol spells them; any other spelling is a 404 and asks upstream nothing.
+
+The service index. The firewall reads the registry's own service index (cached 60 s per registry) and serves a rewritten
+one: every resource it can protect points at a route here, and it says nothing else. A resource the registry names on an
+origin that is not configured is not used: for the public registry the three origins `nuget_upstream_url` (the index, flat
+container, registration, vulnerability and signature documents; default `https://api.nuget.org`), `nuget_search_url`
+(`https://azuresearch-usnc.nuget.org`) and `nuget_publish_url` (`https://www.nuget.org`); for a registry of your own
+(its `target_url` is its service index, `.../v3/index.json`, or the directory holding it) every resource must lie on the
+registry's own origin, any path. A registry whose flat container is elsewhere cannot be served (502); a search or publish
+service elsewhere is simply not offered. Not advertised, because there is nothing to protect or serve: the legacy gallery,
+package staging, the catalog, and the web-page URI templates (report abuse, package details, owner details). Registration is
+served as one SemVer 2 view for every `RegistrationsBaseUrl` type (the registry's semver1-only view is not offered separately).
+`RepositorySignatures` is advertised only when the firewall's public URL is https (the NuGet client refuses it over http, NU1301; over
+http package signatures are verified by the client alone). `VulnerabilityInfo` is advertised over http too, so a development setup
+with `allowInsecureConnections` keeps `NuGetAudit`; audit data over plain http is unauthenticated for an on-path attacker, which is
+an operator's choice of public URL (use https for anything beyond a development machine).
+
+What is applied. A version's publication time is the `published` of its registration leaf. The unlisted sentinel
+(1900-01-01), an absent value and one that does not parse are "no date": the version waits on the time this firewall first saw
+it (held for a whole cooldown) and is never dated from a cache or a build time; a version the flat container lists and
+registration does not yet name is held the same way. The four files of a version (`.nupkg`, `.nuspec`, `readme`, `icon`) are
+judged together: held by the cooldown, a block or OSV (ecosystem `NuGet`, the lower-cased id, the normalised version without
+build metadata; `1.0.0` and `1.0.0.0` are one version for a block) all four are refused (403) and a held version's files are
+never fetched. The flat container's `index.json` lists only the versions that pass, in the registry's order. Registration is
+rendered page by page (a page the registry inlined stays inline; one it links is read only under that registry's own directory of its
+registration base and is served by this firewall's page route), the leaves that pass, `count`, `lower` and `upper` recomputed, `@id`, `packageContent`, `registration`,
+a registry-own `iconUrl` and `readmeUrl` (the flat container's readme route here), a dependency's `registration` link and every other URL of the registry's own origin (a catalog entry
+and its fragments) pointed at this firewall (a catalog URL becomes `v3/catalog/...`, a route that is not served, so no link in a
+document leads a client around the firewall; a licence or project page on another host is the packager's own and stays); a leaf of a
+held version is 403. A file is delivered exactly as the registry sent it (nothing is repacked or opened, so no inflate cap applies; the NuGet
+client verifies the package's own signature); the first verified download pins its digest and a later, different body is
+refused. Search (`v3/query`) and autocomplete (`v3/autocomplete`) keep only the protocol's own query keys (`q`, `id`, `skip`,
+`take`, `prerelease`, `semVerLevel`, `packageType`, `supportedFramework`), pass `take` on exactly (whatever its size: the registry
+applies its own ceiling, 1,000 on nuget.org, and a clamp would silently skip the results between what the client asked for and
+what it got; `totalHits` is the registry's and counts versions this firewall withholds) and show a package only with its allowed
+versions: each result costs a registration and flat container read, every returned result (up to 1,000) is judged two at a time
+(so a large `take` leaves the registry's other refresh places to other reads) under the request's 60 s deadline (a request that runs out of it is a 504; a result whose project cannot be read fails the search, a package the registry does not have is not shown, nothing is dropped silently), and a blocked id is refused before
+the registry is asked about it. The registration index keeps a page the registry inlined inline and links a page the registry only
+linked to this firewall's own route (`v3/registration/{id}/page/{lower}/{upper}.json`, the registry page's bounds), so no response
+holds every leaf of a project with thousands of versions. The vulnerability database (`NuGetAudit`, `dotnet list package
+--vulnerable`) and the repository signature index are read through the firewall: only the files and certificates the
+registry's current index names are served, from that index's own origin.
+
+Bounds. Documents (and each registration page) are read to `max(max_metadata_bytes, 16 MiB)` (the largest registration measured is far
+below it); a registration page is read, its facts taken and its bytes dropped, so a project's registration is not held whole.
+Every version of a project (up to 200,000, a registration of up to 4,096 pages) is kept, judged and listed; only the newest
+`max_references_per_project / 4` versions have their four reference rows made at refresh, and any other version has its rows made
+when a file of it is first asked for and the policy does not refuse it (an exact pin of version 1.0.0 of a nightly feed restores); such rows are bounded per project at four times `max_references_per_project` beyond the newest versions' own, and one more old version past that is a 503; a service index of more
+than 512 resources, a vulnerability index of more than 16 entries and a signature index of more than 64 certificates are refused, a `.nuspec`, readme or icon is read to 16 MiB and takes one of the 64 small-transfer places
+(not a place of the large ones). Work that reaches the registry is bounded across requests: a
+service index is cached per registry (60 s, 64 at most); one request at a time refreshes one project (the others wait for it and use
+what it stored), at most 16 project refreshes run at once in the process and one registry holds at most 4 of them (a wait over 30 s is a 504, so a slow registry of one organisation cannot starve another's reads), every document request has a
+60 s deadline, the registration documents of an id are shared for 5 s (8 ids, 16 MiB each), a vulnerability or signature document
+for 30 s (16 documents of at most 8 MiB; the vulnerability file is read to 32 MiB) and, in the shared service, one fetched project
+for 5 s per registry and id (256 at most); a read that carries the caller's credential reads and fills nothing shared, and every
+certificate is served only when its bytes hash to the SHA-256 fingerprint the registry's index names.
+
+Uploads. Every publish forwarder (npm publish, PyPI upload, `gem push`, `cargo publish`, `dotnet nuget push`) spools the body to
+an unnamed file before forwarding so the policy can be rechecked first. That spool is bounded in one place (src/http/spool.rs): at
+most 8 uploads at once, at most 4 of them one key's (the ninth, or a key's fifth, is a 503, not a queue), all of them together within one byte budget (twice `max_artifact_bytes`, at
+least 64 MiB: the largest upload any forwarder accepts), taken as the bytes arrive and not as a declared length (a declaration that
+never delivers holds a place and nothing else; an upload that finds the budget taken waits up to 30 s for the others to finish instead of being refused), a body that stalls for 60 s or does not arrive within 15 minutes is refused, a write
+with no credential is 401 before anything is read, an empty body (unlist, relist) takes no place, and a declared or received length
+over the cap is 413 before a place is held for it. The credential's value is not validated here (the registry does that), so a
+junk key can occupy the places for at most a minute of silence and never more than the budget.
+
+Resource path prefix. A registry of your own may declare a path prefix (the portal's registry page; migration 0019, optional,
+whole segments such as `/org-a/_packaging`): every resource its service index names, and every document its vulnerability and signature indexes name, must then lie under it, so a feed host that
+serves many tenants by path cannot be steered to another tenant's path with your credential. Absent, the whole host is admitted
+(Azure Artifacts, Artifactory, GitHub Packages and BaGet name resources beside, not below, the index); set it when your layout
+allows. Publish-date residual: the cooldown trusts a version's `published`; nuget.org assigns it, but a self-hosted feed that takes it from the publisher can be back-dated (the same accepted residual as Go's first list: no code defends it, an exception entry or a block is the way through).
+
+Redirects. api.nuget.org answers a package directly. A registry of your own that redirects a `.nupkg` to its storage (GitHub
+Packages, Azure Artifacts, Artifactory with cloud storage) needs an archive origin on its descriptor (the portal's registry
+page; migration 0018): only a `.nupkg` transfer follows a redirect, and only to that origin; the registry credential is not
+sent there. Without one a redirect away is refused (502).
+
+Authentication. A managed firewall on the key route takes the key as HTTP Basic (the source's username and password). NuGet
+signs in with credentials or an API key, never a client certificate (product decisions C1006 and C1007), so the certificate
+script writes no NuGet configuration and points at the Keys page. Through the shared service the registry's own credential is
+the caller's `Authorization` (Basic or Bearer), forwarded to the registry's own origin only; a request that carries one is
+request-scoped. The client sends `X-NuGet-Client-Version` and `X-NuGet-Session-Id` on every read (measured with .NET SDK
+8.0.416); they carry no credential and are on the read allow-list.
+
+Writes. Only the shared service forwards them (class W), on the selected-registry route: `dotnet nuget push` (`PUT
+api/v2/package`, a multipart body), the symbol package (`PUT api/v2/symbolpackage`), `dotnet nuget delete` (unlist, `DELETE
+api/v2/package/{id}/{version}`) and relist (`POST` of the same URL). The caller's own `X-NuGet-ApiKey` and `Authorization` go to the
+endpoint the registry's service index names (the registry's own origin; for the public registry `nuget_publish_url`), never the
+service key; a write with neither is refused locally with 401 before any lookup, a body over twice `max_artifact_bytes` with 413
+(the spool above bounds the rest), and the registry's answer comes back as plain text or JSON with `X-Content-Type-Options: nosniff`
+(a status that is no publish answer is a 502). A standalone or managed firewall has no write route: any non-read verb on `/nuget/`
+is 405 and reaches nothing.

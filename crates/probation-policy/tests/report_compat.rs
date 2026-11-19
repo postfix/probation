@@ -84,3 +84,22 @@ fn go_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.cargo), (Reachability::Ok, Some(Reachability::Ok)));
 }
+
+/// Row 20: the NuGet upstream state is additive in the same way as the families before it.
+#[test]
+fn nuget_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","go":"ok"}"#).unwrap();
+    assert_eq!(old.nuget, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("nuget"));
+    let new = Upstreams { nuget: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""nuget":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        go: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.go), (Reachability::Ok, Some(Reachability::Ok)));
+}

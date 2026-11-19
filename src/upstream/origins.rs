@@ -48,6 +48,11 @@ const GO_SUMDB: &str = "https://sum.golang.org";
 /// 2026-11-19: k8s.io/kubernetes v1.30.0, 18.6 MB; small zips are a direct `200`). That bucket is the
 /// proxy's archive origin: admitted as the target of an archive redirect from the proxy and nowhere else.
 const GO_ARCHIVES: &str = "https://storage.googleapis.com/proxy-golang-org-prod";
+/// NuGet's service index, flat container, registration, vulnerability and signature documents are one host
+/// (api.nuget.org); its search service and its publish endpoint are two more (measured 2026-11-19).
+const NUGET_INDEX: &str = "https://api.nuget.org";
+const NUGET_SEARCH: &str = "https://azuresearch-usnc.nuget.org";
+const NUGET_PUBLISH: &str = "https://www.nuget.org";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -60,10 +65,13 @@ pub enum OriginKind {
     GoProxy,
     GoSumdb,
     GoArchives,
+    NugetIndex,
+    NugetSearch,
+    NugetPublish,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 9] = [
+    pub const ALL: [OriginKind; 12] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
@@ -73,6 +81,9 @@ impl OriginKind {
         OriginKind::GoProxy,
         OriginKind::GoSumdb,
         OriginKind::GoArchives,
+        OriginKind::NugetIndex,
+        OriginKind::NugetSearch,
+        OriginKind::NugetPublish,
     ];
 }
 
@@ -112,6 +123,9 @@ pub struct OriginSet {
     go_proxy: Url,
     go_sumdb: Url,
     go_archives: Url,
+    nuget_index: Url,
+    nuget_search: Url,
+    nuget_publish: Url,
     /// A selected Go registry that declared an archive origin: redirects from its own origin may land there.
     go_selected: bool,
     allow_private_addresses: bool,
@@ -167,6 +181,9 @@ impl OriginSet {
             go_proxy: parse_origin(GO_PROXY),
             go_sumdb: parse_origin(GO_SUMDB),
             go_archives: parse_origin(GO_ARCHIVES),
+            nuget_index: parse_origin(NUGET_INDEX),
+            nuget_search: parse_origin(NUGET_SEARCH),
+            nuget_publish: parse_origin(NUGET_PUBLISH),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -191,6 +208,9 @@ impl OriginSet {
             go_proxy: pick(&config.go_upstream_url, production.go_proxy),
             go_sumdb: pick(&config.go_sumdb_url, production.go_sumdb),
             go_archives: pick(&config.go_artifacts_url, production.go_archives),
+            nuget_index: pick(&config.nuget_upstream_url, production.nuget_index),
+            nuget_search: pick(&config.nuget_search_url, production.nuget_search),
+            nuget_publish: pick(&config.nuget_publish_url, production.nuget_publish),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -214,6 +234,9 @@ impl OriginSet {
             go_proxy: parse_origin(GO_PROXY),
             go_sumdb: parse_origin(GO_SUMDB),
             go_archives: parse_origin(GO_ARCHIVES),
+            nuget_index: parse_origin(NUGET_INDEX),
+            nuget_search: parse_origin(NUGET_SEARCH),
+            nuget_publish: parse_origin(NUGET_PUBLISH),
             go_selected: false,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
@@ -234,6 +257,14 @@ impl OriginSet {
         self
     }
 
+    /// Tests only: where this set sends NuGet service index, search and publish calls (the upstream fake).
+    pub fn with_nuget(mut self, index: Url, search: Url, publish: Url) -> OriginSet {
+        self.nuget_index = index;
+        self.nuget_search = search;
+        self.nuget_publish = publish;
+        self
+    }
+
     /// Tests only: the origin a Go proxy's archive redirects may land on.
     pub fn with_go_archives(mut self, archives: Url) -> OriginSet {
         self.go_archives = archives;
@@ -246,9 +277,9 @@ impl OriginSet {
         (from == OriginKind::GoProxy || (self.go_selected && from == OriginKind::NpmMetadata)) && self.admit(to, OriginKind::GoArchives).is_ok()
     }
 
-    /// A selected Go registry's declared archive origin (a snapshot descriptor field, already checked at
-    /// activation): a redirect of its zip may land there, and nowhere else.
-    pub fn with_selected_go_archive(mut self, archive: Url) -> OriginSet {
+    /// A selected Go or NuGet registry's declared archive origin (a snapshot descriptor field, already checked at
+    /// activation): a redirect of its zip or nupkg may land there, and nowhere else.
+    pub fn with_selected_archive(mut self, archive: Url) -> OriginSet {
         self.go_archives = archive;
         self.go_selected = true;
         self
@@ -291,6 +322,9 @@ impl OriginSet {
             OriginKind::GoProxy => &self.go_proxy,
             OriginKind::GoSumdb => &self.go_sumdb,
             OriginKind::GoArchives => &self.go_archives,
+            OriginKind::NugetIndex => &self.nuget_index,
+            OriginKind::NugetSearch => &self.nuget_search,
+            OriginKind::NugetPublish => &self.nuget_publish,
         }
     }
 
@@ -351,6 +385,27 @@ impl OriginSet {
             let mut path = url
                 .path_segments_mut()
                 .map_err(|()| UrlRejection::PathEscape)?;
+            path.pop_if_empty();
+            for segment in segments {
+                path.push(segment);
+            }
+        }
+        self.admit(&url, kind)?;
+        Ok(url)
+    }
+
+    /// A URL below `base`, a resource URL a registry's own document named (NuGet's flat container, registration
+    /// and search bases): `base` must itself be admitted for `kind` (the same origin the kind names, no
+    /// credentials, no query or fragment), each segment is appended with `PathSegmentsMut::push` (`.` and `..` are
+    /// refused, as in [`OriginSet::url_for`]), and the finished URL is admitted again.
+    pub fn url_below(&self, kind: OriginKind, base: &Url, segments: &[&str]) -> Result<Url, UrlRejection> {
+        if segments.iter().any(|segment| matches!(*segment, "." | "..")) || base.query().is_some() || base.fragment().is_some() {
+            return Err(UrlRejection::PathEscape);
+        }
+        self.admit(base, kind)?;
+        let mut url = base.clone();
+        {
+            let mut path = url.path_segments_mut().map_err(|()| UrlRejection::PathEscape)?;
             path.pop_if_empty();
             for segment in segments {
                 path.push(segment);

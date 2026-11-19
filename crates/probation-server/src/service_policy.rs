@@ -148,20 +148,21 @@ async fn load_policy_snapshot(
             revision,
         });
     }
-    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>);
+    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>, Option<String>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
+        "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin, resource_path_prefix FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
     ).bind(snapshot.org.0 as i32).fetch_all(&mut **tx).await.map_err(unavailable)?;
     if rows.len() > 256 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    for (id, tag, target_url, trusted, osv_scope, archive_origin) in rows {
+    for (id, tag, target_url, trusted, osv_scope, archive_origin, resource_path_prefix) in rows {
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
             "rubygems" => Ecosystem::RubyGems,
             "cargo" => Ecosystem::Cargo,
             "go" => Ecosystem::Go,
+            "nuget" => Ecosystem::NuGet,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {
@@ -187,6 +188,7 @@ async fn load_policy_snapshot(
                 _ => None,
             },
             archive_origin,
+            resource_path_prefix,
         });
     }
     Ok(snapshot)
@@ -232,15 +234,27 @@ pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
 }
 
 /// Sets (`Some`) or clears (`None`) a registry's archive origin. False when the registry is not this
-/// organisation's live Cargo or Go registry with a target (the column only exists for those).
+/// organisation's live Cargo, Go or NuGet registry with a target (the column only exists for those).
 pub async fn set_archive_origin(
     pool: &sqlx::PgPool,
     org: i32,
     registry: i64,
     origin: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go') AND target_url IS NOT NULL AND removed_at IS NULL")
+    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go', 'nuget') AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
+        .bind(registry)
+        .bind(org)
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Sets (`Some`) or clears (`None`) a NuGet registry's resource path prefix. False when the registry is not this
+/// organisation's live NuGet registry with a target.
+pub async fn set_resource_prefix(pool: &sqlx::PgPool, org: i32, registry: i64, prefix: Option<&str>) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query("UPDATE registries SET resource_path_prefix = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'nuget' AND target_url IS NOT NULL AND removed_at IS NULL")
+        .bind(prefix)
         .bind(registry)
         .bind(org)
         .execute(pool)

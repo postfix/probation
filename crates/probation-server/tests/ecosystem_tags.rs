@@ -208,7 +208,7 @@ async fn snapshot_carries_the_archive_origin_of_a_go_registry_and_the_constraint
         .bind(org.id as i32).execute(&db.owner).await.unwrap();
     for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'npm', 'Npm', 'https://n.example/', 'https://x.example/')",
                 "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'go', 'NoTarget', 'https://x.example/')",
-                "INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'nuget', 'Nuget', 'https://n.example/', 'https://x.example/')"] {
+                "INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'pypi', 'Pypi', 'https://n.example/', 'https://x.example/')"] {
         assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
     }
     let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
@@ -221,4 +221,100 @@ async fn snapshot_carries_the_archive_origin_of_a_go_registry_and_the_constraint
     let without = go.iter().find(|r| r["target_url"] == "https://goproxy2.example/repo/").unwrap();
     assert_eq!(with["archive_origin"], "https://zips.example/bucket");
     assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
+}
+
+/// Row 20: a NuGet registry and a NuGet block travel in the snapshot under the wire spelling `NuGet` (the tag in the
+/// database is `nuget`, already carried by migration 0014), and a block is keyed by the lower-cased id the firewall
+/// looks up.
+#[tokio::test]
+async fn snapshot_names_a_nuget_registry_and_a_nuget_block() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Dotnetters").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name) VALUES ($1, 'nuget', 'Packages')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
+        .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name, version) VALUES ($1, 'nuget', 'Newtonsoft.Json', '12.0.3')")
+        .bind(layer).execute(&db.owner).await.unwrap();
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(snapshot["registries"].as_array().unwrap().iter().any(|r| r["ecosystem"] == "NuGet"), "{snapshot}");
+    let text = snapshot.to_string();
+    assert!(text.contains(r#""ecosystem":"NuGet""#) && text.contains(r#""version":"12.0.3""#), "the block decodes as a NuGet block: {snapshot}");
+}
+
+/// Row 20: a settings push may set the three NuGet origins, and only to an https address.
+#[test]
+fn settings_push_accepts_https_nuget_origins_and_refuses_the_rest() {
+    use probation_server::fleet::check_settings;
+    for key in ["nuget_upstream_url", "nuget_search_url", "nuget_publish_url"] {
+        assert!(check_settings(&format!("{key} = \"https://nuget.mirror.example\"\n")).is_ok(), "{key}");
+        for refused in ["http://nuget.mirror.example", "ftp://x", "mirror"] {
+            assert!(check_settings(&format!("{key} = \"{refused}\"\n")).is_err(), "{key} = {refused}");
+        }
+        assert!(check_settings(&format!("{key} = 7\n")).is_err(), "{key} must be a string");
+    }
+}
+
+/// Row 20 (migration 0018): the database lets a NuGet registry with a target hold an archive origin (a feed that
+/// redirects a package to its storage) and still refuses one on any other kind of registry, or without a target;
+/// the snapshot carries it for the NuGet registry that has one and omits it for the one that has none.
+#[tokio::test]
+async fn snapshot_carries_the_archive_origin_of_a_nuget_registry_and_the_constraint_still_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Nugetarchives").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'nuget', 'With', 'https://pkgs.example/nuget/v3/index.json', 'https://blobs.example/store')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'nuget', 'Without', 'https://pkgs2.example/nuget/v3/index.json')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'rubygems', 'Gems', 'https://n.example/', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'nuget', 'NoTarget', 'https://x.example/')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let nuget: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "NuGet").collect();
+    assert_eq!(nuget.len(), 2);
+    let with = nuget.iter().find(|r| r["target_url"] == "https://pkgs.example/nuget/v3/index.json").unwrap();
+    let without = nuget.iter().find(|r| r["target_url"] == "https://pkgs2.example/nuget/v3/index.json").unwrap();
+    assert_eq!(with["archive_origin"], "https://blobs.example/store");
+    assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
+}
+
+/// Row 20 (migration 0019, security review F3): only a NuGet registry with a target may hold a resource path prefix, and
+/// the snapshot carries it for the registry that has one and omits it for the one that has none.
+#[tokio::test]
+async fn snapshot_carries_the_resource_path_prefix_of_a_nuget_registry_and_the_constraint_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Prefixed").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, resource_path_prefix) VALUES ($1, 'nuget', 'With', 'https://pkgs.example/org-a/v3/index.json', '/org-a')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'nuget', 'Without', 'https://pkgs2.example/v3/index.json')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, resource_path_prefix) VALUES ($1, 'go', 'Go', 'https://g.example/', '/x')",
+                "INSERT INTO registries (org_id, ecosystem, name, resource_path_prefix) VALUES ($1, 'nuget', 'NoTarget', '/x')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let nuget: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "NuGet").collect();
+    let with = nuget.iter().find(|r| r["target_url"] == "https://pkgs.example/org-a/v3/index.json").unwrap();
+    let without = nuget.iter().find(|r| r["target_url"] == "https://pkgs2.example/v3/index.json").unwrap();
+    assert_eq!(with["resource_path_prefix"], "/org-a");
+    assert!(without.get("resource_path_prefix").is_none(), "absent, never null: {without}");
 }

@@ -13,6 +13,7 @@ fn osv_key_valid_names_pass_for_every_family() {
             Ecosystem::RubyGems => ("Rack_Test.rb-2", "7.1.0.rc1"),
             Ecosystem::Cargo => ("serde_json-2", "1.0.0-rc.1"),
             Ecosystem::Go => ("github.com/Azure/x~1", "1.2.3+incompatible"),
+            Ecosystem::NuGet => ("Newtonsoft.Json_2-x", "13.0.3-beta.1"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));
@@ -110,5 +111,16 @@ fn osv_key_go_charset_is_ls_f6_and_never_the_escaped_form() {
     assert!(osv_key(Ecosystem::Go, "github.com/Azure/azure-sdk_x~1.v2", "1.2.3+incompatible").is_ok());
     for bad in ["github.com/!azure/x", "github.com/a b", "github.com/ü", "github.com/a?b", "github.com/a@b", ""] {
         assert_eq!(osv_key(Ecosystem::Go, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
+    }
+}
+
+/// Row 20, LS-F6: a NuGet id is `[A-Za-z0-9._-]`, case kept (OSV answers any case, canary 2026-11-19);
+/// a slash, a colon or a space is a key error, never normalised.
+#[test]
+fn osv_key_nuget_charset_is_ls_f6() {
+    assert!(osv_key(Ecosystem::NuGet, "Newtonsoft.Json", "13.0.3").is_ok());
+    assert!(osv_key(Ecosystem::NuGet, "newtonsoft.json", "12.0.3-Beta.1").is_ok());
+    for bad in ["new/tonsoft", "a b", "a:b", "ü", "a@1", ""] {
+        assert_eq!(osv_key(Ecosystem::NuGet, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
     }
 }

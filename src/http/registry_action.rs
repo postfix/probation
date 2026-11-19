@@ -8,10 +8,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use futures_util::StreamExt;
 use probation_policy::PlaceRef;
-use std::io::SeekFrom;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use url::Url;
 
 use crate::App;
@@ -87,25 +84,19 @@ pub async fn forward_registry_action(
     {
         return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
     }
-    let file =
-        tempfile::tempfile_in(&app.config.data_dir).map_err(|_| ApiError::StorageUnusable)?;
-    let mut file = tokio::fs::File::from_std(file);
-    let mut body_len = 0u64;
-    let mut stream = request.body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| ApiError::InvalidInput("action upload is incomplete"))?;
-        body_len = body_len.saturating_add(chunk.len() as u64);
-        if body_len > cap {
-            return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
-        }
-        file.write_all(&chunk)
-            .await
-            .map_err(|_| ApiError::StorageUnusable)?;
-    }
-    file.flush().await.map_err(|_| ApiError::StorageUnusable)?;
-    file.seek(SeekFrom::Start(0))
-        .await
-        .map_err(|_| ApiError::StorageUnusable)?;
+    let super::spool::Spooled::Body(spool) = super::spool::spool(
+        app,
+        principal.key_id.0,
+        request.headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()),
+        cap,
+        request.body,
+    )
+    .await?
+    else {
+        return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
+    };
+    // The spool's place and bytes are held until this request is done with the file.
+    let (file, body_len) = (spool.file, spool.length);
     let action = ActionRequest {
         url,
         origin: origin.clone(),
@@ -117,7 +108,7 @@ pub async fn forward_registry_action(
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
-        otp: None,
+        otp: None, api_key: None,
         body: file,
         body_len,
         max_bytes: app.config.max_metadata_bytes.get(),

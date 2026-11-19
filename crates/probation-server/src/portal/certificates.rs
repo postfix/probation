@@ -508,6 +508,9 @@ async fn issue(
     let go_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'go' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let nuget_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'nuget' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
     let rubygems_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'rubygems' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
@@ -595,6 +598,7 @@ async fn issue(
     script.push_str(&render_rubygems(rubygems_url.as_ref()));
     script.push_str(&render_cargo(cargo_registry_id.is_some()));
     script.push_str(&render_go(go_registry_id.is_some()));
+    script.push_str(&render_nuget(nuget_registry_id.is_some()));
     Ok(Some(script))
 }
 
@@ -632,6 +636,18 @@ fi
 fn render_go(has_registry: bool) -> String {
     if has_registry {
         "echo 'Go: signs in with an API key on the key route, not a client certificate (the Keys page shows the GOPROXY line).' >&2\n".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// NuGet authenticates with an API key on the key route (C1006, C1007): the installed client's own
+/// credentials are a username and password or an API key, never a client certificate, so the script points at
+/// the Keys page and writes no configuration that could never authenticate. Empty when the organisation has no
+/// NuGet registry.
+fn render_nuget(has_registry: bool) -> String {
+    if has_registry {
+        "echo 'NuGet: signs in with an API key on the key route, not a client certificate (the Keys page shows the nuget.config lines).' >&2\n".to_owned()
     } else {
         String::new()
     }
@@ -733,6 +749,14 @@ mod tests {
         let note = render_cargo(true);
         assert!(note.contains("API key on the key route") && note.contains("Keys page"), "{note}");
         assert!(!note.contains("config.toml"), "no configuration that could never authenticate is written");
+    }
+
+    #[test]
+    fn nuget_setup_points_at_the_key_route() {
+        assert_eq!(render_nuget(false), "");
+        let note = render_nuget(true);
+        assert!(note.contains("API key on the key route") && note.contains("nuget.config"), "{note}");
+        assert!(!note.contains("<add") && !note.contains("ClearTextPassword"), "no configuration that could never authenticate is written");
     }
 
     #[test]

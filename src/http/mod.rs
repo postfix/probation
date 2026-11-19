@@ -14,12 +14,14 @@ pub mod pypi_routes;
 pub mod rubygems_routes;
 pub mod cargo_routes;
 pub mod go_routes;
+pub mod nuget_routes;
 pub mod readmit;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
 pub mod service_connector;
 pub mod service_registry;
+pub mod spool;
 pub(crate) mod service_unpublish;
 pub mod token_packument;
 pub mod unpublish_reference;
@@ -131,6 +133,11 @@ fn package_router(app: Arc<App>) -> Router {
         .route("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank", axum::routing::put(cargo_routes::selected_unyank))
         .route("/registry/cargo/{registry}/api/v1/crates/{name}/owners", axum::routing::get(cargo_routes::selected_owners).put(cargo_routes::selected_owners).delete(cargo_routes::selected_owners))
         .route("/registry/cargo/{registry}/api/v1/crates", axum::routing::get(cargo_routes::selected_search))
+        .route("/registry/nuget/{registry}/api/v2/package", axum::routing::put(nuget_routes::selected_push))
+        .route("/registry/nuget/{registry}/api/v2/package/", axum::routing::put(nuget_routes::selected_push))
+        .route("/registry/nuget/{registry}/api/v2/symbolpackage", axum::routing::put(nuget_routes::selected_symbol_push))
+        .route("/registry/nuget/{registry}/api/v2/symbolpackage/", axum::routing::put(nuget_routes::selected_symbol_push))
+        .route("/registry/nuget/{registry}/api/v2/package/{id}/{version}", axum::routing::delete(nuget_routes::selected_package_action).post(nuget_routes::selected_package_action))
         .route("/registry/rubygems/{registry}/api/v1/gems", axum::routing::post(rubygems_routes::selected_push))
         .route("/registry/rubygems/{registry}/api/v1/gems/yank", axum::routing::delete(rubygems_routes::selected_yank))
         .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
@@ -171,6 +178,10 @@ fn package_router(app: Arc<App>) -> Router {
         // (`sumdb/{db}/...`), one catch-all because a module path has any number of segments.
         .route("/go/{*path}", get(go_routes::legacy).head(go_routes::legacy))
         .route("/registry/go/{registry}/{*path}", get(go_routes::selected).head(go_routes::selected))
+        // NuGet v3: the service index, flat container, registration, search, autocomplete, vulnerability and
+        // signature documents and the four files of a version, one catch-all parsed strictly by the handler.
+        .route("/nuget/{*path}", get(nuget_routes::legacy).head(nuget_routes::legacy))
+        .route("/registry/nuget/{registry}/{*path}", get(nuget_routes::selected).head(nuget_routes::selected))
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",

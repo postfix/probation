@@ -8,8 +8,31 @@ use probation_policy::api::{RegistryDescriptor, RegistryId};
 fn descriptor(archive_origin: Option<&str>) -> RegistryDescriptor {
     RegistryDescriptor {
         registry: RegistryId(7), ecosystem: Ecosystem::Cargo, target_url: Some("https://reg.example/index/".into()), trusted: false,
-        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive_origin.map(str::to_owned),
+        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive_origin.map(str::to_owned), resource_path_prefix: None,
     }
+}
+
+/// Row 20 (security review F3): `resource_path_prefix` is additive and optional in the same way.
+#[test]
+fn the_resource_path_prefix_is_additive_and_ignored_by_an_older_reader() {
+    let mut descriptor = descriptor(None);
+    descriptor.ecosystem = Ecosystem::NuGet;
+    let old = serde_json::to_string(&descriptor).unwrap();
+    assert!(!old.contains("resource_path_prefix"), "an absent value is not written: {old}");
+    descriptor.resource_path_prefix = Some("/org-a/_packaging".into());
+    let text = serde_json::to_string(&descriptor).unwrap();
+    assert!(text.contains(r#""resource_path_prefix":"/org-a/_packaging""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct Older {
+        registry: RegistryId,
+        trusted: bool,
+    }
+    let older: Older = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.registry, older.trusted), (RegistryId(7), false));
+    let back: RegistryDescriptor = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.resource_path_prefix.as_deref(), Some("/org-a/_packaging"));
+    let before: RegistryDescriptor = serde_json::from_str(r#"{"registry":7,"ecosystem":"NuGet","target_url":"https://x/","trusted":false,"registry_private_cidrs":[],"deletion_scopes":[]}"#).unwrap();
+    assert_eq!(before.resource_path_prefix, None);
 }
 
 #[test]

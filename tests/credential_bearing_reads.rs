@@ -180,6 +180,51 @@ fn credential_bearing_read_never_enters_shared_caches_go() {
     ));
 }
 
+/// Row 20, the NuGet case of the same contract. A NuGet client carries a credential as `Authorization` (Basic
+/// from `packageSourceCredentials`, or Bearer from a credential provider) and, on a write, as `X-NuGet-ApiKey`;
+/// never in a path of this firewall's routes (an id cannot hold one), and the only query keys are the search
+/// protocol's own. The family adds the two non-secret headers the real client sends (measured with dotnet 8.0.416,
+/// `dotnet_native_client_sends_only_allow_listed_headers` in tests/nuget_native.rs).
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_nuget() {
+    let nuget = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::NUGET), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "Basic dXNlcjpwdw=="),
+        ("Authorization", "Bearer prb_x"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-nuget-apikey", "key"),
+        ("X-NuGet-ApiKey", "key"),
+        ("x-jfrog-art-api", "key"),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!nuget("/nuget/v3-flatcontainer/a/index.json", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!nuget("/nuget/v3-flatcontainer/a/index.json?token=abc", &[]));
+    assert!(!nuget("/nuget/v3/query?q=a&api_key=abc", &[]));
+    assert!(!nuget("/nuget/v3/query?q=a&apikey=abc", &[]));
+    for form in [
+        "https://TOKEN:@pkgs.example.test/nuget/v3/index.json",
+        "https://token@pkgs.example.test/nuget/v3-flatcontainer/a/index.json",
+        "https://user:pass@pkgs.example.test/registry/nuget/9/v3/query?q=a",
+    ] {
+        assert!(!nuget(form, &[]), "{form}: URL userinfo");
+    }
+    // Control: the headers `dotnet` sends for plain reads and the search protocol's own query keys keep the read cache-eligible.
+    assert!(nuget(
+        "/nuget/v3-flatcontainer/a/index.json",
+        &[("host", "x"), ("accept", "*/*"), ("accept-encoding", "gzip, deflate"), ("accept-language", "en-US"), ("user-agent", "NuGet Command Line"), ("x-nuget-session-id", "s"), ("x-nuget-client-version", "6.11.1"), ("if-none-match", "\"a\"")]
+    ));
+    assert!(nuget("/nuget/v3/query?q=a&skip=0&take=20&prerelease=true&semVerLevel=2.0.0&packageType=dotnet-tool&supportedFramework=net8.0", &[("accept", "*/*")]));
+}
+
 // ---- C1028 end to end: bytes fetched under credential A are never served without it ----
 
 /// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
@@ -257,19 +302,22 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(3), ecosystem: probation_policy::Ecosystem::Npm, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }, RegistryDescriptor {
             registry: RegistryId(4), ecosystem: probation_policy::Ecosystem::PyPi, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }, RegistryDescriptor {
             registry: RegistryId(5), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }, RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }, RegistryDescriptor {
             registry: RegistryId(8), ecosystem: probation_policy::Ecosystem::Go, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(9), ecosystem: probation_policy::Ecosystem::NuGet, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }],
     };
     if slow {
@@ -277,7 +325,7 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         // Only this test has it: two RubyGems registries make the unqualified `/rubygems` root ambiguous.
         snapshot.registries.push(RegistryDescriptor {
             registry: RegistryId(6), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: Some("https://slow.invalid/".into()), trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         });
     }
     snapshot
@@ -420,6 +468,17 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
         registry.answer(&format!("/{module}/@v/v1.0.0.zip"), FakeAnswer::Bytes(format!("zip of {module}").into_bytes()));
     }
     registry.answer("/latest", FakeAnswer::Body("go.sum database tree\n".to_owned()));
+    // NuGet (row 20): two packages, one of whose files need the caller's own credential.
+    registry.answer("/v3/index.json", FakeAnswer::Body(common::nuget::service_index(&[])));
+    for id in ["open.pkg", "secret.pkg"] {
+        registry.answer(&format!("/v3-flatcontainer/{id}/index.json"), FakeAnswer::Body(common::nuget::flat_index(&["1.0.0"])));
+        let (index, _) = common::nuget::registration(id, &[vec![common::nuget::leaf(id, "1.0.0", Some("2025-01-01T00:00:00.000+00:00"), true)]], &[]);
+        registry.answer(&format!("/v3/registration5-gz-semver2/{id}/index.json"), FakeAnswer::Body(index));
+        registry.answer(&format!("/v3-flatcontainer/{id}/1.0.0/{id}.1.0.0.nupkg"), FakeAnswer::Bytes(format!("nupkg of {id}").into_bytes()));
+        registry.answer(&format!("/v3-flatcontainer/{id}/1.0.0/{id}.nuspec"), FakeAnswer::Body(common::nuget::nuspec(id, "1.0.0")));
+        registry.answer(&format!("/v3-flatcontainer/{id}/1.0.0/readme"), FakeAnswer::Body("readme".to_owned()));
+        registry.answer(&format!("/v3-flatcontainer/{id}/1.0.0/icon"), FakeAnswer::Bytes(b"icon".to_vec()));
+    }
     registry.answer("/gems/open-gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
     // A gem whose real name has capitals: files are case-exact upstream (N2).
     registry.answer("/gems/Open-Gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
@@ -440,7 +499,8 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
     let transport = Arc::new(PrivateArtifacts(registry, Mutex::new(Vec::new())));
     let server = TestServer::start_with_upstream(
         config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
-        Arc::clone(&transport) as Arc<dyn Transport>, fake_origins(),
+        Arc::clone(&transport) as Arc<dyn Transport>,
+        fake_origins().with_nuget(url::Url::parse(common::nuget::INDEX_ORIGIN).unwrap(), url::Url::parse(common::nuget::SEARCH_ORIGIN).unwrap(), url::Url::parse(common::nuget::PUBLISH_ORIGIN).unwrap()),
     ).await;
     (server, transport, policy_server)
 }
@@ -583,6 +643,44 @@ async fn credential_bearing_read_never_enters_shared_caches_go_end_to_end() {
         assert_eq!(server.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
     }
     assert_eq!(transport.0.calls().len(), calls, "no upstream call for a path-embedded credential form");
+}
+
+/// Row 20: C1028 for NuGet through the row 28 seam (shared service). A read that carries a credential
+/// leaves nothing in a shared cache (no stored project, no service-index memory, no stored file), a file fetched
+/// under a credential is never served without it, and the control read does populate the caches.
+#[tokio::test]
+async fn credential_bearing_read_never_enters_shared_caches_nuget_end_to_end() {
+    let (server, transport, _policy) = service_server().await;
+    let calls = |needle: &str| transport.0.calls().iter().filter(|u| u.path().ends_with(needle)).count();
+    // Plain reads share one service index and one project for the share window.
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers("/nuget/v3-flatcontainer/open.pkg/index.json", &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(calls("/v3/index.json"), 1, "an allow-listed read shares the service index");
+    assert_eq!(calls("/v3-flatcontainer/open.pkg/index.json"), 1, "and the project it just fetched");
+    for (n, carrier) in [("authorization", "Basic dXNlcjpwdw=="), ("authorization", "Bearer allowed"), ("cookie", "s=1"), ("x-jfrog-art-api", "k"), ("x-probe-unknown", "1")].into_iter().enumerate() {
+        let (index, flat) = (calls("/v3/index.json"), calls("/v3-flatcontainer/open.pkg/index.json"));
+        let response = server.get_with_headers("/registry/nuget/9/v3-flatcontainer/open.pkg/index.json", &[carrier]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{carrier:?}");
+        assert_eq!((calls("/v3/index.json"), calls("/v3-flatcontainer/open.pkg/index.json")), (index + 1, flat + 1), "carrier {n} {carrier:?}: a credential-bearing read reads and fills nothing shared");
+    }
+    // Its file never enters the shared store; the control read does.
+    let data = server.app().config.data_dir.clone();
+    let before = files_under(&data.join("content")).len();
+    let nupkg = server.get_with_headers("/nuget/v3-flatcontainer/secret.pkg/1.0.0/secret.pkg.1.0.0.nupkg", &[("authorization", "Bearer allowed")]).await;
+    assert_eq!((nupkg.status(), nupkg.bytes().await.unwrap().as_ref()), (StatusCode::OK, b"nupkg of secret.pkg".as_slice()));
+    assert_eq!(files_under(&data.join("content")).len(), before, "no credential-bearing package in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+    assert_eq!(server.get("/nuget/v3-flatcontainer/secret.pkg/1.0.0/secret.pkg.1.0.0.nupkg").await.status(), StatusCode::FORBIDDEN, "bytes fetched under a credential are never served without it");
+    let eligible = server.get_with_headers("/nuget/v3-flatcontainer/open.pkg/1.0.0/open.pkg.1.0.0.nupkg", &[("accept", "*/*")]).await;
+    assert_eq!(eligible.status(), StatusCode::OK);
+    assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
+    // Paths that embed a credential in a route this firewall does not have reach nothing.
+    let asked = transport.0.calls().len();
+    for path in ["/nuget/tok3n@host/v3/index.json", "/nuget/v3/index.json;token=abc", "/nuget/%40token/v3-flatcontainer/a/index.json"] {
+        assert_eq!(server.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(transport.0.calls().len(), asked, "no upstream call for a path-embedded credential form");
 }
 
 /// Row 18: through the shared service Cargo's index and archives are reads only. Its registry API is
@@ -800,7 +898,7 @@ async fn a_publication_between_authorisation_and_release_is_admitted_again_for_e
     use std::sync::atomic::{AtomicUsize, Ordering};
     let (server, _transport, _policy) = service_server().await;
     let gate = Arc::clone(&server.app().service_policy().expect("service mode").publication_gate);
-    for path in ["/registry/npm/3/open-pkg", "/registry/pypi/4/simple/open-proj/", "/registry/rubygems/5/info/open-gem", "/cargo/config.json", "/go/open.example/mod/@v/list", "/go/open.example/mod/@v/v1.0.0.mod"] {
+    for path in ["/registry/npm/3/open-pkg", "/registry/pypi/4/simple/open-proj/", "/registry/rubygems/5/info/open-gem", "/cargo/config.json", "/go/open.example/mod/@v/list", "/go/open.example/mod/@v/v1.0.0.mod", "/nuget/v3-flatcontainer/open.pkg/index.json", "/nuget/v3-flatcontainer/open.pkg/1.0.0/open.pkg.nuspec"] {
         // An artifact crosses two gates (its own receipt and the service layer's), so a count of publications is exact only for
         // metadata; 100 is "a change that keeps landing" for every route.
         for (publications, expected) in [(0usize, StatusCode::OK), (1, StatusCode::OK), (100, StatusCode::SERVICE_UNAVAILABLE)] {

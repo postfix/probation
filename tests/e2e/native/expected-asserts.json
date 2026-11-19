@@ -13,6 +13,7 @@
   "harness-engine.test.mjs": 3,
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,
+  "nuget-fake.test.mjs": 51,
   "openssl-setup.test.mjs": 37,
   "pf.test.mjs": 35,
   "rendezvous-cli.test.mjs": 80,

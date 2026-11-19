@@ -263,6 +263,7 @@ async fn transfer(
         Ecosystem::RubyGems => Call::Rubygems,
         Ecosystem::Cargo => Call::Cargo,
         Ecosystem::Go => Call::Go,
+        Ecosystem::NuGet => Call::Nuget,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -454,6 +455,10 @@ async fn transfer(
 /// The most a transfer may read: the configured artifact cap, and for a Go `.info` (a few hundred bytes) 256 KiB and for a
 /// `.mod` 16 MiB (what `go` itself accepts), so the small places cannot be held by a hostile upstream's large "tiny" file.
 fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
+    if is_nuget_small(row) {
+        // A nuspec, a readme and an icon are kilobytes; nuget.org limits an icon to 1 MB.
+        return configured.min(16 << 20);
+    }
     if row.reference.ecosystem != Ecosystem::Go {
         return configured;
     }
@@ -468,13 +473,18 @@ fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
 
 /// A Go `.info` or `.mod`: a few hundred bytes that precede every zip and must not queue behind the large transfers.
 fn is_small_metadata(row: &ReferenceRow) -> bool {
-    row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))
+    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row)
+}
+
+/// A NuGet `.nuspec`, `readme` or `icon`: the small files that accompany every `.nupkg`.
+fn is_nuget_small(row: &ReferenceRow) -> bool {
+    row.reference.ecosystem == Ecosystem::NuGet && !row.reference.filename.ends_with(".nupkg")
 }
 
 /// A Go `.zip` is the one transfer whose redirect may land on an archive origin (the proxy's bucket or
 /// the registry's declared one); `.info` and `.mod` never follow it.
 fn allows_archive_redirect(row: &ReferenceRow) -> bool {
-    row.reference.ecosystem == Ecosystem::Go && row.reference.filename.ends_with(".zip")
+    (row.reference.ecosystem == Ecosystem::Go && row.reference.filename.ends_with(".zip")) || (row.reference.ecosystem == Ecosystem::NuGet && row.reference.filename.ends_with(".nupkg"))
 }
 
 fn selected_catalog_authorization(
@@ -490,6 +500,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::RubyGems => OriginKind::RubygemsMetadata,
             crate::policy::Ecosystem::Cargo => OriginKind::CargoIndex,
             crate::policy::Ecosystem::Go => OriginKind::GoProxy,
+            crate::policy::Ecosystem::NuGet => OriginKind::NugetIndex,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -545,6 +556,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::RubyGems => Call::Rubygems,
         Ecosystem::Cargo => Call::Cargo,
         Ecosystem::Go => Call::Go,
+        Ecosystem::NuGet => Call::Nuget,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -616,6 +628,8 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         // Go's archives are served by the proxy itself (proxy.golang.org answers `.zip` directly);
         // a selected registry travels in the npm slot.
         Ecosystem::Go => &[OriginKind::GoProxy, OriginKind::NpmMetadata],
+        // The flat container is on the index host; a selected registry travels in the npm slot.
+        Ecosystem::NuGet => &[OriginKind::NugetIndex, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the

@@ -130,6 +130,7 @@ const ECOSYSTEM_PYPI: u8 = 2;
 const ECOSYSTEM_RUBYGEMS: u8 = 3;
 const ECOSYSTEM_CARGO: u8 = 4;
 const ECOSYSTEM_GO: u8 = 5;
+const ECOSYSTEM_NUGET: u8 = 6;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -161,6 +162,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::RubyGems => ECOSYSTEM_RUBYGEMS,
         Ecosystem::Cargo => ECOSYSTEM_CARGO,
         Ecosystem::Go => ECOSYSTEM_GO,
+        Ecosystem::NuGet => ECOSYSTEM_NUGET,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -307,6 +309,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_RUBYGEMS => Ecosystem::RubyGems.as_tag(),
         ECOSYSTEM_CARGO => Ecosystem::Cargo.as_tag(),
         ECOSYSTEM_GO => Ecosystem::Go.as_tag(),
+        ECOSYSTEM_NUGET => Ecosystem::NuGet.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -426,6 +429,7 @@ impl Target {
             Some("rubygems") => "rubygems",
             Some("cargo") => "cargo",
             Some("go") => "go",
+            Some("nuget") => "nuget",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -444,6 +448,9 @@ impl Target {
 
         if root == "go" {
             return go_target(path);
+        }
+        if root == "nuget" {
+            return nuget_target(path);
         }
         let first = segments.next();
         let second = segments.next();
@@ -539,6 +546,22 @@ fn go_target(path: &str) -> Target {
         None => (None, None),
     };
     Target { ecosystem: "go", package: loggable(package), version: loggable(version) }
+}
+
+/// `/nuget/v3-flatcontainer/{id}/{version}/{file}`, `/nuget/v3-flatcontainer/{id}/index.json`,
+/// `/nuget/v3/registration/{id}/{version}.json` (also under `/registry/nuget/{id}/`): the id and the version are
+/// the segments after the document's own root; every other route has no subject.
+fn nuget_target(path: &str) -> Target {
+    let below = path.strip_prefix("/nuget/").unwrap_or("");
+    let segments: Vec<&str> = below.split('/').collect();
+    let (package, version) = match segments.as_slice() {
+        ["v3-flatcontainer", id, "index.json"] => (Some(*id), Some("index.json")),
+        ["v3-flatcontainer", id, version, _] => (Some(*id), Some(*version)),
+        ["v3", "registration", id, file] => (Some(*id), Some(file.strip_suffix(".json").unwrap_or(file))),
+        ["v3", "registration", id, "page", lower, _] => (Some(*id), Some(*lower)),
+        _ => (None, None),
+    };
+    Target { ecosystem: "nuget", package: loggable(package), version: loggable(version) }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -764,6 +787,25 @@ mod tests {
         ] {
             let target = Target::of(path);
             assert_eq!(target.ecosystem, "go", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
+        }
+    }
+
+    /// Row 20: a NuGet request names its package id and version (the flat container and registration
+    /// routes), every other route has no subject, and the ecosystem is `nuget`.
+    #[test]
+    fn nuget_paths_log_their_id_and_version() {
+        for (path, package, version) in [
+            ("/nuget/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg", Some("newtonsoft.json"), Some("13.0.3")),
+            ("/nuget/v3-flatcontainer/newtonsoft.json/index.json", Some("newtonsoft.json"), Some("index.json")),
+            ("/nuget/v3/registration/newtonsoft.json/13.0.3.json", Some("newtonsoft.json"), Some("13.0.3")),
+            ("/nuget/v3/registration/newtonsoft.json/index.json", Some("newtonsoft.json"), Some("index")),
+            ("/nuget/v3/index.json", None, None),
+            ("/nuget/v3/query", None, None),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.ecosystem, "nuget", "{path}");
             assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
             assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }

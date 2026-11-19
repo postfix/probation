@@ -26,7 +26,84 @@ pub const RESPONSE_LIFETIME: Duration = Duration::from_secs(15 * 60);
 /// Concurrent tiny-file transfers (ponytail: a constant; a key if a deployment measures a need).
 pub const SMALL_DOWNLOADS: usize = 64;
 
+/// Concurrent upload spools (every publish forwarder), and the floor of the bytes they may hold together.
+pub const SPOOLS: usize = 8;
+/// Of those, the most one key (owner) may hold, so one valid key cannot take them all.
+pub const SPOOLS_PER_OWNER: usize = 4;
+/// How long an upload that has run out of budget waits for another to give bytes back before it is refused.
+pub const SPOOL_BUDGET_WAIT: Duration = Duration::from_secs(30);
+const SPOOL_BUDGET_FLOOR: u64 = 64 << 20;
+
+/// Bytes reserved from the shared spool budget; returned when dropped.
+pub struct SpoolReservation {
+    budget: Arc<AtomicU64>,
+    freed: Arc<tokio::sync::Notify>,
+    held: u64,
+}
+
+/// One upload's place, counted against its owner as well; returned when dropped.
+pub struct SpoolSeat {
+    _permit: OwnedSemaphorePermit,
+    owner: u64,
+    owners: Arc<std::sync::Mutex<std::collections::HashMap<u64, usize>>>,
+}
+
+impl Drop for SpoolSeat {
+    fn drop(&mut self) {
+        let mut owners = self.owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = owners.get_mut(&self.owner) {
+            *count -= 1;
+            if *count == 0 {
+                owners.remove(&self.owner);
+            }
+        }
+    }
+}
+
+impl SpoolReservation {
+    /// Takes `more` bytes of the budget; `false` (and nothing taken) when it is not there.
+    pub fn grow(&mut self, more: u64) -> bool {
+        let taken = self.budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| free.checked_sub(more)).is_ok();
+        if taken {
+            self.held += more;
+        }
+        taken
+    }
+
+    /// Like `grow`, but an upload that finds the budget taken waits (up to `wait`) for another to give bytes back: two
+    /// large uploads that together exceed it go one after the other instead of the second being refused.
+    pub async fn grow_waiting(&mut self, more: u64, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let freed = Arc::clone(&self.freed);
+            let notified = freed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.grow(more) {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return self.grow(more);
+            }
+        }
+    }
+}
+
+impl Drop for SpoolReservation {
+    fn drop(&mut self) {
+        self.budget.fetch_add(self.held, Ordering::AcqRel);
+        self.freed.notify_waiters();
+    }
+}
+
 pub struct Limits {
+    /// Places for an upload being spooled to disk, and the bytes all of them may hold together: an anonymous or
+    /// junk-keyed caller cannot pin more than this, whatever the number of requests.
+    spool_slots: Arc<Semaphore>,
+    spool_budget: Arc<AtomicU64>,
+    spool_total: u64,
+    spool_freed: Arc<tokio::sync::Notify>,
+    spool_owners: Arc<std::sync::Mutex<std::collections::HashMap<u64, usize>>>,
     downloads: Arc<Semaphore>,
     /// Places for the transfer of a tiny metadata file (a Go `.info` or `.mod`), apart from the large-transfer places:
     /// a handful of multi-megabyte zips must not make the few hundred bytes that precede them wait and fail.
@@ -47,6 +124,11 @@ impl Limits {
     pub fn new(config: &Config) -> Limits {
         let active_permits = config.max_active_requests.get() as usize;
         Limits {
+            spool_slots: Arc::new(Semaphore::new(SPOOLS)),
+            spool_total: config.max_artifact_bytes.get().saturating_mul(2).max(SPOOL_BUDGET_FLOOR),
+            spool_freed: Arc::default(),
+            spool_owners: Arc::default(),
+            spool_budget: Arc::new(AtomicU64::new(config.max_artifact_bytes.get().saturating_mul(2).max(SPOOL_BUDGET_FLOOR))),
             downloads: Arc::new(Semaphore::new(config.max_artifact_downloads.get() as usize)),
             small_downloads: Arc::new(Semaphore::new(SMALL_DOWNLOADS)),
             download_waiters: Arc::new(Semaphore::new(config.max_download_waiters as usize)),
@@ -69,6 +151,36 @@ impl Limits {
     /// the bound covers the streaming too and not merely the handler.
     pub fn active_permit(&self) -> Option<OwnedSemaphorePermit> {
         Arc::clone(&self.active).try_acquire_owned().ok()
+    }
+
+    /// A place to spool an upload: `None` (a `503`) when all are taken, never a wait.
+    pub fn spool_slot(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.spool_slots).try_acquire_owned().ok()
+    }
+
+    /// A place for `owner` (a key): `None` (a `503`) when all are taken or the owner already holds its share.
+    pub fn spool_seat(&self, owner: u64) -> Option<SpoolSeat> {
+        let mut owners = self.spool_owners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owners.get(&owner).is_some_and(|held| *held >= SPOOLS_PER_OWNER) {
+            return None;
+        }
+        let permit = self.spool_slot()?;
+        *owners.entry(owner).or_default() += 1;
+        Some(SpoolSeat { _permit: permit, owner, owners: Arc::clone(&self.spool_owners) })
+    }
+
+    /// An empty reservation on the shared spool budget, to `grow` as bytes are accepted.
+    pub fn spool_reservation(&self) -> SpoolReservation {
+        SpoolReservation { budget: Arc::clone(&self.spool_budget), freed: Arc::clone(&self.spool_freed), held: 0 }
+    }
+
+    /// The whole budget: the most any one upload may hold (at least the largest cap a forwarder passes, twice an artifact).
+    pub fn spool_budget_total(&self) -> u64 {
+        self.spool_total
+    }
+
+    pub fn spool_budget_free(&self) -> u64 {
+        self.spool_budget.load(Ordering::Acquire)
     }
 
     /// How many of `max_active_requests` are free. A test reads this to assert that a
@@ -184,5 +296,38 @@ mod tests {
         drop(held);
         assert_eq!(limits.active_available(), 1);
         assert!(limits.active_permit().is_some());
+    }
+
+    /// R3: the budget holds the largest upload any forwarder accepts (twice an artifact), whatever the artifact cap.
+    #[test]
+    fn the_spool_budget_holds_twice_the_artifact_cap() {
+        let mut config = config();
+        config.max_artifact_bytes = std::num::NonZeroU64::new(200 << 20).expect("200 MiB");
+        let limits = Limits::new(&config);
+        assert_eq!(limits.spool_budget_total(), 400 << 20);
+        assert_eq!(limits.spool_budget_free(), 400 << 20);
+    }
+
+    /// Spooled uploads share one budget and a few places, and give both back when dropped.
+    #[test]
+    fn the_spool_places_and_bytes_are_bounded_and_returned() {
+        let mut config = config();
+        config.max_artifact_bytes = std::num::NonZeroU64::new(100).expect("one hundred");
+        let limits = Limits::new(&config);
+        let free = limits.spool_budget_free();
+        assert_eq!(free, 64 << 20, "the budget has a floor");
+        let places: Vec<_> = (0..SPOOLS).map(|_| limits.spool_slot().expect("a place")).collect();
+        assert!(limits.spool_slot().is_none(), "the ninth upload is refused, not queued");
+        drop(places);
+        assert!(limits.spool_slot().is_some());
+        let mut first = limits.spool_reservation();
+        assert!(first.grow(free - 10));
+        let mut second = limits.spool_reservation();
+        assert!(!second.grow(11), "past the budget nothing is taken");
+        assert_eq!(limits.spool_budget_free(), 10);
+        assert!(second.grow(10));
+        drop(first);
+        drop(second);
+        assert_eq!(limits.spool_budget_free(), free, "every byte is returned");
     }
 }

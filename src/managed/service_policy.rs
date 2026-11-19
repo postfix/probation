@@ -496,6 +496,7 @@ impl ServicePolicy {
                 .map(|url| url.parse())
                 .transpose()
                 .ok()?,
+            registry_resource_prefix: descriptor.resource_path_prefix.clone(),
             registry_read_authorization: None,
             registry_trusted: descriptor.trusted,
             registry_private_cidrs: descriptor
@@ -669,7 +670,7 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
         if let Some(archive) = &registry.archive_origin {
             // Only a Cargo registry (archives apart from its index) or a Go registry (zip redirects to its
             // storage) has an archive origin, and one needs a target of its own.
-            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go) || registry.target_url.is_none() {
+            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet) || registry.target_url.is_none() {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;
@@ -677,6 +678,12 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
             // userinfo, query or fragment.
             check_target(&url, deny).map_err(|_| ServicePolicyError)?;
             crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
+        }
+        if let Some(prefix) = &registry.resource_path_prefix {
+            // Only a NuGet registry with a target has one, and it is whole path segments.
+            if registry.ecosystem != probation_policy::Ecosystem::NuGet || registry.target_url.is_none() || !valid_resource_prefix(prefix) {
+                return Err(ServicePolicyError);
+            }
         }
         if let Some(target) = &registry.target_url {
             if target.len() > 2048 {
@@ -693,4 +700,14 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
         }
     }
     Ok(())
+}
+
+/// A NuGet registry's resource path prefix: `/` then whole segments of `[A-Za-z0-9._~-]`, no dot-only segment, no
+/// trailing slash, at most 512 bytes (the portal and the activation use this one rule).
+pub fn valid_resource_prefix(prefix: &str) -> bool {
+    prefix.len() <= 512
+        && prefix.starts_with('/')
+        && prefix.len() > 1
+        && !prefix.ends_with('/')
+        && prefix[1..].split('/').all(|segment| !segment.is_empty() && segment != "." && segment != ".." && segment.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-')))
 }

@@ -888,6 +888,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
                 Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                 Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+                Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
             };
             client
                 .get(url)
@@ -930,6 +931,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
@@ -937,6 +939,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
+            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
         }
     }
 }
@@ -1266,6 +1269,41 @@ async fn go_key_route_authenticates_every_read_and_refuses_a_blocked_module_loca
     let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Go)).collect();
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(module), None));
+    h.server.shutdown().await;
+}
+
+/// Row 20: a managed firewall authenticates every NuGet read with the key (Basic from `packageSourceCredentials`),
+/// refuses an unknown key with the same 401, and the key's policy decides: one organisation's block (written in
+/// mixed case, as an operator types it) refuses the id for its keys and leaves another's served. The refusal is
+/// local (no upstream call) and leaves one decision record.
+#[tokio::test]
+async fn nuget_key_route_authenticates_every_read_and_refuses_a_blocked_package_locally() {
+    let h = harness(vec![Block::Package { ecosystem: Ecosystem::NuGet, name: "Evil.Pkg".to_owned(), reason: None }], |_| {}).await;
+    let index = serde_json::json!({"version": "3.0.0", "resources": [
+        {"@id": "https://api.nuget.org/v3-flatcontainer/", "@type": "PackageBaseAddress/3.0.0"},
+        {"@id": "https://api.nuget.org/v3/registration5-gz-semver2/", "@type": "RegistrationsBaseUrl/Versioned"},
+    ]});
+    h.registry.answer("/v3/index.json", FakeAnswer::Body(index.to_string()));
+    h.registry.answer("/v3-flatcontainer/evil.pkg/index.json", FakeAnswer::Body(r#"{"versions":["1.0.0"]}"#.to_owned()));
+    let (registration, _) = common::nuget::registration("evil.pkg", &[vec![common::nuget::leaf("evil.pkg", "1.0.0", Some("2025-01-01T00:00:00.000+00:00"), true)]], &[]);
+    h.registry.answer("/v3/registration5-gz-semver2/evil.pkg/index.json", FakeAnswer::Body(registration));
+    for path in ["/nuget/v3/index.json", "/nuget/v3-flatcontainer/evil.pkg/index.json", "/nuget/v3/registration/evil.pkg/index.json", "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg", "/nuget/v3/query?q=x"] {
+        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    assert_eq!(h.get("/nuget/v3-flatcontainer/evil.pkg/index.json", "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    for path in ["/nuget/v3-flatcontainer/evil.pkg/index.json", "/nuget/v3/registration/evil.pkg/index.json", "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg"] {
+        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the id: {path}");
+    }
+    assert!(h.registry.calls().is_empty(), "a blocked id reaches no upstream call");
+    assert_eq!(h.get("/nuget/v3-flatcontainer/evil.pkg/index.json", &key_b()).await.text().await.unwrap(), r#"{"versions":["1.0.0"]}"#, "Acme's policy keeps the version");
+    // The key route serves no publish endpoint: a managed firewall forwards no writes.
+    let put = reqwest::Client::new().put(h.server.url("/nuget/api/v2/package")).header("x-nuget-apikey", "k").body("x").send().await.unwrap();
+    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::NuGet)).collect();
+    assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
+    assert!(events.iter().all(|e| e.package.as_deref() == Some("evil.pkg")), "{events:#?}");
     h.server.shutdown().await;
 }
 

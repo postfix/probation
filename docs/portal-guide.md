@@ -690,7 +690,7 @@ the firewall's `config.toml` (for example `sync_interval_seconds = 60`) and pres
 **Save and apply**. These stay on each firewall and cannot be pushed: `listen`,
 `data_dir`, `[management]`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url`,
 `siem_auth_header`. The upstream URLs (`npm_upstream_url`, `pypi_upstream_url`,
-`pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`) must be `https://`.
+`pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url`, `go_artifacts_url`, `nuget_upstream_url`, `nuget_search_url`, `nuget_publish_url`) must be `https://`.
 
 The firewalls get the settings one at a time: the next one gets them after the one
 before reports success. Each firewall restarts to apply them, so it needs a restart
@@ -716,16 +716,16 @@ bring it back, register it again.
 ## 5. Selected package registries and certificates
 
 An org admin opens **Organisation → Package registries** to add an npm, PyPI,
-RubyGems, Cargo or Go HTTPS target. For each registry, the page can save a read-only credential and
+RubyGems, Cargo, Go or NuGet HTTPS target (a NuGet registry's target is its service index, `.../v3/index.json`). For each registry, the page can save a read-only credential and
 choose whether to skip the release-age delay. For npm version removal, the admin
 can approve a separate HTTPS deletion destination and path, with an explicit
 choice about forwarding the developer's bearer token. A private registry or
 certificate-status destination needs an operator-approved address range. A Cargo
 registry whose crate files are not under its index URL (Artifactory) takes an
 **Archive origin**, an HTTPS URL its crate files are fetched from and only from (a Go
-registry takes one too: the storage its proxy redirects zips to); Cargo
+registry takes one too: the storage its proxy redirects zips to, and so does a NuGet registry: the storage a feed redirects packages to; a NuGet registry also takes an optional **Resource path prefix**, whole path segments its feed's resources must lie under); Cargo
 signs in with an API key from the Keys page, not a certificate; so does Go (the Keys page
-shows the `GOPROXY` line).
+shows the `GOPROXY` line) and NuGet (the Keys page shows the `dotnet nuget add source` and `nuget.config` lines).
 
 **Organisation → Enterprise certificates** is for an organisation that issues
 its own client certificates. The admin saves the public CA and expected status

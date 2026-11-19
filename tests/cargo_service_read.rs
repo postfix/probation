@@ -27,7 +27,7 @@ fn snapshot(freeze: u64, archive_origin: Option<&str>) -> ServicePolicySnapshot 
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: Some(format!("https://reg.invalid{PREFIX}/")),
-            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive_origin.map(str::to_owned),
+            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive_origin.map(str::to_owned), resource_path_prefix: None,
         }],
     }
 }

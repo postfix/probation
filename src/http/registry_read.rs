@@ -83,6 +83,18 @@ pub(super) async fn recheck_go(
     recheck_for(app, peer, registry, headers, Ecosystem::Go).await
 }
 
+pub(super) async fn admit_nuget(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
+    admit_for(app, peer, registry, headers, Ecosystem::NuGet).await
+}
+
+pub(super) async fn recheck_nuget(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    recheck_for(app, peer, registry, headers, Ecosystem::NuGet).await
+}
+
 pub(super) async fn admit_pypi(
     app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {

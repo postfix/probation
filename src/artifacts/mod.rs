@@ -128,7 +128,9 @@ pub async fn serve_artifact_in(
 
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
-    let origin = principal.and_then(|p| p.registry_origin.as_ref());
+    // A NuGet registry's `target_url` names its service index; every file lives anywhere on its host.
+    let nuget_root = principal.and_then(|p| p.registry_origin.as_ref()).filter(|_| row.reference.ecosystem == Ecosystem::NuGet).and_then(|target| crate::nuget::serve::selected_root(app, target));
+    let origin = if row.reference.ecosystem == Ecosystem::NuGet { nuget_root.as_ref() } else { principal.and_then(|p| p.registry_origin.as_ref()) };
     let private_cidrs = principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice());
     let read_authorization = principal.and_then(|p| p.registry_read_authorization.as_deref());
     ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
@@ -139,7 +141,7 @@ pub async fn serve_artifact_in(
         .and_then(|p| p.registry_archive_origin.as_ref())
         .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
     // A Go registry's declared archive origin, from the same principal the request was admitted under.
-    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| row.reference.ecosystem == Ecosystem::Go);
+    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet));
     let (download_origin, download_authorization) = match archive {
         Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
         None => (origin, read_authorization),
@@ -222,6 +224,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
         Ecosystem::RubyGems => crate::rubygems::serve::ensure_fresh_project_in(app, &row.reference.name, &row.reference.filename, row.registry_id, principal).await?,
         Ecosystem::Cargo => crate::cargo_registry::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
         Ecosystem::Go => crate::go_modules::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
+        Ecosystem::NuGet => crate::nuget::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {

@@ -67,6 +67,14 @@ impl FamilyReadRules {
     /// userinfo, or `GOAUTH`), both request-scoped. No route of this firewall takes a token in its
     /// path or query.
     pub const GO: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    /// NuGet's search and autocomplete read carry only these non-secret query keys (the protocol's own);
+    /// a credential travels as `Authorization` (Basic or Bearer), or as `X-NuGet-ApiKey` on a write, both
+    /// request-scoped. No route takes a token in its path. The headers are the real client's own non-secret ones
+    /// (measured with dotnet 8.0.416, tests/nuget_native.rs).
+    pub const NUGET: FamilyReadRules = FamilyReadRules {
+        headers: &["x-nuget-session-id", "x-nuget-client-version"],
+        query_keys: &["q", "id", "skip", "take", "prerelease", "semVerLevel", "packageType", "supportedFramework"],
+    };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

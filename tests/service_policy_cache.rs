@@ -50,7 +50,7 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }],
     }
 }
@@ -573,7 +573,7 @@ fn descriptors(count: u64) -> Vec<RegistryDescriptor> {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None,
         })
         .collect()
 }
@@ -843,7 +843,7 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 
 #[tokio::test]
 async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
-    use probation_policy::Ecosystem::{Cargo, Go, Npm};
+    use probation_policy::Ecosystem::{Cargo, Go, Npm, NuGet};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
         ("http://files.example.test/crates", Cargo, target, "not https"),
@@ -856,6 +856,8 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
         ("https://files.example.test/crates", Npm, target, "not a Cargo registry"),
         ("https://files.example.test/go", Go, None, "a Go registry needs a target of its own"),
         ("https://127.0.0.1/go", Go, Some("https://goproxy.example.test/repo/"), "loopback"),
+        ("https://files.example.test/nuget", NuGet, None, "a NuGet registry needs a target of its own"),
+        ("https://169.254.169.254/nuget", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"), "metadata address"),
         ("https://files.example.test/crates", Cargo, None, "no target"),
         ("not a url", Cargo, target, "not a URL"),
     ] {
@@ -867,4 +869,39 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
     // A Go registry with a target may declare where its zips are redirected to (row 19).
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://zips.example.test/bucket", Go, Some("https://goproxy.example.test/repo/"))).unwrap()).await;
     result.expect("a Go registry's archive origin is accepted");
+    // A NuGet registry with a target may declare where its packages are redirected to (row 20).
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"))).unwrap()).await;
+    result.expect("a NuGet registry's archive origin is accepted");
+}
+
+/// Row 20 (security review F3): a resource path prefix is whole path segments, and only a NuGet registry with a target may carry one.
+#[tokio::test]
+async fn a_resource_path_prefix_is_checked_and_only_a_nuget_registry_with_a_target_may_carry_one() {
+    use probation_policy::Ecosystem::{Cargo, NuGet};
+    let target = Some("https://pkgs.example.test/nuget/v3/index.json");
+    let with = |prefix: &str, ecosystem, target: Option<&str>| {
+        let mut value = snapshot();
+        value.registries[0].ecosystem = ecosystem;
+        value.registries[0].target_url = target.map(str::to_owned);
+        value.registries[0].resource_path_prefix = Some(prefix.into());
+        value
+    };
+    for (prefix, ecosystem, target, why) in [
+        ("org-a", NuGet, target, "no leading slash"),
+        ("/", NuGet, target, "empty"),
+        ("/org-a/", NuGet, target, "trailing slash"),
+        ("/org-a//x", NuGet, target, "empty segment"),
+        ("/org-a/../x", NuGet, target, "dot segment"),
+        ("/org-a/./x", NuGet, target, "dot segment"),
+        ("/org%2Fa", NuGet, target, "encoded"),
+        ("/org-a?x=1", NuGet, target, "query"),
+        ("/org a", NuGet, target, "space"),
+        ("/org-a", Cargo, Some("https://registry.example.test/index/"), "not a NuGet registry"),
+        ("/org-a", NuGet, None, "no target"),
+    ] {
+        let (result, _policy, _dir) = sync_raw(serde_json::to_value(with(prefix, ecosystem, target)).unwrap()).await;
+        assert!(result.is_err(), "{why}: {prefix}");
+    }
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(with("/org-a/_packaging", NuGet, target)).unwrap()).await;
+    result.expect("an ordinary prefix is accepted");
 }

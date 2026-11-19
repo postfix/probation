@@ -73,6 +73,8 @@ pub struct Principal {
     /// A Cargo registry's declared archive origin (descriptor `archive_origin`): the one other origin and
     /// path prefix its archives may be fetched from. Always `None` outside the shared service.
     pub registry_archive_origin: Option<Url>,
+    /// A NuGet registry's declared resource path prefix (descriptor `resource_path_prefix`).
+    pub registry_resource_prefix: Option<String>,
     /// Request-scoped shared credential, for ordinary selected-registry reads only.
     pub registry_read_authorization: Option<String>,
     pub registry_trusted: bool,
@@ -313,6 +315,7 @@ impl Managed {
             chain,
             registry_origin,
             registry_archive_origin: None,
+            registry_resource_prefix: None,
             registry_read_authorization: read_authorization,
             registry_trusted: trusted,
             registry_private_cidrs,
@@ -363,7 +366,7 @@ impl Managed {
                         rate_limit_source: key.rate_limit_source,
                         org: key.org,
                         chain: key.chain.into(),
-                        registry_origin: None, registry_archive_origin: None,
+                        registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
                         registry_read_authorization: None,
                         registry_trusted: false,
                         registry_private_cidrs: Vec::new(),
@@ -711,7 +714,7 @@ impl Managed {
             rate_limit_source,
             org,
             chain: chain.iter().map(|link| link.place).collect(),
-            registry_origin: None, registry_archive_origin: None,
+            registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
             registry_read_authorization: None,
             registry_trusted: false,
             registry_private_cidrs: Vec::new(),
@@ -1298,7 +1301,7 @@ mod tests {
             authority: None, place, key_id: KeyId(1),
             policy: Arc::new(CompiledPolicy::managed(probation_policy::resolve(&[Layer::empty(LayerKind::Platform), Layer::empty(LayerKind::Org)]))),
             account: place, rate_limit: None, rate_limit_source: LimitSource::Default,
-            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None,
+            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
             registry_read_authorization: None, registry_trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![],
         };
