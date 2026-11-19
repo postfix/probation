@@ -1,10 +1,11 @@
 // The fake OSV API, answering as https://api.osv.dev: POST /v1/querybatch. The
-// ecosystem must be spelled exactly as OSV's schema does (`npm`, `PyPI`, `RubyGems`, `crates.io`); anything
+// ecosystem must be spelled exactly as OSV's schema does (`npm`, `PyPI`, `RubyGems`, `crates.io`, `Go`); anything
 // else is refused with 400, as a misspelt ecosystem must never look like "no finding".
 
 import { normalize } from "./pypi.mjs";
 
-const ECOSYSTEMS = new Set(["npm", "PyPI", "RubyGems", "crates.io"]);
+const ECOSYSTEMS = new Set(["npm", "PyPI", "RubyGems", "crates.io", "Go"]);
+// Go module paths are case-sensitive in OSV (`golang.org/x/Text` finds nothing where `golang.org/x/text` does; api.osv.dev, 2026-11-19).
 // OSV answers `serde_json` and `serde-json` alike for crates.io (checked against api.osv.dev 2026-11-19).
 const spelled = (ecosystem, name) => (ecosystem === "PyPI" ? normalize(name) : ecosystem === "crates.io" ? name.toLowerCase().replaceAll("_", "-") : name);
 const key = (ecosystem, name, version) => `${ecosystem}\0${spelled(ecosystem, name)}\0${version}`;

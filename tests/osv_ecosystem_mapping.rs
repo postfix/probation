@@ -12,6 +12,7 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
     (Ecosystem::PyPi, Some("PyPI")),
     (Ecosystem::RubyGems, Some("RubyGems")),
     (Ecosystem::Cargo, Some("crates.io")),
+    (Ecosystem::Go, Some("Go")),
 ];
 
 #[test]
@@ -45,4 +46,14 @@ fn osv_ecosystem_mapping_per_family_cargo() {
     assert_eq!(Ecosystem::Cargo.as_tag(), "cargo");
     assert_eq!(Ecosystem::from_tag("cargo"), Some(Ecosystem::Cargo));
     assert!(Ecosystem::ALL.contains(&Ecosystem::Cargo));
+}
+
+/// Row 19: names `Ecosystem::Go`, so it does not compile before this row adds the variant. OSV spells
+/// the ecosystem `Go`, the blocklist tag is `go`.
+#[test]
+fn osv_ecosystem_mapping_per_family_go() {
+    assert_eq!(osv_ecosystem(Ecosystem::Go), Some("Go"));
+    assert_eq!(Ecosystem::Go.as_tag(), "go");
+    assert_eq!(Ecosystem::from_tag("go"), Some(Ecosystem::Go));
+    assert!(Ecosystem::ALL.contains(&Ecosystem::Go));
 }

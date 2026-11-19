@@ -887,6 +887,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::PyPi => h.server.url("/pypi/simple/racy-alpha/"),
                 Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
                 Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+                Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
             };
             client
                 .get(url)
@@ -928,12 +929,14 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             }
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
             Ecosystem::PyPi => assert_eq!(listed(&again).len(), 1, "and the next one"),
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
         }
     }
 }
@@ -1231,4 +1234,158 @@ async fn cargo_fully_refused_listing_records_one_decision() {
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(krate), None));
     h.server.shutdown().await;
+}
+
+/// Row 19: a managed firewall authenticates every Go read with the key (Basic from the GOPROXY URL's
+/// userinfo or `.netrc`), refuses an unknown key with the same 401, and the key's policy decides: one
+/// organisation's block refuses the module for its keys and leaves another's served. The refusal is
+/// local (no upstream call) and leaves one decision record.
+#[tokio::test]
+async fn go_key_route_authenticates_every_read_and_refuses_a_blocked_module_locally() {
+    let module = "example.com/gox";
+    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Go, name: module.to_owned(), reason: None }], |_| {}).await;
+    let path = |tail: &str| {
+        let mut segments: Vec<&str> = module.split('/').collect();
+        segments.extend(tail.split('/'));
+        fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &segments).unwrap().path().to_owned()
+    };
+    h.registry.answer(&path("@v/list"), FakeAnswer::Body("v1.0.0\n".to_owned()));
+    h.registry.answer(&path("@v/v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
+    for tail in ["@v/list", "@latest", "@v/v1.0.0.info", "@v/v1.0.0.zip"] {
+        let anonymous = h.server.get(&format!("/go/{module}/{tail}")).await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{tail}");
+    }
+    assert_eq!(h.get(&format!("/go/{module}/@v/list"), "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    let refused = h.get(&format!("/go/{module}/@v/list"), &key_a()).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN, "Globex blocks the module");
+    assert!(h.registry.calls().is_empty(), "a blocked module reaches no upstream call");
+    let served = h.get(&format!("/go/{module}/@v/list"), &key_b()).await;
+    assert_eq!(served.text().await.unwrap(), "v1.0.0\n", "Acme's policy keeps the version");
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Go)).collect();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(module), None));
+    h.server.shutdown().await;
+}
+
+/// Row 19 fix round: a policy publication (any sync that changed anything, even an unrelated key) between a request's
+/// authorisation and its release refuses the finished response (SPEC §9). A Go client does not retry a 503 and a
+/// `go get` is many tiny requests, so the Go route admits the request again instead: the new policy then decides it
+/// (served when it still allows it) and a change that keeps landing is reported after three admissions.
+#[tokio::test]
+async fn go_request_released_across_a_policy_publication_is_admitted_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (publications, expected) in [(0usize, StatusCode::OK), (1, StatusCode::OK), (2, StatusCode::OK), (3, StatusCode::SERVICE_UNAVAILABLE)] {
+        let h = harness(vec![], |_| {}).await;
+        let path = |tail: &str| {
+            let mut segments: Vec<&str> = "example.com/rt".split('/').collect();
+            segments.extend(tail.split('/'));
+            fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &segments).unwrap().path().to_owned()
+        };
+        h.registry.answer(&path("@v/v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
+        h.registry.answer(&path("@v/v1.0.0.mod"), FakeAnswer::Body("module example.com/rt\n".to_owned()));
+        let gate = Arc::clone(h.server.app().managed().unwrap().publication_gate());
+        let left = Arc::new(AtomicUsize::new(publications));
+        let (writer, counter) = (Arc::clone(&gate), Arc::clone(&left));
+        gate.set_barrier(Arc::new(move || {
+            if counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                let writer = Arc::clone(&writer);
+                std::thread::spawn(move || writer.publish(|| ()).unwrap()).join().unwrap();
+            }
+        }));
+        let answer = h.get("/go/example.com/rt/@v/v1.0.0.mod", &key_b()).await;
+        assert_eq!(answer.status(), expected, "{publications} publications landing between authorisation and release");
+        if expected == StatusCode::OK {
+            assert_eq!(answer.text().await.unwrap(), "module example.com/rt\n");
+        }
+        h.server.shutdown().await;
+    }
+}
+
+/// Recheck N1: the revision-query bound is per key. One key's junk tokens (for one module, or for a thousand module
+/// names) never make another key's `go get mod@main` a 429.
+#[tokio::test]
+async fn go_revision_queries_are_bounded_per_key_and_junk_cannot_block_another_key() {
+    let h = harness(vec![], |_| {}).await;
+    let status = |path: String, key: String| {
+        let h = &h;
+        async move { h.get(&path, &key).await.status() }
+    };
+    for n in 0..32 {
+        assert_ne!(status(format!("/go/example.com/rv/@v/junk{n}.info"), key_a()).await, StatusCode::TOO_MANY_REQUESTS, "{n}");
+    }
+    assert_eq!(status("/go/example.com/rv/@v/junk32.info".to_owned(), key_a()).await, StatusCode::TOO_MANY_REQUESTS, "the 33rd distinct token of one key");
+    assert_ne!(status("/go/example.com/rv/@v/main.info".to_owned(), key_b()).await, StatusCode::TOO_MANY_REQUESTS, "another key still resolves");
+    // A thousand junk module names from one key fill no table another key needs.
+    for n in 0..1100 {
+        let _ = status(format!("/go/junk{n}.example.com/m/@v/a.info"), key_a()).await;
+    }
+    assert_ne!(status("/go/example.com/other/@v/main.info".to_owned(), key_b()).await, StatusCode::TOO_MANY_REQUESTS, "the table is not full for everyone");
+    h.server.shutdown().await;
+}
+
+/// Recheck N3 (Go, managed key route): a block published while the request is in flight wins: the response admitted
+/// under the old policy is refused at release, the request is admitted again, and the new policy answers 403.
+#[tokio::test]
+async fn go_block_published_while_the_request_is_in_flight_wins() {
+    struct Held {
+        inner: Arc<FakeRegistry>,
+        arrived: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    #[async_trait::async_trait]
+    impl Transport for Held {
+        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
+            if request.url.path().contains("/mid.example/") && request.url.path().ends_with(".info") {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.fetch_metadata(request).await
+        }
+        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+            self.inner.open_artifact(request).await
+        }
+    }
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), org_blocking(Vec::new()));
+    sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
+    let registry = FakeRegistry::new();
+    let path_of = |tail: &str| fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &["mid.example", "m", "@v", tail]).unwrap().path().to_owned();
+    registry.answer(&path_of("v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
+    registry.answer(&path_of("v1.0.0.mod"), FakeAnswer::Body("module mid.example/m // before the block\n".to_owned()));
+    let held = Arc::new(Held { inner: registry, arrived: Default::default(), release: Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = sync.managed(config_with_open_blocklist(dir.path()));
+    config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
+    let clock = TestClock::at_rfc3339(NOW);
+    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, fake_origins()).await);
+    let fetch = {
+        let (server, key) = (Arc::clone(&server), key_b());
+        tokio::spawn(async move {
+            let response = reqwest::Client::new().get(server.url("/go/mid.example/m/@v/v1.0.0.mod")).header("authorization", bearer(&key)).send().await.unwrap();
+            (response.status().as_u16(), response.text().await.unwrap())
+        })
+    };
+    held.arrived.notified().await;
+    let revision = sync.edit_layer(org(ACME), org_blocking(vec![Block::Package { ecosystem: Ecosystem::Go, name: "mid.example/m".to_owned(), reason: None }]));
+    clock.advance_seconds(70);
+    sync.applied(revision).await;
+    // Wait until the new policy is the one the firewall serves (a second request of the same key is refused locally),
+    // while the first is still in flight; only then let it go on.
+    let mut applied = false;
+    for _ in 0..200 {
+        let probe = reqwest::Client::new().get(server.url("/go/mid.example/m/@v/list")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        if probe.status() == StatusCode::FORBIDDEN {
+            applied = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(applied, "the block reached the firewall");
+    held.release.notify_one();
+    let (status, body) = fetch.await.unwrap();
+    assert_eq!(status, 403, "{body}");
+    assert!(!body.contains("before the block"));
 }

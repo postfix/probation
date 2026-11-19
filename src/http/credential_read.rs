@@ -62,6 +62,11 @@ impl FamilyReadRules {
     /// none carries a credential. Its registry token travels as `Authorization`, a credential,
     /// and never in the path or query of this firewall's routes.
     pub const CARGO: FamilyReadRules = FamilyReadRules { headers: &["cargo-protocol", "upgrade", "http2-settings"], query_keys: &[] };
+    /// Go's `go` command sends only the common headers on a plain read (measured with go 1.26.0,
+    /// tests/go_native.rs): a credential travels as `Authorization` (Basic from `.netrc` or the GOPROXY
+    /// userinfo, or `GOAUTH`), both request-scoped. No route of this firewall takes a token in its
+    /// path or query.
+    pub const GO: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

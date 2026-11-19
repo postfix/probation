@@ -1175,6 +1175,8 @@ pub fn run<T>(body: impl Future<Output = T>) -> T {
 /// be called only once per process and a thread-local subscriber would miss the
 /// poller, which runs on other runtime threads. Tests therefore share one buffer and
 /// select their own lines by the temp path they were given, which is unique per test.
+pub mod go;
+
 pub mod logs {
     use std::io;
     use std::sync::{Arc, Mutex, OnceLock};

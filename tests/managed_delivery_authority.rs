@@ -25,7 +25,7 @@ async fn sync_now(server: &TestServer) {
         report: managed.report(Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok, rubygems: None, cargo: None,
+            osv: Reachability::Ok, rubygems: None, cargo: None, go: None,
         }),
         activity: vec![],
         activity_dropped: vec![],
@@ -174,6 +174,7 @@ async fn prepared_boundary(
         }
         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
     };
     let dir = tempfile::tempdir().unwrap();
     let mut config = management.managed(config_with_open_blocklist(dir.path()));
@@ -204,6 +205,7 @@ async fn prepared_boundary(
         Ecosystem::PyPi => &listing["files"][0]["url"],
         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
     };
     let url: reqwest::Url = url.as_str().unwrap().parse().unwrap();
     let id =
@@ -224,6 +226,7 @@ async fn prepared_boundary(
             Ecosystem::PyPi => common::pypi_upstream_path("authority-check"),
             Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
         };
         let raw = match ecosystem {
             Ecosystem::Npm => {
@@ -234,6 +237,7 @@ async fn prepared_boundary(
             }
             Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
             Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
         };
         let gate = Gate::new();
         registry.answer(

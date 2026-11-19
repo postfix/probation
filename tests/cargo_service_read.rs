@@ -281,5 +281,59 @@ async fn a_download_in_flight_when_the_archive_origin_changes_is_not_delivered()
     server.app().service_policy().expect("service mode").sync_once().await.expect("the new snapshot activates");
     gated.release.notify_one();
     let status = fetch.await.unwrap();
-    assert_eq!(status, 503, "the stale download is refused, not delivered");
+    // The publication refuses the finished response; it is admitted again under the new snapshot, whose descriptor has no
+    // archive origin any more, so the archive is outside the registry's prefix: refused, never delivered.
+    assert!(matches!(status.as_u16(), 404 | 502), "the stale download is refused under the new snapshot, not delivered: {status}");
+}
+
+/// Recheck N3 (generic, shared service): a block published while a download is in flight must win. The finished response
+/// is refused by the publication gate, the request is admitted again under the new snapshot and is 403 there; the bytes
+/// admitted under the old snapshot are never delivered.
+#[tokio::test]
+async fn a_block_published_while_a_download_is_in_flight_wins() {
+    let policy = MockServer::start().await;
+    let archive = format!("https://reg.invalid{PREFIX}/crates");
+    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(snapshot(0, None))).mount(&policy).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config_with_open_blocklist(dir.path());
+    config.service_policy = Some(ServicePolicyConfig {
+        server_url: policy.uri().parse().unwrap(),
+        service_key_file: "/test/key".into(),
+        service_key: FirewallToken::new("prb_01234567890123456789012345678901".into()),
+        sync_interval_seconds: NonZeroU64::new(3600).unwrap(),
+    });
+    let registry = FakeRegistry::new();
+    registry.answer(&format!("{PREFIX}/config.json"), FakeAnswer::Body(format!(r#"{{"dl":"{archive}"}}"#)));
+    let bytes = b"admitted under the old snapshot".to_vec();
+    registry.answer(&format!("{PREFIX}/de/mo/demo"), FakeAnswer::Body(format!("{}\n", line("demo", "1.0.0", &bytes, Some(OLD)))));
+    registry.answer(&format!("{PREFIX}/crates/demo/1.0.0/download"), FakeAnswer::Bytes(bytes));
+    let gated = Arc::new(Gated { inner: registry, arrived: Default::default(), release: Default::default() });
+    let server = Arc::new(TestServer::start_with_upstream(config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(), Arc::clone(&gated) as Arc<dyn Transport>, fake_origins()).await);
+    let fetch = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            let response = server.get("/registry/cargo/7/crates/demo/1.0.0/download").await;
+            (response.status(), response.text().await.unwrap())
+        })
+    };
+    gated.arrived.notified().await;
+    let mut blocked = snapshot(0, None);
+    blocked.revision = 2;
+    for layer in &mut blocked.place_chain {
+        layer.layer_revision = 2;
+    }
+    for layer in &mut blocked.layers {
+        layer.revision = 2;
+        if layer.place.kind == LayerKind::Org {
+            layer.layer.blocks.push(probation_policy::Block::Package { ecosystem: probation_policy::Ecosystem::Cargo, name: "demo".to_owned(), reason: None });
+        }
+    }
+    policy.reset().await;
+    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot")).respond_with(ResponseTemplate::new(200).set_body_json(blocked)).mount(&policy).await;
+    server.app().service_policy().expect("service mode").sync_once().await.expect("the new snapshot activates");
+    gated.release.notify_one();
+    let (status, body) = fetch.await.unwrap();
+    assert_eq!(status, 403, "the block wins over the response admitted before it: {body}");
+    assert!(!body.contains("admitted under the old snapshot"));
 }

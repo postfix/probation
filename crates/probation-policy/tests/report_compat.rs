@@ -65,3 +65,22 @@ fn cargo_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.rubygems), (Reachability::Ok, Some(Reachability::Ok)));
 }
+
+/// Row 19: the Go upstream state is additive in the same way as RubyGems and Cargo.
+#[test]
+fn go_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","cargo":"ok"}"#).unwrap();
+    assert_eq!(old.go, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("\"go\""));
+    let new = Upstreams { go: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""go":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        cargo: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.cargo), (Reachability::Ok, Some(Reachability::Ok)));
+}

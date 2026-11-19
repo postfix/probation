@@ -267,6 +267,8 @@ const ROUTE_TABLE: &[(&str, &str, char)] = &[
     ("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank", "put", 'W'),
     ("/registry/cargo/{registry}/api/v1/crates/{name}/owners", "delete get put", 'W'),
     ("/registry/cargo/{registry}/api/v1/crates", "get", 'R'),
+    ("/go/{*path}", "get head", 'R'),
+    ("/registry/go/{registry}/{*path}", "get head", 'R'),
     ("/registry/rubygems/{registry}/api/v1/gems", "post", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems/yank", "delete", 'W'),
     ("/pypi/simple/", "get", 'R'),

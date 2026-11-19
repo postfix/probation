@@ -19,6 +19,7 @@ pub mod policy;
 pub mod pypi;
 pub mod rubygems;
 pub mod cargo_registry;
+pub mod go_modules;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -172,6 +173,8 @@ pub struct App {
     pub(crate) rubygems: rubygems::serve::Shared,
     /// Cargo: the registry `config.json` cache and the committed crate-name spellings.
     pub(crate) cargo: cargo_registry::serve::Shared,
+    /// Go modules: the in-memory per-module version tables (dates, existence checks), process-owned.
+    pub(crate) go: go_modules::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -430,6 +433,7 @@ impl App {
             login_rates: http::registry_action::LoginRates::default(),
             rubygems: rubygems::serve::Shared::default(),
             cargo: cargo_registry::serve::Shared::default(),
+            go: go_modules::serve::Shared::default(),
             delivery,
             osv,
             managed,

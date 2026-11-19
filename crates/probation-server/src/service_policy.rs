@@ -161,6 +161,7 @@ async fn load_policy_snapshot(
             "pypi" => Ecosystem::PyPi,
             "rubygems" => Ecosystem::RubyGems,
             "cargo" => Ecosystem::Cargo,
+            "go" => Ecosystem::Go,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {
@@ -230,15 +231,15 @@ pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
     .then_some(url)
 }
 
-/// Sets (`Some`) or clears (`None`) a Cargo registry's archive origin. False when the registry is not
-/// this organisation's live Cargo registry (the column only exists for one).
+/// Sets (`Some`) or clears (`None`) a registry's archive origin. False when the registry is not this
+/// organisation's live Cargo or Go registry with a target (the column only exists for those).
 pub async fn set_archive_origin(
     pool: &sqlx::PgPool,
     org: i32,
     registry: i64,
     origin: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'cargo' AND target_url IS NOT NULL AND removed_at IS NULL")
+    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go') AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
         .bind(registry)
         .bind(org)

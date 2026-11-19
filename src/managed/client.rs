@@ -844,6 +844,18 @@ mod tests {
             std::env::set_var("HTTP_PROXY", format!("http://{}", proxy.local_addr().unwrap()));
             std::env::set_var("http_proxy", format!("http://{}", proxy.local_addr().unwrap()));
         }
+        // The variables live for the whole test process unless removed: other tests (osv) build default clients.
+        struct Unset;
+        impl Drop for Unset {
+            fn drop(&mut self) {
+                // SAFETY: as above, only this test sets them.
+                unsafe {
+                    std::env::remove_var("HTTP_PROXY");
+                    std::env::remove_var("http_proxy");
+                }
+            }
+        }
+        let _unset = Unset;
         let (server, _seen) = counting_server().await;
         let answer = burst(&client(&server, 5), 1).await.pop().unwrap();
         assert!(matches!(answer, Ok(CertificateAdmission::Refused)), "{answer:?}");

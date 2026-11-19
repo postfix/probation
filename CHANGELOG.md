@@ -18,6 +18,13 @@ The next release must have a version above 0.2.2.
   the index `cksum`. Through the shared service `cargo publish`, `yank`, `unyank` and
   `owner` are forwarded with the caller's own token only; the owner list and search are
   forwarded as reads.
+- **Go modules** through the firewall (docs/operations.md "Go clients"). `go_upstream_url`,
+  `go_sumdb_url` and `go_artifacts_url` name the proxy, the checksum database and the origin a zip redirect may land on
+  (proxy.golang.org redirects large zips to its signed bucket) like the other origin keys. `@v/list` and
+  `@latest` are filtered by age, blocklist and OSV (`Go`), the `.info`, `.mod` and `.zip` of a version are
+  gated together and delivered exactly as the proxy sent them, case-encoded module paths and versions keep
+  one identity, and the checksum database is forwarded separately (hashes only). Go has no write protocol,
+  so nothing is forwarded through the shared service.
 - **Managed mode** for the firewall. With a `[management]` section in
   `config.toml`, a firewall serves each request under the policy of the API key
   it carries, fetched from a management server and cached. It syncs every

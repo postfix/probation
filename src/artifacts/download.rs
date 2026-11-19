@@ -167,7 +167,7 @@ pub async fn fetch(
     app: &Arc<App>,
     row: &ReferenceRow,
 ) -> Result<VerifiedContent, Arc<DownloadError>> {
-    fetch_at(app, row, None, Vec::new(), None).await
+    fetch_at(app, row, None, Vec::new(), None, None).await
 }
 
 pub async fn fetch_at(
@@ -176,6 +176,7 @@ pub async fn fetch_at(
     origin: Option<url::Url>,
     private_cidrs: Vec<ipnet::IpNet>,
     read_authorization: Option<String>,
+    archive: Option<url::Url>,
 ) -> Result<VerifiedContent, Arc<DownloadError>> {
     let (slot, leader, _waiter) = app.downloads.transfers().join(row.id);
 
@@ -185,7 +186,7 @@ pub async fn fetch_at(
         let app = Arc::clone(app);
         let row = row.clone();
         let started = Arc::clone(&slot);
-        tokio::spawn(async move { run(app, row, origin, private_cidrs, read_authorization, started).await });
+        tokio::spawn(async move { run(app, row, origin, private_cidrs, read_authorization, archive, started).await });
     }
 
     match slot.wait().await {
@@ -202,7 +203,7 @@ pub async fn fetch_at(
 /// The [`Resolution`] is what makes that "every way out" rather than "every way out
 /// this code thought of" — see `concurrency::single_flight` for why it is a `Drop`
 /// guard and not a `catch_unwind` around `transfer`.
-async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private_cidrs: Vec<ipnet::IpNet>, read_authorization: Option<String>, slot: Arc<Slot<SlotOutcome>>) {
+async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private_cidrs: Vec<ipnet::IpNet>, read_authorization: Option<String>, archive: Option<url::Url>, slot: Arc<Slot<SlotOutcome>>) {
     let mut resolution = Resolution::new(
         app.downloads.transfers().clone(),
         row.id,
@@ -211,7 +212,7 @@ async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private
         row.id.to_hex(),
     );
 
-    let outcome = match transfer(&app, &row, origin.as_ref(), &private_cidrs, read_authorization, &slot).await {
+    let outcome = match transfer(&app, &row, origin.as_ref(), &private_cidrs, read_authorization, archive.as_ref(), &slot).await {
         Ok(content) => SlotOutcome::Verified(content),
         Err(err) => SlotOutcome::Failed(Arc::new(err)),
     };
@@ -224,6 +225,7 @@ async fn transfer(
     origin: Option<&url::Url>,
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<String>,
+    archive: Option<&url::Url>,
     slot: &Slot<SlotOutcome>,
 ) -> Result<VerifiedContent, DownloadError> {
     // SPEC §9: "Bound active downloads globally." One permit per transfer, not per
@@ -232,11 +234,11 @@ async fn transfer(
     let permit = tokio::select! {
         biased;
         () = slot.cancelled() => return Err(DownloadError::Cancelled),
-        permit = app.limits.download_permit() => permit,
+        permit = async { if is_small_metadata(row) { app.limits.small_download_permit().await } else { app.limits.download_permit().await } } => permit,
     };
     let _permit = permit.ok_or(DownloadError::Overloaded)?;
 
-    let cap = app.config.max_artifact_bytes.get();
+    let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -247,6 +249,8 @@ async fn transfer(
                     private_cidrs: private_cidrs.to_vec(),
                     read_authorization,
                     max_bytes: cap,
+                    archive_origin: archive.cloned(),
+                    allow_archive_redirect: allows_archive_redirect(row),
                 })
                 .await
         }
@@ -258,6 +262,7 @@ async fn transfer(
         Ecosystem::PyPi => Call::PypiArtifacts,
         Ecosystem::RubyGems => Call::Rubygems,
         Ecosystem::Cargo => Call::Cargo,
+        Ecosystem::Go => Call::Go,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -446,6 +451,32 @@ async fn transfer(
 
 /// A service caller's registry credential belongs to the selected catalog, not a separate
 /// artifact host (for example PyPI's files origin).
+/// The most a transfer may read: the configured artifact cap, and for a Go `.info` (a few hundred bytes) 256 KiB and for a
+/// `.mod` 16 MiB (what `go` itself accepts), so the small places cannot be held by a hostile upstream's large "tiny" file.
+fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
+    if row.reference.ecosystem != Ecosystem::Go {
+        return configured;
+    }
+    if row.reference.filename.ends_with(".info") {
+        configured.min(256 << 10)
+    } else if row.reference.filename.ends_with(".mod") {
+        configured.min(16 << 20)
+    } else {
+        configured
+    }
+}
+
+/// A Go `.info` or `.mod`: a few hundred bytes that precede every zip and must not queue behind the large transfers.
+fn is_small_metadata(row: &ReferenceRow) -> bool {
+    row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))
+}
+
+/// A Go `.zip` is the one transfer whose redirect may land on an archive origin (the proxy's bucket or
+/// the registry's declared one); `.info` and `.mod` never follow it.
+fn allows_archive_redirect(row: &ReferenceRow) -> bool {
+    row.reference.ecosystem == Ecosystem::Go && row.reference.filename.ends_with(".zip")
+}
+
 fn selected_catalog_authorization(
     app: &App,
     row: &ReferenceRow,
@@ -458,6 +489,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::PyPi => OriginKind::PypiMetadata,
             crate::policy::Ecosystem::RubyGems => OriginKind::RubygemsMetadata,
             crate::policy::Ecosystem::Cargo => OriginKind::CargoIndex,
+            crate::policy::Ecosystem::Go => OriginKind::GoProxy,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -484,11 +516,12 @@ pub async fn fetch_request_scoped(
     origin: Option<&url::Url>,
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<String>,
+    archive: Option<&url::Url>,
 ) -> Result<RequestScoped, DownloadError> {
     let temp_dir = app.credential_temp.as_ref().ok_or(DownloadError::Overloaded)?;
-    let permit = app.limits.download_permit().await.ok_or(DownloadError::Overloaded)?;
+    let permit = if is_small_metadata(row) { app.limits.small_download_permit().await } else { app.limits.download_permit().await }.ok_or(DownloadError::Overloaded)?;
     let _permit = permit;
-    let cap = app.config.max_artifact_bytes.get();
+    let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -499,6 +532,8 @@ pub async fn fetch_request_scoped(
                     private_cidrs: private_cidrs.to_vec(),
                     read_authorization,
                     max_bytes: cap,
+                    archive_origin: archive.cloned(),
+                    allow_archive_redirect: allows_archive_redirect(row),
                 })
                 .await
         }
@@ -509,6 +544,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::PyPi => Call::PypiArtifacts,
         Ecosystem::RubyGems => Call::Rubygems,
         Ecosystem::Cargo => Call::Cargo,
+        Ecosystem::Go => Call::Go,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -577,6 +613,9 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         Ecosystem::RubyGems => &[OriginKind::RubygemsMetadata, OriginKind::NpmMetadata],
         // The crate files live on the `dl` host of `config.json`; a selected registry travels in the npm slot.
         Ecosystem::Cargo => &[OriginKind::CargoArtifacts, OriginKind::CargoIndex, OriginKind::NpmMetadata],
+        // Go's archives are served by the proxy itself (proxy.golang.org answers `.zip` directly);
+        // a selected registry travels in the npm slot.
+        Ecosystem::Go => &[OriginKind::GoProxy, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the

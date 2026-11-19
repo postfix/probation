@@ -9,6 +9,8 @@
 //   POST /npm/publish {...}           Npm.publish; answers the version's dist
 //   POST /pypi/publish {...}          Pypi.publish; answers the files made
 //   POST /rubygems/publish {...}      RubyGems.publish; answers the gem made
+//   POST /go/publish {...}            Go.publish; answers the module version made
+//   GET  /go/sumdb                    every request the fake checksum database (sum.golang.org) got
 //   POST /cargo/publish {...}         Cargo.publish; answers the crate made
 //   GET  /cargo/writes                every registry-API call the fake crates.io received (publish, yank, owners, search)
 //   POST /cargo/index {name}          the index file the fake serves for a crate (text)
@@ -41,6 +43,7 @@ import http from "node:http";
 import https from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cargo } from "./cargo.mjs";
+import { Go } from "./go.mjs";
 import { Hibp } from "./hibp.mjs";
 import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
@@ -51,7 +54,7 @@ import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
@@ -62,6 +65,8 @@ const hosts = {
   "index.crates.io": fakes.cargo,
   "static.crates.io": fakes.cargo,
   "crates.io": fakes.cargo,
+  "proxy.golang.org": fakes.go,
+  "sum.golang.org": fakes.go,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -220,6 +225,8 @@ const control = {
   "POST /pypi/publish": (body) => fakes.pypi.publish(body),
   "POST /rubygems/publish": (body) => fakes.rubygems.publish(body),
   "GET /rubygems/writes": () => fakes.rubygems.writes,
+  "POST /go/publish": (body) => fakes.go.publish(body),
+  "GET /go/sumdb": () => fakes.go.sumdb,
   "POST /cargo/publish": (body) => fakes.cargo.publish(body),
   "GET /cargo/writes": () => fakes.cargo.writes,
   "POST /cargo/index": (body) => ({ index: fakes.cargo.index(body.name) }),

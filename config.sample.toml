@@ -142,6 +142,13 @@ osv_mode = "enforce"
 # other origin is refused.
 # cargo_upstream_url = "https://cargo-mirror.example.org"
 # cargo_artifacts_url = "https://cargo-files.example.org"
+# Go modules: the module host (default the public Go module host), the
+# checksum database host the /go/sumdb/ route forwards to (default https://sum.golang.org) and the origin a
+# zip redirect of the module host may land on (default the public module host's own storage bucket).
+# One protected module host, no fallback.
+# go_upstream_url = "https://gomirror.example.org"
+# go_sumdb_url = "https://sumdb.example.org"
+# go_artifacts_url = "https://gofiles.example.org"
 
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this

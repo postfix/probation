@@ -21,6 +21,7 @@ pub(crate) const fn ecosystem_index(ecosystem: Ecosystem) -> usize {
         Ecosystem::PyPi => 1,
         Ecosystem::RubyGems => 2,
         Ecosystem::Cargo => 3,
+        Ecosystem::Go => 4,
     }
 }
 

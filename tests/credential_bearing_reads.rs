@@ -138,6 +138,48 @@ fn credential_bearing_read_never_enters_shared_caches_cargo() {
     ));
 }
 
+/// Row 19, the Go case of the same contract. `go` carries a credential as `Authorization` (Basic from
+/// `.netrc` or from the GOPROXY URL's userinfo, or GOAUTH), never in a path or query of this
+/// firewall's routes; a module path itself cannot hold one (`[A-Za-z0-9._~/-]` and the `!` escape),
+/// and a path that is not one of this firewall's routes is a 404 that asks upstream nothing. The family
+/// adds no header beyond the common allow-list (the real-client witness is
+/// `go_native_client_sends_only_allow_listed_headers` in tests/go_native.rs).
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_go() {
+    let go = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::GO), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "Basic dXNlcjpwdw=="),
+        ("Authorization", "Bearer prb_x"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-jfrog-art-api", "key"),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!go("/go/example.com/m/@v/list", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!go("/go/example.com/m/@v/list?token=abc", &[]));
+    assert!(!go("/go/example.com/m/@v/v1.0.0.zip?api_key=abc", &[]));
+    for form in [
+        "https://TOKEN:@proxy.example.test/go/example.com/m/@v/list",
+        "https://token@proxy.example.test/go/example.com/m/@latest",
+        "https://user:pass@proxy.example.test/registry/go/7/example.com/m/@v/v1.0.0.info",
+    ] {
+        assert!(!go(form, &[]), "{form}: URL userinfo");
+    }
+    // Control: the headers `go` sends for plain reads keep the read cache-eligible.
+    assert!(go(
+        "/go/example.com/m/@v/list",
+        &[("host", "x"), ("accept", "*/*"), ("accept-encoding", "gzip"), ("user-agent", "Go-http-client/1.1"), ("if-none-match", "\"a\""), ("cache-control", "no-cache")]
+    ));
+}
+
 // ---- C1028 end to end: bytes fetched under credential A are never served without it ----
 
 /// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
@@ -145,6 +187,8 @@ struct PrivateArtifacts(Arc<FakeRegistry>, Mutex<Vec<Option<String>>>);
 
 /// How many recent-versions fetches of the slow registry have started, and their release.
 static SLOW_ARRIVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The read credential every call to the checksum database carried (row 19): none may carry one.
+static SUMDB_AUTH: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
 static SLOW_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
 
 #[async_trait::async_trait]
@@ -157,6 +201,9 @@ impl Transport for PrivateArtifacts {
         if request.url.host_str() == Some("slow.invalid") && request.url.path().ends_with("timeframe_versions.json") {
             SLOW_ARRIVED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = SLOW_GATE.acquire().await;
+        }
+        if request.url.host_str() == Some("sum.golang.org") {
+            SUMDB_AUTH.lock().unwrap().push(request.read_authorization.clone());
         }
         // A Cargo registry whose `config.json` wants the caller's own credential (row 18).
         if request.url.path() == "/config.json" {
@@ -219,6 +266,9 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
             registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(8), ecosystem: probation_policy::Ecosystem::Go, target_url: None, trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         }],
     };
@@ -363,6 +413,13 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
         r#"{{"name":"open-crate","vers":"1.0.0","deps":[],"cksum":"{}","features":{{}},"yanked":false,"pubtime":"2025-01-01T00:00:00Z"}}"#, hex::encode(Sha256::digest(b"c"))
     ) + "\n"));
     registry.answer("/crates/open-crate/1.0.0/download", FakeAnswer::Bytes(b"c".to_vec()));
+    for module in ["open.example/mod", "secret.example/mod"] {
+        registry.answer(&format!("/{module}/@v/list"), FakeAnswer::Body("v1.0.0\n".to_owned()));
+        registry.answer(&format!("/{module}/@v/v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
+        registry.answer(&format!("/{module}/@v/v1.0.0.mod"), FakeAnswer::Body(format!("module {module}\n")));
+        registry.answer(&format!("/{module}/@v/v1.0.0.zip"), FakeAnswer::Bytes(format!("zip of {module}").into_bytes()));
+    }
+    registry.answer("/latest", FakeAnswer::Body("go.sum database tree\n".to_owned()));
     registry.answer("/gems/open-gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
     // A gem whose real name has capitals: files are case-exact upstream (N2).
     registry.answer("/gems/Open-Gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
@@ -477,6 +534,52 @@ async fn credential_bearing_read_never_enters_shared_caches_cargo_end_to_end() {
     // Paths that embed a credential in a route this firewall does not have reach nothing.
     let calls = transport.0.calls().len();
     for path in ["/cargo/se/rd/serde;token=abc", "/cargo/tok3n@host/se/rd/serde", "/cargo/%40token/config.json"] {
+        assert_eq!(server.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(transport.0.calls().len(), calls, "no upstream call for a path-embedded credential form");
+}
+
+/// Row 19, C1028 for Go through the row 28 seam (shared service): the version table of a
+/// credential-bearing read is never read or filled, its zip never enters the shared content store, the
+/// checksum database never receives the caller's credential, and the same reads with only allow-listed
+/// headers do share (control).
+#[tokio::test]
+async fn credential_bearing_read_never_enters_shared_caches_go_end_to_end() {
+    let (server, transport, _policy) = service_server().await;
+    let info_calls = |module: &str| transport.0.calls().iter().filter(|u| u.path() == format!("/{module}/@v/v1.0.0.info")).count();
+    // Plain reads share the version memory.
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers("/go/open.example/mod/@v/v1.0.0.mod", &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(info_calls("open.example/mod"), 1, "an allow-listed read shares the confirmed version");
+    for (n, carrier) in [("authorization", "Basic dXNlcjpwdw=="), ("authorization", "Bearer allowed"), ("cookie", "s=1"), ("x-jfrog-art-api", "k"), ("x-probe-unknown", "1")].into_iter().enumerate() {
+        let before = info_calls("open.example/mod");
+        let response = server.get_with_headers("/registry/go/8/open.example/mod/@v/v1.0.0.mod", &[carrier]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{carrier:?}");
+        // Three: the reference lookup, the membership check before the transfer and the one after it (SPEC §9)
+        // each confirm the version for this request alone.
+        assert_eq!(info_calls("open.example/mod"), before + 3, "carrier {n} {carrier:?}: a credential-bearing read confirms the version itself and fills nothing");
+    }
+    // Its zip never enters the shared store; the control read does.
+    let data = server.app().config.data_dir.clone();
+    let before = files_under(&data.join("content")).len();
+    let zip = server.get_with_headers("/go/secret.example/mod/@v/v1.0.0.zip", &[("authorization", "Bearer allowed")]).await;
+    assert_eq!((zip.status(), zip.bytes().await.unwrap().as_ref()), (StatusCode::OK, b"zip of secret.example/mod".as_slice()));
+    assert_eq!(files_under(&data.join("content")).len(), before, "no credential-bearing module zip in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+    assert_eq!(server.get("/go/secret.example/mod/@v/v1.0.0.zip").await.status(), StatusCode::FORBIDDEN, "bytes fetched under a credential are never served without it");
+    let eligible = server.get_with_headers("/go/open.example/mod/@v/v1.0.0.zip", &[("accept", "*/*")]).await;
+    assert_eq!(eligible.status(), StatusCode::OK);
+    assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
+    // The checksum database is asked without the caller's credential, whatever the caller sent.
+    for headers in [&[("authorization", "Bearer allowed")][..], &[("accept", "*/*")][..]] {
+        assert_eq!(server.get_with_headers("/go/sumdb/sum.golang.org/latest", headers).await.status(), StatusCode::OK);
+    }
+    let seen = SUMDB_AUTH.lock().unwrap().clone();
+    assert!(seen.len() >= 2 && seen.iter().all(Option::is_none), "{seen:?}");
+    // Paths that embed a credential in a route this firewall does not have reach nothing.
+    let calls = transport.0.calls().len();
+    for path in ["/go/tok3n@host/example.com/m/@v/list", "/go/example.com/m;token=abc/@v/list", "/go/%40token/example.com/m/@latest"] {
         assert_eq!(server.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
     }
     assert_eq!(transport.0.calls().len(), calls, "no upstream call for a path-embedded credential form");
@@ -687,4 +790,31 @@ async fn rubygems_credential_bearing_index_reads_crawl_at_most_two_at_a_time() {
     for task in tasks {
         assert_eq!(task.await.unwrap(), StatusCode::OK);
     }
+}
+
+/// Recheck N2: in the shared service a policy publication between a read's authorisation and its release (a new
+/// snapshot, even one that changes nothing it needs) admits the read again under the new snapshot, for every family:
+/// one publication is served, a change that keeps landing is reported as 503 after three admissions.
+#[tokio::test]
+async fn a_publication_between_authorisation_and_release_is_admitted_again_for_every_family() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (server, _transport, _policy) = service_server().await;
+    let gate = Arc::clone(&server.app().service_policy().expect("service mode").publication_gate);
+    for path in ["/registry/npm/3/open-pkg", "/registry/pypi/4/simple/open-proj/", "/registry/rubygems/5/info/open-gem", "/cargo/config.json", "/go/open.example/mod/@v/list", "/go/open.example/mod/@v/v1.0.0.mod"] {
+        // An artifact crosses two gates (its own receipt and the service layer's), so a count of publications is exact only for
+        // metadata; 100 is "a change that keeps landing" for every route.
+        for (publications, expected) in [(0usize, StatusCode::OK), (1, StatusCode::OK), (100, StatusCode::SERVICE_UNAVAILABLE)] {
+            let left = Arc::new(AtomicUsize::new(publications));
+            let (writer, counter) = (Arc::clone(&gate), Arc::clone(&left));
+            gate.set_barrier(Arc::new(move || {
+                if counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                    let writer = Arc::clone(&writer);
+                    std::thread::spawn(move || writer.publish(|| ()).unwrap()).join().unwrap();
+                }
+            }));
+            let answer = server.get(path).await;
+            assert_eq!(answer.status(), expected, "{path}: {publications} publications between authorisation and release");
+        }
+    }
+    gate.set_barrier(Arc::new(|| {}));
 }

@@ -123,6 +123,12 @@ pub struct Config {
     /// (static.crates.io by default), same rules as the origins above.
     pub cargo_upstream_url: Option<Url>,
     pub cargo_artifacts_url: Option<Url>,
+    /// Go module proxy (proxy.golang.org by default) and the checksum database the `/go/sumdb/` route
+    /// forwards to (sum.golang.org by default), same rules as the origins above.
+    pub go_upstream_url: Option<Url>,
+    pub go_sumdb_url: Option<Url>,
+    /// The origin a Go proxy's zip redirect may land on (https://storage.googleapis.com/proxy-golang-org-prod by default).
+    pub go_artifacts_url: Option<Url>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -367,6 +373,9 @@ struct RawConfig {
     rubygems_upstream_url: Option<String>,
     cargo_upstream_url: Option<String>,
     cargo_artifacts_url: Option<String>,
+    go_upstream_url: Option<String>,
+    go_sumdb_url: Option<String>,
+    go_artifacts_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -466,6 +475,9 @@ const OPTIONAL_KEYS: &[&str] = &[
     "rubygems_upstream_url",
     "cargo_upstream_url",
     "cargo_artifacts_url",
+    "go_upstream_url",
+    "go_sumdb_url",
+    "go_artifacts_url",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -554,6 +566,9 @@ impl RawConfig {
         let rubygems_upstream_url = upstream_origin("rubygems_upstream_url", self.rubygems_upstream_url)?;
         let cargo_upstream_url = upstream_origin("cargo_upstream_url", self.cargo_upstream_url)?;
         let cargo_artifacts_url = upstream_origin("cargo_artifacts_url", self.cargo_artifacts_url)?;
+        let go_upstream_url = upstream_origin("go_upstream_url", self.go_upstream_url)?;
+        let go_sumdb_url = upstream_origin("go_sumdb_url", self.go_sumdb_url)?;
+        let go_artifacts_url = upstream_origin_with("go_artifacts_url", self.go_artifacts_url, true)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -842,6 +857,9 @@ impl RawConfig {
             rubygems_upstream_url,
             cargo_upstream_url,
             cargo_artifacts_url,
+            go_upstream_url,
+            go_sumdb_url,
+            go_artifacts_url,
             local: LocalText::default(),
         })
     }
@@ -851,6 +869,12 @@ impl RawConfig {
 /// with no credentials, query, fragment or path prefix. An address literal must be a
 /// public one: no DNS answer is checked for it at connect time, so it is checked here.
 fn upstream_origin(key: &'static str, text: Option<String>) -> Result<Option<Url>, ConfigError> {
+    upstream_origin_with(key, text, false)
+}
+
+/// `allow_path`: the one key (`go_artifacts_url`) whose value is an origin AND a path prefix (a storage
+/// bucket's name), admitted by whole path segments.
+fn upstream_origin_with(key: &'static str, text: Option<String>, allow_path: bool) -> Result<Option<Url>, ConfigError> {
     let Some(text) = text else {
         return Ok(None);
     };
@@ -864,8 +888,11 @@ fn upstream_origin(key: &'static str, text: Option<String>) -> Result<Option<Url
             "must not carry a username, password, query or fragment".to_owned(),
         ));
     }
-    if url.path() != "/" {
+    if url.path() != "/" && !allow_path {
         return Err(invalid(key, "must not carry a path prefix".to_owned()));
+    }
+    if url.path().split('/').any(|segment| segment == "." || segment == ".." || segment.contains('%')) {
+        return Err(invalid(key, "must not carry dot or encoded path segments".to_owned()));
     }
     let literal = match url.host() {
         Some(Host::Ipv4(addr)) => Some(IpAddr::V4(addr)),

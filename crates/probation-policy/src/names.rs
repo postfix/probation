@@ -10,6 +10,8 @@ use crate::Ecosystem;
 const MAX_NAME_LENGTH: usize = 214;
 /// Cargo's routing bound (crates.io itself allows 64): generous so no registry's valid name is refused.
 const MAX_CARGO_NAME_LENGTH: usize = 128;
+/// Go module paths are bounded by the OSV key bound (LS-F6), the real maximum of the family.
+const MAX_GO_NAME_LENGTH: usize = 1024;
 
 /// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
 pub fn normalize(raw: &str) -> String {
@@ -41,6 +43,9 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
         // crates.io: names are case-insensitive and `-` and `_` are the same character (the
         // registry refuses a second crate that differs only in them). OSV answers both spellings.
         Ecosystem::Cargo => name.to_ascii_lowercase().replace('_', "-"),
+        // A module path is case-sensitive (`github.com/Azure/x` and `github.com/azure/x` are two
+        // modules) and is the decoded path, never the `!`-escaped proxy spelling.
+        Ecosystem::Go => name.to_owned(),
     }
 }
 
@@ -49,7 +54,11 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
 /// bounded, no padding or control characters); the firewall's route validator stays
 /// the stricter gate on what reaches upstream.
 pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
-    let limit = if ecosystem == Ecosystem::Cargo { MAX_CARGO_NAME_LENGTH } else { MAX_NAME_LENGTH };
+    let limit = match ecosystem {
+        Ecosystem::Cargo => MAX_CARGO_NAME_LENGTH,
+        Ecosystem::Go => MAX_GO_NAME_LENGTH,
+        _ => MAX_NAME_LENGTH,
+    };
     if name.is_empty() || name.len() > limit {
         return false;
     }
@@ -70,7 +79,15 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         // LS-F6 for Cargo: `[A-Za-z0-9_-]`. Deliberately not crates.io's stricter publishing rules
         // (first character, 64 bytes): a block must be accepted for any name a registry could hold.
         Ecosystem::Cargo => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+        // LS-F6 for Go: the decoded path `[A-Za-z0-9._~/-]`, no empty or dot-only element.
+        Ecosystem::Go => valid_go_path(name),
     }
+}
+
+/// A decoded module path: `[A-Za-z0-9._~/-]`, every `/`-separated element non-empty and not `.` or `..`.
+pub fn valid_go_path(name: &str) -> bool {
+    name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/'))
+        && name.split('/').all(|element| !element.is_empty() && element != "." && element != "..")
 }
 
 /// A version in the form its ecosystem compares by: npm by semver precedence, PyPI by
@@ -82,6 +99,9 @@ pub enum CanonicalVersion {
     RubyGems(Vec<GemSegment>),
     /// SemVer 2 with the build metadata dropped (it takes no part in precedence or identity here).
     Cargo(Box<semver::Version>),
+    /// SemVer 2 of a Go version without its leading `v` and without its `+incompatible` (the proxy serves a
+    /// non-modular major only under that suffix, advisories and operators write it without: one match both ways).
+    Go(Box<semver::Version>),
 }
 
 /// One segment of a `Gem::Version` (`Gem::Version#canonical_segments`). Numbers are kept as
@@ -106,6 +126,10 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
         Ecosystem::Cargo => semver::Version::parse(version).ok().map(|mut parsed| {
             parsed.build = semver::BuildMetadata::EMPTY;
             CanonicalVersion::Cargo(Box::new(parsed))
+        }),
+        Ecosystem::Go => semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).ok().map(|mut parsed| {
+            parsed.build = semver::BuildMetadata::EMPTY;
+            CanonicalVersion::Go(Box::new(parsed))
         }),
     }
 }

@@ -55,6 +55,8 @@ pub struct ReqwestTransport {
     origins: OriginSet,
     metadata_client: Client,
     artifact_client: Client,
+    /// The artifact client without the archive redirect (a Go `.info` or `.mod`, and every other family).
+    plain_artifact_client: Client,
     /// LS-F9: applied to every selected (snapshot-sourced) registry.
     service_deny: Option<std::sync::Arc<crate::http::service_connector::Denylist>>,
 }
@@ -68,12 +70,21 @@ impl ReqwestTransport {
     }
 
     pub fn for_origins(origins: OriginSet) -> ReqwestTransport {
-        let metadata_client = base_builder(&origins)
+        let metadata_client = base_builder(&origins, false)
             .timeout(METADATA_TOTAL_TIMEOUT)
             .build()
             .expect("the metadata client builds");
 
-        let artifact_client = base_builder(&origins)
+        let plain_artifact_client = base_builder(&origins, false)
+            .read_timeout(ARTIFACT_READ_TIMEOUT)
+            .timeout(ARTIFACT_TOTAL_TIMEOUT)
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .build()
+            .expect("the plain artifact client builds");
+
+        let artifact_client = base_builder(&origins, true)
             .read_timeout(ARTIFACT_READ_TIMEOUT)
             .timeout(ARTIFACT_TOTAL_TIMEOUT)
             // SPEC §9: "Disable HTTP content decoding for artifact transfers so
@@ -90,6 +101,7 @@ impl ReqwestTransport {
             origins,
             metadata_client,
             artifact_client,
+            plain_artifact_client,
             service_deny: None,
         }
     }
@@ -110,25 +122,35 @@ impl ReqwestTransport {
     }
 
     fn selected(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool) -> Result<(OriginSet, Client), UpstreamError> {
-        self.selected_within(origin, private_cidrs, artifact, follow_redirects, METADATA_TOTAL_TIMEOUT)
+        self.selected_within(origin, private_cidrs, artifact, follow_redirects, METADATA_TOTAL_TIMEOUT, None, false)
     }
 
-    fn selected_within(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool, metadata_total: Duration) -> Result<(OriginSet, Client), UpstreamError> {
+    /// `archive`: a Go registry's declared archive origin, the one other origin a redirect of its zip may land on.
+    #[allow(clippy::too_many_arguments)]
+    fn selected_within(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool, metadata_total: Duration, archive: Option<&Url>, archives: bool) -> Result<(OriginSet, Client), UpstreamError> {
         let origins = match origin {
             Some(origin) => {
                 let selected = OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
                     .map_err(UpstreamError::RejectedUrl)?;
+                let selected = match archive {
+                    Some(archive) => selected.with_selected_go_archive(archive.clone()),
+                    None => selected,
+                };
                 match &self.service_deny {
                     Some(deny) => selected.with_denylist(std::sync::Arc::clone(deny)),
                     None => selected,
                 }
             }
             None if follow_redirects => {
-                return Ok((self.origins.clone(), if artifact { self.artifact_client.clone() } else { self.metadata_client.clone() }));
+                return Ok((self.origins.clone(), match (artifact, archives) {
+                    (true, true) => self.artifact_client.clone(),
+                    (true, false) => self.plain_artifact_client.clone(),
+                    (false, _) => self.metadata_client.clone(),
+                }));
             }
             None => self.origins.clone(),
         };
-        let mut builder = base_builder(&origins);
+        let mut builder = base_builder(&origins, artifact && archives);
         if !follow_redirects {
             // A developer credential may only reach the canonical packument URL.
             builder = builder.redirect(redirect::Policy::none());
@@ -144,7 +166,8 @@ impl ReqwestTransport {
     }
 }
 
-fn base_builder(origins: &OriginSet) -> ClientBuilder {
+/// `archives`: the client of an artifact transfer, whose redirects may also land on a Go proxy's archive origin.
+fn base_builder(origins: &OriginSet, archives: bool) -> ClientBuilder {
     Client::builder()
         .tls_backend_rustls()
         .user_agent(USER_AGENT)
@@ -153,12 +176,12 @@ fn base_builder(origins: &OriginSet) -> ClientBuilder {
         .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
         .dns_resolver(GuardedResolver::with_denylist(origins.allows_private_addresses(), origins.private_cidrs().to_vec(), origins.denylist(), origins.origin(OriginKind::NpmMetadata).port_or_known_default()))
-        .redirect(same_origin_policy(origins.clone()))
+        .redirect(same_origin_policy(origins.clone(), archives))
 }
 
 /// Every hop is admitted against the origin the previous hop was on, so a chain
 /// cannot walk from one of our registries to another, let alone off the map.
-fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
+fn same_origin_policy(origins: OriginSet, archives: bool) -> redirect::Policy {
     redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > MAX_REDIRECT_HOPS {
             // An error rather than `stop`, so it reaches the caller as itself: a
@@ -176,6 +199,7 @@ fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
         };
         match origins.admit(attempt.url(), kind) {
             Ok(()) => attempt.follow(),
+            Err(_) if archives && origins.admits_archive_redirect(kind, attempt.url()) => attempt.follow(),
             // `stop` rather than `error`, so the refused hop arrives here as a 3xx
             // response and can be reported as the redirect it was, with its target.
             Err(_) => attempt.stop(),
@@ -187,7 +211,7 @@ fn same_origin_policy(origins: OriginSet) -> redirect::Policy {
 impl Transport for ReqwestTransport {
     async fn send_action(&self, req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
         let total = if req.body_len > UPLOAD_BODY_BYTES { ARTIFACT_TOTAL_TIMEOUT } else { METADATA_TOTAL_TIMEOUT };
-        let (origins, client) = self.selected_within(Some(&req.origin), &req.private_cidrs, false, false, total)?;
+        let (origins, client) = self.selected_within(Some(&req.origin), &req.private_cidrs, false, false, total, None, false)?;
         Self::admitted(&origins, &req.url)?;
         let mut request = client.request(req.method, req.url).header(header::ACCEPT, "application/json");
         if let Some(authorization) = req.authorization {
@@ -319,7 +343,7 @@ impl Transport for ReqwestTransport {
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let credentialed = req.read_authorization.is_some();
-        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, true, !credentialed)?;
+        let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, true, !credentialed, METADATA_TOTAL_TIMEOUT, req.archive_origin.as_ref().filter(|_| req.allow_archive_redirect), req.allow_archive_redirect)?;
         Self::admitted(&origins, &req.url)?;
         let mut url = req.url;
         let mut authorization = req.read_authorization;
@@ -339,7 +363,13 @@ impl Transport for ReqwestTransport {
                 if redirects >= MAX_REDIRECT_HOPS {
                     return Err(UpstreamError::RedirectLimit { to: next });
                 }
-                Self::admitted(&origins, &next)?;
+                // The credential travels on the first request only. A later hop must stay on the origin the
+                // previous hop was on, or be a Go zip's redirect to its archive origin: never another origin of the
+                // set (the public proxy, the checksum database, another family's host).
+                let from = origins.kind_of(&url).unwrap_or(OriginKind::NpmMetadata);
+                if origins.admit(&next, from).is_err() && !(req.allow_archive_redirect && origins.admits_archive_redirect(from, &next)) {
+                    return Err(UpstreamError::RejectedRedirect { to: next });
+                }
                 url = next;
                 redirects += 1;
                 continue;

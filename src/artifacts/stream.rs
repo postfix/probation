@@ -254,7 +254,7 @@ impl IntoResponse for ArtifactResponse {
             let gate = std::sync::Arc::clone(&authority.gate);
             let prepared = PreparedResponse::artifact(authority, self);
             return respond_order(gate, prepared)
-                .unwrap_or_else(|_| crate::http::error::ApiError::PolicyUnavailable.into_response());
+                .unwrap_or_else(|_| crate::http::readmit::refusal());
         }
         let unsatisfiable = self.status == StatusCode::RANGE_NOT_SATISFIABLE;
         // `HEAD` reports the length of the entity it would have sent; a `416` has no

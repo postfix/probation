@@ -505,6 +505,9 @@ async fn issue(
     let cargo_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'cargo' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let go_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'go' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
     let rubygems_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'rubygems' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
@@ -591,6 +594,7 @@ async fn issue(
     );
     script.push_str(&render_rubygems(rubygems_url.as_ref()));
     script.push_str(&render_cargo(cargo_registry_id.is_some()));
+    script.push_str(&render_go(go_registry_id.is_some()));
     Ok(Some(script))
 }
 
@@ -620,6 +624,17 @@ if ! grep -Fq 'probation/ruby-env.sh' "$HOME/.profile" 2>/dev/null; then
     printf '%s\n' '. "$HOME/.config/probation/ruby-env.sh"' >>"$HOME/.profile"
 fi
 "#)).unwrap_or_default()
+}
+
+/// Go authenticates with an API key on the key route (C1006, C1007): the `go` command has no client
+/// certificate setting for a module proxy, so the script points at the Keys page and writes no
+/// configuration that could never authenticate. Empty when the organisation has no Go registry.
+fn render_go(has_registry: bool) -> String {
+    if has_registry {
+        "echo 'Go: signs in with an API key on the key route, not a client certificate (the Keys page shows the GOPROXY line).' >&2\n".to_owned()
+    } else {
+        String::new()
+    }
 }
 
 /// Cargo authenticates with an API key on the key route (C1006, C1007), not a client certificate, so
@@ -718,6 +733,14 @@ mod tests {
         let note = render_cargo(true);
         assert!(note.contains("API key on the key route") && note.contains("Keys page"), "{note}");
         assert!(!note.contains("config.toml"), "no configuration that could never authenticate is written");
+    }
+
+    #[test]
+    fn go_setup_points_at_the_key_route() {
+        assert_eq!(render_go(false), "");
+        let note = render_go(true);
+        assert!(note.contains("API key on the key route") && note.contains("GOPROXY"), "{note}");
+        assert!(!note.contains("GOFLAGS") && !note.contains("GOPROXY="), "no configuration that could never authenticate is written");
     }
 
     #[test]

@@ -23,10 +23,18 @@ pub const WRITE_IDLE: Duration = Duration::from_secs(30);
 /// SPEC §9: "and a 15-minute response-body lifetime".
 pub const RESPONSE_LIFETIME: Duration = Duration::from_secs(15 * 60);
 
+/// Concurrent tiny-file transfers (ponytail: a constant; a key if a deployment measures a need).
+pub const SMALL_DOWNLOADS: usize = 64;
+
 pub struct Limits {
     downloads: Arc<Semaphore>,
+    /// Places for the transfer of a tiny metadata file (a Go `.info` or `.mod`), apart from the large-transfer places:
+    /// a handful of multi-megabyte zips must not make the few hundred bytes that precede them wait and fail.
+    small_downloads: Arc<Semaphore>,
     /// One place per request waiting for a download permit (`max_download_waiters`).
     download_waiters: Arc<Semaphore>,
+    /// The same count of places for the small transfers, counted apart: slow tiny files cannot make a zip wait-less.
+    small_waiters: Arc<Semaphore>,
     max_download_waiters: usize,
     download_wait: Duration,
     active: Arc<Semaphore>,
@@ -40,7 +48,9 @@ impl Limits {
         let active_permits = config.max_active_requests.get() as usize;
         Limits {
             downloads: Arc::new(Semaphore::new(config.max_artifact_downloads.get() as usize)),
+            small_downloads: Arc::new(Semaphore::new(SMALL_DOWNLOADS)),
             download_waiters: Arc::new(Semaphore::new(config.max_download_waiters as usize)),
+            small_waiters: Arc::new(Semaphore::new(config.max_download_waiters as usize)),
             max_download_waiters: config.max_download_waiters as usize,
             download_wait: Duration::from_secs(config.download_wait_seconds),
             active: Arc::new(Semaphore::new(active_permits)),
@@ -94,13 +104,25 @@ impl Limits {
             .ok()
     }
 
+    /// The permit of a tiny metadata transfer: its own pool, the same bounded wait.
+    /// Waiters are bounded by `max_download_waiters` too, counted apart from the large transfers' waiters; the places are in addition to
+    /// `max_artifact_downloads` (bounded sizes: a `.info` is read to at most 256 KiB, a `.mod` to 16 MiB).
+    pub async fn small_download_permit(&self) -> Option<OwnedSemaphorePermit> {
+        if let Ok(permit) = Arc::clone(&self.small_downloads).try_acquire_owned() {
+            return Some(permit);
+        }
+        let _place = Arc::clone(&self.small_waiters).try_acquire_owned().ok()?;
+        let waited = Arc::clone(&self.small_downloads).acquire_owned();
+        tokio::time::timeout(self.download_wait, waited).await.ok()?.ok()
+    }
+
     pub fn download_available(&self) -> usize {
         self.downloads.available_permits()
     }
 
     /// How many requests are waiting for a download permit now.
     pub fn download_waiting(&self) -> usize {
-        self.max_download_waiters - self.download_waiters.available_permits()
+        (self.max_download_waiters - self.download_waiters.available_permits()) + (self.max_download_waiters - self.small_waiters.available_permits())
     }
 
     pub fn write_idle(&self) -> Duration {

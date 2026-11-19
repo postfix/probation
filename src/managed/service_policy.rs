@@ -667,8 +667,9 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
             .map(|text| text.parse::<ipnet::IpNet>().map_err(|_| ServicePolicyError))
             .collect::<Result<Vec<_>, _>>()?;
         if let Some(archive) = &registry.archive_origin {
-            // Only a Cargo registry has archives apart from its index, and one needs a target of its own.
-            if archive.len() > 2048 || registry.ecosystem != probation_policy::Ecosystem::Cargo || registry.target_url.is_none() {
+            // Only a Cargo registry (archives apart from its index) or a Go registry (zip redirects to its
+            // storage) has an archive origin, and one needs a target of its own.
+            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go) || registry.target_url.is_none() {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;

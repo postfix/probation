@@ -358,6 +358,9 @@ pub struct Upstreams {
     /// Additive (row 18), same rule as `rubygems`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo: Option<Reachability>,
+    /// Additive (row 19), same rule as `cargo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub go: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -572,7 +575,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None, cargo: None,
+                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None,
                     },
                 },
                 effective_period_seconds: 55,

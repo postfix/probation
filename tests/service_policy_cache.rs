@@ -843,7 +843,7 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 
 #[tokio::test]
 async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
-    use probation_policy::Ecosystem::{Cargo, Npm};
+    use probation_policy::Ecosystem::{Cargo, Go, Npm};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
         ("http://files.example.test/crates", Cargo, target, "not https"),
@@ -854,6 +854,8 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
         ("https://169.254.169.254/crates", Cargo, target, "metadata address"),
         ("https://[::ffff:127.0.0.1]/crates", Cargo, target, "mapped loopback"),
         ("https://files.example.test/crates", Npm, target, "not a Cargo registry"),
+        ("https://files.example.test/go", Go, None, "a Go registry needs a target of its own"),
+        ("https://127.0.0.1/go", Go, Some("https://goproxy.example.test/repo/"), "loopback"),
         ("https://files.example.test/crates", Cargo, None, "no target"),
         ("not a url", Cargo, target, "not a URL"),
     ] {
@@ -862,4 +864,7 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
     }
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://files.example.test/api/cargo/repo/crates", Cargo, target)).unwrap()).await;
     result.expect("an ordinary archive origin is accepted");
+    // A Go registry with a target may declare where its zips are redirected to (row 19).
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://zips.example.test/bucket", Go, Some("https://goproxy.example.test/repo/"))).unwrap()).await;
+    result.expect("a Go registry's archive origin is accepted");
 }

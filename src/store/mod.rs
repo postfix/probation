@@ -78,7 +78,10 @@ const SELECT_REFERENCE: &str = "SELECT id, ecosystem, name, version, filename, u
 /// Everything a refresh must carry forward rather than overwrite: the committed
 /// first-seen time (SPEC §5) and the permanent pins and content mapping (STATE-01).
 const SELECT_REFERENCE_CARRIED: &str = "SELECT first_seen_micros, pinned_sha256, pinned_sha512, \
-     pinned_size, content_key FROM artifact_references WHERE id = ?1";
+     pinned_size, content_key, publication_micros FROM artifact_references WHERE id = ?1";
+
+const SELECT_PROJECT_PUBLICATIONS: &str = "SELECT id, publication_micros FROM artifact_references \
+     WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3 AND publication_micros IS NOT NULL";
 
 const SELECT_PROJECT_FIRST_SEEN: &str = "SELECT id, first_seen_micros FROM artifact_references \
      WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3 AND first_seen_micros IS NOT NULL";
@@ -259,6 +262,12 @@ enum StoreCommand {
         reply: oneshot::Sender<StoreResult<Option<ReferenceRow>>>,
     },
     ListProjectFirstSeen {
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: String,
+        reply: oneshot::Sender<StoreResult<HashMap<ReferenceId, i64>>>,
+    },
+    ListProjectPublications {
         registry_id: u64,
         ecosystem: Ecosystem,
         name: String,
@@ -460,6 +469,13 @@ impl StoreHandle {
             reply,
         })
         .await
+    }
+
+    /// The upstream publication time of every reference of one project that has one, in one query (a Go list seeds
+    /// its in-memory table from it after a restart or an eviction).
+    pub async fn list_project_publications_in(&self, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<HashMap<ReferenceId, i64>> {
+        let name = name.to_owned();
+        self.critical(|reply| StoreCommand::ListProjectPublications { registry_id, ecosystem, name, reply }).await
     }
 
     /// The permanently pinned digests of every reference of one project, in one
@@ -837,6 +853,10 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = list_project_first_seen(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
+        StoreCommand::ListProjectPublications { registry_id, ecosystem, name, reply } => {
+            let result = list_project_publications(connection, registry_id, ecosystem, &name).await;
+            answer(healthy, READ, reply, result);
+        }
         StoreCommand::ListKnownProjects { registry_id, ecosystem, reply } => {
             let result = list_known_projects(connection, registry_id, ecosystem).await;
             answer(healthy, READ, reply, result);
@@ -959,6 +979,21 @@ async fn get_reference(
         Some(row) => ReferenceRow::from_row(&row).map(Some),
         None => Ok(None),
     }
+}
+
+async fn list_project_publications(
+    connection: &mut Connection,
+    registry_id: u64,
+    ecosystem: Ecosystem,
+    name: &str,
+) -> StoreResult<HashMap<ReferenceId, i64>> {
+    let mut rows = connection.query(SELECT_PROJECT_PUBLICATIONS, (registry_id as i64, ecosystem.as_tag(), name)).await?;
+    let mut found = HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let id = digest(&row, 0, "artifact_references.id")?;
+        found.insert(ReferenceId::from_bytes(id), integer(&row, 1, "artifact_references.publication_micros")?);
+    }
+    Ok(found)
 }
 
 async fn list_project_first_seen(
@@ -1138,7 +1173,7 @@ async fn refresh_in(
                     upsert.reference.filename.as_str(),
                     upsert.reference.upstream_url.as_str(),
                     encode_digests(&upsert.reference.expected),
-                    upsert.publication_micros,
+                    carried.publication_micros,
                     carried.first_seen_micros,
                     carried.pinned_sha256.map(|bytes| bytes.to_vec()),
                     carried.pinned_sha512.map(|bytes| bytes.to_vec()),
@@ -1174,6 +1209,9 @@ struct Carried {
     pinned_sha512: Option<[u8; 64]>,
     pinned_size: Option<i64>,
     content_key: Option<[u8; 32]>,
+    /// The upstream publication time to write: the upsert's own, or, for a Go version, the one already stored when the
+    /// upsert carries none (a list that only witnesses a version must never blank a date a racing `.info` just recorded).
+    publication_micros: Option<i64>,
 }
 
 async fn carried_forward(
@@ -1186,6 +1224,7 @@ async fn carried_forward(
     let Some(row) = rows.next().await? else {
         return Ok(Carried {
             first_seen_micros: upsert.first_seen_micros,
+            publication_micros: upsert.publication_micros,
             ..Carried::default()
         });
     };
@@ -1201,6 +1240,13 @@ async fn carried_forward(
         pinned_size: optional_unsigned(&row, 3, "artifact_references.pinned_size")?
             .map(|size| size as i64),
         content_key: optional_digest(&row, 4, "artifact_references.content_key")?,
+        publication_micros: if upsert.reference.ecosystem == crate::policy::Ecosystem::Go {
+            // A Go date only gets later: the larger of the stored and the new one (the store task commits one
+            // transaction at a time, so reading it here is the whole race).
+            upsert.publication_micros.into_iter().chain(optional_integer(&row, 5, "artifact_references.publication_micros")?).max()
+        } else {
+            upsert.publication_micros
+        },
     })
 }
 

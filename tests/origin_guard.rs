@@ -22,7 +22,7 @@ use probation::upstream::origins::{OriginKind, UrlRejection};
 use probation::upstream::reqwest_transport::refusal_in;
 use probation::upstream::resolver::{GuardedResolver, is_public};
 use probation::upstream::{
-    ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, Transport, UpstreamError,
+    ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, ReqwestTransport, Transport, UpstreamError,
     UpstreamValidators,
 };
 use reqwest::dns::{Name, Resolve};
@@ -292,7 +292,7 @@ async fn the_transport_resolves_through_the_guard() {
             origin: None,
             private_cidrs: Vec::new(),
             read_authorization: None,
-            max_bytes: A_MEGABYTE,
+            max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
         })
         .await;
     assert!(
@@ -328,7 +328,7 @@ async fn an_ip_literal_never_leaves_through_the_production_transport() {
             private_cidrs: Vec::new(),
                 read_authorization: None,
                 url: parse(literal),
-                max_bytes: A_MEGABYTE,
+                max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
             })
             .await;
         assert!(
@@ -454,6 +454,8 @@ async fn no_config_key_or_env_var_relaxes_origins() {
         "rubygems_upstream_url",
         "cargo_upstream_url",
         "cargo_artifacts_url",
+        "go_upstream_url",
+        "go_sumdb_url",
     ] {
         for refused in [
             "http://127.0.0.1:1",
@@ -655,7 +657,7 @@ async fn shared_read_credential_reaches_metadata_but_not_an_artifact_redirect() 
     let body = upstream.transport.open_artifact(ArtifactRequest {
         url: parse(&upstream.url("/first.tgz")), origin: None,
         private_cidrs: Vec::new(), read_authorization: Some("Bearer shared-read-secret".to_owned()),
-        max_bytes: A_MEGABYTE,
+        max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
     }).await.expect("artifact read");
     let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
     assert_eq!(bytes, b"artifact");
@@ -1111,7 +1113,7 @@ async fn the_artifact_client_does_not_decode_what_the_metadata_client_does() {
             private_cidrs: Vec::new(),
             read_authorization: None,
             url: url.clone(),
-            max_bytes: A_MEGABYTE,
+            max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
         })
         .await
         .expect("the artifact is served");
@@ -1543,4 +1545,165 @@ fn an_origin_path_prefix_is_compared_by_segment() {
             "{url}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row 19: proxy.golang.org answers a large module's `.zip` with a 302 to its storage bucket
+// ---------------------------------------------------------------------------
+
+/// Measured 2026-11-19: `https://proxy.golang.org/k8s.io/kubernetes/@v/v1.30.0.zip` is a `302` to
+/// `https://storage.googleapis.com/proxy-golang-org-prod/<hash>-k8s.io:kubernetes-v1.30.0.zip?Expires=...&Signature=...`
+/// (18.6 MB), while a small zip is a direct `200`. A Go proxy's archive origin is therefore a second,
+/// fixed origin. It is admitted for an ARTIFACT hop from the proxy and from nothing else: not for
+/// metadata (a `list` redirected there is refused), not under another path prefix of the host, not
+/// from another origin kind, and no other host at all.
+#[tokio::test]
+async fn go_zip_redirect_to_the_archive_origin_is_followed_and_nothing_else() {
+    let _guard = ENVIRONMENT.lock().await;
+    let proxy = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let foreign = MockServer::start().await;
+    let url = |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
+    let npm = parse("http://127.0.0.1:1");
+    let origins = OriginSet::for_tests(npm.clone(), npm.clone(), npm)
+        .with_go(url(&proxy, ""), parse("http://127.0.0.1:2"))
+        .with_go_archives(url(&storage, "/proxy-golang-org-prod"));
+    let transport = ReqwestTransport::for_origins(origins.clone());
+    let signed = format!("{}/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip?Expires=1&GoogleAccessId=x&Signature=y%2Bz", storage.uri());
+    let redirect = |location: &str| ResponseTemplate::new(302).insert_header("location", location);
+    for (file, location) in [
+        ("v1.0.0.zip", signed.clone()),
+        ("v1.0.1.zip", format!("{}/other-bucket/x.zip", storage.uri())),
+        ("v1.0.2.zip", format!("{}/proxy-golang-org-prod/../other-bucket/x.zip", storage.uri())),
+        ("v1.0.3.zip", format!("{}/x.zip", foreign.uri())),
+    ] {
+        Mock::given(method("GET")).and(path(format!("/example.com/m/@v/{file}"))).respond_with(redirect(&location)).mount(&proxy).await;
+    }
+    Mock::given(method("GET")).and(path("/example.com/m/@v/list")).respond_with(redirect(&signed)).mount(&proxy).await;
+    Mock::given(method("GET")).and(path("/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"a large zip".to_vec())).mount(&storage).await;
+    Mock::given(method("GET")).and(path("/x.zip")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"stolen".to_vec())).mount(&foreign).await;
+    let artifact = |file: &str, authorization: Option<&str>| {
+        let request = ArtifactRequest {
+            url: origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file]).unwrap(),
+            origin: None, private_cidrs: Vec::new(), read_authorization: authorization.map(str::to_owned), max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: file.ends_with(".zip"),
+        };
+        let transport = &transport;
+        async move { transport.open_artifact(request).await }
+    };
+    let body = artifact("v1.0.0.zip", None).await.expect("the archive origin is followed");
+    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    assert_eq!(bytes, b"a large zip");
+    for file in ["v1.0.1.zip", "v1.0.2.zip", "v1.0.3.zip"] {
+        match artifact(file, None).await.err().unwrap_or_else(|| panic!("{file}: refused")) {
+            UpstreamError::RejectedRedirect { .. } => {}
+            other => panic!("{file}: expected a refused redirect, got {other:?}"),
+        }
+    }
+    assert!(foreign.received_requests().await.unwrap().is_empty(), "the foreign host was never contacted");
+    // Metadata is not an archive: the same redirect on `list` is refused.
+    let list = origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", "list"]).unwrap();
+    match transport.fetch_metadata(metadata(list)).await.err().expect("a metadata redirect to the archive origin is refused") {
+        UpstreamError::RejectedRedirect { .. } => {}
+        other => panic!("expected a refused redirect, got {other:?}"),
+    }
+    // A credentialed read follows by hand and never carries the credential to the archive origin.
+    let body = artifact("v1.0.0.zip", Some("Bearer registry-token")).await.expect("followed with a credential too");
+    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    assert_eq!(bytes, b"a large zip");
+    let storage_requests = storage.received_requests().await.unwrap();
+    assert!(storage_requests.iter().all(|request| request.headers.get("authorization").is_none()), "the registry credential never reaches the archive origin");
+}
+
+/// A selected (private) registry has no second origin: its archive origin is its own, so a redirect
+/// to the public bucket (or anywhere else) is refused; fail closed.
+#[test]
+fn a_selected_go_registry_admits_no_archive_origin_but_its_own() {
+    let selected = OriginSet::selected_npm_with_private(parse("https://goproxy.corp.example/artifactory/api/go/repo/"), Vec::new()).unwrap();
+    assert_eq!(selected.origin(OriginKind::GoArchives).as_str(), "https://goproxy.corp.example/artifactory/api/go/repo/");
+    let public_bucket = parse("https://storage.googleapis.com/proxy-golang-org-prod/x.zip");
+    assert!(selected.admit(&public_bucket, OriginKind::GoArchives).is_err());
+    let production = OriginSet::production();
+    assert_eq!(production.origin(OriginKind::GoArchives).as_str(), "https://storage.googleapis.com/proxy-golang-org-prod");
+    assert!(production.admit(&public_bucket, OriginKind::GoArchives).is_ok());
+    assert!(production.admit(&parse("https://storage.googleapis.com/other-bucket/x.zip"), OriginKind::GoArchives).is_err());
+    assert!(production.admit(&parse("https://storage.googleapis.com.evil.example/proxy-golang-org-prod/x.zip"), OriginKind::GoArchives).is_err());
+    // Only a hop from the Go proxy reaches the bucket: not an npm hop, not a private registry's.
+    assert!(production.admits_archive_redirect(OriginKind::GoProxy, &public_bucket));
+    assert!(!production.admits_archive_redirect(OriginKind::NpmMetadata, &public_bucket), "an npm hop never lands on the Go bucket");
+    assert!(!production.admits_archive_redirect(OriginKind::PypiArtifacts, &public_bucket));
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://goproxy.corp.example/artifactory/api/go/repo/x.zip")), "no declared archive origin: no cross-origin redirect");
+}
+
+/// A selected Go registry that declares an archive origin (its zips are redirected to its cloud
+/// storage) may be redirected there and nowhere else; the declaration is read from the descriptor.
+#[test]
+fn a_declared_go_archive_origin_is_the_one_other_origin_a_selected_registry_redirects_to() {
+    let declared = parse("https://corp-modules.s3.example/zips");
+    let selected = OriginSet::selected_npm_with_private(parse("https://goproxy.corp.example/artifactory/api/go/repo/"), Vec::new()).unwrap()
+        .with_selected_go_archive(declared.clone());
+    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://corp-modules.s3.example/zips/abc.zip?X-Amz-Signature=s")));
+    for refused in [
+        "https://corp-modules.s3.example/other/abc.zip",
+        "https://corp-modules.s3.example:8443/zips/abc.zip",
+        "http://corp-modules.s3.example/zips/abc.zip",
+        "https://evil.example/zips/abc.zip",
+        "https://storage.googleapis.com/proxy-golang-org-prod/x.zip",
+    ] {
+        assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)), "{refused}");
+    }
+    assert_eq!(selected.origin(OriginKind::GoArchives), &declared);
+}
+
+/// Row 19 fix round: the archive redirect is for a zip transfer only, and a credentialed redirect hop stays on the
+/// origin it was on or lands on the archive origin: never another origin of the set (the public proxy, the
+/// checksum database), and the registry credential never travels past the first request.
+#[tokio::test]
+async fn archive_redirect_is_for_zips_only_and_a_credentialed_hop_cannot_reach_another_origin_of_the_set() {
+    let _guard = ENVIRONMENT.lock().await;
+    let proxy = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let sumdb = MockServer::start().await;
+    let url = |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
+    let npm = parse("http://127.0.0.1:1");
+    let origins = OriginSet::for_tests(npm.clone(), npm.clone(), npm)
+        .with_go(url(&proxy, ""), url(&sumdb, ""))
+        .with_go_archives(url(&storage, "/bucket"));
+    let transport = ReqwestTransport::for_origins(origins.clone());
+    let to_bucket = format!("{}/bucket/x?sig=1", storage.uri());
+    for file in ["v1.0.0.zip", "v1.0.0.info", "v1.0.0.mod"] {
+        Mock::given(method("GET")).and(path(format!("/example.com/m/@v/{file}"))).respond_with(ResponseTemplate::new(302).insert_header("location", to_bucket.as_str())).mount(&proxy).await;
+    }
+    Mock::given(method("GET")).and(path("/example.com/m/@v/v1.0.1.zip")).respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/latest", sumdb.uri()).as_str())).mount(&proxy).await;
+    Mock::given(method("GET")).and(path("/bucket/x")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"zip".to_vec())).mount(&storage).await;
+    Mock::given(method("GET")).and(path("/latest")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"tree".to_vec())).mount(&sumdb).await;
+    let get = |file: &str, authorization: Option<&str>, allow: bool| {
+        let request = ArtifactRequest {
+            url: origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file]).unwrap(),
+            origin: None, private_cidrs: Vec::new(), read_authorization: authorization.map(str::to_owned), max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: allow,
+        };
+        let transport = &transport;
+        async move { transport.open_artifact(request).await }
+    };
+    for authorization in [None, Some("Bearer registry")] {
+        assert!(get("v1.0.0.zip", authorization, true).await.is_ok(), "a zip follows its archive redirect ({authorization:?})");
+        for file in ["v1.0.0.info", "v1.0.0.mod"] {
+            assert!(matches!(get(file, authorization, false).await.err(), Some(UpstreamError::RejectedRedirect { .. })), "{file} never follows it ({authorization:?})");
+        }
+        assert!(matches!(get("v1.0.1.zip", authorization, true).await.err(), Some(UpstreamError::RejectedRedirect { .. })), "another origin of the set is refused ({authorization:?})");
+    }
+    assert!(sumdb.received_requests().await.unwrap().iter().all(|r| r.url.path() != "/latest"), "the checksum database was never contacted by a redirect");
+    assert!(storage.received_requests().await.unwrap().iter().all(|r| r.headers.get("authorization").is_none()), "the registry credential never reaches the archive origin");
+}
+
+/// `go_artifacts_url` may carry a path prefix (a bucket's name); no other upstream key may, and no dot or encoded segment.
+#[test]
+fn go_artifacts_url_carries_a_path_prefix_and_the_others_do_not() {
+    use probation::config::Config;
+    let sample = std::fs::read_to_string("config.sample.toml").expect("the shipped sample");
+    assert!(Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"https://storage.example/bucket\"\n")).is_ok());
+    for refused in ["http://storage.example/bucket", "https://storage.example/b?x=1", "https://u:p@storage.example/b", "https://storage.example/b%41"] {
+        assert!(Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"{refused}\"\n")).is_err(), "{refused}");
+    }
+    assert!(Config::from_toml_str(&format!("{sample}\ngo_upstream_url = \"https://goproxy.example/prefix\"\n")).is_err(), "the module host stays an origin");
 }

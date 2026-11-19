@@ -58,10 +58,14 @@ export function helpers(stack, { log = console.log } = {}) {
       rubygemsWrites: () => call("GET", `${FAKES}/rubygems/writes`),
       /// Cargo.publish: {name, version, ageSeconds | publishedAt, yanked}.
       publishCargo: (spec) => call("POST", `${FAKES}/cargo/publish`, spec),
+      /// Go.publish: {module, version, ageSeconds | publishedAt, undated}.
+      publishGo: (spec) => call("POST", `${FAKES}/go/publish`, spec),
+      /// Every request the fake checksum database (sum.golang.org) got: [{path, authorization}].
+      goSumdb: () => call("GET", `${FAKES}/go/sumdb`),
       /// The index file the fake serves for a crate: {index: text | null}.
       cargoWrites: () => call("GET", `${FAKES}/cargo/writes`),
       cargoIndex: (name) => call("POST", `${FAKES}/cargo/index`, { name }),
-      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io", name, version, ids: ["MAL-..."]}; [] clears.
+      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io" | "Go", name, version, ids: ["MAL-..."]}; [] clears.
       osvFlag: (spec) => call("POST", `${FAKES}/osv/flag`, spec),
       osvQueries: () => call("GET", `${FAKES}/osv/queries`),
       /// Replaces the fault list; see fixtures/fakes/main.mjs. faults([]) clears.

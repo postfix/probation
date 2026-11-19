@@ -751,7 +751,7 @@ To close the NAT64 gap at the network level, restrict the firewall's outbound
 connections to the hosts it needs:
 
 - `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`, or the hosts in
-  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url` and `cargo_artifacts_url` if you set them
+  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`, `go_upstream_url`, `go_sumdb_url` and `go_artifacts_url` if you set them
 - `api.osv.dev`, unless `osv_mode = "off"`
 - in managed mode, the server's address from `[management] url`
 
@@ -1338,6 +1338,9 @@ Every size and count above must not be zero.
 | `rubygems_upstream_url` | `https://rubygems.org` | Same rules. One origin serves the compact index, tuple indexes, quick gemspecs and gems. Point a Bundler `source` or `gem --source` at `/rubygems/` of this firewall. |
 | `cargo_upstream_url` | `https://index.crates.io` | Same rules. The Cargo sparse index (`config.json` and the per-crate files). |
 | `cargo_artifacts_url` | `https://static.crates.io` | Same rules. The one origin the `dl` of the registry's `config.json` may name; a `dl` anywhere else, or outside the registry's own path, is refused. Set both Cargo URLs for a mirror. |
+| `go_upstream_url` | `https://proxy.golang.org` | Same rules. The one Go module proxy: `@v/list`, `@latest`, `.info`, `.mod` and `.zip` (the proxy serves its own zips; a zip served from another origin is refused). |
+| `go_artifacts_url` | `https://storage.googleapis.com/proxy-golang-org-prod` | Same rules, except that it may carry a path prefix (a bucket's name; whole segments, no dot or encoded segment). The one origin a zip redirect of the module host may land on: proxy.golang.org answers a large module's `.zip` with a 302 to this signed bucket (measured 18.6 MB for k8s.io/kubernetes v1.30.0; small zips are direct). Only a `.zip` transfer follows it, never a list, an `.info` or a `.mod`, and the registry credential is not sent there. A selected registry has no such origin unless it declares an archive origin on its registry page (below); a redirect away from it is refused (502). |
+| `go_sumdb_url` | `https://sum.golang.org` | Same rules. The one checksum database the `/go/sumdb/{host}/` route forwards to (its host is the database name). |
 | `sync_interval_seconds` | `60` | Managed mode only. From 1 to 86400. How long a change on the server may take to reach this firewall. |
 
 The environment variable `PROBATION_SIEM_AUTH` holds the SIEM credential (section
@@ -1559,3 +1562,58 @@ Names: policy, blocklist and OSV key a crate by its lower-case name with `_` fol
 Authentication: a managed firewall on the key route (`/cargo/`) sets `auth-required` and answers `401` with a `Cargo login_url` challenge, so Cargo sends its token with every read. Cargo sends the token as written, so store it with the word `Bearer` (`token = "Bearer prb_..."` in `credentials.toml`). Cargo authenticates with an API key on the key route (product decisions C1006 and C1007: Cargo and Go sign in through the installed client and the key route, not a client certificate), so the certificate script configures npm, pip and RubyGems only and points Cargo at the Keys page. Through the shared service the registry API is forwarded as class W: `cargo publish` (`PUT /api/v1/crates/new`), `cargo yank` and `--undo` (`DELETE`/`PUT /api/v1/crates/{name}/{version}/yank|unyank`) and `cargo owner --add/--remove` (`PUT`/`DELETE .../owners`) go to the registry's own API root with the caller's own token (Cargo sends it bare in `Authorization`) and never the service key; a write without a token is refused locally with 401 before any upstream call, a body over `max_artifact_bytes` (doubled) is 413, and the registry's own answer (200, 401, 403) is the caller's. The API root is the `api` the registry's `config.json` names, and it must be the registry's own origin (or `https://crates.io` for the `index.crates.io` source); any other host is refused with 502 and nothing is sent. The owner list (`GET .../owners`) and `cargo search` (`GET /api/v1/crates?q=...`, only the query keys `q`, `per_page`, `page`, `sort`, `category`, `keyword` and `letter` are passed on) are forwarded as reads with whatever credential the caller sent and are never cached. A standalone or managed firewall has no such routes and answers 404; the rewritten `config.json` still advertises `api` so those commands reach the shared service where it is the registry. In shared-service mode an index and its `config.json` are shared between credential-free reads for 5 seconds (one upstream fetch for a burst, or for the two lookups of one download); a request that carries a credential never reads or fills that share.
 
 The firewall fetches `config.json` of the registry once a minute at most and never reads or fills that cache for a request that carries a credential.
+
+### Go clients
+
+Set `GOPROXY` to the firewall's `/go/` (or `/registry/go/{id}/` of a selected registry) and nothing else:
+
+```sh
+export GOPROXY=https://key:prb_...@firewall.example/go/    # one URL: no ",direct", no "|" fallback
+```
+
+`GOPROXY` must name only the firewall. In a list such as `...,direct` the client falls back to the origin whenever the
+first entry answers 404 or 410, and with `|` it falls back on any error, so a version the firewall does not list can
+still be fetched from another source. The firewall answers a refused version with 403 (which `go` does not treat as a
+fallback trigger with a comma), but only the single URL keeps every path protected. The firewall serves exactly the module
+proxy protocol: `GET {module}/@v/list`, `{module}/@latest` and `{module}/@v/{version}.info|.mod|.zip` (HEAD and ranges
+on the files), with the module path and the version case-encoded (`!` before a capital letter) exactly as `go` writes
+them; any other spelling of the same module is a 404 and asks upstream nothing.
+
+What is applied. The publication time of a version is the `Time` of its own `.info` (the proxy protocol has no other
+source); a version whose `.info` has no `Time` (or the zero time) waits on the time this firewall first saw it, and a
+`Time` that does not parse refuses the version (502). The three files of a version are judged together: `.info`, `.mod`
+and `.zip` of a version held by the cooldown, a block or OSV (ecosystem `Go`, the module path as `go` writes it, the
+version without its `v`; `2.0.0` and `2.0.0+incompatible` are one version for a block) are all refused (403), and a held version's `.mod` and `.zip` are never
+fetched. `@v/list` shows only the versions that pass, in the proxy's order. Pseudo-versions are not listed by the proxy, so
+each is judged by its own `.info`. `@latest` is the proxy's own answer when it passes, else the highest release (with no
+release, the highest prerelease) that the filtered list still offers, else 404. A zip is delivered exactly as the proxy sent
+it (nothing is repacked or unpacked, so no inflate cap applies); the first verified download pins its digest and a later,
+different body is refused.
+
+Re-admission. A policy publication (any sync that changed anything, a new shared-service snapshot) between a request's authorisation and its release refuses the finished response (SPEC §9). For every GET and HEAD of every family, in every mode, the shared layer around the routes admits the request again from the start under the new policy, at most three times: a block or a stricter rule published meanwhile wins (nothing admitted under the old policy is served), a change that keeps landing is reported as 503. Writes are never replayed. Cost: each admission repeats the rate-budget check, the upstream calls and the OSV lookups of the request, so a tenant near its rate limit can see a 429 from a request that was already admitted once, a request that bypasses the store (a credential-bearing read) downloads again from upstream on each admission, and a download that was already stored is decided again. The publication generation is global, so one publication re-runs every in-flight read of every tenant, each at most three times (before the layer these were 503s).
+
+Bounds. A burst of lists of one module makes one fan-out: a request that finds one running does not wait for it (it answers at once with what is dated). `.info` and `.mod` transfers have their own 64 places in addition to the `max_artifact_downloads` of the large transfers, have their own `max_download_waiters` waiter places (slow tiny files never take the places of zip requests), and are read to 256 KiB (`.info`) and 16 MiB (`.mod`) at most. One list request makes at most 64 `.info` calls (eight at a time, newest versions first, none for a version a block
+already refuses); a version still undated after that is withheld until a later request has dated it, so the list of a module
+this firewall has not seen completes over a few requests. A list of more than a third of `max_references_per_project`
+versions, a `.info` over 256 KiB and a list over `max(max_metadata_bytes, 16 MiB)` are refused. Revision queries (`go get mod@main`) are bounded before any upstream call, per minute: 32 distinct tokens per key and module, 64 per organisation and module (so one organisation's many keys cannot use up the module's 256-token ceiling for everyone else), 256 per module, and 64 distinct modules per key (a key that floods module names stops at that bound; it does not reset its own windows). Past a bound the answer is 429. Dates are remembered in
+memory per module for `metadata_ttl_seconds` (5 s through the shared service); a version the proxy no longer has is 404
+even when its zip is stored.
+
+The checksum database. `go` asks the proxy for `sumdb/{name}/supported` before it contacts the database itself; the
+firewall answers that and forwards `latest`, `lookup/{module}@{version}` and `tile/...` to `go_sumdb_url` only (the database
+name must be that host), so `GOSUMDB` works unchanged through the firewall. These reads carry hashes, never module content;
+they are not cached, never carry the caller's credential and are answered on the public registry only (a registry with a
+`target_url` of its own has no checksum route: keep its modules out of the public database with `GOPRIVATE` or `GONOSUMDB`).
+
+Redirected zips. proxy.golang.org answers a zip of about 10 MB or more with a 302 to its signed storage bucket (`go_artifacts_url`); only a `.zip` transfer follows it, never a list, an `.info` or a `.mod`, and the registry credential is not sent there. A private proxy in redirect mode (Athens or Artifactory with cloud storage) does the same to its own storage: such a registry declares an **archive origin** on the registry page of the portal (a Go registry with a target only; an https URL, origin and path prefix, without credentials, query or fragment, checked like a target: the enforcer's address denylist applies). A redirect of that registry's zip may then land there and nowhere else; without one a redirect away from the registry is refused (502). The descriptor field is `archive_origin` (the same optional field Cargo registries use); an older enforcer ignores it and so keeps refusing the redirect.
+
+Revision queries. `go get mod@main`, `mod@v1` and `mod@<commit>` ask `GET {module}/@v/{rev}.info`; the firewall passes a bounded token (`[A-Za-z0-9._+-]`, at most 128 bytes, lower case on the wire, never starting with `.` or `-` and never holding `..`) to the proxy, at most 32 distinct tokens per key per module per minute and 256 per module across all keys (429 beyond; one key's junk never blocks another key, and the counting tables are bounded: a flood evicts old windows, it never blocks), and judges the version the proxy resolves it to (a pseudo-version or a tag) by that version's own time, block and OSV: a name for a held or blocked version is held or blocked, and the answer is that version's `.info`. Its `.mod` and `.zip` then take the ordinary path.
+
+Dates and back-dating. A version's time is the proxy's `Time`, which for a VCS-backed module is the commit time the publisher chose. The firewall therefore dates a version no earlier than its own first sight for any version that appears after the first list it saw for that module (a later list, or a pseudo-version asked for afterwards): it is held for one cooldown from that day whatever `Time` says. What stays trusted: every version of a module's first list (and any version asked for before the module's first list was ever served), whose `Time` is used as sent. The limit is the very first list: a back-dated version already present when this firewall first lists a module has its upstream date. A pseudo-version of a module whose list the firewall already saw is held one cooldown from the first request for it, even for an old commit. Plainly: a CI that pins an old pseudo-version of a module whose list this firewall has since seen (a `go get -u` or `go list -m -u` through it is enough) can get 403 for that version for one cooldown, although go.sum pins it, and the same request made before that list was seen is served; an exception entry for the version is the way through.
+
+Authentication. A managed firewall on the key route (`/go/`) takes the key as HTTP Basic (the userinfo of the `GOPROXY` URL,
+or a `.netrc` entry). `go` has no client-certificate setting for a module proxy (product decisions C1006 and C1007), so the
+certificate script writes no Go configuration and points at the Keys page. Through the shared service a selected registry's
+own credential is the caller's `Authorization` (Basic or Bearer); such a request is request-scoped (nothing of it is cached or
+shared, and its zip is held in a request-owned file). Go has no write protocol: a module is published by pushing to its
+repository, never to a proxy, so every non-read request is refused and nothing is forwarded.

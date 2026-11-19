@@ -13,6 +13,8 @@ pub mod npm_routes;
 pub mod pypi_routes;
 pub mod rubygems_routes;
 pub mod cargo_routes;
+pub mod go_routes;
+pub mod readmit;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
@@ -58,6 +60,8 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .fallback_service(package_router(Arc::clone(&app)))
         .layer(middleware::from_fn_with_state(Arc::clone(&app), service_registry::respond))
+        // Outside the shared-service gate and every route: a read whose release the gate refused is admitted again.
+        .layer(middleware::from_fn(readmit::readmit))
         .layer(middleware::map_response(no_store))
         .layer(middleware::from_fn_with_state(Arc::clone(&app), logging::decide))
         .layer(middleware::from_fn(bound_headers))
@@ -163,6 +167,10 @@ fn package_router(app: Arc<App>) -> Router {
             "/registry/cargo/{registry}/crates/{name}/{version}/download",
             get(cargo_routes::selected_download).head(cargo_routes::selected_download),
         )
+        // The Go module proxy: `@v/list`, `@latest`, `@v/{version}.info|mod|zip` and the checksum database
+        // (`sumdb/{db}/...`), one catch-all because a module path has any number of segments.
+        .route("/go/{*path}", get(go_routes::legacy).head(go_routes::legacy))
+        .route("/registry/go/{registry}/{*path}", get(go_routes::selected).head(go_routes::selected))
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",

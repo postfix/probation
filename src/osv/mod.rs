@@ -433,6 +433,7 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         Ecosystem::PyPi => &["pypi.org", "files.pythonhosted.org"],
         Ecosystem::RubyGems => &["rubygems.org", "index.rubygems.org"],
         Ecosystem::Cargo => &["index.crates.io", "static.crates.io"],
+        Ecosystem::Go => &["proxy.golang.org", "sum.golang.org"],
     };
     let public_source = target_url
         .and_then(|text| Url::parse(text).ok())
@@ -785,7 +786,7 @@ mod tests {
     async fn osv_client_new_spawns_one_batcher_task() {
         let shutdown = CancellationToken::new();
         let (client, handle) = OsvClient::new(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             StdDuration::from_secs(60),
             StdDuration::from_millis(50),
             shutdown.clone(),
@@ -892,7 +893,7 @@ mod tests {
     ) -> (OsvClient, JoinHandle<()>, CancellationToken) {
         let shutdown = CancellationToken::new();
         let (client, handle) = OsvClient::spawn_with(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             cache_ttl,
             request_timeout,
@@ -1031,6 +1032,49 @@ mod tests {
             let (url, _server, count) = mode_server(true).await;
             let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
             let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &cargo_candidate("serde-json", "9.9.9"), scope).await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
+            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+        }
+    }
+
+    fn go_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
+        Candidate { ecosystem: Ecosystem::Go, ..candidate(name, version) }
+    }
+
+    /// Row 19, LS-F12 (`osv_skipped_for_private_registry_in_go`): a Go registry the operator sets
+    /// Private is never asked about (its module paths reach nothing); the fixed public sources ignore
+    /// the field.
+    #[tokio::test]
+    async fn osv_skipped_for_private_registry_in_go() {
+        let mirror = "https://goproxy.corp.example/artifactory/api/go/repo/";
+        let scope = effective_scope(Ecosystem::Go, Some(mirror), Some(OsvScope::Private));
+        assert_eq!(scope, OsvScope::Private);
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &go_candidate("corp.example/internal", "1.0.0"), scope).await;
+        shutdown.cancel();
+        let _ = handle.await;
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's module path reaches no OSV server");
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+        for public in ["https://proxy.golang.org/", "https://sum.golang.org/"] {
+            assert_eq!(effective_scope(Ecosystem::Go, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        }
+    }
+
+    /// Row 19, LS-F12 (`osv_public_mirror_with_explicit_scope_is_queried`): a mirror whose operator
+    /// says Public, and one with no field (the user decision of 2026-11-18), is queried, and a MAL
+    /// match denies.
+    #[tokio::test]
+    async fn osv_public_mirror_with_explicit_scope_is_queried_in_go() {
+        let mirror = "https://goproxy.mirror.example/";
+        for explicit in [Some(OsvScope::Public), None] {
+            let scope = effective_scope(Ecosystem::Go, Some(mirror), explicit);
+            assert_eq!(scope, OsvScope::Public, "{explicit:?}");
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &go_candidate("github.com/Azure/x", "9.9.9"), scope).await;
             shutdown.cancel();
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");

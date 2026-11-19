@@ -164,6 +164,7 @@ async fn shared_service_final_handoff_orders_publication() {
                         ),
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -402,6 +403,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         ),
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -436,6 +438,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::PyPi => &listing["files"][0]["url"],
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
                         Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
+                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()

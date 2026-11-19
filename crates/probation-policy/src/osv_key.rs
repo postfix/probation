@@ -49,6 +49,8 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::RubyGems => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
         // LS-F6: crate name `[A-Za-z0-9_-]`, validated and never normalised.
         Ecosystem::Cargo => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+        // LS-F6: decoded module path `[A-Za-z0-9._~/-]`, case kept; the `!`-escaped proxy form is a key error.
+        Ecosystem::Go => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/')),
     }
 }
 

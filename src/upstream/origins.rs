@@ -41,6 +41,13 @@ const RUBYGEMS: &str = "https://rubygems.org";
 /// Cargo's sparse index and its crate files (the `dl` of its `config.json`) are two hosts.
 const CARGO_INDEX: &str = "https://index.crates.io";
 const CARGO_ARTIFACTS: &str = "https://static.crates.io";
+/// The Go module proxy and the checksum database it forwards (`/sumdb/...`) are two hosts.
+const GO_PROXY: &str = "https://proxy.golang.org";
+const GO_SUMDB: &str = "https://sum.golang.org";
+/// proxy.golang.org answers a large module's `.zip` with a `302` to its signed storage bucket (measured
+/// 2026-11-19: k8s.io/kubernetes v1.30.0, 18.6 MB; small zips are a direct `200`). That bucket is the
+/// proxy's archive origin: admitted as the target of an archive redirect from the proxy and nowhere else.
+const GO_ARCHIVES: &str = "https://storage.googleapis.com/proxy-golang-org-prod";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -50,16 +57,22 @@ pub enum OriginKind {
     RubygemsMetadata,
     CargoIndex,
     CargoArtifacts,
+    GoProxy,
+    GoSumdb,
+    GoArchives,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 6] = [
+    pub const ALL: [OriginKind; 9] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
         OriginKind::RubygemsMetadata,
         OriginKind::CargoIndex,
         OriginKind::CargoArtifacts,
+        OriginKind::GoProxy,
+        OriginKind::GoSumdb,
+        OriginKind::GoArchives,
     ];
 }
 
@@ -96,6 +109,11 @@ pub struct OriginSet {
     rubygems: Url,
     cargo_index: Url,
     cargo_artifacts: Url,
+    go_proxy: Url,
+    go_sumdb: Url,
+    go_archives: Url,
+    /// A selected Go registry that declared an archive origin: redirects from its own origin may land there.
+    go_selected: bool,
     allow_private_addresses: bool,
     private_cidrs: Vec<IpNet>,
     /// LS-F9: absolute denylist of a snapshot-sourced registry; its own private CIDRs
@@ -124,6 +142,8 @@ impl OriginSet {
             return Err(UrlRejection::PathEscape);
         }
         let mut origins = Self::production();
+        // A private registry has no second origin: its zips come from its own (a redirect elsewhere is refused).
+        origins.go_archives = target.clone();
         origins.npm_metadata = target;
         origins.private_cidrs = private_cidrs;
         origins.admit(origins.origin(OriginKind::NpmMetadata), OriginKind::NpmMetadata)?;
@@ -144,6 +164,10 @@ impl OriginSet {
             rubygems: parse_origin(RUBYGEMS),
             cargo_index: parse_origin(CARGO_INDEX),
             cargo_artifacts: parse_origin(CARGO_ARTIFACTS),
+            go_proxy: parse_origin(GO_PROXY),
+            go_sumdb: parse_origin(GO_SUMDB),
+            go_archives: parse_origin(GO_ARCHIVES),
+            go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -164,6 +188,10 @@ impl OriginSet {
             rubygems: pick(&config.rubygems_upstream_url, production.rubygems),
             cargo_index: pick(&config.cargo_upstream_url, production.cargo_index),
             cargo_artifacts: pick(&config.cargo_artifacts_url, production.cargo_artifacts),
+            go_proxy: pick(&config.go_upstream_url, production.go_proxy),
+            go_sumdb: pick(&config.go_sumdb_url, production.go_sumdb),
+            go_archives: pick(&config.go_artifacts_url, production.go_archives),
+            go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -183,6 +211,10 @@ impl OriginSet {
             rubygems: parse_origin(RUBYGEMS),
             cargo_index: parse_origin(CARGO_INDEX),
             cargo_artifacts: parse_origin(CARGO_ARTIFACTS),
+            go_proxy: parse_origin(GO_PROXY),
+            go_sumdb: parse_origin(GO_SUMDB),
+            go_archives: parse_origin(GO_ARCHIVES),
+            go_selected: false,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
             deny: None,
@@ -192,6 +224,33 @@ impl OriginSet {
     /// Tests only: where this set sends RubyGems calls (the upstream fake).
     pub fn with_rubygems(mut self, rubygems: Url) -> OriginSet {
         self.rubygems = rubygems;
+        self
+    }
+
+    /// Tests only: where this set sends Go module proxy and checksum database calls (the upstream fake).
+    pub fn with_go(mut self, proxy: Url, sumdb: Url) -> OriginSet {
+        self.go_proxy = proxy;
+        self.go_sumdb = sumdb;
+        self
+    }
+
+    /// Tests only: the origin a Go proxy's archive redirects may land on.
+    pub fn with_go_archives(mut self, archives: Url) -> OriginSet {
+        self.go_archives = archives;
+        self
+    }
+
+    /// Whether a redirect from a hop on `from` to `to` is one of the fixed second origins: a Go proxy's
+    /// archive redirect to its archive origin (path prefix included). Nothing else crosses origins.
+    pub fn admits_archive_redirect(&self, from: OriginKind, to: &Url) -> bool {
+        (from == OriginKind::GoProxy || (self.go_selected && from == OriginKind::NpmMetadata)) && self.admit(to, OriginKind::GoArchives).is_ok()
+    }
+
+    /// A selected Go registry's declared archive origin (a snapshot descriptor field, already checked at
+    /// activation): a redirect of its zip may land there, and nowhere else.
+    pub fn with_selected_go_archive(mut self, archive: Url) -> OriginSet {
+        self.go_archives = archive;
+        self.go_selected = true;
         self
     }
 
@@ -229,6 +288,9 @@ impl OriginSet {
             OriginKind::RubygemsMetadata => &self.rubygems,
             OriginKind::CargoIndex => &self.cargo_index,
             OriginKind::CargoArtifacts => &self.cargo_artifacts,
+            OriginKind::GoProxy => &self.go_proxy,
+            OriginKind::GoSumdb => &self.go_sumdb,
+            OriginKind::GoArchives => &self.go_archives,
         }
     }
 

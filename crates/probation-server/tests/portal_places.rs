@@ -1550,7 +1550,7 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm, PyPI, RubyGems or Cargo"), "{}", refused.body);
+        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo or Go"), "{}", refused.body);
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);
@@ -4515,4 +4515,40 @@ async fn t_registry_archive_origin_form_sets_clears_and_reaches_the_snapshot() {
     assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"));
     assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
     assert_eq!(stored().await, None, "cleared");
+}
+
+/// Row 19: the registry add form lists Go and takes it, a Go registry is stored under the tag `go`
+/// (migration 0014 already carries it), takes the optional archive origin (a private proxy in redirect
+/// mode sends its zips to its own storage; migration 0017 widened who may hold one) with the same shape
+/// rules as a Cargo registry's, and the block form offers Go.
+#[tokio::test]
+async fn t_registry_form_adds_a_go_registry_with_an_optional_archive_origin_and_the_block_form_offers_go() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let page = admin.get(&catalog).await;
+    assert!(page.body.contains(r#"<option value="go">Go</option>"#), "the add form lists Go: {}", page.body);
+    let added = admin.submit(&catalog, &catalog, &[("name", "Corp Go"), ("ecosystem", "go"), ("target_url", "https://goproxy.example.test/artifactory/api/go/repo/")]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Go'")
+        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!((tag.as_str(), target.as_deref()), ("go", Some("https://goproxy.example.test/artifactory/api/go/repo/")));
+    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Go'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    assert_eq!(stored().await, None);
+    let page = admin.get(&catalog).await;
+    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a Go registry has the archive origin field");
+    let action = format!("{catalog}/{id}/archive-origin");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://zips.example.test/bucket")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("https://zips.example.test/bucket"));
+    for refused in ["http://zips.example.test/", "https://user:pw@zips.example.test/", "https://zips.example.test/?x=1", "zips"] {
+        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    }
+    assert_eq!(stored().await.as_deref(), Some("https://zips.example.test/bucket"), "a refused value changes nothing");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None, "cleared");
+    let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
+    assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
+    assert_eq!(policy.body.matches(r#"<option value="go">Go</option>"#).count(), 2, "the block and exception forms offer Go: {}", policy.body);
 }

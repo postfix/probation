@@ -37,6 +37,7 @@ pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
         Ecosystem::PyPi => Some("PyPI"),
         Ecosystem::RubyGems => Some("RubyGems"),
         Ecosystem::Cargo => Some("crates.io"),
+        Ecosystem::Go => Some("Go"),
     }
 }
 
@@ -526,7 +527,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(OSV_BATCH_RECORDS + 8);
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),
@@ -569,7 +570,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),
@@ -611,7 +612,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let request_timeout = Duration::from_millis(100);
         let handle = tokio::spawn(run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             request_timeout,
@@ -654,7 +655,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         shutdown.cancel();
         run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),
@@ -681,7 +682,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),
@@ -723,7 +724,7 @@ mod tests {
         drop(tx);
 
         run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),
@@ -748,7 +749,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run(
-            Client::new(),
+            Client::builder().no_proxy().build().expect("a client"),
             url,
             rx,
             Duration::from_secs(5),

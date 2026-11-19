@@ -153,3 +153,72 @@ async fn snapshot_carries_the_archive_origin_of_a_cargo_registry_only() {
     assert_eq!(with["archive_origin"], "https://reg.example/crates");
     assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
 }
+
+/// Row 19: a Go registry and a Go block travel in the snapshot under the wire spelling `Go` (the tag in
+/// the database is `go`, already carried by migration 0014, so row 19 needs no migration of its own),
+/// and a block on a case-sensitive module path keeps its capitals.
+#[tokio::test]
+async fn snapshot_names_a_go_registry_and_a_go_block() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Gophers").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name) VALUES ($1, 'go', 'Modules')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
+        .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name, version) VALUES ($1, 'go', 'github.com/Azure/azure-sdk-for-go', '1.0.0+incompatible')")
+        .bind(layer).execute(&db.owner).await.unwrap();
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(snapshot["registries"].as_array().unwrap().iter().any(|r| r["ecosystem"] == "Go"), "{snapshot}");
+    let text = snapshot.to_string();
+    assert!(text.contains(r#""name":"github.com/Azure/azure-sdk-for-go""#) && text.contains(r#""version":"1.0.0+incompatible""#) && text.contains("Go"), "the block decodes as a Go block: {snapshot}");
+}
+
+/// Row 19: a settings push may set the two Go origins, and only to an https address.
+#[test]
+fn settings_push_accepts_https_go_origins_and_refuses_the_rest() {
+    use probation_server::fleet::check_settings;
+    for key in ["go_upstream_url", "go_sumdb_url", "go_artifacts_url"] {
+        assert!(check_settings(&format!("{key} = \"https://goproxy.mirror.example\"\n")).is_ok(), "{key}");
+        for refused in ["http://goproxy.mirror.example", "ftp://x", "mirror"] {
+            assert!(check_settings(&format!("{key} = \"{refused}\"\n")).is_err(), "{key} = {refused}");
+        }
+        assert!(check_settings(&format!("{key} = 7\n")).is_err(), "{key} must be a string");
+    }
+}
+
+/// Row 19 (migration 0017): the database lets a Go registry with a target hold an archive origin and
+/// still refuses one on any other kind of registry, or without a target; the snapshot carries it for
+/// the Go registry that has one and omits it for the one that has none.
+#[tokio::test]
+async fn snapshot_carries_the_archive_origin_of_a_go_registry_and_the_constraint_still_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Goarchives").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'go', 'With', 'https://goproxy.example/repo/', 'https://zips.example/bucket')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'go', 'Without', 'https://goproxy2.example/repo/')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'npm', 'Npm', 'https://n.example/', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'go', 'NoTarget', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'nuget', 'Nuget', 'https://n.example/', 'https://x.example/')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let go: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "Go").collect();
+    assert_eq!(go.len(), 2);
+    let with = go.iter().find(|r| r["target_url"] == "https://goproxy.example/repo/").unwrap();
+    let without = go.iter().find(|r| r["target_url"] == "https://goproxy2.example/repo/").unwrap();
+    assert_eq!(with["archive_origin"], "https://zips.example/bucket");
+    assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
+}

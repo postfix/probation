@@ -129,6 +129,7 @@ const ECOSYSTEM_NPM: u8 = 1;
 const ECOSYSTEM_PYPI: u8 = 2;
 const ECOSYSTEM_RUBYGEMS: u8 = 3;
 const ECOSYSTEM_CARGO: u8 = 4;
+const ECOSYSTEM_GO: u8 = 5;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -159,6 +160,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::PyPi => ECOSYSTEM_PYPI,
         Ecosystem::RubyGems => ECOSYSTEM_RUBYGEMS,
         Ecosystem::Cargo => ECOSYSTEM_CARGO,
+        Ecosystem::Go => ECOSYSTEM_GO,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -304,6 +306,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_PYPI => Ecosystem::PyPi.as_tag(),
         ECOSYSTEM_RUBYGEMS => Ecosystem::RubyGems.as_tag(),
         ECOSYSTEM_CARGO => Ecosystem::Cargo.as_tag(),
+        ECOSYSTEM_GO => Ecosystem::Go.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -422,6 +425,7 @@ impl Target {
             Some("pypi") => "pypi",
             Some("rubygems") => "rubygems",
             Some("cargo") => "cargo",
+            Some("go") => "go",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -438,6 +442,9 @@ impl Target {
             }
         };
 
+        if root == "go" {
+            return go_target(path);
+        }
         let first = segments.next();
         let second = segments.next();
         let third = segments.next();
@@ -514,6 +521,24 @@ impl Target {
             },
         }
     }
+}
+
+/// `/go/{module}/@v/{file}`, `/go/{module}/@v/list`, `/go/{module}/@latest` (also under
+/// `/registry/go/{id}/`): the module is the escaped path before `@`, the version the file's name.
+fn go_target(path: &str) -> Target {
+    let below = path.strip_prefix("/go/");
+    let (package, version) = match below {
+        Some(below) if below.starts_with("sumdb/") => (Some("sumdb"), below.rsplit('/').next()),
+        Some(below) => match below.strip_suffix("/@latest") {
+            Some(module) => (Some(module), Some("latest")),
+            None => match below.rsplit_once("/@v/") {
+                Some((module, file)) => (Some(module), Some(file)),
+                None => (None, None),
+            },
+        },
+        None => (None, None),
+    };
+    Target { ecosystem: "go", package: loggable(package), version: loggable(version) }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -721,6 +746,24 @@ mod tests {
         ] {
             let target = Target::of(path);
             assert_eq!(target.ecosystem, "cargo", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
+        }
+    }
+
+    /// Row 19: a Go request names its module (the escaped path before `@`) and its version file, the
+    /// list and `@latest` name their own words, and the ecosystem is `go`. (A selected `/registry/go/{id}/` path, like every family's, takes its ecosystem from the reference row.)
+    #[test]
+    fn go_paths_log_their_module_and_version() {
+        for (path, package, version) in [
+            ("/go/github.com/!azure/x/@v/v1.2.3.zip", Some("github.com/!azure/x"), Some("v1.2.3.zip")),
+            ("/go/example.com/m/@v/list", Some("example.com/m"), Some("list")),
+            ("/go/example.com/m/@latest", Some("example.com/m"), Some("latest")),
+            ("/go/sumdb/sum.golang.org/latest", Some("sumdb"), Some("latest")),
+            ("/go/unknown", None, None),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.ecosystem, "go", "{path}");
             assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
             assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }

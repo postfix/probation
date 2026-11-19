@@ -624,3 +624,43 @@ async fn stored_full_fetch(server: &TestServer) -> i64 {
         .expect("the project is stored")
         .fetched_at_micros
 }
+
+/// Recheck N4 (slice 19): an upsert that carries no publication date must not blank the one already stored for a Go
+/// version (two overlapping first lists: one only witnesses the version, the other recorded its date in between).
+/// Other families keep replacing it, as before.
+#[tokio::test]
+async fn an_upsert_without_a_date_does_not_blank_a_recorded_go_publication() {
+    let dir = tempfile::tempdir().expect("a temporary data directory");
+    let (store, task) = store(&dir).await;
+    for (ecosystem, carried) in [(Ecosystem::Go, true), (Ecosystem::Npm, false)] {
+        let reference = ArtifactReference {
+            ecosystem,
+            name: "example.com/race".to_owned(),
+            version: "1.0.0".to_owned(),
+            filename: "v1.0.0.info".to_owned(),
+            upstream_url: Url::parse("https://goproxy.invalid/example.com/race/@v/v1.0.0.info").unwrap(),
+            expected: Vec::new(),
+        };
+        let id = ReferenceId::compute(&reference);
+        let commit = |publication: Option<i64>| ProjectRefresh {
+            ecosystem,
+            name: "example.com/race".to_owned(),
+            payload: Arc::from(br#"{}"#.as_slice()),
+            validators: UpstreamValidators::default(),
+            validated_at_micros: 1,
+            fetched_at_micros: 1,
+            references: vec![ReferenceUpsert { id, reference: reference.clone(), publication_micros: publication, first_seen_micros: Some(5) }],
+        };
+        store.commit_project_refresh(commit(Some(1_735_689_600_000_000))).await.unwrap();
+        store.commit_project_refresh(commit(None)).await.unwrap();
+        let row = store.get_reference(id).await.unwrap().unwrap();
+        assert_eq!(row.publication_micros, carried.then_some(1_735_689_600_000_000), "{ecosystem:?}");
+        // L5: an overlapping record that computed an EARLIER date and commits last does not move a Go date back.
+        store.commit_project_refresh(commit(Some(1_700_000_000_000_000))).await.unwrap();
+        let row = store.get_reference(id).await.unwrap().unwrap();
+        let expected = if carried { 1_735_689_600_000_000 } else { 1_700_000_000_000_000 };
+        assert_eq!(row.publication_micros, Some(expected), "{ecosystem:?}: a Go date only gets later");
+    }
+    drop(store);
+    let _ = task.await;
+}

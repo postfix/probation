@@ -172,6 +172,9 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "rubygems_upstream_url",
         "cargo_upstream_url",
         "cargo_artifacts_url",
+        "go_upstream_url",
+        "go_sumdb_url",
+        "go_artifacts_url",
     ] {
         if table
             .get(key)

@@ -71,6 +71,18 @@ pub(super) async fn recheck_cargo(
     recheck_for(app, peer, registry, headers, Ecosystem::Cargo).await
 }
 
+pub(super) async fn admit_go(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
+    admit_for(app, peer, registry, headers, Ecosystem::Go).await
+}
+
+pub(super) async fn recheck_go(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    recheck_for(app, peer, registry, headers, Ecosystem::Go).await
+}
+
 pub(super) async fn admit_pypi(
     app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {

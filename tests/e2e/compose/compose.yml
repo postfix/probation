@@ -121,6 +121,8 @@ services:
           - index.crates.io
           - static.crates.io
           - crates.io
+          - proxy.golang.org
+          - sum.golang.org
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -323,6 +325,17 @@ services:
     environment:
       <<: *client-env
       CARGO_HTTP_CAINFO: /e2e/ca/ca.pem
+
+  # Go 1.26 (the Go image). `go` reads the CA from SSL_CERT_FILE; modules, caches and home stay under /work.
+  client-go:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: go.Dockerfile
+    image: localhost/probation-e2e-client:go1.26
+    environment:
+      <<: *client-env
+      GOTOOLCHAIN: local
 
   client-uv:
     <<: *client

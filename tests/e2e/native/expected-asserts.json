@@ -9,6 +9,7 @@
   "crlf.test.py": 9,
   "dockerfile.test.mjs": 5,
   "encoding.test.py": 2,
+  "go-fake.test.mjs": 35,
   "harness-engine.test.mjs": 3,
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,

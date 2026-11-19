@@ -171,6 +171,7 @@ async fn view(
                         Some("pypi") => "PyPI".to_owned(),
                         Some("rubygems") => "RubyGems".to_owned(),
                         Some("cargo") => "Cargo".to_owned(),
+                        Some("go") => "Go".to_owned(),
                         Some(other) => other.to_owned(),
                         None => String::new(),
                     },

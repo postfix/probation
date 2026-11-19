@@ -123,6 +123,12 @@ pub struct ArtifactRequest {
     pub private_cidrs: Vec<ipnet::IpNet>,
     pub read_authorization: Option<String>,
     pub max_bytes: u64,
+    /// A Go registry's declared archive origin (descriptor `archive_origin`): the one other origin and
+    /// path prefix a redirect of its zip may land on. `None` for every other request.
+    pub archive_origin: Option<Url>,
+    /// A Go `.zip` transfer: the only request whose redirect may land on an archive origin (the proxy's
+    /// bucket, or the registry's declared one). Never set for `.info`, `.mod` or any other family.
+    pub allow_archive_redirect: bool,
 }
 
 /// A stream of body bytes that has already been capped. Errors are ours, not

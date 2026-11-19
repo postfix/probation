@@ -138,11 +138,13 @@ pub async fn serve_artifact_in(
     let archive = principal
         .and_then(|p| p.registry_archive_origin.as_ref())
         .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
+    // A Go registry's declared archive origin, from the same principal the request was admitted under.
+    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| row.reference.ecosystem == Ecosystem::Go);
     let (download_origin, download_authorization) = match archive {
         Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
         None => (origin, read_authorization),
     };
-    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, download_origin, private_cidrs, download_authorization).await?;
+    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, download_origin, private_cidrs, download_authorization, go_archive).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
     // exactly this: were the bytes already verified on disk, or did this request pay
     // for the transfer?
@@ -219,6 +221,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
         Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
         Ecosystem::RubyGems => crate::rubygems::serve::ensure_fresh_project_in(app, &row.reference.name, &row.reference.filename, row.registry_id, principal).await?,
         Ecosystem::Cargo => crate::cargo_registry::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
+        Ecosystem::Go => crate::go_modules::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {
@@ -364,12 +367,13 @@ async fn open_or_download(
     origin: Option<&url::Url>,
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<&str>,
+    go_archive: Option<&url::Url>,
 ) -> Result<(PinnedFile, Vec<Digest>, bool), ApiError> {
     // C1028: a credential-bearing read (the caller's own upstream credential, or any request
     // the allow-list of LS-F4 classed request-scoped) is never served from and never
     // written to the shared content store; its body lives in a request-owned file.
     if app.service_policy().is_some() && (read_authorization.is_some() || crate::http::logging::request_scoped()) {
-        let scoped = download::fetch_request_scoped(app, row, origin, private_cidrs, read_authorization.map(str::to_owned))
+        let scoped = download::fetch_request_scoped(app, row, origin, private_cidrs, read_authorization.map(str::to_owned), go_archive)
             .await
             .map_err(|err| service_download_error(app, &err))?;
         let mut pinned = pinned;
@@ -409,7 +413,7 @@ async fn open_or_download(
         }
     }
 
-    let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned))
+    let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned), go_archive.cloned())
         .await
         .map_err(|err| service_download_error(app, &err))?;
     // The row in hand predates the pins this download just established.
@@ -444,7 +448,7 @@ async fn open_or_download(
     Ok((file, pinned, true))
 }
 
-fn decision_error(decision: Decision, now: i64) -> ApiError {
+pub(crate) fn decision_error(decision: Decision, now: i64) -> ApiError {
     match decision {
         // Not reachable: a caller only asks for the error of a non-`Allow` decision.
         // Refusing is still the right answer if one ever does.

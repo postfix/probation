@@ -53,6 +53,8 @@ pub async fn respond(
             &super::credential_read::FamilyReadRules::RUBYGEMS
         } else if request.uri().path().starts_with("/cargo/") || request.uri().path().starts_with("/registry/cargo/") {
             &super::credential_read::FamilyReadRules::CARGO
+        } else if request.uri().path().starts_with("/go/") || request.uri().path().starts_with("/registry/go/") {
+            &super::credential_read::FamilyReadRules::GO
         } else {
             &super::credential_read::FamilyReadRules::NPM
         };
@@ -62,7 +64,7 @@ pub async fn respond(
         }
     }
     // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
-    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") {
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -73,8 +75,9 @@ pub async fn respond(
     // A changed generation refuses this prepared request. Replaying it would
     // require a new admission and budget; clients may make a fresh request.
     let prepared = PreparedResponse::new(Arc::clone(&publication_gate), generation, response);
-    let authorization = authorize_current_policy(&publication_gate, &prepared)?;
-    release_verified_response(authorization).map_err(|_| ApiError::PolicyUnavailable)
+    // A refusal is the marked 503 the shared layer admits again (src/http/readmit.rs), not a final answer.
+    let Ok(authorization) = authorize_current_policy(&publication_gate, &prepared) else { return Ok(super::readmit::refusal()) };
+    Ok(release_verified_response(authorization).unwrap_or_else(|_| super::readmit::refusal()))
 }
 
 struct SelectedRegistry {
@@ -101,6 +104,7 @@ fn classify_selected_registry(
             Some("pypi") => Ecosystem::PyPi,
             Some("rubygems") => Ecosystem::RubyGems,
             Some("cargo") => Ecosystem::Cargo,
+            Some("go") => Ecosystem::Go,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
@@ -114,6 +118,8 @@ fn classify_selected_registry(
             (Ecosystem::RubyGems, rest)
         } else if let Some(rest) = path.strip_prefix("/cargo/") {
             (Ecosystem::Cargo, rest)
+        } else if let Some(rest) = path.strip_prefix("/go/") {
+            (Ecosystem::Go, rest)
         } else {
             return Err(ApiError::NotFound);
         };
@@ -159,6 +165,11 @@ fn classify_selected_registry(
     // non-read request is refused here.
     let cargo_api = ecosystem == Ecosystem::Cargo && rest.starts_with("api/v1/crates");
     if ecosystem == Ecosystem::Cargo && !cargo_api && !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return Err(ApiError::MethodNotAllowed);
+    }
+    // Go has no write protocol: GOPROXY is read-only, so a module is published to its repository and
+    // never through this service. Reads only.
+    if ecosystem == Ecosystem::Go && !matches!(*request.method(), Method::GET | Method::HEAD) {
         return Err(ApiError::MethodNotAllowed);
     }
     let search = ecosystem == Ecosystem::Npm && rest == "-/v1/search";

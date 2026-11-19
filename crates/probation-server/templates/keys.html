@@ -38,6 +38,10 @@ credential-provider = "cargo:token"
 # ~/.cargo/credentials.toml (cargo sends the token as written, so keep the word Bearer)
 [registries.probation]
 token = "Bearer {{ secret }}"</pre>
+<h3>Point Go at Probation</h3>
+<pre># one protected proxy: no ",direct" and no "|" fallback, or a refusal could be bypassed
+export GOPROXY={{ scheme }}://key:{{ secret }}@{{ host }}/go/</pre>
+<p class="mut">The checksum database stays on: go asks it through the same proxy. Use <code>GONOSUMDB</code> only for your own private modules.</p>
 <p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}</p>
 </section>
 {% endif %}
