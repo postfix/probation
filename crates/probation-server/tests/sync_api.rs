@@ -40,7 +40,7 @@ fn changes_body(since: u64, activity: Vec<ActivityEvent>, dropped: Vec<DroppedCo
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok, rubygems: None,
+                osv: Reachability::Ok, rubygems: None, cargo: None,
             },
         },
         effective_period_seconds: 55,

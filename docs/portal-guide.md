@@ -690,7 +690,7 @@ the firewall's `config.toml` (for example `sync_interval_seconds = 60`) and pres
 **Save and apply**. These stay on each firewall and cannot be pushed: `listen`,
 `data_dir`, `[management]`, `tls_cert_path`, `tls_key_path`, `public_url`, `siem_url`,
 `siem_auth_header`. The upstream URLs (`npm_upstream_url`, `pypi_upstream_url`,
-`pypi_artifacts_url`, `rubygems_upstream_url`) must be `https://`.
+`pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url`, `cargo_artifacts_url`) must be `https://`.
 
 The firewalls get the settings one at a time: the next one gets them after the one
 before reports success. Each firewall restarts to apply them, so it needs a restart
@@ -715,12 +715,15 @@ bring it back, register it again.
 
 ## 5. Selected package registries and certificates
 
-An org admin opens **Organisation → Package registries** to add an npm or PyPI
-HTTPS target. For each registry, the page can save a read-only credential and
+An org admin opens **Organisation → Package registries** to add an npm, PyPI,
+RubyGems or Cargo HTTPS target. For each registry, the page can save a read-only credential and
 choose whether to skip the release-age delay. For npm version removal, the admin
 can approve a separate HTTPS deletion destination and path, with an explicit
 choice about forwarding the developer's bearer token. A private registry or
-certificate-status destination needs an operator-approved address range.
+certificate-status destination needs an operator-approved address range. A Cargo
+registry whose crate files are not under its index URL (Artifactory) takes an
+**Archive origin**, an HTTPS URL its crate files are fetched from and only from; Cargo
+signs in with an API key from the Keys page, not a certificate.
 
 **Organisation → Enterprise certificates** is for an organisation that issues
 its own client certificates. The admin saves the public CA and expected status

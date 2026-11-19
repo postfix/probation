@@ -18,6 +18,7 @@ pub mod osv;
 pub mod policy;
 pub mod pypi;
 pub mod rubygems;
+pub mod cargo_registry;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -169,6 +170,8 @@ pub struct App {
     pub(crate) login_rates: http::registry_action::LoginRates,
     /// RubyGems: cached tuple indexes, recent-version dates and the heavy-path limiter.
     pub(crate) rubygems: rubygems::serve::Shared,
+    /// Cargo: the registry `config.json` cache and the committed crate-name spellings.
+    pub(crate) cargo: cargo_registry::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -426,6 +429,7 @@ impl App {
             limits,
             login_rates: http::registry_action::LoginRates::default(),
             rubygems: rubygems::serve::Shared::default(),
+            cargo: cargo_registry::serve::Shared::default(),
             delivery,
             osv,
             managed,

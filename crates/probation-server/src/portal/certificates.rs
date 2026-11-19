@@ -502,6 +502,9 @@ async fn issue(
     let pypi_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'pypi' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let cargo_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'cargo' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
     let rubygems_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'rubygems' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
@@ -587,6 +590,7 @@ async fn issue(
         &client_key.serialize_pem(),
     );
     script.push_str(&render_rubygems(rubygems_url.as_ref()));
+    script.push_str(&render_cargo(cargo_registry_id.is_some()));
     Ok(Some(script))
 }
 
@@ -616,6 +620,16 @@ if ! grep -Fq 'probation/ruby-env.sh' "$HOME/.profile" 2>/dev/null; then
     printf '%s\n' '. "$HOME/.config/probation/ruby-env.sh"' >>"$HOME/.profile"
 fi
 "#)).unwrap_or_default()
+}
+
+/// Cargo authenticates with an API key on the key route (C1006, C1007), not a client certificate, so
+/// the script points at the Keys page instead of writing a certificate configuration. Empty when the organisation has no Cargo registry.
+fn render_cargo(has_registry: bool) -> String {
+    if has_registry {
+        "echo 'Cargo: signs in with an API key on the key route, not a client certificate (the Keys page shows the Cargo lines).' >&2\n".to_owned()
+    } else {
+        String::new()
+    }
 }
 
 fn render_bundle(npm_url: Option<&url::Url>, pypi_url: Option<&url::Url>, cert: &str, ca: &str, key: &str) -> String {
@@ -696,6 +710,14 @@ mod tests {
         assert!(script.contains(":ssl_client_cert: $base/client.pem"));
         assert!(script.contains("BUNDLE_SSL_CLIENT_CERT"));
         assert_eq!(render_rubygems(None), "");
+    }
+
+    #[test]
+    fn cargo_setup_points_at_the_key_route() {
+        assert_eq!(render_cargo(false), "");
+        let note = render_cargo(true);
+        assert!(note.contains("API key on the key route") && note.contains("Keys page"), "{note}");
+        assert!(!note.contains("config.toml"), "no configuration that could never authenticate is written");
     }
 
     #[test]

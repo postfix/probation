@@ -156,6 +156,13 @@ pub struct RegistryDescriptor {
     /// Absent reads as the default rule: `Public` (no protection is removed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub osv_scope: Option<OsvScope>,
+    /// Additive and optional (row 18, user decision 2026-11-19): the https origin and path prefix a
+    /// Cargo registry's archives (`dl` of its `config.json`) may be fetched from when they are not
+    /// under `target_url` (Artifactory's `api/cargo/{repo}/index` beside `.../crates`). Absent: the
+    /// archives must be under `target_url`. An older enforcer ignores the field, so it keeps refusing
+    /// such archives. Only a Cargo registry may carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_origin: Option<String>,
 }
 
 /// One package request's transport-owned TLS chain and selected URL registry.
@@ -348,6 +355,9 @@ pub struct Upstreams {
     /// unknown, so older readers never see the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rubygems: Option<Reachability>,
+    /// Additive (row 18), same rule as `rubygems`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -562,7 +572,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None,
+                        osv: Reachability::Ok, rubygems: None, cargo: None,
                     },
                 },
                 effective_period_seconds: 55,

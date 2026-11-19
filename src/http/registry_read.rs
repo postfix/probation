@@ -59,6 +59,18 @@ pub(super) async fn recheck_rubygems(
     recheck_for(app, peer, registry, headers, Ecosystem::RubyGems).await
 }
 
+pub(super) async fn admit_cargo(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
+    admit_for(app, peer, registry, headers, Ecosystem::Cargo).await
+}
+
+pub(super) async fn recheck_cargo(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    recheck_for(app, peer, registry, headers, Ecosystem::Cargo).await
+}
+
 pub(super) async fn admit_pypi(
     app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
@@ -134,7 +146,8 @@ fn service_principal(app: &App, registry: RegistryId, ecosystem: Ecosystem, head
     if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
         let value = value.to_str().map_err(|_| ApiError::Unauthenticated)?;
         // RubyGems sends its API key bare in `Authorization`; npm and PyPI send Bearer or Basic.
-        let bare_key_ok = ecosystem == Ecosystem::RubyGems && !value.trim().is_empty();
+        // Cargo sends its registry token bare as well (`Authorization: <token>`).
+        let bare_key_ok = matches!(ecosystem, Ecosystem::RubyGems | Ecosystem::Cargo) && !value.trim().is_empty();
         if value.len() > 8192 || !(bare_key_ok || value.starts_with("Bearer ") || value.starts_with("Basic ")) { return Err(ApiError::Unauthenticated); }
         principal.registry_read_authorization = Some(value.to_owned());
     }

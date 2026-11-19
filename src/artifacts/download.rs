@@ -257,6 +257,7 @@ async fn transfer(
         Ecosystem::Npm => Call::Npm,
         Ecosystem::PyPi => Call::PypiArtifacts,
         Ecosystem::RubyGems => Call::Rubygems,
+        Ecosystem::Cargo => Call::Cargo,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -456,6 +457,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::Npm => OriginKind::NpmMetadata,
             crate::policy::Ecosystem::PyPi => OriginKind::PypiMetadata,
             crate::policy::Ecosystem::RubyGems => OriginKind::RubygemsMetadata,
+            crate::policy::Ecosystem::Cargo => OriginKind::CargoIndex,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -506,6 +508,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::Npm => Call::Npm,
         Ecosystem::PyPi => Call::PypiArtifacts,
         Ecosystem::RubyGems => Call::Rubygems,
+        Ecosystem::Cargo => Call::Cargo,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -572,6 +575,8 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         Ecosystem::PyPi => &[OriginKind::PypiArtifacts, OriginKind::PypiMetadata],
         // A selected registry's origin travels in the slot `selected_npm_with_private` fills.
         Ecosystem::RubyGems => &[OriginKind::RubygemsMetadata, OriginKind::NpmMetadata],
+        // The crate files live on the `dl` host of `config.json`; a selected registry travels in the npm slot.
+        Ecosystem::Cargo => &[OriginKind::CargoArtifacts, OriginKind::CargoIndex, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the

@@ -79,6 +79,8 @@ jiff = "0.2.37"
 lru = "0.18.4"
 nodejs-semver = "5.0.0"
 pep440_rs = "0.7.3"
+# SemVer 2 for Cargo versions (the version the lockfile already resolves).
+semver = "1.0.28"
 # The policy rules the firewall and the management server share. `version` as well as
 # `path`, so the published `probation` names the published `probation-policy`.
 probation-policy = { path = "crates/probation-policy", version = "0.2.2" }

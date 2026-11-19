@@ -133,7 +133,16 @@ pub async fn serve_artifact_in(
     let read_authorization = principal.and_then(|p| p.registry_read_authorization.as_deref());
     ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
 
-    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, origin, private_cidrs, read_authorization).await?;
+    // A Cargo archive that lives outside the registry's index path is fetched from the origin its descriptor
+    // declares, and only from there; the registry's credential goes along only when that is the registry's own origin.
+    let archive = principal
+        .and_then(|p| p.registry_archive_origin.as_ref())
+        .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
+    let (download_origin, download_authorization) = match archive {
+        Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
+        None => (origin, read_authorization),
+    };
+    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, download_origin, private_cidrs, download_authorization).await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
     // exactly this: were the bytes already verified on disk, or did this request pay
     // for the transfer?
@@ -209,6 +218,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
         Ecosystem::Npm => npm::ensure_fresh_project_at(app, &row.reference.name, row.registry_id, origin, private_cidrs, read_authorization).await?,
         Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
         Ecosystem::RubyGems => crate::rubygems::serve::ensure_fresh_project_in(app, &row.reference.name, &row.reference.filename, row.registry_id, principal).await?,
+        Ecosystem::Cargo => crate::cargo_registry::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {
@@ -520,6 +530,15 @@ fn download_error(err: &DownloadError, now: i64) -> ApiError {
         // is no longer reported as `OVERLOADED`, because nothing was at capacity.
         DownloadError::Aborted => ApiError::InternalFailure,
     }
+}
+
+/// `url` is on `base`'s scheme, host and port and under its path prefix (whole segments).
+fn url_under(base: &url::Url, url: &url::Url) -> bool {
+    if base.origin() != url.origin() || url.path().split('/').any(|segment| segment == "..") {
+        return false;
+    }
+    let prefix = base.path().trim_end_matches('/');
+    prefix.is_empty() || url.path() == prefix || url.path().starts_with(&format!("{prefix}/"))
 }
 
 #[cfg(test)]

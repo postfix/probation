@@ -5,7 +5,7 @@
   "expires_at": "2099-01-01T00:00:00Z",
   "blocked_packages": [
     { "ecosystem": "npm", "name": "good", "version": null, "reason": "this record is fine" },
-    { "ecosystem": "cargo", "name": "bad", "version": null, "reason": "cargo is not an ecosystem this release serves" }
+    { "ecosystem": "cobol", "name": "bad", "version": null, "reason": "cobol is not an ecosystem this release serves" }
   ],
   "blocked_hashes": []
 }

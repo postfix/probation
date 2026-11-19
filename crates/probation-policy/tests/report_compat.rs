@@ -45,3 +45,23 @@ fn rubygems_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.pypi, older.osv), (Reachability::Ok, Reachability::Ok, Reachability::Ok));
 }
+
+/// Row 18: the Cargo upstream state is additive in the same way (absent from an older report,
+/// never written when unknown, ignored by an older reader).
+#[test]
+fn cargo_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","rubygems":"ok"}"#).unwrap();
+    assert_eq!(old.cargo, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("cargo"));
+    let new = Upstreams { cargo: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""cargo":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        rubygems: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.rubygems), (Reachability::Ok, Some(Reachability::Ok)));
+}

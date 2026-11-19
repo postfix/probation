@@ -751,7 +751,7 @@ To close the NAT64 gap at the network level, restrict the firewall's outbound
 connections to the hosts it needs:
 
 - `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`, or the hosts in
-  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url` and `rubygems_upstream_url` if you set them
+  `npm_upstream_url`, `pypi_upstream_url`, `pypi_artifacts_url`, `rubygems_upstream_url`, `cargo_upstream_url` and `cargo_artifacts_url` if you set them
 - `api.osv.dev`, unless `osv_mode = "off"`
 - in managed mode, the server's address from `[management] url`
 
@@ -1336,6 +1336,8 @@ Every size and count above must not be zero.
 | `pypi_upstream_url` | `https://pypi.org` | Same rules. |
 | `pypi_artifacts_url` | `https://files.pythonhosted.org` | Same rules. |
 | `rubygems_upstream_url` | `https://rubygems.org` | Same rules. One origin serves the compact index, tuple indexes, quick gemspecs and gems. Point a Bundler `source` or `gem --source` at `/rubygems/` of this firewall. |
+| `cargo_upstream_url` | `https://index.crates.io` | Same rules. The Cargo sparse index (`config.json` and the per-crate files). |
+| `cargo_artifacts_url` | `https://static.crates.io` | Same rules. The one origin the `dl` of the registry's `config.json` may name; a `dl` anywhere else, or outside the registry's own path, is refused. Set both Cargo URLs for a mirror. |
 | `sync_interval_seconds` | `60` | Managed mode only. From 1 to 86400. How long a change on the server may take to reach this firewall. |
 
 The environment variable `PROBATION_SIEM_AUTH` holds the SIEM credential (section
@@ -1530,3 +1532,30 @@ depend on.
 ### RubyGems clients
 
 Point `gem` and Bundler at `/rubygems/` of the firewall (or `/registry/rubygems/{id}/` of a selected registry): `gem install NAME --clear-sources --source https://firewall.example/rubygems/`, or `source "https://firewall.example/rubygems/"` in the Gemfile. Bundler uses the compact index and sees only eligible versions of each gem. The legacy `specs.4.8.gz` indexes `gem` reads are filtered with the registry's own publication dates (rubygems.org's `timeframe_versions` API, at most 42 days back); a registry without that API lists no gem it has not indexed, and Bundler is unaffected. Through the shared service `gem push` and `gem yank` are forwarded only with the caller's own API key to the selected registry's own origin. Bundler may re-download an info file on each run: upstream's `versions` checksum is the MD5 of the unfiltered file.
+
+### Cargo clients
+
+A registry whose archives are not under the path of its index URL (Artifactory keeps `api/cargo/{repo}/index` and `api/cargo/{repo}/crates` apart) declares an **archive origin** on the registry page of the portal (a Cargo registry with a target only): an https URL, origin and path prefix, without credentials, query or fragment, checked like a target (the enforcer's address denylist applies). Its archives (the `dl` of the registry's `config.json`) are then fetched from that origin and only from it; the registry's read credential is sent there only when it is the registry's own origin. Without one, an archive outside the target's own prefix is refused (502). The descriptor field is `archive_origin`, additive and optional.
+
+Point Cargo's source at `/cargo/` of the firewall (or `/registry/cargo/{id}/` of a selected registry):
+
+```toml
+# ~/.cargo/config.toml
+[source.crates-io]
+replace-with = "probation"
+[source.probation]
+registry = "sparse+https://firewall.example/cargo/"
+[registries.probation]
+index = "sparse+https://firewall.example/cargo/"
+credential-provider = "cargo:token"
+```
+
+The `[registries.probation]` entry names the source to Cargo for credentials (without it Cargo answers "no token found") and `credential-provider` is needed because the firewall asks for authentication (Cargo refuses an authenticated registry that has no provider).
+
+Cargo reads the index file of each crate it resolves and sees only eligible versions: a version published inside the cooldown, a blocked version or one OSV flags is left out of the file, and every other line (checksum, features, yank flag, `rust_version`) is upstream's text. The firewall serves its own `config.json`, whose `dl` and `api` name the firewall, and a crate archive is delivered only when its SHA-256 equals the `cksum` of the same index line. A yanked version stays listed and downloadable, as it does upstream (lockfiles name it). The publication time is the `pubtime` field crates.io writes (or `created_at`, whichever is later); a line without either waits on the time this firewall first saw it.
+
+Names: policy, blocklist and OSV key a crate by its lower-case name with `_` folded to `-` (crates.io treats them as one name); the archive file name keeps the registry's spelling (`Inflector-0.11.4.crate`), so the download URL needs the crate name exactly as the index line spells it, which Cargo does.
+
+Authentication: a managed firewall on the key route (`/cargo/`) sets `auth-required` and answers `401` with a `Cargo login_url` challenge, so Cargo sends its token with every read. Cargo sends the token as written, so store it with the word `Bearer` (`token = "Bearer prb_..."` in `credentials.toml`). Cargo authenticates with an API key on the key route (product decisions C1006 and C1007: Cargo and Go sign in through the installed client and the key route, not a client certificate), so the certificate script configures npm, pip and RubyGems only and points Cargo at the Keys page. Through the shared service the registry API is forwarded as class W: `cargo publish` (`PUT /api/v1/crates/new`), `cargo yank` and `--undo` (`DELETE`/`PUT /api/v1/crates/{name}/{version}/yank|unyank`) and `cargo owner --add/--remove` (`PUT`/`DELETE .../owners`) go to the registry's own API root with the caller's own token (Cargo sends it bare in `Authorization`) and never the service key; a write without a token is refused locally with 401 before any upstream call, a body over `max_artifact_bytes` (doubled) is 413, and the registry's own answer (200, 401, 403) is the caller's. The API root is the `api` the registry's `config.json` names, and it must be the registry's own origin (or `https://crates.io` for the `index.crates.io` source); any other host is refused with 502 and nothing is sent. The owner list (`GET .../owners`) and `cargo search` (`GET /api/v1/crates?q=...`, only the query keys `q`, `per_page`, `page`, `sort`, `category`, `keyword` and `letter` are passed on) are forwarded as reads with whatever credential the caller sent and are never cached. A standalone or managed firewall has no such routes and answers 404; the rewritten `config.json` still advertises `api` so those commands reach the shared service where it is the registry. In shared-service mode an index and its `config.json` are shared between credential-free reads for 5 seconds (one upstream fetch for a burst, or for the two lookups of one download); a request that carries a credential never reads or fills that share.
+
+The firewall fetches `config.json` of the registry once a minute at most and never reads or fills that cache for a request that carries a credential.

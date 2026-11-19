@@ -57,6 +57,11 @@ impl FamilyReadRules {
     pub const PYPI: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
     /// RubyGems (`gem`, Bundler) sends only the common headers on a plain read; a credential
     /// travels as `Authorization` or URL userinfo, both request-scoped. No path or query token.
+    /// Cargo's plain reads add `Cargo-Protocol: version=1` and, over plain http, libcurl's h2c
+    /// upgrade pair `Upgrade` and `HTTP2-Settings` (all observed from cargo 1.96, tests/cargo_native.rs);
+    /// none carries a credential. Its registry token travels as `Authorization`, a credential,
+    /// and never in the path or query of this firewall's routes.
+    pub const CARGO: FamilyReadRules = FamilyReadRules { headers: &["cargo-protocol", "upgrade", "http2-settings"], query_keys: &[] };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

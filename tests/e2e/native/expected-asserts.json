@@ -1,6 +1,7 @@
 {
   "assertions.test.mjs": 192,
   "ca-script.test.mjs": 3,
+  "cargo-fake.test.mjs": 34,
   "check_workflow.test.py": 160,
   "client-host.test.mjs": 28,
   "clients.test.mjs": 513,

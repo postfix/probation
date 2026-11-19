@@ -1531,7 +1531,7 @@ async fn t_portal_block_ecosystem() {
         ],
         vec![
             ("action", "add_block"),
-            ("ecosystem", "cargo"),
+            ("ecosystem", "cobol"),
             ("name", "left-pad"),
             ("what", "version"),
             ("version", "1.3.0"),
@@ -1550,7 +1550,7 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm, PyPI or RubyGems"), "{}", refused.body);
+        assert!(refused.has("Choose npm, PyPI, RubyGems or Cargo"), "{}", refused.body);
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);
@@ -4470,4 +4470,49 @@ async fn t_registry_osv_scope_form_sets_clears_and_is_listed() {
     let refused = other.submit(&format!("/org/{}/registries", world.globex.id), &foreign, &[("osv_scope", "private")]).await;
     assert_ne!(refused.status, StatusCode::SEE_OTHER);
     assert_eq!(stored().await, None);
+}
+
+/// Row 18 (user decision 2026-11-19): a Cargo registry's optional archive origin is set, cleared, listed
+/// and validated like a target, only a Cargo registry takes one, another organisation's administrator
+/// cannot set it, and the snapshot carries it.
+#[tokio::test]
+async fn t_registry_archive_origin_form_sets_clears_and_reaches_the_snapshot() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    for (name, ecosystem) in [("Mirror cargo", "cargo"), ("Mirror npm", "npm")] {
+        let added = admin.submit(&catalog, &catalog, &[("name", name), ("ecosystem", ecosystem), ("target_url", "https://packages.example.test/api/cargo/repo/index/")]).await;
+        assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    }
+    let id = |name: &'static str| {
+        let (db, org) = (fx.db.app.clone(), world.acme.id as i32);
+        async move { sqlx::query_scalar::<_, i64>("SELECT id FROM registries WHERE org_id = $1 AND name = $2").bind(org).bind(name).fetch_one(&db).await.unwrap() }
+    };
+    let (cargo, npm) = (id("Mirror cargo").await, id("Mirror npm").await);
+    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(cargo).fetch_one(&fx.db.app).await.unwrap() };
+    assert_eq!(stored().await, None, "new registries declare none: archives must lie under the target");
+    // N2: the field is on Cargo rows only, and the stored value is shown there.
+    let page = admin.get(&catalog).await;
+    assert_eq!(page.body.matches("Archive origin").count(), 1, "one Cargo row, one field (the npm row has none)");
+    assert!(!page.body.contains("Archive origin: "), "nothing stored, nothing shown");
+    let action = format!("{catalog}/{cargo}/archive-origin");
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://packages.example.test/api/cargo/repo/crates")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"));
+    let page = admin.get(&catalog).await;
+    assert!(page.body.contains("Archive origin: https://packages.example.test/api/cargo/repo/crates"), "the stored origin is listed: {}", page.body);
+    assert!(page.body.contains(r#"value="https://packages.example.test/api/cargo/repo/crates""#), "and prefilled in its form");
+    for refused in ["http://files.example.test/", "https://user:pw@files.example.test/", "https://files.example.test/?x=1", "https://files.example.test/#f", "files"] {
+        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    }
+    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"), "a refused value changes nothing");
+    assert_ne!(admin.submit(&catalog, &format!("{catalog}/{npm}/archive-origin"), &[("archive_origin", "https://files.example.test/")]).await.status, StatusCode::SEE_OTHER, "only a Cargo registry takes one");
+    let snapshot_origin: Option<String> = sqlx::query_scalar("SELECT archive_origin FROM registries WHERE id = $1").bind(npm).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(snapshot_origin, None);
+    let mut other = admin_browser(&fx, "gus@globex.test").await;
+    let foreign = format!("/org/{}/registries/{cargo}/archive-origin", world.globex.id);
+    assert_ne!(other.submit(&format!("/org/{}/registries", world.globex.id), &foreign, &[("archive_origin", "https://evil.example.test/")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"));
+    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(stored().await, None, "cleared");
 }

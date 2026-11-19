@@ -11,6 +11,7 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
     (Ecosystem::Npm, Some("npm")),
     (Ecosystem::PyPi, Some("PyPI")),
     (Ecosystem::RubyGems, Some("RubyGems")),
+    (Ecosystem::Cargo, Some("crates.io")),
 ];
 
 #[test]
@@ -35,4 +36,13 @@ fn osv_ecosystem_mapping_per_family_rubygems() {
     assert_eq!(Ecosystem::RubyGems.as_tag(), "rubygems");
     assert_eq!(Ecosystem::from_tag("rubygems"), Some(Ecosystem::RubyGems));
     assert!(Ecosystem::ALL.contains(&Ecosystem::RubyGems));
+}
+
+/// Row 18: names `Ecosystem::Cargo`, so it does not compile before this row adds the variant.
+#[test]
+fn osv_ecosystem_mapping_per_family_cargo() {
+    assert_eq!(osv_ecosystem(Ecosystem::Cargo), Some("crates.io"));
+    assert_eq!(Ecosystem::Cargo.as_tag(), "cargo");
+    assert_eq!(Ecosystem::from_tag("cargo"), Some(Ecosystem::Cargo));
+    assert!(Ecosystem::ALL.contains(&Ecosystem::Cargo));
 }

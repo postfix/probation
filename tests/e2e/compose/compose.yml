@@ -118,6 +118,9 @@ services:
           - ocsp-b.e2e.test
           - pypi.org
           - rubygems.org
+          - index.crates.io
+          - static.crates.io
+          - crates.io
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -309,6 +312,17 @@ services:
       BUNDLE_SSL_CA_CERT: /e2e/ca/ca.pem
       GEM_HOME: /work/.gems
       BUNDLE_PATH: /work/.bundle-gems
+
+  # Cargo 1.96 (the Rust image). Cargo reads its own CA setting, not SSL_CERT_FILE alone.
+  client-cargo:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: cargo.Dockerfile
+    image: localhost/probation-e2e-client:cargo1.96
+    environment:
+      <<: *client-env
+      CARGO_HTTP_CAINFO: /e2e/ca/ca.pem
 
   client-uv:
     <<: *client

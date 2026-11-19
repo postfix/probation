@@ -21,11 +21,24 @@
 <h3>Point pip at Probation: add to <code>pip.conf</code></h3>
 <pre>[global]
 index-url = {{ scheme }}://key:{{ secret }}@{{ host }}/pypi/simple/</pre>
+<p class="mut">uv and Poetry use the same index URL.</p>
 <h3>Point RubyGems and Bundler at Probation</h3>
 <pre># Gemfile
 source "{{ scheme }}://key:{{ secret }}@{{ host }}/rubygems/"
 # gem install: gem install NAME --clear-sources --source {{ scheme }}://key:{{ secret }}@{{ host }}/rubygems/</pre>
-<p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}uv and Poetry use the same index URL.</p>
+<h3>Point Cargo at Probation</h3>
+<pre># ~/.cargo/config.toml
+[source.crates-io]
+replace-with = "probation"
+[source.probation]
+registry = "sparse+{{ scheme }}://{{ host }}/cargo/"
+[registries.probation]
+index = "sparse+{{ scheme }}://{{ host }}/cargo/"
+credential-provider = "cargo:token"
+# ~/.cargo/credentials.toml (cargo sends the token as written, so keep the word Bearer)
+[registries.probation]
+token = "Bearer {{ secret }}"</pre>
+<p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}</p>
 </section>
 {% endif %}
 <section aria-labelledby="own-heading">

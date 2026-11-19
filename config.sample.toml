@@ -137,6 +137,11 @@ osv_mode = "enforce"
 # pypi_artifacts_url = "https://pypi-files.example.org"
 # RubyGems (indexes, quick gemspecs and gems; default https://rubygems.org), same rules.
 # rubygems_upstream_url = "https://rubygems-mirror.example.org"
+# Cargo: the sparse index (default https://index.crates.io) and the host its config.json names
+# for crate files (`dl`, default https://static.crates.io). Set both for a mirror; a `dl` on any
+# other origin is refused.
+# cargo_upstream_url = "https://cargo-mirror.example.org"
+# cargo_artifacts_url = "https://cargo-files.example.org"
 
 # Managed mode (docs/management-server.md): the firewall serves each request under
 # its own API key's policy, which it fetches from a management server. Without this

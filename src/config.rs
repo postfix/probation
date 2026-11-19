@@ -119,6 +119,10 @@ pub struct Config {
     pub pypi_artifacts_url: Option<Url>,
     /// RubyGems upstream (rubygems.org by default), same rules as the origins above.
     pub rubygems_upstream_url: Option<Url>,
+    /// Cargo sparse index (index.crates.io by default) and the crate files its `config.json` names
+    /// (static.crates.io by default), same rules as the origins above.
+    pub cargo_upstream_url: Option<Url>,
+    pub cargo_artifacts_url: Option<Url>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -361,6 +365,8 @@ struct RawConfig {
     pypi_upstream_url: Option<String>,
     pypi_artifacts_url: Option<String>,
     rubygems_upstream_url: Option<String>,
+    cargo_upstream_url: Option<String>,
+    cargo_artifacts_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -458,6 +464,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "pypi_upstream_url",
     "pypi_artifacts_url",
     "rubygems_upstream_url",
+    "cargo_upstream_url",
+    "cargo_artifacts_url",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -544,6 +552,8 @@ impl RawConfig {
         let pypi_upstream_url = upstream_origin("pypi_upstream_url", self.pypi_upstream_url)?;
         let pypi_artifacts_url = upstream_origin("pypi_artifacts_url", self.pypi_artifacts_url)?;
         let rubygems_upstream_url = upstream_origin("rubygems_upstream_url", self.rubygems_upstream_url)?;
+        let cargo_upstream_url = upstream_origin("cargo_upstream_url", self.cargo_upstream_url)?;
+        let cargo_artifacts_url = upstream_origin("cargo_artifacts_url", self.cargo_artifacts_url)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -830,6 +840,8 @@ impl RawConfig {
             pypi_upstream_url,
             pypi_artifacts_url,
             rubygems_upstream_url,
+            cargo_upstream_url,
+            cargo_artifacts_url,
             local: LocalText::default(),
         })
     }

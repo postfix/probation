@@ -128,7 +128,7 @@ async fn start_in(service: bool) -> Native {
             rate_limit: None, rate_limit_source: LimitSource::Default,
             registries: vec![RegistryDescriptor {
                 registry: RegistryId(5), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: None, trusted: false,
-                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+                registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
             }],
         };
         let mock = wiremock::MockServer::start().await;

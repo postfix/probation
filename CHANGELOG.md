@@ -10,6 +10,14 @@ The next release must have a version above 0.2.2.
 
 ### Added
 
+- **RubyGems and Cargo** through the firewall (docs/operations.md "RubyGems clients" and
+  "Cargo clients"). `rubygems_upstream_url`, `cargo_upstream_url` and `cargo_artifacts_url`
+  name their origins like the npm and PyPI keys. Cargo's sparse index is filtered by age,
+  blocklist and OSV (`crates.io`) with every kept line unchanged, its `config.json` is
+  rewritten to name the firewall, and a crate is delivered only when its SHA-256 equals
+  the index `cksum`. Through the shared service `cargo publish`, `yank`, `unyank` and
+  `owner` are forwarded with the caller's own token only; the owner list and search are
+  forwarded as reads.
 - **Managed mode** for the firewall. With a `[management]` section in
   `config.toml`, a firewall serves each request under the policy of the API key
   it carries, fetched from a management server and cached. It syncs every

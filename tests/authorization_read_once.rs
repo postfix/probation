@@ -50,6 +50,8 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ("src/http/pypi_routes.rs", "fn selected_upload", "get(header::AUTHORIZATION)", 1),
     // Row 17: `gem push` / `gem yank` forward the caller's own API key, as the PyPI upload does.
     ("src/http/rubygems_routes.rs", "fn forward_write", "get(header::AUTHORIZATION)", 1),
+    // Row 18 follow-up: Cargo's registry API forwards the caller's own token to the registry's API root.
+    ("src/http/cargo_routes.rs", "fn forward_api", "get(header::AUTHORIZATION)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_named_read", "header(header::AUTHORIZATION,value)", 1),
     ("src/upstream/reqwest_transport.rs", "fn fetch_token_packument", "header(header::AUTHORIZATION,authorization)", 1),
     ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),

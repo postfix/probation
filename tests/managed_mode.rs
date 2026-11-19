@@ -886,6 +886,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::Npm => h.server.url("/npm/racy-widget"),
                 Ecosystem::PyPi => h.server.url("/pypi/simple/racy-alpha/"),
                 Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
+                Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
             };
             client
                 .get(url)
@@ -926,11 +927,13 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 pypi(&key_a()).await
             }
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
+            Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
             Ecosystem::PyPi => assert_eq!(listed(&again).len(), 1, "and the next one"),
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
+            Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
         }
     }
 }
@@ -1177,5 +1180,55 @@ async fn rubygems_fully_refused_listing_records_one_decision() {
     let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::RubyGems)).collect();
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(gem), None));
+    h.server.shutdown().await;
+}
+
+/// Row 18: a managed firewall authenticates every Cargo read, so it tells Cargo to send its token
+/// (`auth-required` in the rewritten `config.json`) and answers an unauthenticated read with the
+/// `Cargo login_url` challenge besides Basic, which is what makes `cargo` fetch its token and retry.
+#[tokio::test]
+async fn cargo_key_route_challenges_and_advertises_auth_required() {
+    let h = harness(vec![], |_| {}).await;
+    let path = |segments: &[&str]| fake_origins().url_for(probation::upstream::OriginKind::CargoIndex, segments).unwrap().path().to_owned();
+    h.registry.answer(&path(&["config.json"]), FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()));
+    let anonymous = h.server.get("/cargo/config.json").await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let challenges: Vec<String> = anonymous.headers().get_all("www-authenticate").iter().map(|v| v.to_str().unwrap().to_owned()).collect();
+    assert!(challenges.iter().any(|c| c.starts_with("Basic ")) && challenges.iter().any(|c| c.starts_with("Cargo login_url=\"")), "{challenges:?}");
+    let download = h.server.get("/cargo/crates/demo/1.0.0/download").await;
+    assert_eq!(download.status(), StatusCode::UNAUTHORIZED);
+    assert!(download.headers().get_all("www-authenticate").iter().any(|v| v.to_str().unwrap().starts_with("Cargo ")));
+    let served = h.get("/cargo/config.json", &key_a()).await;
+    assert_eq!(served.status(), StatusCode::OK);
+    let config: Value = serde_json::from_slice(&served.bytes().await.unwrap()).unwrap();
+    assert_eq!(config["auth-required"], true, "cargo sends its token only to a registry that says so");
+    assert_eq!(h.get("/cargo/config.json", "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    h.server.shutdown().await;
+}
+
+/// Row 18 (the family's version of slice 17's F4): a Cargo index with nothing left for a key is the
+/// family's refusal and leaves one decision record with no version; a key that keeps a line is served
+/// it and leaves none.
+#[tokio::test]
+async fn cargo_fully_refused_listing_records_one_decision() {
+    let krate = "cratex";
+    let h = harness(
+        vec![Block::Package { ecosystem: Ecosystem::Cargo, name: krate.to_owned(), reason: None }],
+        |_| {},
+    )
+    .await;
+    let path = |segments: &[&str]| fake_origins().url_for(probation::upstream::OriginKind::CargoIndex, segments).unwrap().path().to_owned();
+    h.registry.answer(&path(&["config.json"]), FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()));
+    let line = format!(r#"{{"name":"{krate}","vers":"1.0.0","deps":[],"cksum":"{}","features":{{}},"yanked":false,"pubtime":"2025-01-01T00:00:00Z"}}"#, "ab".repeat(32));
+    h.registry.answer(&path(&["cr", "at", krate]), FakeAnswer::Body(format!("{line}\n")));
+    let refused = h.get(&format!("/cargo/cr/at/{krate}"), &key_a()).await;
+    assert_eq!(refused.status(), StatusCode::OK);
+    assert_eq!(refused.text().await.unwrap(), "", "Globex blocks the crate");
+    let served = h.get(&format!("/cargo/cr/at/{krate}"), &key_b()).await;
+    assert_eq!(served.text().await.unwrap(), format!("{line}\n"), "Acme's policy keeps the line");
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Cargo)).collect();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(krate), None));
     h.server.shutdown().await;
 }

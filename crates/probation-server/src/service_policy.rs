@@ -148,18 +148,19 @@ async fn load_policy_snapshot(
             revision,
         });
     }
-    type Row = (i64, String, Option<String>, bool, Option<String>);
+    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, ecosystem, target_url, trusted, osv_scope FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
+        "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
     ).bind(snapshot.org.0 as i32).fetch_all(&mut **tx).await.map_err(unavailable)?;
     if rows.len() > 256 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    for (id, tag, target_url, trusted, osv_scope) in rows {
+    for (id, tag, target_url, trusted, osv_scope, archive_origin) in rows {
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
             "rubygems" => Ecosystem::RubyGems,
+            "cargo" => Ecosystem::Cargo,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {
@@ -184,6 +185,7 @@ async fn load_policy_snapshot(
                 Some("private") => Some(OsvScope::Private),
                 _ => None,
             },
+            archive_origin,
         });
     }
     Ok(snapshot)
@@ -208,6 +210,36 @@ pub async fn set_osv_scope(
     });
     let done = sqlx::query("UPDATE registries SET osv_scope = $1 WHERE id = $2 AND org_id = $3 AND removed_at IS NULL")
         .bind(column)
+        .bind(registry)
+        .bind(org)
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Why an archive origin is refused: it is checked with the rules of a registry target.
+pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
+    let url = url::Url::parse(text).ok()?;
+    (text.len() <= 2048
+        && url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then_some(url)
+}
+
+/// Sets (`Some`) or clears (`None`) a Cargo registry's archive origin. False when the registry is not
+/// this organisation's live Cargo registry (the column only exists for one).
+pub async fn set_archive_origin(
+    pool: &sqlx::PgPool,
+    org: i32,
+    registry: i64,
+    origin: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'cargo' AND target_url IS NOT NULL AND removed_at IS NULL")
+        .bind(origin)
         .bind(registry)
         .bind(org)
         .execute(pool)

@@ -170,6 +170,8 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "pypi_upstream_url",
         "pypi_artifacts_url",
         "rubygems_upstream_url",
+        "cargo_upstream_url",
+        "cargo_artifacts_url",
     ] {
         if table
             .get(key)

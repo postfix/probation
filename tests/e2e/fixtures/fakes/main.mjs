@@ -9,6 +9,9 @@
 //   POST /npm/publish {...}           Npm.publish; answers the version's dist
 //   POST /pypi/publish {...}          Pypi.publish; answers the files made
 //   POST /rubygems/publish {...}      RubyGems.publish; answers the gem made
+//   POST /cargo/publish {...}         Cargo.publish; answers the crate made
+//   GET  /cargo/writes                every registry-API call the fake crates.io received (publish, yank, owners, search)
+//   POST /cargo/index {name}          the index file the fake serves for a crate (text)
 //   GET  /rubygems/writes             every `gem push`/`gem yank` the fake received
 //   POST /osv/flag {...}              Osv.flag
 //   GET  /osv/queries                 every querybatch query received
@@ -37,6 +40,7 @@ import { readFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Cargo } from "./cargo.mjs";
 import { Hibp } from "./hibp.mjs";
 import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
@@ -47,7 +51,7 @@ import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
@@ -55,6 +59,9 @@ const hosts = {
   "private-registry.e2e.test": fakes.npmB,
   "pypi.org": fakes.pypi,
   "rubygems.org": fakes.rubygems,
+  "index.crates.io": fakes.cargo,
+  "static.crates.io": fakes.cargo,
+  "crates.io": fakes.cargo,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -213,6 +220,9 @@ const control = {
   "POST /pypi/publish": (body) => fakes.pypi.publish(body),
   "POST /rubygems/publish": (body) => fakes.rubygems.publish(body),
   "GET /rubygems/writes": () => fakes.rubygems.writes,
+  "POST /cargo/publish": (body) => fakes.cargo.publish(body),
+  "GET /cargo/writes": () => fakes.cargo.writes,
+  "POST /cargo/index": (body) => ({ index: fakes.cargo.index(body.name) }),
   "POST /osv/flag": (body) => (fakes.osv.flag(body), { ok: true }),
   "GET /osv/queries": () => fakes.osv.queries,
   "POST /hibp/leak": (body) => (fakes.hibp.leak(body.password), { ok: true }),

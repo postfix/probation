@@ -170,6 +170,7 @@ async fn view(
                     ecosystem: match ecosystem.as_deref() {
                         Some("pypi") => "PyPI".to_owned(),
                         Some("rubygems") => "RubyGems".to_owned(),
+                        Some("cargo") => "Cargo".to_owned(),
                         Some(other) => other.to_owned(),
                         None => String::new(),
                     },

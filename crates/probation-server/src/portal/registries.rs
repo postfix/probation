@@ -10,13 +10,13 @@ use super::{Shared, not_found, redirect, refused, unavailable};
 
 #[derive(Template)]
 #[template(
-    source = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Package registries · Probation</title></head><body><a class=\"skip\" href=\"#main\">Skip to main content</a><main id=\"main\"><h1>Package registries</h1><ul>{% for row in rows %}<li>{{ row.0 }} {{ row.1 }} {{ row.2 }} {{ row.3 }}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/trust\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label><input name=\"trusted\" type=\"checkbox\"{% if row.4 %} checked{% endif %}>Skip age delay</label><button type=\"submit\">Save trust</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/osv-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>OSV scope<select name=\"osv_scope\"><option value=\"\">Default (queried)</option><option value=\"public\">Public: names reach the shared server</option><option value=\"private\">Private: OSV not applicable</option></select></label><button type=\"submit\">Save OSV scope</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/read-credential\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Read-only Authorization{% if row.5 %} (configured){% endif %}<input name=\"read_authorization\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Bearer token or Basic credentials\"></label><label><input name=\"clear\" type=\"checkbox\">Clear credential</label><button type=\"submit\">Save credential</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/delete-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Deletion HTTPS origin<input name=\"origin\" type=\"url\" placeholder=\"https://tarballs.example.test\" required></label><label>Path prefix<input name=\"path_prefix\" placeholder=\"/packages\" required></label><label><input name=\"forward_bearer\" type=\"checkbox\">Forward developer bearer to this origin and path</label><button type=\"submit\">Approve deletion destination</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/remove\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><button type=\"submit\">Remove</button></form></li>{% endfor %}</ul><h2>Approved deletion destinations</h2><ul>{% for scope in scopes %}<li>Registry {{ scope.0 }}: {{ scope.1 }}{{ scope.2 }}{% if scope.3 %} (developer bearer enabled){% endif %}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ scope.0 }}/delete-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><input type=\"hidden\" name=\"origin\" value=\"{{ scope.1 }}\"><input type=\"hidden\" name=\"path_prefix\" value=\"{{ scope.2 }}\"><input type=\"hidden\" name=\"remove\" value=\"on\"><button type=\"submit\">Remove destination</button></form></li>{% endfor %}</ul><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Name<input name=\"name\" required></label><label>Ecosystem<select name=\"ecosystem\"><option value=\"npm\">npm</option><option value=\"pypi\">PyPI</option></select></label><label>HTTPS target<input name=\"target_url\" type=\"url\" required></label><label>Read-only Authorization value, if needed<input name=\"read_authorization\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Bearer token or Basic credentials\"></label><label><input name=\"trusted\" type=\"checkbox\">Skip age delay</label><button type=\"submit\">Add registry</button></form><h2>Request private destination</h2><form method=\"post\" action=\"/org/{{ org }}/private-egress\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Purpose<select name=\"purpose\"><option value=\"registry\">Registry</option><option value=\"ocsp\">OCSP status</option></select></label><label>Saved HTTPS target<input name=\"target_url\" type=\"url\" required></label><label>Allowed CIDR<input name=\"cidr\" required></label><button type=\"submit\">Request operator approval</button></form></main></body></html>",
+    source = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Package registries · Probation</title></head><body><a class=\"skip\" href=\"#main\">Skip to main content</a><main id=\"main\"><h1>Package registries</h1><ul>{% for row in rows %}<li>{{ row.0 }} {{ row.1 }} {{ row.2 }} {{ row.3 }}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/trust\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label><input name=\"trusted\" type=\"checkbox\"{% if row.4 %} checked{% endif %}>Skip age delay</label><button type=\"submit\">Save trust</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/osv-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>OSV scope<select name=\"osv_scope\"><option value=\"\">Default (queried)</option><option value=\"public\">Public: names reach the shared server</option><option value=\"private\">Private: OSV not applicable</option></select></label><button type=\"submit\">Save OSV scope</button></form>{% if row.2 == \"cargo\" %}{% if !row.6.is_empty() %}<span>Archive origin: {{ row.6 }}</span>{% endif %}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/archive-origin\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Archive origin (empty for none)<input name=\"archive_origin\" type=\"url\" value=\"{{ row.6 }}\" placeholder=\"https://host/api/cargo/repo/crates\"></label><button type=\"submit\">Save archive origin</button></form>{% endif %}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/read-credential\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Read-only Authorization{% if row.5 %} (configured){% endif %}<input name=\"read_authorization\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Bearer token or Basic credentials\"></label><label><input name=\"clear\" type=\"checkbox\">Clear credential</label><button type=\"submit\">Save credential</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/delete-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Deletion HTTPS origin<input name=\"origin\" type=\"url\" placeholder=\"https://tarballs.example.test\" required></label><label>Path prefix<input name=\"path_prefix\" placeholder=\"/packages\" required></label><label><input name=\"forward_bearer\" type=\"checkbox\">Forward developer bearer to this origin and path</label><button type=\"submit\">Approve deletion destination</button></form><form method=\"post\" action=\"/org/{{ org }}/registries/{{ row.0 }}/remove\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><button type=\"submit\">Remove</button></form></li>{% endfor %}</ul><h2>Approved deletion destinations</h2><ul>{% for scope in scopes %}<li>Registry {{ scope.0 }}: {{ scope.1 }}{{ scope.2 }}{% if scope.3 %} (developer bearer enabled){% endif %}<form method=\"post\" action=\"/org/{{ org }}/registries/{{ scope.0 }}/delete-scope\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><input type=\"hidden\" name=\"origin\" value=\"{{ scope.1 }}\"><input type=\"hidden\" name=\"path_prefix\" value=\"{{ scope.2 }}\"><input type=\"hidden\" name=\"remove\" value=\"on\"><button type=\"submit\">Remove destination</button></form></li>{% endfor %}</ul><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Name<input name=\"name\" required></label><label>Ecosystem<select name=\"ecosystem\"><option value=\"npm\">npm</option><option value=\"pypi\">PyPI</option><option value=\"rubygems\">RubyGems</option><option value=\"cargo\">Cargo</option></select></label><label>HTTPS target<input name=\"target_url\" type=\"url\" required></label><label>Read-only Authorization value, if needed<input name=\"read_authorization\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Bearer token or Basic credentials\"></label><label><input name=\"trusted\" type=\"checkbox\">Skip age delay</label><button type=\"submit\">Add registry</button></form><h2>Request private destination</h2><form method=\"post\" action=\"/org/{{ org }}/private-egress\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><label>Purpose<select name=\"purpose\"><option value=\"registry\">Registry</option><option value=\"ocsp\">OCSP status</option></select></label><label>Saved HTTPS target<input name=\"target_url\" type=\"url\" required></label><label>Allowed CIDR<input name=\"cidr\" required></label><button type=\"submit\">Request operator approval</button></form></main></body></html>",
     ext = "html"
 )]
 struct CatalogPage<'a> {
     org: i32,
     csrf: &'a str,
-    rows: &'a [(i64, String, String, String, bool, bool)],
+    rows: &'a [(i64, String, String, String, bool, bool, String)],
     scopes: &'a [(i64, String, String, bool)],
 }
 
@@ -127,8 +127,8 @@ pub(crate) async fn catalog(
     if let Err(answer) = super::organisation::admin_on(&portal, &signed_in, &place).await {
         return answer;
     }
-    let rows = sqlx::query_as::<_, (i64, String, String, String, bool, bool)>(
-        "SELECT id, name, ecosystem, coalesce(target_url, ''), trusted, read_authorization_enc IS NOT NULL FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id",
+    let rows = sqlx::query_as::<_, (i64, String, String, String, bool, bool, String)>(
+        "SELECT id, name, ecosystem, coalesce(target_url, ''), trusted, read_authorization_enc IS NOT NULL, coalesce(archive_origin, '') FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id",
     )
     .bind(org)
     .fetch_all(&portal.pool)
@@ -174,7 +174,7 @@ pub(crate) async fn add(
     let Ok(target) = url::Url::parse(&form.target_url) else {
         return refused("A valid HTTPS registry target is required.");
     };
-    if !matches!(form.ecosystem.as_str(), "npm" | "pypi" | "rubygems")
+    if !matches!(form.ecosystem.as_str(), "npm" | "pypi" | "rubygems" | "cargo")
         || form.name.trim().is_empty()
         || form.name.len() > 200
         || target.scheme() != "https"
@@ -287,6 +287,48 @@ pub(crate) async fn set_osv_scope(
         _ => return refused("Choose Public, Private or the default."),
     };
     match crate::service_policy::set_osv_scope(&portal.pool, org, registry, scope).await {
+        Ok(true) => redirect(&format!("/org/{org}/registries")),
+        Ok(false) => not_found(),
+        Err(err) => unavailable(err),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ArchiveOriginForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    archive_origin: String,
+}
+
+/// Sets or clears a Cargo registry's archive origin (an https origin and path prefix, the same shape
+/// rules as a target).
+pub(crate) async fn set_archive_origin(
+    State(portal): State<Shared>,
+    Path((org, registry)): Path<(i32, i64)>,
+    headers: HeaderMap,
+    Form(form): Form<ArchiveOriginForm>,
+) -> Response {
+    let signed_in = match portal.signed_in_post(&headers, &form.csrf).await {
+        Ok(value) => value,
+        Err(answer) => return answer,
+    };
+    let Some(place) = super::organisation::org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    if let Err(answer) = super::organisation::admin_on(&portal, &signed_in, &place).await {
+        return answer;
+    }
+    let text = form.archive_origin.trim();
+    let origin = if text.is_empty() {
+        None
+    } else {
+        match crate::service_policy::valid_archive_origin(text) {
+            Some(url) => Some(url.to_string()),
+            None => return refused("An archive origin is an HTTPS URL without credentials, query or fragment."),
+        }
+    };
+    match crate::service_policy::set_archive_origin(&portal.pool, org, registry, origin.as_deref()).await {
         Ok(true) => redirect(&format!("/org/{org}/registries")),
         Ok(false) => not_found(),
         Err(err) => unavailable(err),

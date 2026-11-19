@@ -432,6 +432,7 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         Ecosystem::Npm => &["registry.npmjs.org"],
         Ecosystem::PyPi => &["pypi.org", "files.pythonhosted.org"],
         Ecosystem::RubyGems => &["rubygems.org", "index.rubygems.org"],
+        Ecosystem::Cargo => &["index.crates.io", "static.crates.io"],
     };
     let public_source = target_url
         .and_then(|text| Url::parse(text).ok())
@@ -989,6 +990,47 @@ mod tests {
             let (url, _server, count) = mode_server(true).await;
             let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
             let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &gem_candidate("rack", "9.9.9"), scope).await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
+            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+        }
+    }
+
+    fn cargo_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
+        Candidate { ecosystem: Ecosystem::Cargo, ..candidate(name, version) }
+    }
+
+    /// Row 18, LS-F12: a Cargo registry the operator sets Private is never asked about (its
+    /// crate names reach nothing); the fixed public source ignores the field.
+    #[tokio::test]
+    async fn osv_skipped_for_private_registry_in_cargo() {
+        let mirror = "https://crates.corp.example/index/";
+        let scope = effective_scope(Ecosystem::Cargo, Some(mirror), Some(OsvScope::Private));
+        assert_eq!(scope, OsvScope::Private);
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &cargo_candidate("internal-crate", "1.0.0"), scope).await;
+        shutdown.cancel();
+        let _ = handle.await;
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's crate name reaches no OSV server");
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+        for public in ["https://index.crates.io/", "https://static.crates.io/crates"] {
+            assert_eq!(effective_scope(Ecosystem::Cargo, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        }
+    }
+
+    /// Row 18, LS-F12: a mirror whose operator says Public, and one with no field (the user
+    /// decision of 2026-11-18), is queried, and a MAL match denies.
+    #[tokio::test]
+    async fn osv_public_mirror_with_explicit_scope_is_queried_in_cargo() {
+        let mirror = "https://mirror.example/cargo/";
+        for explicit in [Some(OsvScope::Public), None] {
+            let scope = effective_scope(Ecosystem::Cargo, Some(mirror), explicit);
+            assert_eq!(scope, OsvScope::Public, "{explicit:?}");
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &cargo_candidate("serde-json", "9.9.9"), scope).await;
             shutdown.cancel();
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");

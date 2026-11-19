@@ -11,6 +11,7 @@ fn osv_key_valid_names_pass_for_every_family() {
             Ecosystem::Npm => ("@scope/left-pad", "1.3.0-beta.1+build.5"),
             Ecosystem::PyPi => ("requests-oauthlib", "2.0.post1"),
             Ecosystem::RubyGems => ("Rack_Test.rb-2", "7.1.0.rc1"),
+            Ecosystem::Cargo => ("serde_json-2", "1.0.0-rc.1"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));
@@ -90,4 +91,13 @@ fn osv_key_rubygems_charset_is_ls_f6() {
         assert_eq!(osv_key(Ecosystem::RubyGems, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
     }
     assert_eq!(osv_key(Ecosystem::RubyGems, "rack", ""), Err(OsvKeyError::Version));
+}
+
+/// Row 18, LS-F6: a crate name is `[A-Za-z0-9_-]`; a dot or a slash is a key error, never normalised.
+#[test]
+fn osv_key_cargo_charset_is_ls_f6() {
+    assert!(osv_key(Ecosystem::Cargo, "Serde_Json-2", "1.0.0").is_ok(), "case and underscore are kept");
+    for bad in ["serde.json", "serde/json", "serde json", "sérde", ""] {
+        assert_eq!(osv_key(Ecosystem::Cargo, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
+    }
 }

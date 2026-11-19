@@ -12,6 +12,7 @@ pub mod logging;
 pub mod npm_routes;
 pub mod pypi_routes;
 pub mod rubygems_routes;
+pub mod cargo_routes;
 pub mod registry_read;
 pub mod registry_action;
 pub mod registry_routes;
@@ -101,6 +102,16 @@ fn package_router(app: Arc<App>) -> Router {
         .route("/registry/rubygems/{registry}/versions", get(rubygems_routes::selected_versions))
         .route("/registry/rubygems/{registry}/names", get(rubygems_routes::selected_names))
         .route("/registry/rubygems/{registry}/quick/Marshal.4.8/{file}", get(rubygems_routes::selected_quick))
+        .route("/cargo/config.json", get(cargo_routes::config))
+        .route("/cargo/1/{name}", get(cargo_routes::index_1))
+        .route("/cargo/2/{name}", get(cargo_routes::index_2))
+        .route("/cargo/3/{a}/{name}", get(cargo_routes::index_3))
+        .route("/cargo/{ab}/{cd}/{name}", get(cargo_routes::index_4))
+        .route("/registry/cargo/{registry}/config.json", get(cargo_routes::selected_config))
+        .route("/registry/cargo/{registry}/1/{name}", get(cargo_routes::selected_index_1))
+        .route("/registry/cargo/{registry}/2/{name}", get(cargo_routes::selected_index_2))
+        .route("/registry/cargo/{registry}/3/{a}/{name}", get(cargo_routes::selected_index_3))
+        .route("/registry/cargo/{registry}/{ab}/{cd}/{name}", get(cargo_routes::selected_index_4))
         .route("/pypi/simple/", get(pypi_routes::index))
         .route("/pypi/simple/{project}/", get(pypi_routes::project))
         .route(
@@ -111,6 +122,11 @@ fn package_router(app: Arc<App>) -> Router {
         // lists it.
         .route_layer(middleware::from_fn(get_only))
         .route("/registry/pypi/{registry}/", axum::routing::post(pypi_routes::selected_upload))
+        .route("/registry/cargo/{registry}/api/v1/crates/new", axum::routing::put(cargo_routes::selected_publish))
+        .route("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/yank", axum::routing::delete(cargo_routes::selected_yank))
+        .route("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank", axum::routing::put(cargo_routes::selected_unyank))
+        .route("/registry/cargo/{registry}/api/v1/crates/{name}/owners", axum::routing::get(cargo_routes::selected_owners).put(cargo_routes::selected_owners).delete(cargo_routes::selected_owners))
+        .route("/registry/cargo/{registry}/api/v1/crates", axum::routing::get(cargo_routes::selected_search))
         .route("/registry/rubygems/{registry}/api/v1/gems", axum::routing::post(rubygems_routes::selected_push))
         .route("/registry/rubygems/{registry}/api/v1/gems/yank", axum::routing::delete(rubygems_routes::selected_yank))
         .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
@@ -140,6 +156,12 @@ fn package_router(app: Arc<App>) -> Router {
         .route(
             "/registry/rubygems/{registry}/gems/{file}",
             get(rubygems_routes::selected_gem).head(rubygems_routes::selected_gem),
+        )
+        // A crate archive: the `dl` of the rewritten `config.json` (Cargo appends `/{crate}/{version}/download`).
+        .route("/cargo/crates/{name}/{version}/download", get(cargo_routes::download).head(cargo_routes::download))
+        .route(
+            "/registry/cargo/{registry}/crates/{name}/{version}/download",
+            get(cargo_routes::selected_download).head(cargo_routes::selected_download),
         )
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(

@@ -36,6 +36,7 @@ pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
         Ecosystem::Npm => Some("npm"),
         Ecosystem::PyPi => Some("PyPI"),
         Ecosystem::RubyGems => Some("RubyGems"),
+        Ecosystem::Cargo => Some("crates.io"),
     }
 }
 

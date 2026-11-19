@@ -1,11 +1,13 @@
 // The fake OSV API, answering as https://api.osv.dev: POST /v1/querybatch. The
-// ecosystem must be spelled exactly as OSV's schema does (`npm`, `PyPI`, `RubyGems`); anything
+// ecosystem must be spelled exactly as OSV's schema does (`npm`, `PyPI`, `RubyGems`, `crates.io`); anything
 // else is refused with 400, as a misspelt ecosystem must never look like "no finding".
 
 import { normalize } from "./pypi.mjs";
 
-const ECOSYSTEMS = new Set(["npm", "PyPI", "RubyGems"]);
-const key = (ecosystem, name, version) => `${ecosystem}\0${ecosystem === "PyPI" ? normalize(name) : name}\0${version}`;
+const ECOSYSTEMS = new Set(["npm", "PyPI", "RubyGems", "crates.io"]);
+// OSV answers `serde_json` and `serde-json` alike for crates.io (checked against api.osv.dev 2026-11-19).
+const spelled = (ecosystem, name) => (ecosystem === "PyPI" ? normalize(name) : ecosystem === "crates.io" ? name.toLowerCase().replaceAll("_", "-") : name);
+const key = (ecosystem, name, version) => `${ecosystem}\0${spelled(ecosystem, name)}\0${version}`;
 
 export class Osv {
   constructor() {

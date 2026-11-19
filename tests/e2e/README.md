@@ -38,10 +38,10 @@ and openssl. `tests/e2e/signup_to_install.sh` runs the release witness alone.
 | `gateway` | nginx, terminates TLS (the documented topology) | `portal.e2e.test`, `sync.e2e.test`, `fw1.e2e.test`, `fw2.e2e.test`, `fw-standalone.e2e.test` |
 | `firewall-1`, `firewall-2` | managed firewalls, sync interval 10 s | via the gateway |
 | `firewall-standalone` | no `[management]`; producer file in `$E2E_WORK/producer/blocklist.json` | via the gateway |
-| `fakes` | `fixtures/fakes/`: npm, PyPI, RubyGems (`rubygems.org`: compact index, tuple indexes, quick gemspecs, real `.gem` archives, the paged `timeframe_versions` API), OSV, range API, OIDC IdP | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.osv.dev`, `api.pwnedpasswords.com`, `accounts.google.com`, `idp.e2e.test`; control API `http://fakes.e2e.test:8080` |
+| `fakes` | `fixtures/fakes/`: npm, PyPI, RubyGems (`rubygems.org`: compact index, tuple indexes, quick gemspecs, real `.gem` archives, the paged `timeframe_versions` API), Cargo (`index.crates.io`: `config.json` and the sparse index with `pubtime`; `static.crates.io`: real `.crate` archives), OSV, range API, OIDC IdP | `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.osv.dev`, `api.pwnedpasswords.com`, `accounts.google.com`, `idp.e2e.test`; control API `http://fakes.e2e.test:8080` |
 | `mail` | mailpit, STARTTLS required | `mail.e2e.test` (SMTP 1025, API 8025) |
 | `bridge` | `fixtures/bridge.mjs`, the host's CONNECT proxy into the network | `127.0.0.1:$E2E_BRIDGE_PORT` |
-| `client-*` | pinned client containers (`sleep infinity`); `client-ruby` is Ruby 3.3 with RubyGems 3.5 and Bundler 2.5 | |
+| `client-*` | pinned client containers (`sleep infinity`); `client-ruby` is Ruby 3.3 with RubyGems 3.5 and Bundler 2.5; `client-cargo` is Rust with Cargo 1.96.0 | |
 
 How the stack stays offline and still tests the shipped binary (D1):
 
@@ -326,3 +326,4 @@ cold one.
 
 
 - `E2E-rubygems`: Bundler and `gem` through firewall-1 under a 7-day freeze (old version locked and installed, exact pin of the young one fails, a never-indexed gem installs through the dated legacy index, young platform builds withheld), OSV on RubyGems, a mixed-case gem (index case-insensitive, files case-exact, a lowercase block hides every spelling) and `gem push` through a managed firewall. `node tests/e2e/harness/run.mjs --only E2E-rubygems`. The fake's own builders are checked by `native/rubygems-fake.test.mjs`.
+- `E2E-cargo`: Cargo 1.96 through firewall-1 under a 7-day freeze (the old version locks, downloads, verifies and builds; the exact pin of the young one fails and its archive is HELD), the rewritten `config.json` (`dl`, `api`, `auth-required`) and the `Cargo login_url` 401 challenge without a token, a yanked line served byte for byte with a matching `If-None-Match` answered 304, OSV on `crates.io`, and a mixed-case crate (index at the lower-case path, archive only under the exact spelling, a lower-case hyphenated block hides it). `node tests/e2e/harness/run.mjs --only E2E-cargo`. The fake's builders are checked by `native/cargo-fake.test.mjs`.

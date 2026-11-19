@@ -490,6 +490,12 @@ impl ServicePolicy {
                 .map(|url| url.parse())
                 .transpose()
                 .ok()?,
+            registry_archive_origin: descriptor
+                .archive_origin
+                .as_ref()
+                .map(|url| url.parse())
+                .transpose()
+                .ok()?,
             registry_read_authorization: None,
             registry_trusted: descriptor.trusted,
             registry_private_cidrs: descriptor
@@ -566,12 +572,14 @@ fn classify_snapshot(bytes: &[u8]) -> Result<(ServicePolicySnapshot, Vec<Registr
 /// not resolve now is not an activation failure: it fails at connect.
 async fn check_hostnames(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result<(), ServicePolicyError> {
     for registry in &reply.registries {
-        let Some(url) = registry.target_url.as_deref().and_then(|text| url::Url::parse(text).ok()) else { continue };
-        let (Some(url::Host::Domain(host)), Some(port)) = (url.host(), url.port_or_known_default()) else { continue };
-        // Bounded: an unreachable resolver must not stall activation (connect time still checks).
-        let Ok(Ok(answers)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host((host, port))).await else { continue };
-        if answers.into_iter().any(|addr| deny.denies_endpoint(addr.ip(), port)) {
-            return Err(ServicePolicyError);
+        for text in [registry.target_url.as_deref(), registry.archive_origin.as_deref()] {
+            let Some(url) = text.and_then(|text| url::Url::parse(text).ok()) else { continue };
+            let (Some(url::Host::Domain(host)), Some(port)) = (url.host(), url.port_or_known_default()) else { continue };
+            // Bounded: an unreachable resolver must not stall activation (connect time still checks).
+            let Ok(Ok(answers)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host((host, port))).await else { continue };
+            if answers.into_iter().any(|addr| deny.denies_endpoint(addr.ip(), port)) {
+                return Err(ServicePolicyError);
+            }
         }
     }
     Ok(())
@@ -658,6 +666,17 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
             .iter()
             .map(|text| text.parse::<ipnet::IpNet>().map_err(|_| ServicePolicyError))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(archive) = &registry.archive_origin {
+            // Only a Cargo registry has archives apart from its index, and one needs a target of its own.
+            if archive.len() > 2048 || registry.ecosystem != probation_policy::Ecosystem::Cargo || registry.target_url.is_none() {
+                return Err(ServicePolicyError);
+            }
+            let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;
+            // The same absolute denylist as the target (LS-F9 / D5), and the same shape rules: https, no
+            // userinfo, query or fragment.
+            check_target(&url, deny).map_err(|_| ServicePolicyError)?;
+            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
+        }
         if let Some(target) = &registry.target_url {
             if target.len() > 2048 {
                 return Err(ServicePolicyError);

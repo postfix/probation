@@ -95,6 +95,49 @@ fn credential_bearing_read_never_enters_shared_caches_rubygems() {
     ));
 }
 
+/// Row 18, the Cargo case of the same contract. Cargo carries a credential as `Authorization: <token>`
+/// (bare, or `Bearer ...`), never in a path or query of this firewall's routes; a registry that
+/// embeds a token in a URL (Cloudsmith) or takes userinfo does so in the URL the client was
+/// given, which is userinfo here. The family adds no header beyond the common allow-list (the
+/// real-client witness is `cargo_native_client_sends_only_allow_listed_headers` in tests/cargo_native.rs).
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_cargo() {
+    let cargo = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::CARGO), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "cio0123456789abcdef"),
+        ("authorization", "Bearer prb_x"),
+        ("Authorization", "Basic dXNlcjpwdw=="),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-jfrog-art-api", "key"),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!cargo("/cargo/se/rd/serde", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!cargo("/cargo/config.json?token=abc", &[]));
+    assert!(!cargo("/cargo/crates/serde/1.0.0/download?api_key=abc", &[]));
+    // The path-embedded and userinfo credential forms of the family's registries.
+    for form in [
+        "https://TOKEN:@crates.example.test/cargo/se/rd/serde",
+        "https://token@crates.example.test/cargo/se/rd/serde",
+        "https://user:pass@crates.example.test/registry/cargo/7/config.json",
+    ] {
+        assert!(!cargo(form, &[]), "{form}: URL userinfo");
+    }
+    // Control: the headers `cargo` sends for plain reads keep the read cache-eligible.
+    assert!(cargo(
+        "/cargo/se/rd/serde",
+        &[("host", "x"), ("accept", "*/*"), ("accept-encoding", "gzip"), ("user-agent", "cargo/1.96.0"), ("if-none-match", "\"a\""), ("if-modified-since", "Mon, 01 Jan 2026 00:00:00 GMT"), ("cache-control", "no-cache")]
+    ));
+}
+
 // ---- C1028 end to end: bytes fetched under credential A are never served without it ----
 
 /// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
@@ -114,6 +157,14 @@ impl Transport for PrivateArtifacts {
         if request.url.host_str() == Some("slow.invalid") && request.url.path().ends_with("timeframe_versions.json") {
             SLOW_ARRIVED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = SLOW_GATE.acquire().await;
+        }
+        // A Cargo registry whose `config.json` wants the caller's own credential (row 18).
+        if request.url.path() == "/config.json" {
+            match request.read_authorization.as_deref() {
+                Some("config-login") => return Err(UpstreamError::Status(401)),
+                Some("config-deny") => return Err(UpstreamError::Status(403)),
+                _ => {}
+            }
         }
         if request.url.path().contains("login-meta") {
             return Err(UpstreamError::Status(401));
@@ -159,13 +210,16 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(3), ecosystem: probation_policy::Ecosystem::Npm, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(4), ecosystem: probation_policy::Ecosystem::PyPi, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(5), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         }],
     };
     if slow {
@@ -173,7 +227,7 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         // Only this test has it: two RubyGems registries make the unqualified `/rubygems` root ambiguous.
         snapshot.registries.push(RegistryDescriptor {
             registry: RegistryId(6), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: Some("https://slow.invalid/".into()), trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
         });
     }
     snapshot
@@ -304,6 +358,11 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
     }).to_string()));
     registry.answer("/specs.4.8.gz", FakeAnswer::Bytes(std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/rubygems/full-index-slice.4.8.gz")).unwrap()));
     registry.answer("/api/v1/timeframe_versions.json", FakeAnswer::Body("[]".to_owned()));
+    registry.answer("/config.json", FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()));
+    registry.answer("/op/en/open-crate", FakeAnswer::Body(format!(
+        r#"{{"name":"open-crate","vers":"1.0.0","deps":[],"cksum":"{}","features":{{}},"yanked":false,"pubtime":"2025-01-01T00:00:00Z"}}"#, hex::encode(Sha256::digest(b"c"))
+    ) + "\n"));
+    registry.answer("/crates/open-crate/1.0.0/download", FakeAnswer::Bytes(b"c".to_vec()));
     registry.answer("/gems/open-gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
     // A gem whose real name has capitals: files are case-exact upstream (N2).
     registry.answer("/gems/Open-Gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
@@ -384,6 +443,68 @@ async fn credential_bearing_read_never_enters_shared_caches_rubygems_end_to_end(
     let eligible = server.get_with_headers("/rubygems/gems/open-gem-1.0.0.gem", &[("keep-alive", "30")]).await;
     assert_eq!(eligible.status(), StatusCode::OK);
     assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
+}
+
+/// Row 18, C1028 for Cargo through the row 28 seam (shared service): the rewritten `config.json`
+/// and the crate archive of a credential-bearing read never enter a shared cache; the same reads
+/// with only allow-listed headers do (config cached, archive stored).
+#[tokio::test]
+async fn credential_bearing_read_never_enters_shared_caches_cargo_end_to_end() {
+    let (server, transport, _policy) = service_server().await;
+    let fetches = |path: &str| transport.0.calls().iter().filter(|u| u.path() == path).count();
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers("/cargo/config.json", &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(fetches("/config.json"), 1, "an allow-listed read shares the cached upstream config");
+    for (n, carrier) in [("authorization", "cio_token"), ("authorization", "Bearer allowed"), ("cookie", "s=1"), ("x-jfrog-art-api", "k"), ("x-probe-unknown", "1")].into_iter().enumerate() {
+        let before = fetches("/config.json");
+        let response = server.get_with_headers("/registry/cargo/7/config.json", &[carrier]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{carrier:?}");
+        assert_eq!(fetches("/config.json"), before + 1, "carrier {n} {carrier:?}: a credential-bearing read fetches its own config and fills nothing");
+    }
+    assert_eq!(fetches("/config.json"), 6);
+    // The index of the crate through the service is never cached either way; with a credential the
+    // archive stays out of the shared content store.
+    let data = server.app().config.data_dir.clone();
+    let before = files_under(&data.join("content")).len();
+    let crate_file = server.get_with_headers("/cargo/crates/open-crate/1.0.0/download", &[("authorization", "cio_token")]).await;
+    assert_eq!((crate_file.status(), crate_file.bytes().await.unwrap().as_ref()), (StatusCode::OK, b"c".as_slice()));
+    assert_eq!(files_under(&data.join("content")).len(), before, "no credential-bearing crate body in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+    let eligible = server.get_with_headers("/cargo/crates/open-crate/1.0.0/download", &[("accept", "*/*")]).await;
+    assert_eq!(eligible.status(), StatusCode::OK);
+    assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
+    // Paths that embed a credential in a route this firewall does not have reach nothing.
+    let calls = transport.0.calls().len();
+    for path in ["/cargo/se/rd/serde;token=abc", "/cargo/tok3n@host/se/rd/serde", "/cargo/%40token/config.json"] {
+        assert_eq!(server.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(transport.0.calls().len(), calls, "no upstream call for a path-embedded credential form");
+}
+
+/// Row 18: through the shared service Cargo's index and archives are reads only. Its registry API is
+/// forwarded by its own routes (tests/cargo_service_write.rs); every other write verb or path is refused
+/// and reaches nothing upstream; a query string on a read route is no route.
+#[tokio::test]
+async fn cargo_is_read_only_through_the_shared_service() {
+    let (server, transport, _policy) = service_server().await;
+    let calls = transport.0.calls().len();
+    let client = reqwest::Client::new();
+    for (method, path) in [
+        ("POST", "/cargo/api/v1/crates/new"),
+        ("PUT", "/cargo/api/v1/crates/open-crate/1.0.0/yank"),
+        ("DELETE", "/registry/cargo/7/api/v1/crates/open-crate/1.0.0/unyank"),
+        ("POST", "/registry/cargo/7/op/en/open-crate"),
+        ("DELETE", "/cargo/crates/open-crate/1.0.0/download"),
+        ("PUT", "/cargo/config.json"),
+    ] {
+        let response = client.request(method.parse().unwrap(), server.url(path)).body("x").send().await.unwrap();
+        assert!(matches!(response.status(), StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND), "{method} {path}: {}", response.status());
+    }
+    assert_eq!(server.get("/cargo/config.json?x=1").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(transport.0.calls().len(), calls, "nothing reached upstream");
+    // The control: the same family's reads work.
+    assert_eq!(server.get("/cargo/config.json").await.status(), StatusCode::OK);
 }
 
 /// S28-1: one case per carrier on the metadata routes: afterwards no shared metadata,
@@ -469,6 +590,24 @@ async fn metadata_upstream_401_and_403_have_their_own_codes() {
     // A named read (src/http/registry_routes.rs).
     assert_eq!(code(server.get_with_headers("/registry/npm/3/-/whoami", &[("authorization", "Bearer expired")]).await).await, login, "named read 401");
     assert_eq!(code(server.get_with_headers("/registry/npm/3/-/whoami", &[("authorization", "Bearer denied")]).await).await, denied, "named read 403");
+}
+
+/// Row 18: a Cargo registry that refuses the caller's credential at `config.json` or at an index
+/// file is reported with the upstream codes, never as a policy refusal or a generic 502.
+#[tokio::test]
+async fn cargo_upstream_401_and_403_have_their_own_codes() {
+    let (server, _transport, _policy) = service_server().await;
+    let code = |answer: reqwest::Response| async move {
+        let status = answer.status().as_u16();
+        let body: serde_json::Value = serde_json::from_str(&answer.text().await.unwrap()).unwrap();
+        (status, body["error"].as_str().unwrap_or_default().to_owned())
+    };
+    let login = (401, "UPSTREAM_AUTHENTICATION_REQUIRED".to_owned());
+    let denied = (403, "UPSTREAM_DENIED".to_owned());
+    assert_eq!(code(server.get_with_headers("/registry/cargo/7/config.json", &[("authorization", "config-login")]).await).await, login, "config.json 401");
+    assert_eq!(code(server.get_with_headers("/registry/cargo/7/config.json", &[("authorization", "config-deny")]).await).await, denied, "config.json 403");
+    assert_eq!(code(server.get("/cargo/lo/gi/login-meta").await).await, login, "index file 401");
+    assert_eq!(code(server.get("/cargo/de/ny/deny-meta").await).await, denied, "index file 403");
 }
 
 /// N2: outside any request context (a background task, a test) shared-service mode has no

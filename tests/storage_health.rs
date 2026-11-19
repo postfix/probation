@@ -425,7 +425,7 @@ async fn an_unreadable_reference_row_is_refused_as_storage_unusable() {
     let (data_dir, config) = data_dir_holding(&format!(
         "INSERT INTO artifact_references (id, ecosystem, name, version, filename, \
          upstream_url, expected, first_seen_micros) \
-         VALUES (X'{unknown_ecosystem}', 'cargo', 'w', '1.0.0', 'w-1.0.0.tgz', \
+         VALUES (X'{unknown_ecosystem}', 'cobol', 'w', '1.0.0', 'w-1.0.0.tgz', \
                  'https://npm.invalid/w/-/w-1.0.0.tgz', '', NULL), \
                 (X'{undecodable_digest}', 'npm', 'w', '1.0.0', 'w-1.0.0.tgz', \
                  'https://npm.invalid/w/-/w-1.0.0.tgz', 'sha256-zz', NULL), \

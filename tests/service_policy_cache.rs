@@ -50,7 +50,7 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None,
+            osv_scope: None, archive_origin: None,
         }],
     }
 }
@@ -573,7 +573,7 @@ fn descriptors(count: u64) -> Vec<RegistryDescriptor> {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None,
+            osv_scope: None, archive_origin: None,
         })
         .collect()
 }
@@ -829,4 +829,37 @@ fn listen_port_zero_is_refused_under_service_policy() {
     assert!(Config::from_toml_str(&text("127.0.0.1:8080")).is_ok());
     // Without [service_policy] a random port stays allowed (tests and local use).
     assert!(Config::from_toml_str(&include_str!("../config.sample.toml").replace("127.0.0.1:8080", "127.0.0.1:0")).is_ok());
+}
+
+// ---- row 18: the optional archive origin of a Cargo descriptor ----
+
+fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option<&str>) -> ServicePolicySnapshot {
+    let mut value = snapshot();
+    value.registries[0].ecosystem = ecosystem;
+    value.registries[0].target_url = target.map(str::to_owned);
+    value.registries[0].archive_origin = Some(origin.into());
+    value
+}
+
+#[tokio::test]
+async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
+    use probation_policy::Ecosystem::{Cargo, Npm};
+    let target = Some("https://registry.example.test/api/cargo/repo/index/");
+    for (origin, ecosystem, target, why) in [
+        ("http://files.example.test/crates", Cargo, target, "not https"),
+        ("https://user:pw@files.example.test/crates", Cargo, target, "userinfo"),
+        ("https://files.example.test/crates?x=1", Cargo, target, "query"),
+        ("https://files.example.test/crates#f", Cargo, target, "fragment"),
+        ("https://127.0.0.1/crates", Cargo, target, "loopback"),
+        ("https://169.254.169.254/crates", Cargo, target, "metadata address"),
+        ("https://[::ffff:127.0.0.1]/crates", Cargo, target, "mapped loopback"),
+        ("https://files.example.test/crates", Npm, target, "not a Cargo registry"),
+        ("https://files.example.test/crates", Cargo, None, "no target"),
+        ("not a url", Cargo, target, "not a URL"),
+    ] {
+        let (result, policy, _dir) = sync_raw(serde_json::to_value(archived(origin, ecosystem, target)).unwrap()).await;
+        assert!(result.is_err() && policy.snapshot().is_none(), "{origin} ({why}) must be rejected before activation");
+    }
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://files.example.test/api/cargo/repo/crates", Cargo, target)).unwrap()).await;
+    result.expect("an ordinary archive origin is accepted");
 }

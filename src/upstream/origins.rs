@@ -38,6 +38,9 @@ const PYPI_METADATA: &str = "https://pypi.org";
 const PYPI_ARTIFACTS: &str = "https://files.pythonhosted.org";
 /// RubyGems serves its indexes, quick gemspecs and gems from one host.
 const RUBYGEMS: &str = "https://rubygems.org";
+/// Cargo's sparse index and its crate files (the `dl` of its `config.json`) are two hosts.
+const CARGO_INDEX: &str = "https://index.crates.io";
+const CARGO_ARTIFACTS: &str = "https://static.crates.io";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -45,14 +48,18 @@ pub enum OriginKind {
     PypiMetadata,
     PypiArtifacts,
     RubygemsMetadata,
+    CargoIndex,
+    CargoArtifacts,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 4] = [
+    pub const ALL: [OriginKind; 6] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
         OriginKind::RubygemsMetadata,
+        OriginKind::CargoIndex,
+        OriginKind::CargoArtifacts,
     ];
 }
 
@@ -87,6 +94,8 @@ pub struct OriginSet {
     pypi_metadata: Url,
     pypi_artifacts: Url,
     rubygems: Url,
+    cargo_index: Url,
+    cargo_artifacts: Url,
     allow_private_addresses: bool,
     private_cidrs: Vec<IpNet>,
     /// LS-F9: absolute denylist of a snapshot-sourced registry; its own private CIDRs
@@ -133,6 +142,8 @@ impl OriginSet {
             pypi_metadata: parse_origin(PYPI_METADATA),
             pypi_artifacts: parse_origin(PYPI_ARTIFACTS),
             rubygems: parse_origin(RUBYGEMS),
+            cargo_index: parse_origin(CARGO_INDEX),
+            cargo_artifacts: parse_origin(CARGO_ARTIFACTS),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -151,6 +162,8 @@ impl OriginSet {
             pypi_metadata: pick(&config.pypi_upstream_url, production.pypi_metadata),
             pypi_artifacts: pick(&config.pypi_artifacts_url, production.pypi_artifacts),
             rubygems: pick(&config.rubygems_upstream_url, production.rubygems),
+            cargo_index: pick(&config.cargo_upstream_url, production.cargo_index),
+            cargo_artifacts: pick(&config.cargo_artifacts_url, production.cargo_artifacts),
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
             deny: None,
@@ -168,6 +181,8 @@ impl OriginSet {
             pypi_metadata: pypi,
             pypi_artifacts: artifacts,
             rubygems: parse_origin(RUBYGEMS),
+            cargo_index: parse_origin(CARGO_INDEX),
+            cargo_artifacts: parse_origin(CARGO_ARTIFACTS),
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
             deny: None,
@@ -177,6 +192,13 @@ impl OriginSet {
     /// Tests only: where this set sends RubyGems calls (the upstream fake).
     pub fn with_rubygems(mut self, rubygems: Url) -> OriginSet {
         self.rubygems = rubygems;
+        self
+    }
+
+    /// Tests only: where this set sends Cargo index and crate-file calls (the upstream fake).
+    pub fn with_cargo(mut self, index: Url, artifacts: Url) -> OriginSet {
+        self.cargo_index = index;
+        self.cargo_artifacts = artifacts;
         self
     }
 
@@ -205,6 +227,8 @@ impl OriginSet {
             OriginKind::PypiMetadata => &self.pypi_metadata,
             OriginKind::PypiArtifacts => &self.pypi_artifacts,
             OriginKind::RubygemsMetadata => &self.rubygems,
+            OriginKind::CargoIndex => &self.cargo_index,
+            OriginKind::CargoArtifacts => &self.cargo_artifacts,
         }
     }
 

@@ -51,6 +51,8 @@ pub async fn respond(
             &super::credential_read::FamilyReadRules::PYPI
         } else if request.uri().path().starts_with("/rubygems/") || request.uri().path().starts_with("/registry/rubygems/") {
             &super::credential_read::FamilyReadRules::RUBYGEMS
+        } else if request.uri().path().starts_with("/cargo/") || request.uri().path().starts_with("/registry/cargo/") {
+            &super::credential_read::FamilyReadRules::CARGO
         } else {
             &super::credential_read::FamilyReadRules::NPM
         };
@@ -60,7 +62,7 @@ pub async fn respond(
         }
     }
     // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
-    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") {
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -98,6 +100,7 @@ fn classify_selected_registry(
             Some("npm") => Ecosystem::Npm,
             Some("pypi") => Ecosystem::PyPi,
             Some("rubygems") => Ecosystem::RubyGems,
+            Some("cargo") => Ecosystem::Cargo,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
@@ -109,6 +112,8 @@ fn classify_selected_registry(
             (Ecosystem::PyPi, rest)
         } else if let Some(rest) = path.strip_prefix("/rubygems/") {
             (Ecosystem::RubyGems, rest)
+        } else if let Some(rest) = path.strip_prefix("/cargo/") {
+            (Ecosystem::Cargo, rest)
         } else {
             return Err(ApiError::NotFound);
         };
@@ -149,6 +154,13 @@ fn classify_selected_registry(
     if ecosystem == Ecosystem::RubyGems && !rubygems_write && (!matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().query().is_some()) {
         return Err(if request.uri().query().is_some() { ApiError::NotFound } else { ApiError::MethodNotAllowed });
     }
+    // Cargo's registry API (publish, yank, unyank, owners, search) is forwarded by the family handler
+    // (class W with the caller's own token, or the owner list and search as reads); any other
+    // non-read request is refused here.
+    let cargo_api = ecosystem == Ecosystem::Cargo && rest.starts_with("api/v1/crates");
+    if ecosystem == Ecosystem::Cargo && !cargo_api && !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return Err(ApiError::MethodNotAllowed);
+    }
     let search = ecosystem == Ecosystem::Npm && rest == "-/v1/search";
     let named_action = ecosystem == Ecosystem::Npm && rest.starts_with("-/")
         && rest != "-/ping" && !search && !audit;
@@ -156,7 +168,9 @@ fn classify_selected_registry(
         && request.method() == Method::GET
         && request.uri().query() == Some("write=true")
         && parse_uri_package(rest).is_ok();
-    if request.uri().query().is_some() && !search && !write_preflight && !named_action {
+    // Cargo's search is the one Cargo read with a query string (the handler keeps the known keys only).
+    let cargo_search = cargo_api && rest == "api/v1/crates" && request.method() == Method::GET;
+    if request.uri().query().is_some() && !search && !write_preflight && !named_action && !cargo_search {
         return Err(ApiError::NotFound);
     }
     // Existing action handlers classify named operations and credentials before I/O.

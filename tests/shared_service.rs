@@ -111,7 +111,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None,
+                osv_scope: None, archive_origin: None,
             },
             RegistryDescriptor {
                 registry: RegistryId(4),
@@ -120,7 +120,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None,
+                osv_scope: None, archive_origin: None,
             },
         ],
     }
@@ -163,6 +163,7 @@ async fn shared_service_final_handoff_orders_publication() {
                             "/packages/final_package-1.0.0-py3-none-any.whl".into(),
                         ),
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
+                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -400,6 +401,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                             "/packages/race_package-1.0.0-py3-none-any.whl".into(),
                         ),
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
+                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -433,6 +435,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::Npm => &listing["versions"]["1.0.0"]["dist"]["tarball"],
                         Ecosystem::PyPi => &listing["files"][0]["url"],
                         Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
+                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()

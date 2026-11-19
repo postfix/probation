@@ -128,6 +128,7 @@ struct RequestContext {
 const ECOSYSTEM_NPM: u8 = 1;
 const ECOSYSTEM_PYPI: u8 = 2;
 const ECOSYSTEM_RUBYGEMS: u8 = 3;
+const ECOSYSTEM_CARGO: u8 = 4;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -157,6 +158,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::Npm => ECOSYSTEM_NPM,
         Ecosystem::PyPi => ECOSYSTEM_PYPI,
         Ecosystem::RubyGems => ECOSYSTEM_RUBYGEMS,
+        Ecosystem::Cargo => ECOSYSTEM_CARGO,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -301,6 +303,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_NPM => Ecosystem::Npm.as_tag(),
         ECOSYSTEM_PYPI => Ecosystem::PyPi.as_tag(),
         ECOSYSTEM_RUBYGEMS => Ecosystem::RubyGems.as_tag(),
+        ECOSYSTEM_CARGO => Ecosystem::Cargo.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -418,6 +421,7 @@ impl Target {
             Some("npm") => "npm",
             Some("pypi") => "pypi",
             Some("rubygems") => "rubygems",
+            Some("cargo") => "cargo",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -482,6 +486,18 @@ impl Target {
             ("pypi", _, project, ..) => Target {
                 ecosystem: root,
                 package: loggable(project),
+                version: None,
+            },
+            // `/cargo/crates/{crate}/{version}/download` names its crate and version; every other
+            // Cargo path is an index file (`/cargo/se/rd/serde`) whose last segment is the crate.
+            ("cargo", Some("crates"), Some(name), Some(version), ..) => Target {
+                ecosystem: root,
+                package: loggable(Some(name)),
+                version: loggable(Some(version)),
+            },
+            ("cargo", Some(_), ..) => Target {
+                ecosystem: root,
+                package: loggable(path.rsplit('/').next()),
                 version: None,
             },
             // `/rubygems/gems/{file}.gem`, `/rubygems/info/{gem}`, `/rubygems/quick/Marshal.4.8/{file}`:
@@ -690,6 +706,23 @@ mod tests {
             let target = Target::of(path);
             assert_eq!(target.package, Some(format!("{package:?}")), "{path}");
             assert_eq!(target.version, Some(format!("{file:?}")), "{path}");
+        }
+    }
+
+    /// Row 18: a Cargo download names its crate and version, an index file names its crate by
+    /// the last segment, and `config.json` names its own file; the ecosystem is `cargo` throughout.
+    #[test]
+    fn cargo_paths_log_their_crate_and_version() {
+        for (path, package, version) in [
+            ("/cargo/crates/serde_json/1.0.140/download", Some("serde_json"), Some("1.0.140")),
+            ("/cargo/se/rd/serde_json", Some("serde_json"), None),
+            ("/cargo/3/a/abc", Some("abc"), None),
+            ("/cargo/config.json", Some("config.json"), None),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.ecosystem, "cargo", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }
     }
 

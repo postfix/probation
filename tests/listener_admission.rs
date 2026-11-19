@@ -111,7 +111,7 @@ fn snapshot() -> ServicePolicySnapshot {
     let places = [PlaceRef { kind: LayerKind::Platform, id: 1 }, PlaceRef { kind: LayerKind::Org, id: 10 }];
     let descriptor = |id, ecosystem| RegistryDescriptor {
         registry: RegistryId(id), ecosystem, target_url: None, trusted: false,
-        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None,
+        registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None,
     };
     ServicePolicySnapshot {
         version: 1, key_id: KeyId(7), org: OrgId(10), account: places[1], revision: 1,
@@ -122,7 +122,7 @@ fn snapshot() -> ServicePolicySnapshot {
             revision: 1,
         }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
-        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems)],
+        registries: vec![descriptor(3, probation_policy::Ecosystem::Npm), descriptor(4, probation_policy::Ecosystem::PyPi), descriptor(5, probation_policy::Ecosystem::RubyGems), RegistryDescriptor { target_url: Some("https://cargo-reg.invalid/".into()), ..descriptor(7, probation_policy::Ecosystem::Cargo) }],
     }
 }
 
@@ -250,6 +250,23 @@ const ROUTE_TABLE: &[(&str, &str, char)] = &[
     ("/registry/rubygems/{registry}/quick/Marshal.4.8/{file}", "get", 'R'),
     ("/rubygems/gems/{file}", "get head", 'R'),
     ("/registry/rubygems/{registry}/gems/{file}", "get head", 'R'),
+    ("/cargo/config.json", "get", 'R'),
+    ("/cargo/1/{name}", "get", 'R'),
+    ("/cargo/2/{name}", "get", 'R'),
+    ("/cargo/3/{a}/{name}", "get", 'R'),
+    ("/cargo/{ab}/{cd}/{name}", "get", 'R'),
+    ("/registry/cargo/{registry}/config.json", "get", 'R'),
+    ("/registry/cargo/{registry}/1/{name}", "get", 'R'),
+    ("/registry/cargo/{registry}/2/{name}", "get", 'R'),
+    ("/registry/cargo/{registry}/3/{a}/{name}", "get", 'R'),
+    ("/registry/cargo/{registry}/{ab}/{cd}/{name}", "get", 'R'),
+    ("/cargo/crates/{name}/{version}/download", "get head", 'R'),
+    ("/registry/cargo/{registry}/crates/{name}/{version}/download", "get head", 'R'),
+    ("/registry/cargo/{registry}/api/v1/crates/new", "put", 'W'),
+    ("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/yank", "delete", 'W'),
+    ("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank", "put", 'W'),
+    ("/registry/cargo/{registry}/api/v1/crates/{name}/owners", "delete get put", 'W'),
+    ("/registry/cargo/{registry}/api/v1/crates", "get", 'R'),
     ("/registry/rubygems/{registry}/api/v1/gems", "post", 'W'),
     ("/registry/rubygems/{registry}/api/v1/gems/yank", "delete", 'W'),
     ("/pypi/simple/", "get", 'R'),
@@ -342,7 +359,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
     let (server, registry, _policy) = service(&["10.1.0.0/16"]).await;
     let before = registry.calls().len();
     let concrete = |template: &str| {
-        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else { "3" };
+        let eco_registry = if template.contains("/pypi/") { "4" } else if template.contains("/rubygems/") { "5" } else if template.contains("/cargo/") { "7" } else { "3" };
         template
             .replace("{registry}", eco_registry)
             .replace("{package}", "left-pad")
@@ -351,6 +368,7 @@ async fn every_class_w_route_refuses_without_credential_and_makes_no_upstream_ca
             .replace("{reference_id}", "0123456789abcdef0123456789abcdef")
             .replace("{*rest}", "unpublish")
             .replace("{version}", "1.0.0")
+            .replace("{name}", "demo")
     };
     let mut driven = 0;
     for (template, verbs, class) in ROUTE_TABLE {
