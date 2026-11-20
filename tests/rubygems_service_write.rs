@@ -112,7 +112,7 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }],
     }
 }

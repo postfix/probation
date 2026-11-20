@@ -76,6 +76,14 @@ export function helpers(stack, { log = console.log } = {}) {
       /// Dates every revision of a Conan reference {name, version, ageSeconds} that long ago (a real `conan upload` dates them now).
       publishConan: (spec) => call("POST", `${FAKES}/conan/publish`, spec),
       conanAge: (spec) => call("POST", `${FAKES}/conan/age`, spec),
+      /// {repo, tag, image: "hello-1" | "hello-2"}: serves that REAL tiny image of fixtures/oci as repo:tag on the fake Docker Hub.
+      publishOci: (spec) => call("POST", `${FAKES}/oci/publish`, spec),
+      publishOciForeign: (spec) => call("POST", `${FAKES}/oci/publish-foreign`, spec),
+      moveOci: (spec) => call("POST", `${FAKES}/oci/move`, spec),
+      /// Every write / every request / every token request the fake Docker Hub got.
+      ociWrites: () => call("GET", `${FAKES}/oci/writes`),
+      ociSeen: () => call("GET", `${FAKES}/oci/seen`),
+      ociTokens: () => call("GET", `${FAKES}/oci/tokens`),
       /// Every upload-endpoint call the fake center2.conan.io got: [{method, path, authorization, bytes, sha256}].
       conanWrites: () => call("GET", `${FAKES}/conan/writes`),
       /// Every request the fake checksum database (sum.golang.org) got: [{path, authorization}].

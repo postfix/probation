@@ -145,6 +145,14 @@ pub struct Config {
     /// out) and the one URL `conan upload` is forwarded to for the public registry (none by default: ConanCenter takes no uploads).
     pub conan_upstream_url: Option<Url>,
     pub conan_publish_url: Option<Url>,
+    /// OCI: the default registry (https://registry-1.docker.io; an origin, and a path prefix for a mirror that has one) and the one
+    /// storage origin a blob's redirect on it may land on (https://production.cloudfront.docker.com).
+    pub oci_upstream_url: Option<Url>,
+    pub oci_artifacts_url: Option<Url>,
+    /// The token service of the default OCI registry when it is not the registry's own host (an https origin).
+    pub oci_token_url: Option<Url>,
+    /// The hosts a layer's own download `urls` (a foreign layer) may name: an exact host, or `*.suffix` for every host below a suffix.
+    pub oci_foreign_layer_hosts: Vec<String>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -401,6 +409,11 @@ struct RawConfig {
     maven_publish_url: Option<String>,
     conan_upstream_url: Option<String>,
     conan_publish_url: Option<String>,
+    oci_upstream_url: Option<String>,
+    oci_artifacts_url: Option<String>,
+    oci_token_url: Option<String>,
+    #[serde(default = "default_foreign_layer_hosts")]
+    oci_foreign_layer_hosts: Vec<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -428,6 +441,27 @@ struct RawServicePolicy {
     sync_interval_seconds: Option<u64>,
     #[serde(default)]
     trusted_proxies: Vec<String>,
+}
+
+/// What a Windows base image's foreign layers are served from (the `*.data` host is where its redirects land).
+fn default_foreign_layer_hosts() -> Vec<String> {
+    ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"].map(str::to_owned).to_vec()
+}
+
+/// An exact host or `*.suffix`, lower case, letters, digits, `-` and `.` only; at most 64 entries (an empty list allows no foreign layer).
+fn foreign_layer_hosts(hosts: Vec<String>) -> Result<Vec<String>, ConfigError> {
+    let bad = |why: &str| invalid("oci_foreign_layer_hosts", why.to_owned());
+    if hosts.len() > 64 {
+        return Err(bad("at most 64 hosts"));
+    }
+    for host in &hosts {
+        let name = host.strip_prefix("*.").unwrap_or(host);
+        let labels_ok = !name.is_empty() && name.len() <= 253 && name.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        if !labels_ok || name.split('.').count() < 2 {
+            return Err(bad("each entry is a lower-case host (`mcr.microsoft.com`) or `*.` and a lower-case domain (`*.data.mcr.microsoft.com`)"));
+        }
+    }
+    Ok(hosts)
 }
 
 fn default_download_wait_seconds() -> u64 {
@@ -512,6 +546,10 @@ const OPTIONAL_KEYS: &[&str] = &[
     "maven_publish_url",
     "conan_upstream_url",
     "conan_publish_url",
+    "oci_upstream_url",
+    "oci_artifacts_url",
+    "oci_token_url",
+    "oci_foreign_layer_hosts",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -610,6 +648,10 @@ impl RawConfig {
         let maven_publish_url = upstream_origin_with("maven_publish_url", self.maven_publish_url, true)?;
         let conan_upstream_url = upstream_origin_with("conan_upstream_url", self.conan_upstream_url, true)?;
         let conan_publish_url = upstream_origin_with("conan_publish_url", self.conan_publish_url, true)?;
+        let oci_upstream_url = upstream_origin_with("oci_upstream_url", self.oci_upstream_url, true)?;
+        let oci_artifacts_url = upstream_origin("oci_artifacts_url", self.oci_artifacts_url)?;
+        let oci_token_url = upstream_origin("oci_token_url", self.oci_token_url)?;
+        let oci_foreign_layer_hosts = foreign_layer_hosts(self.oci_foreign_layer_hosts)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -908,6 +950,10 @@ impl RawConfig {
             maven_publish_url,
             conan_upstream_url,
             conan_publish_url,
+            oci_upstream_url,
+            oci_artifacts_url,
+            oci_token_url,
+            oci_foreign_layer_hosts,
             local: LocalText::default(),
         })
     }

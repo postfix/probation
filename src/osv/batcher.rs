@@ -41,6 +41,8 @@ pub fn osv_ecosystem(ecosystem: Ecosystem) -> Option<&'static str> {
         Ecosystem::NuGet => Some("NuGet"),
         Ecosystem::Maven => Some("Maven"),
         Ecosystem::Conan => Some("ConanCenter"),
+        // OSV has no generic image ecosystem: the family is not OSV-covered (03 "Central OSV lookup").
+        Ecosystem::Oci => None,
     }
 }
 

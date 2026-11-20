@@ -35,7 +35,7 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ),
     (
         "src/managed/mod.rs",
-        "fn authenticate",
+        "fn authenticate_charging",
         "get(AUTHORIZATION)",
         1,
     ),
@@ -57,6 +57,10 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     // Row 21: Maven's deploy endpoints forward the caller's own `Authorization` (Basic from `settings.xml`) to the registry's own origin.
     ("src/http/maven_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
     ("src/http/conan_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    // Row 24: OCI's push and upload endpoints forward the caller's own `Authorization` (the token of the registry's token flow, or Basic) to the registry's own origin.
+    ("src/http/oci_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    // The OCI exchange of the transport sends the credential it is given (the caller's own, or a token the firewall obtained) to the origin it names and nowhere else.
+    ("src/upstream/reqwest_transport.rs", "fn fetch_oci", "header(header::AUTHORIZATION,value)", 1),
     // Fix round of row 21: the spool counts its places per credential presented (a hash of the header name and value, never sent or stored) ...
     ("src/http/spool.rs", "fn owner_in", "\"authorization\"", 1),
     // ... and `probe_file` reads a Maven file's headers with the caller's own read credential, as `fetch_metadata` does.
@@ -877,7 +881,7 @@ fn harmless_edits_keep_the_scan_passing() {
     let copy = mutated("src/managed/mod.rs", |text| {
         let text = replace_once(
             &text,
-            "        peer: IpAddr,\n    ) -> Result<Principal, Refusal> {",
+            "        peer: IpAddr,\n        charge_rate: bool,\n    ) -> Result<Principal, Refusal> {",
             "        peer: IpAddr,\n        _label: impl Into<String>,\n    ) -> Result<Principal, Refusal> {",
         );
         replace_once(
@@ -906,7 +910,7 @@ fn harmless_edits_keep_the_scan_passing() {
     let copy = mutated("src/managed/mod.rs", |text| {
         replace_once(
             &text,
-            "        peer: IpAddr,\n    ) -> Result<Principal, Refusal> {",
+            "        peer: IpAddr,\n        charge_rate: bool,\n    ) -> Result<Principal, Refusal> {",
             "        peer: IpAddr,\n        _out: &mut impl std::io::Write,\n        _name: &'a impl AsRef<str>,\n        _all: &[impl std::fmt::Debug],\n    ) -> Result<Principal, Refusal> {",
         )
     });

@@ -175,6 +175,7 @@ async fn view(
                         Some("nuget") => "NuGet".to_owned(),
                         Some("maven") => "Maven".to_owned(),
                         Some("conan") => "Conan".to_owned(),
+                        Some("oci") => "OCI".to_owned(),
                         Some(other) => other.to_owned(),
                         None => String::new(),
                     },

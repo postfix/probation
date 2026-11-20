@@ -511,6 +511,9 @@ async fn issue(
     let nuget_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'nuget' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let oci_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'oci' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
     let conan_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'conan' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
@@ -607,6 +610,7 @@ async fn issue(
     script.push_str(&render_nuget(nuget_registry_id.is_some()));
     script.push_str(&render_maven(maven_registry_id.is_some()));
     script.push_str(&render_conan(conan_registry_id.is_some()));
+    script.push_str(&render_oci(oci_registry_id.is_some()));
     Ok(Some(script))
 }
 
@@ -679,6 +683,17 @@ fn render_maven(has_registry: bool) -> String {
 fn render_conan(has_registry: bool) -> String {
     if has_registry {
         "echo 'Conan: signs in with an API key on the key route (conan remote login), not a client certificate (the Keys page shows the commands).' >&2\n".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Docker, Podman and containerd log in through the registry's token flow with an API key (`docker login`: the key is the password and
+/// `/v2/token` returns it as the token), never a client certificate, so the script points at the Keys page. Empty when the organisation
+/// has no OCI registry.
+fn render_oci(has_registry: bool) -> String {
+    if has_registry {
+        "echo 'OCI: signs in with an API key through the registry token flow (docker login), not a client certificate (the Keys page shows the commands).' >&2\n".to_owned()
     } else {
         String::new()
     }
@@ -796,6 +811,13 @@ mod tests {
         let note = render_maven(true);
         assert!(note.contains("API key on the key route") && note.contains("settings.xml"), "{note}");
         assert!(!note.contains("<server>") && !note.contains("<password>"), "no configuration that could never authenticate is written");
+    }
+
+    #[test]
+    fn oci_setup_points_at_the_key_route() {
+        assert_eq!(render_oci(false), "");
+        let note = render_oci(true);
+        assert!(note.contains("registry token flow") && note.contains("docker login"), "{note}");
     }
 
     #[test]

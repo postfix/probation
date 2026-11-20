@@ -381,28 +381,28 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(3), ecosystem: probation_policy::Ecosystem::Npm, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(4), ecosystem: probation_policy::Ecosystem::PyPi, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(5), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Cargo, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(8), ecosystem: probation_policy::Ecosystem::Go, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(9), ecosystem: probation_policy::Ecosystem::NuGet, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(10), ecosystem: probation_policy::Ecosystem::Maven, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }, RegistryDescriptor {
             registry: RegistryId(11), ecosystem: probation_policy::Ecosystem::Conan, target_url: None, trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }],
     };
     if slow {
@@ -410,7 +410,7 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
         // Only this test has it: two RubyGems registries make the unqualified `/rubygems` root ambiguous.
         snapshot.registries.push(RegistryDescriptor {
             registry: RegistryId(6), ecosystem: probation_policy::Ecosystem::RubyGems, target_url: Some("https://slow.invalid/".into()), trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         });
     }
     snapshot
@@ -1093,4 +1093,41 @@ async fn a_publication_between_authorisation_and_release_is_admitted_again_for_e
         }
     }
     gate.set_barrier(Arc::new(|| {}));
+}
+
+/// Row 24, the OCI case of the same contract. A registry client sends `Authorization` on almost every request (Basic on a login, then the
+/// Bearer token of the token flow), so those reads are request-scoped; no route of this firewall takes a credential in its path (a
+/// repository name cannot hold one) or in its query (the lists take `n`, `last` and the referrers filter, `ns` names a mirror's
+/// registry); the daemon's own non-secret header and an anonymous read keep a read cache-eligible.
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_oci() {
+    let oci = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::OCI), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "Basic dXNlcjpwdw=="),
+        ("Authorization", "Bearer eyJ0b2tlbiI6IjEifQ"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-registry-auth", "e30="),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!oci("/v2/library/alpine/manifests/latest", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!oci("/v2/library/alpine/manifests/latest?token=abc", &[]));
+    assert!(!oci("/v2/library/alpine/tags/list?access_token=abc&n=5", &[]));
+    for form in [
+        "https://TOKEN:@registry.example.test/v2/library/alpine/manifests/latest",
+        "https://token@registry.example.test/v2/library/alpine/tags/list",
+        "https://user:pass@registry.example.test/registry/oci/10/v2/_catalog",
+    ] {
+        assert!(!oci(form, &[]), "{form}: URL userinfo");
+    }
+    // Control: the paging keys, the mirror's `ns` and the client's own non-secret headers keep a read cache-eligible.
+    assert!(oci("/v2/library/alpine/tags/list?n=50&last=3.1&ns=docker.io", &[("host", "x"), ("accept", "application/vnd.oci.image.index.v1+json"), ("accept-encoding", "gzip"), ("user-agent", "containerd/2.2.0"), ("docker-distribution-api-version", "registry/2.0")]));
 }

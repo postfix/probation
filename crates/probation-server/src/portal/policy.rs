@@ -457,6 +457,7 @@ fn ecosystem_label(ecosystem: Ecosystem) -> String {
         Ecosystem::NuGet => "NuGet",
         Ecosystem::Maven => "Maven",
         Ecosystem::Conan => "Conan",
+        Ecosystem::Oci => "OCI",
     }
     .to_owned()
 }
@@ -704,7 +705,7 @@ fn freeze(value: &str, unit: &str) -> Result<Option<u64>, String> {
 
 /// Blocks and exceptions on a package always name their ecosystem (C31).
 fn ecosystem(value: &str) -> Result<Ecosystem, String> {
-    Ecosystem::from_tag(value).ok_or_else(|| "Choose npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven or Conan.".to_owned())
+    Ecosystem::from_tag(value).ok_or_else(|| "Choose npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven, Conan or OCI.".to_owned())
 }
 
 fn new_block(form: &PolicyForm) -> Result<Block, String> {

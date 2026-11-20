@@ -437,6 +437,7 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         Ecosystem::NuGet => &["api.nuget.org", "azuresearch-usnc.nuget.org", "azuresearch-ussc.nuget.org", "www.nuget.org"],
         Ecosystem::Maven => &["repo.maven.apache.org", "repo1.maven.org"],
         Ecosystem::Conan => &["center2.conan.io", "center.conan.io"],
+        Ecosystem::Oci => &[],
     };
     let public_source = target_url
         .and_then(|text| Url::parse(text).ok())
@@ -685,7 +686,8 @@ pub async fn evaluate_scoped(
     let rules = policy
         .policy
         .rules_for(candidate.ecosystem, candidate.name, candidate.version);
-    if rules.osv == OsvSetting::Off || scope == OsvScope::Private {
+    // A family OSV has no ecosystem for (container images) is never asked about, whatever the scope says.
+    if rules.osv == OsvSetting::Off || scope == OsvScope::Private || batcher::osv_ecosystem(candidate.ecosystem).is_none() {
         return blind.decision;
     }
 
@@ -1162,6 +1164,23 @@ mod tests {
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
             assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+        }
+    }
+
+    /// Row 24, LS-F12 (`osv_not_applicable_to_oci`): OSV has no image ecosystem (the mapping is None), so no scope, public or private, ever sends an
+    /// image's name to an OSV server and a MAL-flagging server changes nothing.
+    #[tokio::test]
+    async fn osv_not_applicable_to_oci() {
+        for explicit in [Some(OsvScope::Public), Some(OsvScope::Private), None] {
+            let scope = effective_scope(Ecosystem::Oci, Some("https://registry.example.org/"), explicit);
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let candidate = Candidate { ecosystem: Ecosystem::Oci, ..candidate("library/alpine", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") };
+            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &candidate, scope).await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), 0, "{explicit:?}: an image is never asked about");
+            assert!(matches!(decision, Decision::Allow), "{explicit:?}: {decision:?}");
         }
     }
 

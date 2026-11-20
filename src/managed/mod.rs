@@ -76,6 +76,8 @@ pub struct Principal {
     pub registry_archive_origin: Option<Url>,
     /// A NuGet registry's declared resource path prefix (descriptor `resource_path_prefix`).
     pub registry_resource_prefix: Option<String>,
+    /// An OCI registry's declared token-service origin (descriptor `token_origin`).
+    pub registry_token_origin: Option<Url>,
     /// Request-scoped shared credential, for ordinary selected-registry reads only.
     pub registry_read_authorization: Option<String>,
     pub registry_trusted: bool,
@@ -247,6 +249,7 @@ impl Managed {
             layers,
             rate_limit,
             rate_limit_source,
+            token_origin,
         } = answer
         else {
             return Err(Refusal::Unauthenticated);
@@ -259,6 +262,17 @@ impl Managed {
         let registry_private_cidrs = registry_private_cidrs.iter()
             .map(|cidr| cidr.parse::<ipnet::IpNet>().map_err(|_| Refusal::Unauthenticated))
             .collect::<Result<Vec<_>, _>>()?;
+        // The declared token origin of an OCI registry: an https origin without a path (a malformed one refuses the admission, fail closed).
+        let registry_token_origin = token_origin
+            .as_deref()
+            .map(|text| {
+                let url = Url::parse(text).map_err(|_| Refusal::Unauthenticated)?;
+                if url.scheme() != "https" || !(url.path() == "/" || url.path().is_empty()) || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() || url.host_str().is_none() {
+                    return Err(Refusal::Unauthenticated);
+                }
+                Ok(url)
+            })
+            .transpose()?;
         let registry_origin = target_url
             .as_deref()
             .map(|target| {
@@ -316,7 +330,7 @@ impl Managed {
             chain,
             registry_origin,
             registry_archive_origin: None,
-            registry_resource_prefix: None,
+            registry_resource_prefix: None, registry_token_origin,
             registry_read_authorization: read_authorization,
             registry_trusted: trusted,
             registry_private_cidrs,
@@ -367,7 +381,7 @@ impl Managed {
                         rate_limit_source: key.rate_limit_source,
                         org: key.org,
                         chain: key.chain.into(),
-                        registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
+                        registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
                         registry_read_authorization: None,
                         registry_trusted: false,
                         registry_private_cidrs: Vec::new(),
@@ -738,7 +752,7 @@ impl Managed {
             rate_limit_source,
             org,
             chain: chain.iter().map(|link| link.place).collect(),
-            registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
+            registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
             registry_read_authorization: None,
             registry_trusted: false,
             registry_private_cidrs: Vec::new(),
@@ -1325,7 +1339,7 @@ mod tests {
             authority: None, place, key_id: KeyId(1),
             policy: Arc::new(CompiledPolicy::managed(probation_policy::resolve(&[Layer::empty(LayerKind::Platform), Layer::empty(LayerKind::Org)]))),
             account: place, rate_limit: None, rate_limit_source: LimitSource::Default,
-            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None,
+            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
             registry_read_authorization: None, registry_trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![],
         };
@@ -1357,6 +1371,15 @@ mod tests {
         publish_on: &'static [usize],
         grant: bool,
         rate_limit: Option<u32>,
+    ) -> (Arc<Managed>, Arc<std::sync::atomic::AtomicUsize>, wiremock::MockServer, tempfile::TempDir) {
+        certificate_fixture_with(publish_on, grant, rate_limit, None).await
+    }
+
+    async fn certificate_fixture_with(
+        publish_on: &'static [usize],
+        grant: bool,
+        rate_limit: Option<u32>,
+        token_origin: Option<&str>,
     ) -> (Arc<Managed>, Arc<std::sync::atomic::AtomicUsize>, wiremock::MockServer, tempfile::TempDir) {
         use probation_policy::api::{MemberCertificateId, PlaceLayer};
         use probation_policy::{Layer, LayerKind};
@@ -1396,6 +1419,7 @@ mod tests {
                 PlaceLayer { place, layer: Layer::empty(LayerKind::Org), revision: 1 },
             ],
             rate_limit: rate_limit.map(|limit| limit.try_into().unwrap()),
+            token_origin: token_origin.map(str::to_owned),
             rate_limit_source: LimitSource::Default,
         })
         .unwrap();
@@ -1438,6 +1462,21 @@ mod tests {
         );
         // One request consumed the account's single token exactly once.
         assert!(matches!(admit_one(&managed).await, Err(Refusal::RateLimited)));
+    }
+
+    /// R2: the registry's declared token-service origin is part of a certificate admission, so a GitLab-style realm on another host
+    /// works in a certificate-managed firewall as it does in a shared service; a malformed one refuses the admission (fail closed).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_certificate_admission_carries_the_registrys_token_origin() {
+        let (managed, _hits, _server, _dir) = certificate_fixture_with(&[], true, None, Some("https://gitlab.example")).await;
+        let principal = admit_one(&managed).await.expect("admitted");
+        assert_eq!(principal.registry_token_origin.as_ref().map(url::Url::as_str), Some("https://gitlab.example/"));
+        let (managed, _hits, _server, _dir) = certificate_fixture(&[], true, None).await;
+        assert!(admit_one(&managed).await.expect("admitted").registry_token_origin.is_none());
+        for bad in ["http://gitlab.example", "https://gitlab.example/jwt/auth", "https://u:p@gitlab.example", "not a url"] {
+            let (managed, _hits, _server, _dir) = certificate_fixture_with(&[], true, None, Some(bad)).await;
+            assert!(matches!(admit_one(&managed).await, Err(Refusal::Unauthenticated)), "{bad}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

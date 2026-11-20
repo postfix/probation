@@ -29,13 +29,13 @@ fn snapshot_with(freeze: u64, target: Option<&str>, archive: Option<&str>, count
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Conan, target_url: target.map(str::to_owned),
-            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive.map(str::to_owned), resource_path_prefix: None,
+            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: archive.map(str::to_owned), resource_path_prefix: None, token_origin: None,
         }],
     };
     for n in 1..count {
         snapshot.registries.push(RegistryDescriptor {
             registry: RegistryId(7 + n), ecosystem: probation_policy::Ecosystem::Conan, target_url: Some(format!("https://reg{n}.invalid/repo/")),
-            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         });
     }
     snapshot

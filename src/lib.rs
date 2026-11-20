@@ -23,6 +23,7 @@ pub mod go_modules;
 pub mod nuget;
 pub mod maven;
 pub mod conan;
+pub mod oci;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -184,6 +185,8 @@ pub struct App {
     pub(crate) maven: maven::serve::Shared,
     /// Conan: the per-package unit tables, refresh places and row gates, process-owned.
     pub(crate) conan: conan::serve::Shared,
+    /// OCI: anonymous tokens, token realms, fetch places, row gates and the small digest memos, process-owned.
+    pub(crate) oci: oci::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -447,6 +450,7 @@ impl App {
             nuget: nuget::serve::Shared::default(),
             maven: maven::serve::Shared::default(),
             conan: conan::serve::Shared::new(upstream_requests),
+            oci: oci::serve::Shared::new(upstream_requests),
             delivery,
             osv,
             managed,

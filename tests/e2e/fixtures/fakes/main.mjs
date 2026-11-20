@@ -13,6 +13,12 @@
 //   GET  /go/sumdb                    every request the fake checksum database (sum.golang.org) got
 //   POST /nuget/publish {...}         NuGet.publish; answers the package version made
 //   POST /maven/publish {...}         Maven.publish; answers the version (or snapshot build) made
+//   POST /oci/publish-foreign {repo, tag, image}   the same image with its layer named by a download URL on mcr.microsoft.com (a foreign layer)
+//   POST /oci/publish {repo, tag, image}   serves the REAL tiny image hello-1 or hello-2 of fixtures/oci as repo:tag on the fake Docker Hub
+//   POST /oci/move {repo, tag, image}      points a tag at another image
+//   GET  /oci/writes                       every write the fake registry-1.docker.io received (method, path, authorization, bytes)
+//   GET  /oci/seen                         every request any of its three hosts received (host, method, path, authorization)
+//   GET  /oci/tokens                       every token request the fake auth.docker.io received (scope, service, basic)
 //   POST /maven/plugin {...}          a plugin the fake serves in its group's metadata
 //   POST /conan/publish {name, version, ageSeconds, binaries: {pkgid: ageSeconds}}   serves the real hello/1.0 or hello/2.0 files of fixtures/conan
 //   POST /conan/age {name, version, ageSeconds}   dates every revision of name/version that long ago (a REAL `conan upload` dates them now)
@@ -60,13 +66,14 @@ import { Hibp } from "./hibp.mjs";
 import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
 import { Oidc } from "./oidc.mjs";
+import { Oci } from "./oci.mjs";
 import { Osv } from "./osv.mjs";
 import { Pypi } from "./pypi.mjs";
 import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), nuget: new NuGet(), maven: new Maven(), conan: new Conan(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), nuget: new NuGet(), maven: new Maven(), conan: new Conan(), oci: new Oci(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
@@ -84,6 +91,10 @@ const hosts = {
   "www.nuget.org": fakes.nuget,
   "repo.maven.apache.org": fakes.maven,
   "center2.conan.io": fakes.conan,
+  "registry-1.docker.io": fakes.oci,
+  "auth.docker.io": fakes.oci,
+  "production.cloudfront.docker.com": fakes.oci,
+  "mcr.microsoft.com": fakes.oci,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -199,7 +210,8 @@ async function serve(req, res) {
   }
   if (f?.mode === "corrupt" && bytes.length) bytes[bytes.length - 1] ^= 1;
   entry.status = answer.status;
-  headers["content-length"] = bytes.length;
+  // (a HEAD answer states the length the GET would have, which is what a real registry does and containerd reads)
+  if (!(req.method === "HEAD" && headers["content-length"] !== undefined)) headers["content-length"] = bytes.length;
   res.writeHead(answer.status, headers);
   if (f?.mode === "stall") {
     res.write(bytes.subarray(0, f.afterBytes ?? 0));
@@ -250,6 +262,12 @@ const control = {
   "POST /maven/publish": (body) => fakes.maven.publish(body),
   "POST /maven/plugin": (body) => fakes.maven.plugin(body),
   "GET /maven/writes": () => fakes.maven.writes,
+  "POST /oci/publish": (body) => fakes.oci.publish(body),
+  "POST /oci/publish-foreign": (body) => fakes.oci.publishForeign(body),
+  "POST /oci/move": (body) => fakes.oci.move(body),
+  "GET /oci/writes": () => fakes.oci.writes,
+  "GET /oci/seen": () => fakes.oci.seen,
+  "GET /oci/tokens": () => fakes.oci.tokens,
   "POST /conan/publish": (body) => fakes.conan.publish(body),
   "POST /conan/age": (body) => fakes.conan.age(body),
   "GET /conan/writes": () => fakes.conan.writes,

@@ -16,6 +16,7 @@
   "lockfile.test.mjs": 11,
   "maven-fake.test.mjs": 25,
   "nuget-fake.test.mjs": 51,
+  "oci-fake.test.mjs": 42,
   "openssl-setup.test.mjs": 37,
   "pf.test.mjs": 35,
   "rendezvous-cli.test.mjs": 80,

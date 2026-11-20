@@ -128,6 +128,10 @@ services:
           - www.nuget.org
           - repo.maven.apache.org
           - center2.conan.io
+          - registry-1.docker.io
+          - auth.docker.io
+          - production.cloudfront.docker.com
+          - mcr.microsoft.com
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -376,6 +380,17 @@ services:
       context: ./clients
       dockerfile: conan.Dockerfile
     image: localhost/probation-e2e-client:conan2.21.0
+    environment:
+      <<: *client-env
+
+  # skopeo (the registry client podman, buildah and CRI-O share), installed at image build; the stack itself is offline. Go reads the
+  # system trust store (SSL_CERT_FILE is the E2E CA from the shared environment).
+  client-oci:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: oci.Dockerfile
+    image: localhost/probation-e2e-client:skopeo
     environment:
       <<: *client-env
 

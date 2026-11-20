@@ -16,6 +16,7 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
     (Ecosystem::NuGet, Some("NuGet")),
     (Ecosystem::Maven, Some("Maven")),
     (Ecosystem::Conan, Some("ConanCenter")),
+    (Ecosystem::Oci, None),
 ];
 
 #[test]
@@ -89,4 +90,15 @@ fn osv_ecosystem_mapping_per_family_conan() {
     assert_eq!(Ecosystem::Conan.as_tag(), "conan");
     assert_eq!(Ecosystem::from_tag("conan"), Some(Ecosystem::Conan));
     assert!(Ecosystem::ALL.contains(&Ecosystem::Conan));
+}
+
+/// Row 24: names `Ecosystem::Oci`, so it does not compile before this row adds the variant. OSV has no generic image
+/// ecosystem: the mapping is None (the family is not advertised as OSV-covered), and the tag is `oci`.
+#[test]
+fn osv_ecosystem_mapping_per_family_oci() {
+    assert_eq!(osv_ecosystem(Ecosystem::Oci), None);
+    assert_eq!(Ecosystem::Oci.as_tag(), "oci");
+    assert_eq!(Ecosystem::from_tag("oci"), Some(Ecosystem::Oci));
+    assert!(Ecosystem::ALL.contains(&Ecosystem::Oci));
+    assert_eq!(Ecosystem::ALL.len(), 9);
 }

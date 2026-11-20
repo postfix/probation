@@ -107,6 +107,18 @@ pub(super) async fn recheck_conan(
     recheck_for(app, peer, registry, headers, Ecosystem::Conan).await
 }
 
+pub(super) async fn admit_oci(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
+    admit_for(app, peer, registry, headers, Ecosystem::Oci).await
+}
+
+pub(super) async fn recheck_oci(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    recheck_for(app, peer, registry, headers, Ecosystem::Oci).await
+}
+
 pub(super) async fn admit_maven(
     app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {

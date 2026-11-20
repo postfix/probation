@@ -267,6 +267,11 @@ enum StoreCommand {
         name: String,
         reply: oneshot::Sender<StoreResult<HashMap<ReferenceId, i64>>>,
     },
+    CountRegistryProjects {
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        reply: oneshot::Sender<StoreResult<u64>>,
+    },
     CountProjectReferences {
         registry_id: u64,
         ecosystem: Ecosystem,
@@ -481,6 +486,11 @@ impl StoreHandle {
     pub async fn count_project_references_in(&self, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<u64> {
         let name = name.to_owned();
         self.critical(|reply| StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply }).await
+    }
+
+    /// How many distinct projects (OCI: repositories) have rows in one registry.
+    pub async fn count_registry_projects_in(&self, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<u64> {
+        self.critical(|reply| StoreCommand::CountRegistryProjects { registry_id, ecosystem, reply }).await
     }
 
     /// The upstream publication time of every reference of one project that has one, in one query (a Go list seeds
@@ -865,6 +875,10 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = list_project_first_seen(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
+        StoreCommand::CountRegistryProjects { registry_id, ecosystem, reply } => {
+            let result = count_registry_projects(connection, registry_id, ecosystem).await;
+            answer(healthy, READ, reply, result);
+        }
         StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply } => {
             let result = count_project_references(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
@@ -994,6 +1008,16 @@ async fn get_reference(
     match rows.next().await? {
         Some(row) => ReferenceRow::from_row(&row).map(Some),
         None => Ok(None),
+    }
+}
+
+async fn count_registry_projects(connection: &mut Connection, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<u64> {
+    let mut rows = connection
+        .query("SELECT COUNT(DISTINCT name) FROM artifact_references WHERE registry_id = ?1 AND ecosystem = ?2", (registry_id as i64, ecosystem.as_tag()))
+        .await?;
+    match rows.next().await? {
+        Some(row) => unsigned(&row, 0, "count(distinct artifact_references.name)"),
+        None => Ok(0),
     }
 }
 
@@ -1266,7 +1290,7 @@ async fn carried_forward(
         pinned_size: optional_unsigned(&row, 3, "artifact_references.pinned_size")?
             .map(|size| size as i64),
         content_key: optional_digest(&row, 4, "artifact_references.content_key")?,
-        publication_micros: if matches!(upsert.reference.ecosystem, crate::policy::Ecosystem::Go | crate::policy::Ecosystem::Maven | crate::policy::Ecosystem::Conan) {
+        publication_micros: if matches!(upsert.reference.ecosystem, crate::policy::Ecosystem::Go | crate::policy::Ecosystem::Maven | crate::policy::Ecosystem::Conan | crate::policy::Ecosystem::Oci) {
             // A Go date only gets later: the larger of the stored and the new one (the store task commits one
             // transaction at a time, so reading it here is the whole race).
             upsert.publication_micros.into_iter().chain(optional_integer(&row, 5, "artifact_references.publication_micros")?).max()

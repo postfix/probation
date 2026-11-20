@@ -608,6 +608,10 @@ async fn admit_certificate(
         "SELECT origin, path_prefix, forward_bearer FROM registry_delete_origins WHERE registry_id = $1 ORDER BY origin, path_prefix"
     ).bind(asked.registry.0 as i64).fetch_all(&mut *tx).await?
         .into_iter().map(|(origin, path_prefix, forward_bearer)| RegistryDeletionScope { origin, path_prefix, forward_bearer }).collect();
+    let token_origin: Option<String> = sqlx::query_scalar("SELECT token_origin FROM registries WHERE id = $1")
+        .bind(asked.registry.0 as i64)
+        .fetch_one(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(CertificateAdmission::Granted {
         registry: asked.registry,
@@ -627,6 +631,7 @@ async fn admit_certificate(
         } else {
             LimitSource::Default
         },
+        token_origin,
     }))
 }
 

@@ -21,7 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
-use reqwest::header::{self, HeaderValue};
+use reqwest::header::{self, HeaderName, HeaderValue};
 use reqwest::{Client, ClientBuilder, Response, redirect};
 use tokio::io::AsyncReadExt;
 use url::Url;
@@ -29,7 +29,7 @@ use url::Url;
 use crate::upstream::origins::{OriginKind, OriginSet};
 use crate::upstream::resolver::GuardedResolver;
 use crate::upstream::{
-    ActionRequest, ActionResponse, ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest, MetadataResponse, NamedReadRequest, Transport,
+    ActionRequest, ActionResponse, ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest, MetadataResponse, NamedReadRequest, OciRequest, OciResponse, Transport,
     UpstreamError, UpstreamValidators, capped, collect_capped,
 };
 
@@ -135,7 +135,8 @@ impl ReqwestTransport {
                 let selected = match archive {
                     Some(archive) => selected.with_selected_archive(archive.clone()),
                     None => selected,
-                };
+                }
+                .with_foreign_of(&self.origins);
                 match &self.service_deny {
                     Some(deny) => selected.with_denylist(std::sync::Arc::clone(deny)),
                     None => selected,
@@ -195,7 +196,8 @@ fn same_origin_policy(origins: OriginSet, archives: bool) -> redirect::Policy {
             return attempt.stop();
         };
         let Some(kind) = origins.kind_of(previous) else {
-            return attempt.stop();
+            // A foreign layer's URL redirects only within the foreign list (credentials were never sent to it).
+            return if archives && origins.admits_foreign(previous) && origins.admits_foreign(attempt.url()) { attempt.follow() } else { attempt.stop() };
         };
         match origins.admit(attempt.url(), kind) {
             Ok(()) => attempt.follow(),
@@ -243,6 +245,61 @@ impl Transport for ReqwestTransport {
         let content_type = header_string(&response, header::CONTENT_TYPE);
         let body = collect_capped(byte_stream(response), req.max_bytes).await?;
         Ok(ActionResponse { status, content_type, body })
+    }
+
+    async fn fetch_oci(&self, req: OciRequest) -> Result<OciResponse, UpstreamError> {
+        let long = req.body.as_ref().is_some_and(|(_, length)| *length > UPLOAD_BODY_BYTES);
+        let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, false, false, if long { ARTIFACT_TOTAL_TIMEOUT } else { METADATA_TOTAL_TIMEOUT }, None, false)?;
+        // Only the registry itself (or the realm origin a caller named): the storage origin of a blob redirect is not a registry.
+        if !matches!(Self::admitted(&origins, &req.url)?, OriginKind::OciRegistry | OriginKind::NpmMetadata) {
+            return Err(UpstreamError::RejectedUrl(crate::upstream::UrlRejection::ForeignOrigin));
+        }
+        let bad = |_| UpstreamError::Status(400);
+        let mut request = client.request(req.method, req.url);
+        request = request.header(header::ACCEPT, HeaderValue::from_str(req.accept.as_deref().unwrap_or("*/*")).map_err(bad)?);
+        if let Some(authorization) = req.authorization {
+            let mut value = HeaderValue::from_str(&authorization).map_err(bad)?;
+            value.set_sensitive(true);
+            request = request.header(header::AUTHORIZATION, value);
+        }
+        if let Some(content_type) = req.content_type {
+            request = request.header(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).map_err(bad)?);
+        }
+        if let Some(range) = req.content_range {
+            request = request.header(header::CONTENT_RANGE, HeaderValue::from_str(&range).map_err(bad)?);
+        }
+        if let Some((file, length)) = req.body {
+            let body = futures_util::stream::try_unfold(file, |mut file| async move {
+                let mut chunk = [0u8; 64 * 1024];
+                let count = file.read(&mut chunk).await?;
+                Ok::<_, std::io::Error>((count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)))
+            });
+            request = request.header(header::CONTENT_LENGTH, length.to_string()).body(reqwest::Body::wrap_stream(body));
+        }
+        let response = request.send().await.map_err(upstream_error)?;
+        check_connected_peer(&response, &origins)?;
+        let status = response.status().as_u16();
+        let mut headers = Vec::new();
+        for (name, key) in [
+            ("content-type", header::CONTENT_TYPE),
+            ("content-length", header::CONTENT_LENGTH),
+            ("www-authenticate", header::WWW_AUTHENTICATE),
+            ("link", header::LINK),
+            ("location", header::LOCATION),
+            ("range", header::RANGE),
+            ("docker-content-digest", HeaderName::from_static("docker-content-digest")),
+            ("docker-upload-uuid", HeaderName::from_static("docker-upload-uuid")),
+            ("oci-subject", HeaderName::from_static("oci-subject")),
+            ("oci-filters-applied", HeaderName::from_static("oci-filters-applied")),
+        ] {
+            for value in response.headers().get_all(&key).iter().take(8) {
+                if let Some(text) = value.to_str().ok().filter(|text| text.len() <= 8192) {
+                    headers.push((name, text.to_owned()));
+                }
+            }
+        }
+        let body = collect_capped(byte_stream(response), req.max_bytes).await?;
+        Ok(OciResponse { status, headers, body })
     }
 
     async fn fetch_named_read(&self, req: NamedReadRequest) -> Result<bytes::Bytes, UpstreamError> {
@@ -369,7 +426,10 @@ impl Transport for ReqwestTransport {
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let credentialed = req.read_authorization.is_some();
         let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, true, !credentialed, METADATA_TOTAL_TIMEOUT, req.archive_origin.as_ref().filter(|_| req.allow_archive_redirect), req.allow_archive_redirect)?;
-        Self::admitted(&origins, &req.url)?;
+        // A foreign layer's own URL (an OCI layer descriptor's `urls`, https on the operator's list) is an artifact like any other, fetched with no credential.
+        if !(req.allow_archive_redirect && req.read_authorization.is_none() && origins.admits_foreign(&req.url)) {
+            Self::admitted(&origins, &req.url)?;
+        }
         let mut url = req.url;
         let mut authorization = req.read_authorization;
         let mut redirects = 0;
@@ -392,7 +452,7 @@ impl Transport for ReqwestTransport {
                 // previous hop was on, or be a Go zip's redirect to its archive origin: never another origin of the
                 // set (the public proxy, the checksum database, another family's host).
                 let from = origins.kind_of(&url).unwrap_or(OriginKind::NpmMetadata);
-                if origins.admit(&next, from).is_err() && !(req.allow_archive_redirect && origins.admits_archive_redirect(from, &next)) {
+                if origins.admit(&next, from).is_err() && !(req.allow_archive_redirect && (origins.admits_archive_redirect(from, &next) || (origins.admits_foreign(&url) && origins.admits_foreign(&next)))) {
                     return Err(UpstreamError::RejectedRedirect { to: next });
                 }
                 url = next;

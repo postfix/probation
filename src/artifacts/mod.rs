@@ -74,6 +74,33 @@ pub async fn serve_artifact(
     serve_artifact_in(app, principal, ecosystem, 0, id, filename, method, range_header).await
 }
 
+/// The decision a request would get before any byte is fetched (the first half of [`serve_artifact_in`]): the policy is valid, the reference is
+/// this registry's and ecosystem's and this filename, and the current policy allows it. A refusal is the same error `serve_artifact_in` gives
+/// (and is recorded the same way); the row is returned so a caller can see whether its bytes are already verified on disk.
+pub async fn preflight(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    ecosystem: Ecosystem,
+    registry_id: u64,
+    id: ReferenceId,
+    filename: &str,
+) -> Result<ReferenceRow, ApiError> {
+    let policy = app.policy_for(principal).ok_or(ApiError::PolicyUnavailable)?;
+    let now = app.clock.now_utc_micros();
+    if !policy.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_valid_at(now)) {
+        return Err(ApiError::PolicyUnavailable);
+    }
+    let row = load_reference(app, id).await?;
+    if row.registry_id != registry_id || row.reference.ecosystem != ecosystem || row.reference.filename != filename {
+        return Err(ApiError::NotFound);
+    }
+    let pinned = row.pinned_digests();
+    match evaluate(app, &policy, now, &row, &pinned).await {
+        Decision::Allow => Ok(row),
+        other => Err(refused(app, principal, &policy, now, &row, &pinned, other)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_artifact_in(
     app: &Arc<App>,
@@ -141,7 +168,7 @@ pub async fn serve_artifact_in(
         .and_then(|p| p.registry_archive_origin.as_ref())
         .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
     // A Go registry's declared archive origin, from the same principal the request was admitted under.
-    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet | Ecosystem::Maven | Ecosystem::Conan));
+    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet | Ecosystem::Maven | Ecosystem::Conan | Ecosystem::Oci));
     let (download_origin, download_authorization) = match archive {
         Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
         None => (origin, read_authorization),
@@ -227,6 +254,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
         Ecosystem::NuGet => crate::nuget::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
         Ecosystem::Maven => crate::maven::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
         Ecosystem::Conan => crate::conan::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
+        Ecosystem::Oci => crate::oci::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {
@@ -255,7 +283,22 @@ async fn evaluate(
     row: &ReferenceRow,
     pinned: &[Digest],
 ) -> Decision {
-    osv::evaluate_scoped(&app.osv, policy, now, &candidate(row, pinned), app.osv_scope(row.registry_id)).await
+    let mut candidate = candidate(row, pinned);
+    // An OCI blob has one policy identity, its sha256: the one the firewall computed while the bytes streamed in, whatever spelling the
+    // client asked with (a block by digest names it), and a digest blocked under any repository is blocked in every one.
+    let sha256_text;
+    if row.reference.ecosystem == Ecosystem::Oci {
+        if row.reference.version.starts_with("sha512:")
+            && let Some(computed) = pinned.iter().find(|digest| digest.algorithm == crate::policy::HashAlgorithm::Sha256)
+        {
+            sha256_text = format!("sha256:{}", hex::encode(&computed.bytes));
+            candidate.version = &sha256_text;
+        }
+        if let Some(blocked) = crate::oci::serve::blocked_anywhere(policy, now, candidate.version) {
+            return blocked;
+        }
+    }
+    osv::evaluate_scoped(&app.osv, policy, now, &candidate, app.osv_scope(row.registry_id)).await
 }
 
 fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {

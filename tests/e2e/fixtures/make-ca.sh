@@ -13,7 +13,7 @@ openssl=${OPENSSL:-openssl}
 # Git for Windows rewrites an argument that starts with `/` (-subj /CN=...) into a Windows path before a native openssl sees it.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 names=(
-  registry.npmjs.org registry-b.e2e.test private-registry.e2e.test ocsp-a.e2e.test ocsp-b.e2e.test private-ocsp.e2e.test pypi.org rubygems.org index.crates.io static.crates.io crates.io proxy.golang.org sum.golang.org api.nuget.org azuresearch-usnc.nuget.org www.nuget.org repo.maven.apache.org center2.conan.io files.pythonhosted.org api.osv.dev api.pwnedpasswords.com
+  registry.npmjs.org registry-b.e2e.test private-registry.e2e.test ocsp-a.e2e.test ocsp-b.e2e.test private-ocsp.e2e.test pypi.org rubygems.org index.crates.io static.crates.io crates.io proxy.golang.org sum.golang.org api.nuget.org azuresearch-usnc.nuget.org www.nuget.org repo.maven.apache.org center2.conan.io registry-1.docker.io auth.docker.io production.cloudfront.docker.com mcr.microsoft.com files.pythonhosted.org api.osv.dev api.pwnedpasswords.com
   accounts.google.com idp.e2e.test fakes.e2e.test mail.e2e.test unlisted-cdn.e2e.test
   portal.e2e.test sync.e2e.test fw1.e2e.test fw2.e2e.test fw-standalone.e2e.test
   localhost

@@ -71,7 +71,7 @@ fn snapshot_at(target: Option<&str>) -> ServicePolicySnapshot {
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor {
             registry: RegistryId(7), ecosystem: probation_policy::Ecosystem::Conan, target_url: target.map(Into::into),
-            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }],
     }
 }

@@ -78,7 +78,7 @@ fn snapshot() -> ServicePolicySnapshot {
             layer: Layer { freeze_seconds: Some(0), osv: Some(OsvSetting::Off), ..Layer::empty(place.kind) }, revision: 1 }).collect(),
         rate_limit: None, rate_limit_source: LimitSource::Default,
         registries: vec![RegistryDescriptor { registry: RegistryId(3), ecosystem: probation_policy::Ecosystem::Npm,
-            target_url: None, trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None }],
+            target_url: None, trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None }],
     }
 }
 

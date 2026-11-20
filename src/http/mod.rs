@@ -17,6 +17,7 @@ pub mod go_routes;
 pub mod nuget_routes;
 pub mod maven_routes;
 pub mod conan_routes;
+pub mod oci_routes;
 pub mod readmit;
 pub mod registry_read;
 pub mod registry_action;
@@ -192,6 +193,14 @@ fn package_router(app: Arc<App>) -> Router {
         // handler; a selected registry's `PUT` and `DELETE` are the class-W upload routes.
         .route("/conan/{*path}", get(conan_routes::legacy).head(conan_routes::legacy))
         .route("/registry/conan/{registry}/{*path}", get(conan_routes::selected).head(conan_routes::selected).put(conan_routes::selected).delete(conan_routes::selected))
+        // OCI distribution: the registry API's own `/v2/` tree behind one catch-all parsed strictly by the handler (the root, with and
+        // without its slash, is the client's ping); a selected registry's writes are the class-W upload and push routes.
+        .route("/v2", get(oci_routes::legacy).head(oci_routes::legacy))
+        .route("/v2/", get(oci_routes::legacy).head(oci_routes::legacy))
+        .route("/v2/{*path}", get(oci_routes::legacy).head(oci_routes::legacy))
+        .route("/registry/oci/{registry}/v2", get(oci_routes::selected).head(oci_routes::selected))
+        .route("/registry/oci/{registry}/v2/", get(oci_routes::selected).head(oci_routes::selected))
+        .route("/registry/oci/{registry}/v2/{*path}", get(oci_routes::selected).head(oci_routes::selected).post(oci_routes::selected).put(oci_routes::selected).patch(oci_routes::selected).delete(oci_routes::selected))
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",

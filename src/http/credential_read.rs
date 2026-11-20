@@ -83,6 +83,10 @@ impl FamilyReadRules {
     /// its own non-secret identification headers; a credential travels as `Authorization` (Basic on a login, then the Bearer token it
     /// returns), request-scoped, and no route takes one in its path.
     pub const CONAN: FamilyReadRules = FamilyReadRules { headers: &["x-client-anonymous-id", "x-client-id", "x-conan-server-capabilities"], query_keys: &["q", "ignorecase"] };
+    /// OCI reads carry `ns` (the registry a mirror was asked for), the list parameters and the referrers filter; the daemon and
+    /// containerd send the API version they speak. A credential travels as `Authorization` (a Basic login, or the Bearer token of the
+    /// token flow) on almost every request, so those reads are request-scoped; anonymous reads stay cache-eligible.
+    pub const OCI: FamilyReadRules = FamilyReadRules { headers: &["docker-distribution-api-version"], query_keys: &["ns", "n", "last", "artifactType"] };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

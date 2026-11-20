@@ -20,6 +20,8 @@ const MAX_NUGET_VERSION_LENGTH: usize = 256;
 const MAX_MAVEN_NAME_LENGTH: usize = 512;
 /// A Conan name, version, user or channel (the client's own limit is 101 bytes; this is above every real one).
 const MAX_CONAN_NAME_LENGTH: usize = 200;
+/// An OCI repository name (the distribution spec's own limit).
+const MAX_OCI_NAME_LENGTH: usize = 255;
 
 /// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
 pub fn normalize(raw: &str) -> String {
@@ -61,6 +63,9 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
         // A Conan remote may fold case (Artifactory repositories can): policy sees the lower-case name, so `Zlib` cannot get round a block on
         // `zlib`. URLs and rows keep the remote's own spelling.
         Ecosystem::Conan => name.to_ascii_lowercase(),
+        // A repository name is lower case by the distribution spec: a name with an upper-case letter is not a name (it is refused
+        // before any upstream call), so the policy name is the request's own spelling.
+        Ecosystem::Oci => name.to_owned(),
     }
 }
 
@@ -75,6 +80,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::NuGet => MAX_NUGET_NAME_LENGTH,
         Ecosystem::Maven => MAX_MAVEN_NAME_LENGTH,
         Ecosystem::Conan => MAX_CONAN_NAME_LENGTH,
+        Ecosystem::Oci => MAX_OCI_NAME_LENGTH,
         _ => MAX_NAME_LENGTH,
     };
     if name.is_empty() || name.len() > limit {
@@ -104,6 +110,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) && !name.starts_with('.') && !name.ends_with('.'),
         Ecosystem::Maven => valid_maven_name(name),
         Ecosystem::Conan => valid_conan_part(name),
+        Ecosystem::Oci => valid_oci_name(name),
     }
 }
 
@@ -170,6 +177,8 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
         Ecosystem::Maven => None,
         // A Conan recipe version keeps its native spelling too (the client's version ranges decide ordering).
         Ecosystem::Conan => None,
+        // A tag or a digest: the exact text is the identity.
+        Ecosystem::Oci => None,
     }
 }
 
@@ -306,4 +315,41 @@ pub fn valid_conan_part(part: &str) -> bool {
     part.len() <= MAX_CONAN_NAME_LENGTH
         && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'.' | b'-'))
+}
+
+/// An OCI repository name as the distribution spec writes it: `/`-separated components of `[a-z0-9]+` joined by single
+/// `.`, `_`, `__` or runs of `-`, at most 255 bytes.
+pub fn valid_oci_name(name: &str) -> bool {
+    name.len() <= MAX_OCI_NAME_LENGTH && !name.is_empty() && name.split('/').all(valid_oci_component)
+}
+
+fn valid_oci_component(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    let alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let (Some(first), Some(last)) = (bytes.first(), bytes.last()) else { return false };
+    if !alnum(*first) || !alnum(*last) {
+        return false;
+    }
+    let mut run = 0usize;
+    let mut separator = 0u8;
+    for &b in bytes {
+        if alnum(b) {
+            run = 0;
+            separator = 0;
+            continue;
+        }
+        if !matches!(b, b'.' | b'_' | b'-') {
+            return false;
+        }
+        run += 1;
+        // `.` once, `_` once or twice, `-` any number; never two kinds side by side.
+        if run > 1 && b != separator && separator != 0 {
+            return false;
+        }
+        separator = b;
+        if (b == b'.' && run > 1) || (b == b'_' && run > 2) {
+            return false;
+        }
+    }
+    true
 }

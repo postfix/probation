@@ -16,6 +16,7 @@ fn osv_key_valid_names_pass_for_every_family() {
             Ecosystem::NuGet => ("Newtonsoft.Json_2-x", "13.0.3-beta.1"),
             Ecosystem::Maven => ("org.example:Lib_2-x", "1.0.0.Final"),
             Ecosystem::Conan => ("zlib", "1.3.1"),
+            Ecosystem::Oci => ("library/alpine", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));

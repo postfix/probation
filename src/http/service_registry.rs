@@ -47,7 +47,9 @@ pub async fn respond(
     // C1028 / LS-F4: a read is cache-eligible only on the allow-list; anything else is
     // request-scoped and never touches a shared cache.
     if matches!(*request.method(), Method::GET | Method::HEAD) {
-        let rules = if request.uri().path().starts_with("/conan/") || request.uri().path().starts_with("/registry/conan/") {
+        let rules = if request.uri().path() == "/v2" || request.uri().path().starts_with("/v2/") || request.uri().path().starts_with("/registry/oci/") {
+            &super::credential_read::FamilyReadRules::OCI
+        } else if request.uri().path().starts_with("/conan/") || request.uri().path().starts_with("/registry/conan/") {
             &super::credential_read::FamilyReadRules::CONAN
         } else if request.uri().path().starts_with("/maven/") || request.uri().path().starts_with("/registry/maven/") {
             &super::credential_read::FamilyReadRules::MAVEN
@@ -70,7 +72,7 @@ pub async fn respond(
         }
     }
     // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
-    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") && !request.uri().path().starts_with("/registry/maven/") && !request.uri().path().starts_with("/maven/") && !request.uri().path().starts_with("/registry/conan/") && !request.uri().path().starts_with("/conan/") {
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") && !request.uri().path().starts_with("/registry/maven/") && !request.uri().path().starts_with("/maven/") && !request.uri().path().starts_with("/registry/conan/") && !request.uri().path().starts_with("/conan/") && !request.uri().path().starts_with("/registry/oci/") && request.uri().path() != "/v2" && !request.uri().path().starts_with("/v2/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -99,6 +101,7 @@ fn classify_selected_registry(
         && request.method() != Method::DELETE
         && request.method() != Method::POST
         && request.method() != Method::PUT
+        && request.method() != Method::PATCH
     {
         return Err(ApiError::MethodNotAllowed);
     }
@@ -114,10 +117,14 @@ fn classify_selected_registry(
             Some("nuget") => Ecosystem::NuGet,
             Some("maven") => Ecosystem::Maven,
             Some("conan") => Ecosystem::Conan,
+            Some("oci") => Ecosystem::Oci,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
-        (ecosystem, registry, parts.next().ok_or(ApiError::NotFound)?)
+        let rest = parts.next().ok_or(ApiError::NotFound)?;
+        // OCI's namespace is the registry API's own `v2` tree: `rest` is what follows it.
+        let rest = if ecosystem == Ecosystem::Oci { rest.strip_prefix("v2").filter(|tail| tail.is_empty() || tail.starts_with('/')).ok_or(ApiError::NotFound)?.trim_start_matches('/') } else { rest };
+        (ecosystem, registry, rest)
     } else {
         let (ecosystem, rest) = if let Some(rest) = path.strip_prefix("/npm/") {
             (Ecosystem::Npm, rest)
@@ -135,6 +142,8 @@ fn classify_selected_registry(
             (Ecosystem::Maven, rest)
         } else if let Some(rest) = path.strip_prefix("/conan/") {
             (Ecosystem::Conan, rest)
+        } else if path == "/v2" || path.starts_with("/v2/") {
+            (Ecosystem::Oci, path.strip_prefix("/v2").unwrap_or("").trim_start_matches('/'))
         } else {
             return Err(ApiError::NotFound);
         };
@@ -154,6 +163,9 @@ fn classify_selected_registry(
         .any(|item| item.registry == registry && item.ecosystem == ecosystem)
     {
         return Err(ApiError::NotFound);
+    }
+    if request.method() == Method::PATCH && ecosystem != Ecosystem::Oci {
+        return Err(ApiError::MethodNotAllowed);
     }
     let audit = ecosystem == Ecosystem::Npm
         && matches!(rest, "-/npm/v1/security/advisories/bulk" | "-/npm/v1/security/audits/quick");
@@ -221,7 +233,9 @@ fn classify_selected_registry(
         && parse_uri_package(rest).is_ok();
     // Cargo's search is the one Cargo read with a query string (the handler keeps the known keys only).
     let cargo_search = cargo_api && rest == "api/v1/crates" && request.method() == Method::GET;
-    if request.uri().query().is_some() && !search && !write_preflight && !named_action && !cargo_search && !nuget_query && !conan_search {
+    // OCI's reads and writes carry the registry API's own parameters (paging, `ns`, upload state, `digest`, `mount`): the handler reads
+    // the keys of its route and refuses any other.
+    if request.uri().query().is_some() && ecosystem != Ecosystem::Oci && !search && !write_preflight && !named_action && !cargo_search && !nuget_query && !conan_search {
         return Err(ApiError::NotFound);
     }
     // Existing action handlers classify named operations and credentials before I/O.
@@ -240,7 +254,7 @@ fn classify_selected_registry(
         rest
     };
     let query = request.uri().query().map(|query| format!("?{query}")).unwrap_or_default();
-    let uri = format!("/registry/{}/{}/{rest}{query}", ecosystem.as_tag(), registry.0)
+    let uri = if ecosystem == Ecosystem::Oci { format!("/registry/oci/{}/v2/{rest}{query}", registry.0) } else { format!("/registry/{}/{}/{rest}{query}", ecosystem.as_tag(), registry.0) }
         .parse()
         .map_err(|_| ApiError::NotFound)?;
     Ok(SelectedRegistry { uri })
@@ -251,6 +265,10 @@ async fn dispatch_selected_registry(
     selected: SelectedRegistry,
     next: Next,
 ) -> Response {
+    // A client that used the plain `/v2/` namespace is answered in it (an OCI `Link` or `Location` points back there).
+    if request.uri().path() == "/v2" || request.uri().path().starts_with("/v2/") {
+        request.extensions_mut().insert(super::oci_routes::Direct);
+    }
     *request.uri_mut() = selected.uri;
     next.run(request).await
 }

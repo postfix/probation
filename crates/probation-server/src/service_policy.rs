@@ -148,14 +148,14 @@ async fn load_policy_snapshot(
             revision,
         });
     }
-    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>, Option<String>);
+    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>, Option<String>, Option<String>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin, resource_path_prefix FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
+        "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin, resource_path_prefix, token_origin FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
     ).bind(snapshot.org.0 as i32).fetch_all(&mut **tx).await.map_err(unavailable)?;
     if rows.len() > 256 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    for (id, tag, target_url, trusted, osv_scope, archive_origin, resource_path_prefix) in rows {
+    for (id, tag, target_url, trusted, osv_scope, archive_origin, resource_path_prefix, token_origin) in rows {
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
@@ -165,6 +165,7 @@ async fn load_policy_snapshot(
             "nuget" => Ecosystem::NuGet,
             "maven" => Ecosystem::Maven,
             "conan" => Ecosystem::Conan,
+            "oci" => Ecosystem::Oci,
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         };
         let registry_private_cidrs = match &target_url {
@@ -191,6 +192,7 @@ async fn load_policy_snapshot(
             },
             archive_origin,
             resource_path_prefix,
+            token_origin,
         });
     }
     Ok(snapshot)
@@ -236,14 +238,40 @@ pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
 }
 
 /// Sets (`Some`) or clears (`None`) a registry's archive origin. False when the registry is not this
-/// organisation's live Cargo, Go, NuGet, Maven or Conan registry with a target (the column only exists for those).
+/// organisation's live Cargo, Go, NuGet, Maven, Conan or OCI registry with a target (the column only exists for those).
 pub async fn set_archive_origin(
     pool: &sqlx::PgPool,
     org: i32,
     registry: i64,
     origin: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go', 'nuget', 'maven', 'conan') AND target_url IS NOT NULL AND removed_at IS NULL")
+    let done = sqlx::query("UPDATE registries SET archive_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem IN ('cargo', 'go', 'nuget', 'maven', 'conan', 'oci') AND target_url IS NOT NULL AND removed_at IS NULL")
+        .bind(origin)
+        .bind(registry)
+        .bind(org)
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// A token origin is an https origin and nothing else (no path, query, fragment or userinfo).
+pub fn valid_token_origin(text: &str) -> Option<url::Url> {
+    let url = url::Url::parse(text).ok()?;
+    (text.len() <= 2048
+        && url.scheme() == "https"
+        && url.host_str().is_some()
+        && (url.path() == "/" || url.path().is_empty())
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then_some(url)
+}
+
+/// Sets (`Some`) or clears (`None`) an OCI registry's token origin. False when the registry is not this organisation's live OCI
+/// registry with a target.
+pub async fn set_token_origin(pool: &sqlx::PgPool, org: i32, registry: i64, origin: Option<&str>) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query("UPDATE registries SET token_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'oci' AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
         .bind(registry)
         .bind(org)

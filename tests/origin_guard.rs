@@ -1822,3 +1822,28 @@ fn the_conan_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
     assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.tgz")));
     assert!(!origins.admits_archive_redirect(OriginKind::ConanRemote, &parse("https://storage.example/x.tgz")), "ConanCenter answers a file directly: no redirect is followed");
 }
+
+/// Row 24 (R3): a foreign layer's own URL is admitted only on the operator's host list: https on the default port, no user name, no address, an
+/// exact host or a `*.` suffix; and the keys that name them are validated.
+#[test]
+fn a_foreign_layer_url_is_admitted_only_on_the_operators_host_list() {
+    use probation::config::Config;
+    let origins = OriginSet::production();
+    for good in ["https://mcr.microsoft.com/v2/windows/blobs/x", "https://go.microsoft.com/fwlink/?linkid=1", "https://download.microsoft.com/a/b", "https://eastus.data.mcr.microsoft.com/abc?sig=1"] {
+        assert!(origins.admits_foreign(&parse(good)), "{good}");
+    }
+    for bad in ["http://mcr.microsoft.com/x", "https://mcr.microsoft.com:8443/x", "https://u:p@mcr.microsoft.com/x", "https://mcr.microsoft.com.evil.example/x", "https://evilmcr.microsoft.com/x", "https://data.mcr.microsoft.com/x", "https://127.0.0.1/x", "https://[::1]/x", "https://elsewhere.example/x", "https://mcr.microsoft.com/x#f"] {
+        assert!(!origins.admits_foreign(&parse(bad)), "{bad}");
+    }
+    let sample = std::fs::read_to_string("config.sample.toml").unwrap();
+    let config = Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = [\"layers.example\", \"*.cdn.example\"]\noci_token_url = \"https://gitlab.example\"\n")).unwrap();
+    assert_eq!(config.oci_foreign_layer_hosts, ["layers.example", "*.cdn.example"]);
+    assert_eq!(config.oci_token_url.as_ref().map(url::Url::as_str), Some("https://gitlab.example/"));
+    assert!(Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = []\n")).unwrap().oci_foreign_layer_hosts.is_empty(), "an empty list allows no foreign layer");
+    for bad in ["[\"UPPER.example\"]", "[\"https://x.example\"]", "[\"*.\"]", "[\"localhost\"]", "[\"a b.example\"]", "[\"*.*.example\"]"] {
+        assert!(Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = {bad}\n")).is_err(), "{bad}");
+    }
+    for bad in ["http://gitlab.example", "https://u:p@gitlab.example", "https://127.0.0.1"] {
+        assert!(Config::from_toml_str(&format!("{sample}\noci_token_url = \"{bad}\"\n")).is_err(), "{bad}");
+    }
+}

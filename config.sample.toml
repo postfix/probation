@@ -167,6 +167,19 @@ osv_mode = "enforce"
 # so without it an upload to the public registry is a 404).
 # conan_upstream_url = "https://artifactory.example.org/artifactory/api/conan/conan-center"
 # conan_publish_url = "https://artifactory.example.org/artifactory/api/conan/conan-local"
+# OCI registries (docker, podman, containerd, skopeo): the default registry the plain `/v2/` root serves (default https://registry-1.docker.io; an
+# origin AND the optional path prefix of a registry's `v2` tree) and the one storage host a blob download on it may be redirected to (default
+# https://production.cloudfront.docker.com; the caller's credential is never sent there). A shared service's selected registries name their own.
+# oci_upstream_url = "https://registry.example.org/artifactory/api/docker/images"
+# oci_artifacts_url = "https://objects.example.org"
+# The token service of the default registry when its challenge names another host than the registry's own (a GitLab registry does: an https origin;
+# a registry of a shared service or a certificate-managed firewall declares its own on the registry page). Without it a realm on another host is not asked.
+# oci_token_url = "https://gitlab.example.org"
+# The hosts a layer's own download `urls` may name (a foreign layer, which Windows base images use): an exact host, or `*.` and a domain for every
+# host below it. https on the default port only, no user name, never an address. A manifest that names any other host is refused, and a layer's
+# URL on the list is fetched by this firewall with no credential and verified against its digest. An empty list allows no foreign layer.
+# Default: ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"].
+# oci_foreign_layer_hosts = ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"]
 
 # Shared-service mode ([service_policy], see docs/configuration.md) only: the load
 # balancers in front of this firewall. From these peers `X-Forwarded-For` names the

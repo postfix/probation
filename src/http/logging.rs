@@ -133,6 +133,7 @@ const ECOSYSTEM_GO: u8 = 5;
 const ECOSYSTEM_NUGET: u8 = 6;
 const ECOSYSTEM_MAVEN: u8 = 7;
 const ECOSYSTEM_CONAN: u8 = 8;
+const ECOSYSTEM_OCI: u8 = 9;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -167,6 +168,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::NuGet => ECOSYSTEM_NUGET,
         Ecosystem::Maven => ECOSYSTEM_MAVEN,
         Ecosystem::Conan => ECOSYSTEM_CONAN,
+        Ecosystem::Oci => ECOSYSTEM_OCI,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -316,6 +318,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_NUGET => Ecosystem::NuGet.as_tag(),
         ECOSYSTEM_MAVEN => Ecosystem::Maven.as_tag(),
         ECOSYSTEM_CONAN => Ecosystem::Conan.as_tag(),
+        ECOSYSTEM_OCI => Ecosystem::Oci.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -438,6 +441,7 @@ impl Target {
             Some("nuget") => "nuget",
             Some("maven") => "maven",
             Some("conan") => "conan",
+            Some("v2") => return oci_target(path),
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -601,6 +605,19 @@ fn conan_target(path: &str) -> Target {
         _ => (None, None),
     };
     Target { ecosystem: "conan", package: loggable(package), version: loggable(version) }
+}
+
+/// `/v2/{name}/{manifests|blobs|...}/{reference}` (and `/registry/oci/{id}/v2/...`): the repository and the tag or digest; the ping,
+/// the token endpoint and the catalog have no subject. The ecosystem is `oci`.
+fn oci_target(path: &str) -> Target {
+    let below = path.strip_prefix("/v2/").unwrap_or("");
+    let (package, version) = match crate::oci::coords::parse(below) {
+        Some(crate::oci::coords::Parsed::Manifest { name, reference }) => (Some(name), Some(reference.text())),
+        Some(crate::oci::coords::Parsed::Blob { name, digest } | crate::oci::coords::Parsed::Referrers { name, digest }) => (Some(name), Some(digest.to_string())),
+        Some(crate::oci::coords::Parsed::Tags { name } | crate::oci::coords::Parsed::UploadStart { name } | crate::oci::coords::Parsed::Upload { name, .. }) => (Some(name), None),
+        _ => (None, None),
+    };
+    Target { ecosystem: "oci", package: loggable(package.as_deref()), version: loggable(version.as_deref()) }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -863,6 +880,27 @@ mod tests {
         ] {
             let target = Target::of(path);
             assert_eq!(target.ecosystem, "conan", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
+        }
+    }
+
+    /// Row 24: an OCI request names its repository and the tag or digest; the ping, the token endpoint and the catalog have no subject.
+    #[test]
+    fn oci_paths_log_their_repository_and_reference() {
+        let d = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for (path, package, version) in [
+            ("/v2/library/alpine/manifests/latest".to_owned(), Some("library/alpine"), Some("latest".to_owned())),
+            (format!("/v2/team/app/blobs/{d}"), Some("team/app"), Some(d.to_owned())),
+            ("/v2/team/app/tags/list".to_owned(), Some("team/app"), None),
+            ("/v2/team/app/blobs/uploads/".to_owned(), Some("team/app"), None),
+            ("/v2/".to_owned(), None, None),
+            ("/v2/token".to_owned(), None, None),
+            ("/v2/_catalog".to_owned(), None, None),
+            ("/v2/Not A/manifests/x".to_owned(), None, None),
+        ] {
+            let target = Target::of(&path);
+            assert_eq!(target.ecosystem, "oci", "{path}");
             assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
             assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }

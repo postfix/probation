@@ -1214,6 +1214,7 @@ pub mod go;
 pub mod nuget;
 pub mod maven;
 pub mod conan;
+pub mod oci;
 
 pub mod logs {
     use std::io;

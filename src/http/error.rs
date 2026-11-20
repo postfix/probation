@@ -239,7 +239,7 @@ impl ApiError {
 
     /// The reason a client is shown: [`ApiError::reason`], except that a network-lock
     /// refusal names the address it refused (C92). Only the response carries it.
-    fn shown_reason(&self) -> String {
+    pub(crate) fn shown_reason(&self) -> String {
         match self {
             ApiError::NetworkNotAllowed(client) => {
                 format!("this API key may not be used from {client}")

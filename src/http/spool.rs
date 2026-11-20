@@ -223,7 +223,7 @@ mod tests {
             policy: Arc::new(crate::policy::CompiledPolicy::managed(probation_policy::resolve(&[Layer::empty(LayerKind::Platform), Layer::empty(LayerKind::Org)]))),
             account: place, rate_limit: None, rate_limit_source: LimitSource::Default,
             org: Some(OrgId(account)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None,
-            registry_resource_prefix: None, registry_read_authorization: None, registry_trusted: false,
+            registry_resource_prefix: None, registry_token_origin: None, registry_read_authorization: None, registry_trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![],
         }
     }

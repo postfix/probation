@@ -160,7 +160,7 @@ pub struct RegistryDescriptor {
     /// Cargo registry's archives (`dl` of its `config.json`) may be fetched from when they are not
     /// under `target_url` (Artifactory's `api/cargo/{repo}/index` beside `.../crates`). Absent: the
     /// archives must be under `target_url`. An older enforcer ignores the field, so it keeps refusing
-    /// such archives. Only a Cargo, Go, NuGet, Maven or Conan registry may carry it.
+    /// such archives. Only a Cargo, Go, NuGet, Maven, Conan or OCI registry may carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_origin: Option<String>,
     /// Additive and optional (row 20): narrows a NuGet registry's resources (the flat container, registration,
@@ -170,6 +170,12 @@ pub struct RegistryDescriptor {
     /// ignores the field and keeps the host-wide rule. Only a NuGet registry with a target may carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_path_prefix: Option<String>,
+    /// Additive and optional (row 24): the https origin (no path) of the token service an OCI registry's `WWW-Authenticate` challenge may
+    /// name when it is not the registry's own host (GitLab's `registry.example` challenges `https://gitlab.example/jwt/auth`). Absent: the
+    /// registry's own origin or the built-in table of public registries' token hosts. An older enforcer ignores the field and so refuses
+    /// such a realm (fail closed). Only an OCI registry with a target may carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_origin: Option<String>,
 }
 
 /// One package request's transport-owned TLS chain and selected URL registry.
@@ -183,6 +189,8 @@ pub struct CertificateAdmissionRequest {
 /// Current root, certificate, membership, registry and policy checked together.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
+// (one answer per admission, read once: a box would be a second allocation for the common answer)
+#[allow(clippy::large_enum_variant)]
 pub enum CertificateAdmission {
     Granted {
         registry: RegistryId,
@@ -199,6 +207,10 @@ pub enum CertificateAdmission {
         layers: Vec<PlaceLayer>,
         rate_limit: Option<NonZeroU32>,
         rate_limit_source: LimitSource,
+        /// Additive (row 24): an OCI registry's declared token-service origin (descriptor `token_origin`), the same field a shared service
+        /// gets in its snapshot. An older enforcer ignores it and refuses such a realm (fail closed).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_origin: Option<String>,
     },
     Refused,
 }
@@ -377,6 +389,8 @@ pub struct Upstreams {
     /// Additive (row 23), same rule as `maven`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conan: Option<Reachability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -591,7 +605,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None,
+                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
                     },
                 },
                 effective_period_seconds: 55,

@@ -163,6 +163,8 @@ impl BlocklistSnapshot {
                 Ecosystem::Maven => record.name.clone(),
                 // A Conan name is judged lower-case (a remote that folds case must not be a way round a block).
                 Ecosystem::Conan => probation_policy::names::canonical_name(Ecosystem::Conan, &record.name),
+                // A repository name is lower case by the distribution spec and kept exactly as written.
+                Ecosystem::Oci => record.name.clone(),
             };
             entry_count += 1;
             match &record.version {
@@ -328,6 +330,16 @@ impl BlocklistSnapshot {
         blocked
             .iter()
             .any(|entry| entry.canonical.as_ref() == Some(&candidate))
+    }
+
+    /// The names of one ecosystem that have `version` (exactly as written) among their blocked versions: a digest-named block
+    /// (OCI) is a block of that digest in every repository.
+    pub fn names_blocking_exact_version(&self, ecosystem: Ecosystem, version: &str) -> Vec<String> {
+        self.versions[ecosystem_index(ecosystem)]
+            .iter()
+            .filter(|(_, blocked)| blocked.iter().any(|entry| entry.raw == version))
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     pub fn blocks_digest(&self, digest: &Digest) -> bool {

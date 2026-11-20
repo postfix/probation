@@ -497,6 +497,7 @@ impl ServicePolicy {
                 .transpose()
                 .ok()?,
             registry_resource_prefix: descriptor.resource_path_prefix.clone(),
+            registry_token_origin: descriptor.token_origin.as_ref().map(|url| url.parse()).transpose().ok()?,
             registry_read_authorization: None,
             registry_trusted: descriptor.trusted,
             registry_private_cidrs: descriptor
@@ -670,12 +671,25 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
         if let Some(archive) = &registry.archive_origin {
             // Only a Cargo registry (archives apart from its index) or a Go registry (zip redirects to its
             // storage) has an archive origin, and one needs a target of its own.
-            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet | probation_policy::Ecosystem::Maven | probation_policy::Ecosystem::Conan) || registry.target_url.is_none() {
+            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet | probation_policy::Ecosystem::Maven | probation_policy::Ecosystem::Conan | probation_policy::Ecosystem::Oci) || registry.target_url.is_none() {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;
             // The same absolute denylist as the target (LS-F9 / D5), and the same shape rules: https, no
             // userinfo, query or fragment.
+            check_target(&url, deny).map_err(|_| ServicePolicyError)?;
+            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
+        }
+        if let Some(origin) = &registry.token_origin {
+            // Only an OCI registry with a target has one: an https origin with no path, query, fragment or userinfo, checked against the
+            // same absolute denylist as the target.
+            if origin.len() > 2048 || registry.ecosystem != probation_policy::Ecosystem::Oci || registry.target_url.is_none() {
+                return Err(ServicePolicyError);
+            }
+            let url: url::Url = origin.parse().map_err(|_| ServicePolicyError)?;
+            if url.scheme() != "https" || (url.path() != "/" && !url.path().is_empty()) || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+                return Err(ServicePolicyError);
+            }
             check_target(&url, deny).map_err(|_| ServicePolicyError)?;
             crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
         }

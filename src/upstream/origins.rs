@@ -61,6 +61,10 @@ const MAVEN_PUBLISH: &str = "https://maven-publish.invalid";
 const CONAN_REMOTE: &str = "https://center2.conan.io";
 /// Where an upload to the public registry goes when the operator names one (there is no default: ConanCenter takes no uploads).
 const CONAN_PUBLISH: &str = "https://conan-publish.invalid";
+/// Docker Hub's registry API (the default OCI registry; `docker.io` names it for a client).
+const OCI_REGISTRY: &str = "https://registry-1.docker.io";
+/// Where Docker Hub redirects a blob download to (signed URLs): the one other origin a blob's redirect may land on.
+const OCI_ARCHIVES: &str = "https://production.cloudfront.docker.com";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -80,10 +84,12 @@ pub enum OriginKind {
     MavenPublish,
     ConanRemote,
     ConanPublish,
+    OciRegistry,
+    OciArchives,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 16] = [
+    pub const ALL: [OriginKind; 18] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
@@ -100,6 +106,8 @@ impl OriginKind {
         OriginKind::MavenPublish,
         OriginKind::ConanRemote,
         OriginKind::ConanPublish,
+        OriginKind::OciRegistry,
+        OriginKind::OciArchives,
     ];
 }
 
@@ -146,6 +154,10 @@ pub struct OriginSet {
     maven_publish: Url,
     conan_remote: Url,
     conan_publish: Url,
+    oci_registry: Url,
+    oci_archives: Url,
+    /// Hosts a foreign layer's own URLs may name (exact or `*.suffix`); https on the default port only.
+    foreign: Vec<String>,
     /// A selected Go registry that declared an archive origin: redirects from its own origin may land there.
     go_selected: bool,
     allow_private_addresses: bool,
@@ -208,6 +220,9 @@ impl OriginSet {
             maven_publish: parse_origin(MAVEN_PUBLISH),
             conan_remote: parse_origin(CONAN_REMOTE),
             conan_publish: parse_origin(CONAN_PUBLISH),
+            oci_registry: parse_origin(OCI_REGISTRY),
+            oci_archives: parse_origin(OCI_ARCHIVES),
+            foreign: default_foreign(),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -239,6 +254,9 @@ impl OriginSet {
             maven_publish: pick(&config.maven_publish_url, production.maven_publish),
             conan_remote: pick(&config.conan_upstream_url, production.conan_remote),
             conan_publish: pick(&config.conan_publish_url, production.conan_publish),
+            oci_registry: pick(&config.oci_upstream_url, production.oci_registry),
+            oci_archives: pick(&config.oci_artifacts_url, production.oci_archives),
+            foreign: config.oci_foreign_layer_hosts.clone(),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -269,6 +287,9 @@ impl OriginSet {
             maven_publish: parse_origin(MAVEN_PUBLISH),
             conan_remote: parse_origin(CONAN_REMOTE),
             conan_publish: parse_origin(CONAN_PUBLISH),
+            oci_registry: parse_origin(OCI_REGISTRY),
+            oci_archives: parse_origin(OCI_ARCHIVES),
+            foreign: default_foreign(),
             go_selected: false,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
@@ -311,6 +332,44 @@ impl OriginSet {
         self
     }
 
+    /// Docker Hub has answered a blob with a redirect to more than one storage host over time (measured 2026-11-20: CloudFront; before,
+    /// Cloudflare): while the default registry IS Docker Hub, both of its own are admitted. Any other registry names its storage origin.
+    fn hub_storage(&self, to: &Url) -> bool {
+        self.oci_registry.host_str() == Some("registry-1.docker.io")
+            && to.scheme() == "https"
+            && to.port().is_none()
+            && to.username().is_empty()
+            && matches!(to.host_str(), Some("production.cloudfront.docker.com" | "production.cloudflare.docker.com"))
+    }
+
+    /// Tests only: where this set sends OCI registry calls and where a blob's redirect may land (the upstream fake).
+    /// Whether `url` may be fetched as a foreign layer: https on the default port, no userinfo, a host on the list (exact, or below a `*.` suffix).
+    pub fn admits_foreign(&self, url: &Url) -> bool {
+        if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+            return false;
+        }
+        let Some(host) = url.host_str().map(str::to_ascii_lowercase) else { return false };
+        if host.parse::<std::net::IpAddr>().is_ok() || url.path().split('/').any(|segment| segment == "..") {
+            return false;
+        }
+        self.foreign.iter().any(|entry| match entry.strip_prefix("*.") {
+            Some(suffix) => host.len() > suffix.len() + 1 && host.ends_with(suffix) && host.as_bytes()[host.len() - suffix.len() - 1] == b'.',
+            None => *entry == host,
+        })
+    }
+
+    /// The same list for a set built for a selected registry (it is the process's, not the registry's).
+    pub fn with_foreign_of(mut self, other: &OriginSet) -> OriginSet {
+        self.foreign = other.foreign.clone();
+        self
+    }
+
+    pub fn with_oci(mut self, registry: Url, archives: Url) -> OriginSet {
+        self.oci_registry = registry;
+        self.oci_archives = archives;
+        self
+    }
+
     /// Tests only: the origin a Go proxy's archive redirects may land on.
     pub fn with_go_archives(mut self, archives: Url) -> OriginSet {
         self.go_archives = archives;
@@ -321,6 +380,8 @@ impl OriginSet {
     /// archive redirect to its archive origin (path prefix included). Nothing else crosses origins.
     pub fn admits_archive_redirect(&self, from: OriginKind, to: &Url) -> bool {
         (from == OriginKind::GoProxy || (self.go_selected && from == OriginKind::NpmMetadata)) && self.admit(to, OriginKind::GoArchives).is_ok()
+            // The public registry's blob redirects (a signed storage URL) land on its one declared storage origin.
+            || (from == OriginKind::OciRegistry && (self.admit(to, OriginKind::OciArchives).is_ok() || self.hub_storage(to)))
     }
 
     /// A selected Go, NuGet or Maven registry's declared archive origin (a snapshot descriptor field, already checked at
@@ -375,6 +436,8 @@ impl OriginSet {
             OriginKind::MavenPublish => &self.maven_publish,
             OriginKind::ConanRemote => &self.conan_remote,
             OriginKind::ConanPublish => &self.conan_publish,
+            OriginKind::OciRegistry => &self.oci_registry,
+            OriginKind::OciArchives => &self.oci_archives,
         }
     }
 
@@ -538,6 +601,10 @@ impl OriginSet {
     fn permits_scheme(&self, scheme: &str) -> bool {
         scheme == "https" || (self.allow_private_addresses && scheme == "http")
     }
+}
+
+fn default_foreign() -> Vec<String> {
+    ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"].map(str::to_owned).to_vec()
 }
 
 fn parse_origin(text: &str) -> Url {

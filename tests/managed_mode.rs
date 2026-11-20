@@ -891,6 +891,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
                 Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                 Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+                Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
             };
             client
                 .get(url)
@@ -936,6 +937,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
             Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
             Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+            Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
@@ -946,6 +948,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
             Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
             Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+            Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
         }
     }
 }
@@ -1594,4 +1597,191 @@ async fn conan_key_route_authenticates_every_read_and_refuses_a_blocked_package_
     assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
     assert!(events.iter().all(|e| e.package.as_deref() == Some("evil")), "{events:#?}");
     h.server.shutdown().await;
+}
+
+// ---------------------------------------------------------------- row 24: OCI on the certificate-managed key route
+
+/// An organisation layer that releases an image as soon as it is first seen (the age of an image starts then): so these tests are about
+/// who decides, not about the cooldown.
+fn oci_org(blocks: Vec<Block>) -> Layer {
+    Layer { freeze_seconds: Some(0), ..org_blocking(blocks) }
+}
+
+fn oci_origins() -> probation::upstream::OriginSet {
+    fake_origins().with_oci(url::Url::parse(common::oci::REGISTRY).unwrap(), url::Url::parse(common::oci::CDN).unwrap())
+}
+
+/// Row 24: a managed firewall admits every OCI read by the key a client's own `docker login` carries (the password of the token request,
+/// which this firewall answers with the key itself as the token a client then sends as a Bearer), answers an unknown key with the
+/// registry's own challenge (a Bearer realm that is this firewall's `/v2/token`), and the key's policy decides: a blocked repository is
+/// refused locally, with no registry call; a write has no route on this firewall.
+#[tokio::test]
+async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_blocked_repository_locally() {
+    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Oci, name: "evil/app".to_owned(), reason: None }], |_| {}).await;
+    let oci = common::oci::FakeOci::new();
+    let app = common::oci::image("a", &[b"layer"]);
+    oci.put_image("evil/app", Some("v1"), &app);
+    oci.put_image("good/app", Some("v1"), &app);
+    h.server.shutdown().await;
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), oci_org(Vec::new()));
+    sync.layer(org(GLOBEX), oci_org(vec![Block::Package { ecosystem: Ecosystem::Oci, name: "evil/app".to_owned(), reason: None }]));
+    sync.known_key(&key_a(), &[PLATFORM, org(GLOBEX)]);
+    sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
+    let dir = tempfile::tempdir().unwrap();
+    let config = sync.managed(config_with_open_blocklist(dir.path()));
+    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&oci) as Arc<dyn Transport>, oci_origins()).await;
+    let get = |path: &str, key: Option<&str>| {
+        let url = server.url(path);
+        let key = key.map(bearer);
+        async move {
+            let mut request = reqwest::Client::new().get(url);
+            if let Some(key) = key {
+                request = request.header("authorization", key);
+            }
+            request.send().await.unwrap()
+        }
+    };
+    // No key: the challenge names this firewall's token endpoint, and nothing was asked of the registry.
+    let challenge = get("/v2/", None).await;
+    assert_eq!(challenge.status(), StatusCode::UNAUTHORIZED);
+    assert!(challenge.headers().get("www-authenticate").unwrap().to_str().unwrap().starts_with("Bearer realm=\""), "{:?}", challenge.headers());
+    assert_eq!(get("/v2/good/app/manifests/v1", Some("prb_not_a_known_key_0123456789ab")).await.status(), StatusCode::UNAUTHORIZED);
+    assert!(oci.seen().is_empty(), "no registry call before authentication");
+    // The token request: the key as the Basic password comes back as the token (docker login's own flow), and the token is admitted.
+    let basic = format!("Basic {}", base64(format!("user:{}", key_b())));
+    let token = reqwest::Client::new().get(server.url("/v2/token?service=probation&scope=repository:good/app:pull")).header("authorization", &basic).send().await.unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&token.text().await.unwrap()).unwrap();
+    assert_eq!(doc["token"], key_b(), "{doc}");
+    assert_eq!(get("/v2/", Some(&key_b())).await.status(), StatusCode::OK);
+    // The key's policy decides.
+    assert_eq!(get("/v2/evil/app/manifests/v1", Some(&key_a())).await.status(), StatusCode::FORBIDDEN, "Globex blocks the repository");
+    assert!(oci.seen().is_empty(), "a blocked repository reaches no registry call: {:?}", oci.seen());
+    let served = get("/v2/evil/app/manifests/v1", Some(&key_b())).await;
+    assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps it");
+    assert_eq!(served.bytes().await.unwrap().to_vec(), app.manifest);
+    let blob = get(&format!("/v2/evil/app/blobs/{}", app.layer_digests[0]), Some(&key_b())).await;
+    assert_eq!(blob.status(), StatusCode::OK);
+    // The registry never saw a firewall key.
+    assert!(oci.seen().iter().all(|call| call.authorization.as_deref().is_none_or(|auth| !auth.contains("prb_"))), "{:?}", oci.seen());
+    // A write has no route on a key route.
+    let post = reqwest::Client::new().post(server.url("/v2/good/app/blobs/uploads/")).header("authorization", bearer(&key_b())).send().await.unwrap();
+    assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    server.shutdown().await;
+}
+
+/// R2: a registry that challenges with a token service on another host works on the key route when `oci_token_url` names that host.
+#[tokio::test]
+async fn oci_key_route_follows_a_token_service_on_another_host_only_when_named() {
+    for (named, expected) in [(None, StatusCode::BAD_GATEWAY), (Some("https://gitlab.example"), StatusCode::OK)] {
+        let oci = common::oci::FakeOci::new();
+        oci.require_token();
+        oci.foreign_realm("https://gitlab.example/jwt/auth");
+        oci.put_image("good/app", Some("v1"), &common::oci::image("a", &[b"layer"]));
+        let sync = FakeSyncServer::start().await;
+        sync.layer(PLATFORM, platform_layer());
+        sync.layer(org(ACME), oci_org(Vec::new()));
+        sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = sync.managed(config_with_open_blocklist(dir.path()));
+        config.oci_token_url = named.map(|text| url::Url::parse(text).unwrap());
+        let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&oci) as Arc<dyn Transport>, oci_origins()).await;
+        let response = reqwest::Client::new().get(server.url("/v2/good/app/manifests/v1")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        assert_eq!(response.status(), expected, "named {named:?}");
+        server.shutdown().await;
+    }
+}
+
+/// Row 24 (the lesson of slice 23's R5-1): the policy re-read after a document costs the account no second token of its rate limit.
+#[tokio::test]
+async fn an_oci_read_costs_one_rate_token() {
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), oci_org(Vec::new()));
+    sync.known_key_limited(&key_b(), &[PLATFORM, org(ACME)], Some(2));
+    let oci = common::oci::FakeOci::new();
+    oci.put_image("app", Some("v1"), &common::oci::image("a", &[b"layer"]));
+    let dir = tempfile::tempdir().unwrap();
+    let config = sync.managed(config_with_open_blocklist(dir.path()));
+    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), oci as Arc<dyn Transport>, oci_origins()).await;
+    let get = |path: &'static str| {
+        let (url, key) = (server.url(path), key_b());
+        async move { reqwest::Client::new().get(url).header("authorization", bearer(&key)).send().await.unwrap().status().as_u16() }
+    };
+    assert_eq!(get("/v2/app/manifests/v1").await, 200, "the first token");
+    assert_eq!(get("/v2/app/tags/list").await, 404, "the second token: the manifest did not take two (the registry has no tag list: its 404)");
+    assert_eq!(get("/v2/app/manifests/v1").await, 429, "the bucket of two is empty");
+    server.shutdown().await;
+}
+
+/// Row 24 (FIX-16-A on the key route): a stricter layer published while a manifest is being fetched is never applied late to an answer
+/// made under the old one: the manifest is a day old, served under the old layer, held under the new (a 7-day freeze); the answer that
+/// leaves is the re-admitted one.
+#[tokio::test]
+async fn an_oci_manifest_is_not_served_under_a_layer_that_a_publication_replaced_mid_request() {
+    struct Held {
+        inner: Arc<common::oci::FakeOci>,
+        arrived: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        once: std::sync::atomic::AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl Transport for Held {
+        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
+            self.inner.fetch_metadata(request).await
+        }
+        async fn fetch_oci(&self, request: probation::upstream::OciRequest) -> Result<probation::upstream::OciResponse, probation::upstream::UpstreamError> {
+            // Only the first fetch of the slow manifest is held: the re-admitted request must not wait for a second release.
+            let gated = request.url.path().contains("/slow/manifests/") && !self.once.swap(true, std::sync::atomic::Ordering::SeqCst);
+            let answer = self.inner.fetch_oci(request).await;
+            if gated {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
+            answer
+        }
+        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+            self.inner.open_artifact(request).await
+        }
+    }
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), oci_org(Vec::new()));
+    sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
+    let oci = common::oci::FakeOci::new();
+    let app = common::oci::image("a", &[b"layer"]);
+    oci.put_image("slow", Some("v1"), &app);
+    oci.put_image("fast", Some("v1"), &app);
+    let held = Arc::new(Held { inner: oci, arrived: Default::default(), release: Default::default(), once: Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = sync.managed(config_with_open_blocklist(dir.path()));
+    config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
+    let clock = TestClock::at_rfc3339(NOW);
+    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, oci_origins()).await);
+    let read = {
+        let (server, key) = (Arc::clone(&server), key_b());
+        tokio::spawn(async move {
+            let response = reqwest::Client::new().get(server.url("/v2/slow/manifests/v1")).header("authorization", bearer(&key)).send().await.unwrap();
+            (response.status().as_u16(), response.bytes().await.unwrap().to_vec())
+        })
+    };
+    held.arrived.notified().await;
+    let revision = sync.edit_layer(org(ACME), Layer { freeze_seconds: Some(7 * 86_400), ..org_blocking(Vec::new()) });
+    clock.advance_seconds(70);
+    sync.applied(revision).await;
+    let mut applied = false;
+    for _ in 0..200 {
+        let probe = reqwest::Client::new().get(server.url("/v2/fast/manifests/v1")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        if probe.status() == StatusCode::FORBIDDEN {
+            applied = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(applied, "the layer reached the firewall");
+    held.release.notify_one();
+    let (status, body) = read.await.unwrap();
+    assert!(body != app.manifest, "nothing decided under the old layer is served under the new one: {status}");
+    assert_eq!(status, 403, "the request is admitted again under the new layer, which holds it");
 }

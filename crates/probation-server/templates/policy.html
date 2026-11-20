@@ -25,7 +25,7 @@
 <label for="unit">Unit</label>
 <select id="unit" name="unit"><option value="hours"{% if view.unit == "hours" %} selected{% endif %}>hours</option><option value="days"{% if view.unit == "days" %} selected{% endif %}>days</option></select>
 </div>
-<p class="mut" id="freeze-help">Empty inherits the layer above. Anything from 0 hours to 365 days; applies to npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven and Conan. {{ view.freeze_above }}</p>
+<p class="mut" id="freeze-help">Empty inherits the layer above. Anything from 0 hours to 365 days; applies to npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven, Conan and OCI. {{ view.freeze_above }}</p>
 {% if view.freeze_not_in_effect %}<p class="err">This freeze is {{ view.not_in_effect }}.</p>{% endif %}
 </fieldset>
 <fieldset><legend>OSV malicious-package check</legend>
@@ -69,7 +69,7 @@
 <fieldset><legend>Add a block</legend>
 <div class="row">
 <label for="block-ecosystem">Ecosystem</label>
-<select id="block-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option><option value="rubygems">RubyGems</option><option value="cargo">Cargo</option><option value="go">Go</option><option value="nuget">NuGet</option><option value="maven">Maven</option><option value="conan">Conan</option></select>
+<select id="block-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option><option value="rubygems">RubyGems</option><option value="cargo">Cargo</option><option value="go">Go</option><option value="nuget">NuGet</option><option value="maven">Maven</option><option value="conan">Conan</option><option value="oci">OCI</option></select>
 <label for="block-name">Package name</label>
 <input id="block-name" name="name" autocomplete="off">
 <label for="block-what">What</label>
@@ -111,7 +111,7 @@
 <fieldset><legend>Add an exception</legend>
 <div class="row">
 <label for="exception-ecosystem">Ecosystem</label>
-<select id="exception-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option><option value="rubygems">RubyGems</option><option value="cargo">Cargo</option><option value="go">Go</option><option value="nuget">NuGet</option><option value="maven">Maven</option><option value="conan">Conan</option></select>
+<select id="exception-ecosystem" name="ecosystem"><option value="npm">npm</option><option value="pypi">PyPI</option><option value="rubygems">RubyGems</option><option value="cargo">Cargo</option><option value="go">Go</option><option value="nuget">NuGet</option><option value="maven">Maven</option><option value="conan">Conan</option><option value="oci">OCI</option></select>
 <label for="exception-name">Package name</label>
 <input id="exception-name" name="name" autocomplete="off">
 <label for="exception-version">Exact version <span class="mut">(empty: the whole package, also future versions)</span></label>

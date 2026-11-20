@@ -21,6 +21,7 @@ pub enum Call {
     Nuget,
     Maven,
     Conan,
+    Oci,
 }
 
 const ANSWERED: u8 = 1;
@@ -51,7 +52,7 @@ impl Tracker {
 
 #[derive(Default)]
 pub struct UpstreamHealth {
-    trackers: [Tracker; 10],
+    trackers: [Tracker; 11],
     /// LS-F3: layer rules of the active snapshot skipped for an unknown ecosystem tag.
     policy_rules_skipped_unknown_ecosystem: std::sync::atomic::AtomicU64,
     /// Central OSV (row 30): counters that travel in the sync report (`osv_report`) and the
@@ -186,7 +187,7 @@ impl UpstreamHealth {
     /// Closes the period and reports it. `pypi` is unreachable when either of its
     /// trackers is, so a files outage shows even while metadata refreshes succeed.
     pub fn take_period(&self) -> Upstreams {
-        let [npm, metadata, artifacts, osv, rubygems, cargo, go, nuget, maven, conan] = &self.trackers;
+        let [npm, metadata, artifacts, osv, rubygems, cargo, go, nuget, maven, conan, oci] = &self.trackers;
         // Reported only once RubyGems has been called, so a firewall that serves none never names it.
         let rubygems_down = rubygems.close_period();
         let cargo_down = cargo.close_period();
@@ -194,6 +195,7 @@ impl UpstreamHealth {
         let nuget_down = nuget.close_period();
         let maven_down = maven.close_period();
         let conan_down = conan.close_period();
+        let oci_down = oci.close_period();
         let state = |down| {
             if down {
                 Reachability::Unreachable
@@ -212,6 +214,7 @@ impl UpstreamHealth {
             nuget: nuget.touched.load(Ordering::Acquire).then(|| state(nuget_down)),
             maven: maven.touched.load(Ordering::Acquire).then(|| state(maven_down)),
             conan: conan.touched.load(Ordering::Acquire).then(|| state(conan_down)),
+            oci: oci.touched.load(Ordering::Acquire).then(|| state(oci_down)),
         }
     }
 }
@@ -226,7 +229,7 @@ mod tests {
         let ok = Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None,
+            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
         };
         assert_eq!(health.take_period(), ok, "no calls yet");
         health.record_upstream::<()>(Call::Npm, &Err(UpstreamError::Status(503)));

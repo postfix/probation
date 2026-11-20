@@ -61,6 +61,10 @@ conan remote remove conancenter
 conan remote add probation {{ scheme }}://{{ host }}/conan
 conan remote login probation key -p {{ secret }}</pre>
 <p class="mut">The login returns the key as the token the client sends from then on (<code>Authorization: Bearer</code>); Conan reads and uploads through Probation need nothing else.</p>
+<h3>Point Docker, Podman or containerd at Probation</h3>
+<pre>docker login {{ host }} -u key -p {{ secret }}
+docker pull {{ host }}/library/alpine:latest</pre>
+<p class="mut">The login is the registry's own token flow: the client asks Probation's <code>/v2/token</code> with the key and sends the token it gets back (<code>Authorization: Bearer</code>) from then on. The first path segment after the host is the repository on the registry Probation fronts (Docker Hub by default).</p>
 <p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}</p>
 </section>
 {% endif %}

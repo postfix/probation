@@ -182,6 +182,9 @@ pub fn check_settings(text: &str) -> Result<(), String> {
         "maven_publish_url",
         "conan_upstream_url",
         "conan_publish_url",
+        "oci_upstream_url",
+        "oci_artifacts_url",
+        "oci_token_url",
     ] {
         if table
             .get(key)

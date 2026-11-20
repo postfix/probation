@@ -44,6 +44,12 @@ pub trait Transport: Send + Sync + 'static {
     async fn send_action(&self, _req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
         Err(UpstreamError::Status(501))
     }
+    /// One exchange with an OCI registry (a read of a manifest, a tag list, a token, or a write with the caller's own
+    /// credential): the status, the headers an OCI client reads and a capped body. Redirects are never followed here (a blob's
+    /// redirect is the artifact transfer's, with its own origin rules); a 3xx comes back as the answer it is.
+    async fn fetch_oci(&self, _req: OciRequest) -> Result<OciResponse, UpstreamError> {
+        Err(UpstreamError::Status(501))
+    }
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError>;
     /// Whether the file at `req.url` exists, and the validators it carries, without reading its body (a Maven file's own
     /// `Last-Modified`). `None` is the repository's 404 or 410. The default reads at most one byte through `fetch_metadata`: a
@@ -111,6 +117,37 @@ pub struct ActionRequest {
     pub body: tokio::fs::File,
     pub body_len: u64,
     pub max_bytes: u64,
+}
+
+pub struct OciRequest {
+    pub url: Url,
+    /// The registry's own origin (a token realm's origin for a token request); `None` is the default registry.
+    pub origin: Option<Url>,
+    pub private_cidrs: Vec<ipnet::IpNet>,
+    pub method: Method,
+    pub authorization: Option<String>,
+    pub accept: Option<String>,
+    pub content_type: Option<String>,
+    pub content_range: Option<String>,
+    /// A body spooled to a file, and its length.
+    pub body: Option<(tokio::fs::File, u64)>,
+    pub max_bytes: u64,
+}
+
+/// The headers of an OCI answer a client reads (names lower case); everything else stays behind.
+pub struct OciResponse {
+    pub status: u16,
+    pub headers: Vec<(&'static str, String)>,
+    pub body: Bytes,
+}
+
+impl OciResponse {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(key, _)| *key == name).map(|(_, value)| value.as_str())
+    }
+    pub fn headers_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
+        self.headers.iter().filter(move |(key, _)| *key == name).map(|(_, value)| value.as_str())
+    }
 }
 
 pub struct ActionResponse {
@@ -264,6 +301,11 @@ impl Transport for Limited {
     async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
         let _slot = self.slot().await;
         self.inner.probe_file(req).await
+    }
+
+    async fn fetch_oci(&self, req: OciRequest) -> Result<OciResponse, UpstreamError> {
+        let _slot = self.slot().await;
+        self.inner.fetch_oci(req).await
     }
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {

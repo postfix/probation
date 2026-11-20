@@ -111,7 +111,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None, archive_origin: None, resource_path_prefix: None,
+                osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
             },
             RegistryDescriptor {
                 registry: RegistryId(4),
@@ -120,7 +120,7 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None, archive_origin: None, resource_path_prefix: None,
+                osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
             },
         ],
     }
@@ -168,6 +168,7 @@ async fn shared_service_final_handoff_orders_publication() {
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
                         Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                         Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -412,6 +413,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
                         Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                         Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -451,6 +453,7 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                         Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
                         Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
                         Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
+                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()

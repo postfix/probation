@@ -458,3 +458,105 @@ async fn snapshot_carries_the_archive_origin_of_a_conan_registry_and_the_constra
     assert_eq!(with["archive_origin"], "https://blobs.example/store");
     assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
 }
+
+/// Row 24: an OCI registry and an OCI block travel in the snapshot under the wire spelling `Oci` (the tag in the database is
+/// `oci`, already carried by migration 0014), and the block keeps the repository name.
+#[tokio::test]
+async fn snapshot_names_a_oci_registry_and_a_oci_block() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Images").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name) VALUES ($1, 'oci', 'Hub')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
+        .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name, version) VALUES ($1, 'oci', 'evil/pkg', '1.0')")
+        .bind(layer).execute(&db.owner).await.unwrap();
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(snapshot["registries"].as_array().unwrap().iter().any(|r| r["ecosystem"] == "Oci"), "{snapshot}");
+    let text = snapshot.to_string();
+    assert!(text.contains(r#""ecosystem":"Oci""#) && text.contains("evil/pkg"), "the block decodes as an OCI block: {snapshot}");
+}
+
+/// Row 24: a settings push may set the two OCI origins (the default registry, with a path prefix if it has one, and the storage its blob redirects land on), and only to an https address.
+#[test]
+fn settings_push_accepts_https_oci_origins_and_refuses_the_rest() {
+    use probation_server::fleet::check_settings;
+    for key in ["oci_upstream_url", "oci_artifacts_url"] {
+        assert!(check_settings(&format!("{key} = \"https://oci.mirror.example/artifactory/api/oci/oci\"\n")).is_ok(), "{key}");
+        for refused in ["http://oci.mirror.example", "ftp://x", "mirror"] {
+            assert!(check_settings(&format!("{key} = \"{refused}\"\n")).is_err(), "{key} = {refused}");
+        }
+        assert!(check_settings(&format!("{key} = 7\n")).is_err(), "{key} must be a string");
+    }
+}
+
+/// Row 24 (migration 0022): the database lets an OCI registry with a target hold an archive origin and still refuses one on any
+/// other kind of registry, or without a target; the snapshot carries it for the OCI registry that has one and omits it for the one
+/// that has none.
+#[tokio::test]
+async fn snapshot_carries_the_archive_origin_of_a_oci_registry_and_the_constraint_still_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Ociarchives").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'oci', 'With', 'https://reg.example/', 'https://blobs.example/store')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'oci', 'Without', 'https://reg2.example/')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'rubygems', 'Gems', 'https://n.example/', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'oci', 'NoTarget', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, target_url, resource_path_prefix) VALUES ($1, 'oci', 'Prefix', 'https://m.example/', '/x')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let oci: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "Oci").collect();
+    assert_eq!(oci.len(), 2);
+    let with = oci.iter().find(|r| r["target_url"] == "https://reg.example/").unwrap();
+    let without = oci.iter().find(|r| r["target_url"] == "https://reg2.example/").unwrap();
+    assert_eq!(with["archive_origin"], "https://blobs.example/store");
+    assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
+}
+
+/// Row 24 (migration 0023, code review F5): an OCI registry with a target may declare a token origin and the snapshot carries it; the database
+/// refuses one on any other kind of registry or without a target.
+#[tokio::test]
+async fn snapshot_carries_the_token_origin_of_an_oci_registry_and_the_constraint_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Ocitokens").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, token_origin) VALUES ($1, 'oci', 'With', 'https://reg.example/', 'https://gitlab.example')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'oci', 'Without', 'https://reg2.example/')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, token_origin) VALUES ($1, 'conan', 'C', 'https://n.example/', 'https://x.example')",
+                "INSERT INTO registries (org_id, ecosystem, name, token_origin) VALUES ($1, 'oci', 'NoTarget', 'https://x.example')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let oci: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "Oci").collect();
+    assert_eq!(oci.len(), 2);
+    let with = oci.iter().find(|r| r["target_url"] == "https://reg.example/").unwrap();
+    let without = oci.iter().find(|r| r["target_url"] == "https://reg2.example/").unwrap();
+    assert_eq!(with["token_origin"], "https://gitlab.example");
+    assert!(without.get("token_origin").is_none(), "absent, never null: {without}");
+    // R2: the certificate admission reads the same column as the application role does (the query it runs after the grant).
+    for (target, expected) in [("https://reg.example/", Some("https://gitlab.example")), ("https://reg2.example/", None)] {
+        let found: Option<String> = sqlx::query_scalar("SELECT token_origin FROM registries WHERE target_url = $1").bind(target).fetch_one(&db.app).await.unwrap();
+        assert_eq!(found.as_deref(), expected, "{target}");
+    }
+}

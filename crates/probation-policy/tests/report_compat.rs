@@ -141,3 +141,22 @@ fn conan_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.maven), (Reachability::Ok, Some(Reachability::Ok)));
 }
+
+/// Row 24: the OCI upstream state is additive in the same way as the families before it.
+#[test]
+fn oci_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","conan":"ok"}"#).unwrap();
+    assert_eq!(old.oci, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("oci"));
+    let new = Upstreams { oci: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""oci":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        conan: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.conan), (Reachability::Ok, Some(Reachability::Ok)));
+}

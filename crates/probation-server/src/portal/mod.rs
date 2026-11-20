@@ -234,6 +234,10 @@ fn routes() -> Routes {
         post(registries::set_archive_origin),
     )
     .post(
+        "/org/{org}/registries/{registry}/token-origin",
+        post(registries::set_token_origin),
+    )
+    .post(
         "/org/{org}/registries/{registry}/resource-prefix",
         post(registries::set_resource_prefix),
     )

@@ -242,6 +242,7 @@ async fn transfer(
 
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
+    let read_authorization = crate::oci::serve::ambient_authorization(app, &row.reference, row.registry_id, origin, private_cidrs, read_authorization).await.map_err(DownloadError::Upstream)?;
     let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -269,6 +270,7 @@ async fn transfer(
         Ecosystem::NuGet => Call::Nuget,
         Ecosystem::Maven => Call::Maven,
         Ecosystem::Conan => Call::Conan,
+        Ecosystem::Oci => Call::Oci,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -286,6 +288,7 @@ async fn transfer(
 
     let mut sha256 = Sha256::new();
     let mut sha512 = Sha512::new();
+    let legacy_digests = row.reference.ecosystem != Ecosystem::Oci;
     let mut sha1 = Sha1::new();
     let mut md5 = <md5::Md5 as md5::Digest>::new();
     let mut size = 0u64;
@@ -309,8 +312,11 @@ async fn transfer(
         }
         sha256.update(&chunk);
         sha512.update(&chunk);
-        sha1.update(&chunk);
-        md5::Digest::update(&mut md5, &chunk);
+        // (sha1 and md5 are for Maven's and Conan's sidecars: an OCI layer is hashed once, with the two digests it is judged and pinned by)
+        if legacy_digests {
+            sha1.update(&chunk);
+            md5::Digest::update(&mut md5, &chunk);
+        }
         content_write(app, temp.write_all(&chunk).await)?;
     }
 
@@ -512,6 +518,8 @@ fn allows_archive_redirect(row: &ReferenceRow) -> bool {
         // A registry's jar or archive may be answered with a redirect to its storage; its small files never are.
         || (row.reference.ecosystem == Ecosystem::Maven && !is_maven_small(row))
         || (row.reference.ecosystem == Ecosystem::Conan && !is_conan_small(row))
+        // A blob is answered with a redirect to the registry's storage (a signed URL); the credential never follows it.
+        || row.reference.ecosystem == Ecosystem::Oci
 }
 
 fn selected_catalog_authorization(
@@ -530,6 +538,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::NuGet => OriginKind::NugetIndex,
             crate::policy::Ecosystem::Maven => OriginKind::MavenRepo,
             crate::policy::Ecosystem::Conan => OriginKind::ConanRemote,
+            crate::policy::Ecosystem::Oci => OriginKind::OciRegistry,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -563,6 +572,7 @@ pub async fn fetch_request_scoped(
     let _permit = permit;
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
+    let read_authorization = crate::oci::serve::ambient_authorization(app, &row.reference, row.registry_id, origin, private_cidrs, read_authorization).await.map_err(DownloadError::Upstream)?;
     let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -589,6 +599,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::NuGet => Call::Nuget,
         Ecosystem::Maven => Call::Maven,
         Ecosystem::Conan => Call::Conan,
+        Ecosystem::Oci => Call::Oci,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -596,6 +607,7 @@ pub async fn fetch_request_scoped(
         return Err(DownloadError::TooLarge { limit: cap });
     }
     let mut temp = temp_dir.begin(body.declared_length).map_err(DownloadError::Temp)?;
+    let legacy_digests = row.reference.ecosystem != Ecosystem::Oci;
     let (mut sha256, mut sha512, mut sha1, mut size) = (Sha256::new(), Sha512::new(), Sha1::new(), 0u64);
     let mut md5 = <md5::Md5 as md5::Digest>::new();
     let mut stream = body.stream;
@@ -607,8 +619,11 @@ pub async fn fetch_request_scoped(
         }
         sha256.update(&chunk);
         sha512.update(&chunk);
-        sha1.update(&chunk);
-        md5::Digest::update(&mut md5, &chunk);
+        // (sha1 and md5 are for Maven's and Conan's sidecars: an OCI layer is hashed once, with the two digests it is judged and pinned by)
+        if legacy_digests {
+            sha1.update(&chunk);
+            md5::Digest::update(&mut md5, &chunk);
+        }
         // Off the async worker: the temporary file is a plain blocking file.
         temp = temp.write_blocking(chunk.to_vec()).await.map_err(DownloadError::Temp)?;
     }
@@ -670,8 +685,14 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         Ecosystem::Maven => &[OriginKind::MavenRepo, OriginKind::NpmMetadata],
         // Every file of a recipe or package revision is under the remote's own `v2/conans` tree; a selected registry travels in the npm slot.
         Ecosystem::Conan => &[OriginKind::ConanRemote, OriginKind::NpmMetadata],
+        // A blob is under the registry's own `/v2/{name}/blobs/` tree; a selected registry travels in the npm slot.
+        Ecosystem::Oci => &[OriginKind::OciRegistry, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
+    // An OCI foreign layer is fetched from the URL its manifest names, when the operator's list admits that host.
+    if row.reference.ecosystem == Ecosystem::Oci && app.origins.admits_foreign(url) {
+        return Ok(());
+    }
     // Admitted against each own origin rather than by `kind_of`, which names only the
     // first of several origins configured to the same URL.
     if own.iter().any(|kind| origins.admit(url, *kind).is_ok()) {

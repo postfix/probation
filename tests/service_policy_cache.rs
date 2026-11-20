@@ -50,7 +50,7 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         }],
     }
 }
@@ -582,7 +582,7 @@ fn descriptors(count: u64) -> Vec<RegistryDescriptor> {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None,
+            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
         })
         .collect()
 }
@@ -852,7 +852,7 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 
 #[tokio::test]
 async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
-    use probation_policy::Ecosystem::{Cargo, Conan, Go, Maven, Npm, NuGet};
+    use probation_policy::Ecosystem::{Cargo, Conan, Go, Maven, Npm, NuGet, Oci};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
         ("http://files.example.test/crates", Cargo, target, "not https"),
@@ -870,6 +870,8 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
         ("https://169.254.169.254/maven", Maven, Some("https://nexus.example.test/repository/releases/"), "metadata address"),
         ("https://files.example.test/conan", Conan, None, "a Conan registry needs a target of its own"),
         ("https://169.254.169.254/conan", Conan, Some("https://art.example.test/artifactory/api/conan/c/"), "metadata address"),
+        ("https://files.example.test/oci", Oci, None, "an OCI registry needs a target of its own"),
+        ("https://169.254.169.254/oci", Oci, Some("https://registry.example.test/"), "metadata address"),
         ("https://169.254.169.254/nuget", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"), "metadata address"),
         ("https://files.example.test/crates", Cargo, None, "no target"),
         ("not a url", Cargo, target, "not a URL"),
@@ -891,6 +893,9 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
     // A Conan registry with a target may declare where its archives are redirected to (row 23).
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Conan, Some("https://art.example.test/artifactory/api/conan/c/"))).unwrap()).await;
     result.expect("a Conan registry's archive origin is accepted");
+    // An OCI registry with a target may declare where its blobs are redirected to (row 24).
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Oci, Some("https://registry.example.test/"))).unwrap()).await;
+    result.expect("an OCI registry's archive origin is accepted");
 }
 
 /// Row 20 (security review F3): a resource path prefix is whole path segments, and only a NuGet registry with a target may carry one.
@@ -923,4 +928,35 @@ async fn a_resource_path_prefix_is_checked_and_only_a_nuget_registry_with_a_targ
     }
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(with("/org-a/_packaging", NuGet, target)).unwrap()).await;
     result.expect("an ordinary prefix is accepted");
+}
+
+/// Row 24 (code review F5): a token origin is an https origin of an OCI registry with a target, and nothing else; it is checked like a target.
+#[tokio::test]
+async fn a_token_origin_is_an_https_origin_and_only_an_oci_registry_with_a_target_may_carry_one() {
+    use probation_policy::Ecosystem::{Conan, Oci};
+    let target = Some("https://registry.example.test/");
+    let tokened = |origin: &str, ecosystem: probation_policy::Ecosystem, target: Option<&str>| {
+        let mut value = snapshot();
+        value.registries[0].ecosystem = ecosystem;
+        value.registries[0].target_url = target.map(str::to_owned);
+        value.registries[0].token_origin = Some(origin.into());
+        value
+    };
+    for (origin, ecosystem, target, why) in [
+        ("http://gitlab.example.test", Oci, target, "not https"),
+        ("https://user:pw@gitlab.example.test", Oci, target, "userinfo"),
+        ("https://gitlab.example.test/jwt/auth", Oci, target, "a path"),
+        ("https://gitlab.example.test/?x=1", Oci, target, "query"),
+        ("https://gitlab.example.test/#f", Oci, target, "fragment"),
+        ("https://127.0.0.1", Oci, target, "loopback"),
+        ("https://169.254.169.254", Oci, target, "metadata address"),
+        ("https://gitlab.example.test", Oci, None, "an OCI registry needs a target of its own"),
+        ("https://gitlab.example.test", Conan, Some("https://art.example.test/c/"), "not an OCI registry"),
+        ("not a url", Oci, target, "not a URL"),
+    ] {
+        let (result, policy, _dir) = sync_raw(serde_json::to_value(tokened(origin, ecosystem, target)).unwrap()).await;
+        assert!(result.is_err() && policy.snapshot().is_none(), "{origin} ({why}) must be rejected before activation");
+    }
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(tokened("https://gitlab.example.test", Oci, target)).unwrap()).await;
+    result.expect("an OCI registry's token origin is accepted");
 }

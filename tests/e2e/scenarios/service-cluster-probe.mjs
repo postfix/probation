@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { join } from "node:path";
@@ -11,8 +11,9 @@ import { startCommonService } from "../harness/service-setup.mjs";
 // the e2e work directory (disk), content-store only: `ctr content fetch` resolves and pulls without a snapshotter.
 // Every connection the runtime makes goes through a recording CONNECT proxy that reaches the stack only for the
 // service's own name; any other destination is refused and counted as a direct-origin attempt (fallback).
-// The service has no OCI route before row 24, so a 404 from the service is the expected, recorded answer here.
-// Every expectation that holds only before row 24 carries a ROW24-FLIP tag (grep it); row 24 removes or flips each one.
+// Row 24 serves OCI (the default registry is the fake Docker Hub of fixtures/fakes/oci.mjs): the routed pull succeeds, the service decides the
+// runtime's HEAD of the tag, and the refusals below (the service down, no fallback to the origin) are unchanged. The service's cooldown is
+// 0 here (the age of an image is when the service first saw its digest; this probe is about routing, not about the cooldown).
 export const meta = {
   id: "E2E-service-cluster-probe",
   title: "containerd explicit-server routing probe against the shared service",
@@ -68,6 +69,8 @@ export default async function clusterProbe(h) {
   }
   const version = spawnSync("containerd", ["--version"], { encoding: "utf8" }).stdout;
   h.expect(version.includes("1c4457e00facac03ce1d75f7b6777a7a851e5c41"), `containerd is the pinned 2.2.0 commit: ${version.trim()}`);
+  const standalone = join(h.stack.work, "firewall-standalone.toml");
+  writeFileSync(standalone, readFileSync(standalone, "utf8").replace(/^cooldown_seconds = .*$/m, "cooldown_seconds = 0"));
   await startCommonService(h);
 
   const dir = join(h.stack.work, "containerd-probe");
@@ -104,25 +107,25 @@ disabled_plugins = ["io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images
     const fetch = (hosts, timeout) => ctr(["--debug", "-a", sock, "content", "fetch", "--hosts-dir", join(dir, hosts), IMAGE], env, timeout);
     const hosts = (list) => [...new Set(list.map((t) => t.split(":")[0]))].sort();
 
-    // The service's own request log: count of HEAD requests it decided as 404 (its log carries no path).
+    // The service's own request log: count of HEAD requests it decided as 200 (its log carries the ecosystem and the repository, not the verb's path).
     const decidedHeads = () => {
       const logs = spawnSync(h.stack.engine, ["logs", h.stack.container("firewall-standalone")], { encoding: "utf8" });
-      return `${logs.stdout}${logs.stderr}`.split("\n").filter((l) => l.includes('"method":"\\"HEAD\\""') && l.includes('"status":404')).length;
+      return `${logs.stdout}${logs.stderr}`.split("\n").filter((l) => l.includes('"method":"\\"HEAD\\""') && l.includes('"status":200') && l.includes("oci")).length;
     };
     const headsBefore = decidedHeads();
 
     // 1. Routed: the pull for docker.io names the service and only the service.
     let r = await fetch("hosts");
     h.log(`routed pull: exit ${r.status}\n${r.stderr}`);
-    h.expect(r.status !== 0, "row 28 has no OCI route, so the pull is refused there"); // ROW24-FLIP: row 24 serves OCI, the pull succeeds
+    h.expect(r.status === 0, `row 24 serves OCI: the routed pull succeeds: ${r.stderr.slice(-300)}`);
     h.expect(r.stderr.includes(SERVICE_HOST), "the runtime talked to the service named by hosts.toml");
     h.expect(JSON.stringify(hosts(proxy.connects)) === JSON.stringify([SERVICE_HOST]), `only the service was contacted: ${hosts(proxy.connects)}`);
 
-    // 2. The service decided exactly one HEAD for it (its request log carries no path: a 404, route unknown). The request's
-    // own shape comes from the runtime's debug log: original repository path, original registry kept as ns=docker.io.
+    // 2. The service decided the runtime's HEAD of the tag (200). The request's own shape comes from the runtime's debug log: original
+    // repository path, original registry kept as ns=docker.io.
     const decided = decidedHeads() - headsBefore;
     h.log(`service decided HEAD 404 during the pull: ${decided}`);
-    h.expect(decided === 1, `the service decided exactly the runtime's one HEAD (404 NOT_FOUND, no OCI route): ${decided}`); // ROW24-FLIP: row 24 answers it
+    h.expect(decided >= 1, `the service decided the runtime's HEAD of the tag (200): ${decided}`);
     h.expect(/\/v2\/library\/alpine\/manifests\/latest\?ns=docker\.io/.test(r.stderr), "the runtime's request is /v2/library/alpine/manifests/latest?ns=docker.io");
 
     // 3. Service down: the origin is healthy and reachable, yet the runtime does not go there.

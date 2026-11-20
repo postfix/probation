@@ -1,0 +1,1 @@
+{"architecture":"amd64","os":"linux","created":"2001-01-01T00:00:00Z","config":{"Cmd":["/hello.txt"]},"rootfs":{"type":"layers","diff_ids":["sha256:c8220faf39fdc5a2edb8efab2b083988e88f0e16a8ee0e031f8c38921d8e5f80"]},"history":[{"created":"2001-01-01T00:00:00Z","created_by":"probation fixture"}]}
