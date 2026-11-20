@@ -16,6 +16,7 @@ pub mod cargo_routes;
 pub mod go_routes;
 pub mod nuget_routes;
 pub mod maven_routes;
+pub mod conan_routes;
 pub mod readmit;
 pub mod registry_read;
 pub mod registry_action;
@@ -187,6 +188,10 @@ fn package_router(app: Arc<App>) -> Router {
         // catch-all parsed strictly by the handler; a selected registry's `PUT` and `DELETE` are the class-W deploy routes.
         .route("/maven/{*path}", get(maven_routes::legacy).head(maven_routes::legacy))
         .route("/registry/maven/{registry}/{*path}", get(maven_routes::selected).head(maven_routes::selected).put(maven_routes::selected).delete(maven_routes::selected))
+        // Conan 2: the remote's REST tree (`v2/...`: ping, login, search, revisions, files) behind one catch-all parsed strictly by the
+        // handler; a selected registry's `PUT` and `DELETE` are the class-W upload routes.
+        .route("/conan/{*path}", get(conan_routes::legacy).head(conan_routes::legacy))
+        .route("/registry/conan/{registry}/{*path}", get(conan_routes::selected).head(conan_routes::selected).put(conan_routes::selected).delete(conan_routes::selected))
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",

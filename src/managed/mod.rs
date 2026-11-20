@@ -486,6 +486,25 @@ impl Managed {
         headers: &HeaderMap,
         peer: IpAddr,
     ) -> Result<Principal, Refusal> {
+        self.authenticate_charging(headers, peer, true).await
+    }
+
+    /// [`Self::authenticate`] again for a request already admitted (a long search re-reads the key's current policy when it is
+    /// done): the network lock applies, the account's rate is not charged a second time.
+    pub async fn reauthenticate(
+        &self,
+        headers: &HeaderMap,
+        peer: IpAddr,
+    ) -> Result<Principal, Refusal> {
+        self.authenticate_charging(headers, peer, false).await
+    }
+
+    async fn authenticate_charging(
+        &self,
+        headers: &HeaderMap,
+        peer: IpAddr,
+        charge_rate: bool,
+    ) -> Result<Principal, Refusal> {
         if self.retired.load(Ordering::Acquire) {
             return Err(Refusal::Unauthenticated);
         }
@@ -516,7 +535,11 @@ impl Managed {
             }).map_err(|_| Refusal::Busy)??
         };
         principal.authority = Some(service_policy::AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation));
-        self.admit(&principal, client)?;
+        if charge_rate {
+            self.admit(&principal, client)?;
+        } else {
+            self.admit_network(&principal, client)?;
+        }
         Ok(principal)
     }
 
@@ -1221,7 +1244,7 @@ fn key_hash(presented: &HeaderValue) -> Result<KeyHash, Refusal> {
 
 /// The key from `Bearer <key>` (npm) or the password of `Basic <user:key>` (pip, uv,
 /// Poetry; any username), if it has a key's shape. Format is checked before hashing.
-fn bearer_or_basic_password(value: &HeaderValue) -> Option<String> {
+pub(crate) fn bearer_or_basic_password(value: &HeaderValue) -> Option<String> {
     if value.len() > MAX_CREDENTIALS_BYTES {
         return None;
     }

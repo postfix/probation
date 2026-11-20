@@ -79,6 +79,10 @@ impl FamilyReadRules {
     /// `Accept-Encoding`, `Host` and conditional headers on a metadata read, all common); a credential travels as
     /// `Authorization` (Basic from `settings.xml`, or a bearer token), request-scoped, and no route takes one in its path.
     pub const MAVEN: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    /// Conan reads carry the search pattern (`q`, `ignorecase`) and, from the real client (conan 2.21.0, measured in tests/conan_native.rs),
+    /// its own non-secret identification headers; a credential travels as `Authorization` (Basic on a login, then the Bearer token it
+    /// returns), request-scoped, and no route takes one in its path.
+    pub const CONAN: FamilyReadRules = FamilyReadRules { headers: &["x-client-anonymous-id", "x-client-id", "x-conan-server-capabilities"], query_keys: &["q", "ignorecase"] };
     pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
 }
 

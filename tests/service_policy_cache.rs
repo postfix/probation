@@ -852,7 +852,7 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 
 #[tokio::test]
 async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
-    use probation_policy::Ecosystem::{Cargo, Go, Maven, Npm, NuGet};
+    use probation_policy::Ecosystem::{Cargo, Conan, Go, Maven, Npm, NuGet};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
         ("http://files.example.test/crates", Cargo, target, "not https"),
@@ -868,6 +868,8 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
         ("https://files.example.test/nuget", NuGet, None, "a NuGet registry needs a target of its own"),
         ("https://files.example.test/maven", Maven, None, "a Maven registry needs a target of its own"),
         ("https://169.254.169.254/maven", Maven, Some("https://nexus.example.test/repository/releases/"), "metadata address"),
+        ("https://files.example.test/conan", Conan, None, "a Conan registry needs a target of its own"),
+        ("https://169.254.169.254/conan", Conan, Some("https://art.example.test/artifactory/api/conan/c/"), "metadata address"),
         ("https://169.254.169.254/nuget", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"), "metadata address"),
         ("https://files.example.test/crates", Cargo, None, "no target"),
         ("not a url", Cargo, target, "not a URL"),
@@ -886,6 +888,9 @@ async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_
     // A Maven registry with a target may declare where its artifacts are redirected to (row 21).
     let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Maven, Some("https://nexus.example.test/repository/releases/"))).unwrap()).await;
     result.expect("a Maven registry's archive origin is accepted");
+    // A Conan registry with a target may declare where its archives are redirected to (row 23).
+    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Conan, Some("https://art.example.test/artifactory/api/conan/c/"))).unwrap()).await;
+    result.expect("a Conan registry's archive origin is accepted");
 }
 
 /// Row 20 (security review F3): a resource path prefix is whole path segments, and only a NuGet registry with a target may carry one.

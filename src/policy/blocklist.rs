@@ -161,6 +161,8 @@ impl BlocklistSnapshot {
                 Ecosystem::NuGet => probation_policy::names::canonical_name(Ecosystem::NuGet, &record.name),
                 // `groupId:artifactId` is case-sensitive: kept exactly as the blocklist spells it.
                 Ecosystem::Maven => record.name.clone(),
+                // A Conan name is judged lower-case (a remote that folds case must not be a way round a block).
+                Ecosystem::Conan => probation_policy::names::canonical_name(Ecosystem::Conan, &record.name),
             };
             entry_count += 1;
             match &record.version {
@@ -684,7 +686,7 @@ mod tests {
         let mixed = parse(&document(
             1,
             r#"{"ecosystem":"npm","name":"good","version":null,"reason":"malware"},
-               {"ecosystem":"conan","name":"bad","version":null,"reason":"malware"}"#,
+               {"ecosystem":"swift","name":"bad","version":null,"reason":"malware"}"#,
             "",
         ));
         assert!(matches!(

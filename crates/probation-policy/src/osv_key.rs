@@ -55,6 +55,8 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
         // LS-F6: `groupId:artifactId`, each part `[A-Za-z0-9._-]`, exactly one `:`, case kept.
         Ecosystem::Maven => crate::names::valid_maven_name(name),
+        // LS-F6: the package name, `[A-Za-z0-9_][A-Za-z0-9_+.-]*`, case kept (OSV's `ConanCenter` ecosystem keys by name).
+        Ecosystem::Conan => crate::names::valid_conan_part(name),
     }
 }
 

@@ -160,7 +160,7 @@ pub struct RegistryDescriptor {
     /// Cargo registry's archives (`dl` of its `config.json`) may be fetched from when they are not
     /// under `target_url` (Artifactory's `api/cargo/{repo}/index` beside `.../crates`). Absent: the
     /// archives must be under `target_url`. An older enforcer ignores the field, so it keeps refusing
-    /// such archives. Only a Cargo, Go, NuGet or Maven registry may carry it.
+    /// such archives. Only a Cargo, Go, NuGet, Maven or Conan registry may carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_origin: Option<String>,
     /// Additive and optional (row 20): narrows a NuGet registry's resources (the flat container, registration,
@@ -374,6 +374,9 @@ pub struct Upstreams {
     /// Additive (row 21), same rule as `nuget`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maven: Option<Reachability>,
+    /// Additive (row 23), same rule as `maven`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conan: Option<Reachability>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -588,7 +591,7 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None,
+                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None,
                     },
                 },
                 effective_period_seconds: 55,

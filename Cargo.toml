@@ -90,7 +90,7 @@ probation-policy = { path = "crates/probation-policy", version = "0.2.2" }
 reqwest = { version = "0.13.5", features = ["stream", "gzip", "brotli", "zstd"] }
 rustls = "0.23.45"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["raw_value"] }
 sha1 = "0.11.0"
 # Maven's `.md5` checksum files (already in the lockfile through sqlx).
 md-5 = "0.11.0"

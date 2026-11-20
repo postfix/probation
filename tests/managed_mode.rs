@@ -890,6 +890,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
                 Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
                 Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
+                Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
             };
             client
                 .get(url)
@@ -934,6 +935,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
             Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
+            Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
@@ -943,6 +945,7 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
             Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
             Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
             Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
+            Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
         }
     }
 }
@@ -1462,4 +1465,133 @@ async fn go_block_published_while_the_request_is_in_flight_wins() {
     let (status, body) = fetch.await.unwrap();
     assert_eq!(status, 403, "{body}");
     assert!(!body.contains("before the block"));
+}
+
+/// Recheck-4 L2 (Conan search, managed key route): a stricter layer published while a search judges is never applied late to a listing made
+/// under the old one. The reference is a day old: listed under the old layer (no freeze), held under the new one (a 7-day freeze). The
+/// answer (re-admitted under the new layer, or refused by the end-of-search fingerprint check) does not list it.
+#[tokio::test]
+async fn a_conan_search_does_not_list_what_a_layer_published_mid_search_holds() {
+    struct Held {
+        inner: Arc<FakeRegistry>,
+        arrived: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    #[async_trait::async_trait]
+    impl Transport for Held {
+        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
+            if request.url.path().contains("/slowmid/") && request.url.path().ends_with("/revisions") {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.fetch_metadata(request).await
+        }
+        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+            self.inner.open_artifact(request).await
+        }
+    }
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), org_blocking(Vec::new()));
+    sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
+    let registry = FakeRegistry::new();
+    let day_old = "2026-04-05T12:00:00Z";
+    for name in ["slowmid", "fastmid"] {
+        registry.answer(&common::conan::at(&format!("{}/revisions", common::conan::base(name, "1.0"))), FakeAnswer::Body(common::conan::revisions_doc(("reference", &format!("{name}/1.0@_/_")), &[("aaaa0000000000000000000000000001", Some(day_old))])));
+    }
+    registry.answer(&common::conan::at("v2/conans/search"), FakeAnswer::Body(common::conan::search_doc(&["slowmid/1.0@_/_", "fastmid/1.0@_/_"])));
+    let held = Arc::new(Held { inner: registry, arrived: Default::default(), release: Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = sync.managed(config_with_open_blocklist(dir.path()));
+    config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
+    let clock = TestClock::at_rfc3339(NOW);
+    let origins = fake_origins().with_conan(url::Url::parse(common::conan::REMOTE).unwrap(), url::Url::parse(common::conan::PUBLISH).unwrap());
+    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, origins).await);
+    let search = {
+        let (server, key) = (Arc::clone(&server), key_b());
+        tokio::spawn(async move {
+            let response = reqwest::Client::new().get(server.url("/conan/v2/conans/search?q=*")).header("authorization", bearer(&key)).send().await.unwrap();
+            (response.status().as_u16(), response.text().await.unwrap())
+        })
+    };
+    held.arrived.notified().await;
+    let revision = sync.edit_layer(org(ACME), Layer { freeze_seconds: Some(7 * 86_400), ..org_blocking(Vec::new()) });
+    clock.advance_seconds(70);
+    sync.applied(revision).await;
+    // The new layer is the one the firewall serves once a fresh read of the day-old reference is held.
+    let mut applied = false;
+    for _ in 0..200 {
+        let probe = reqwest::Client::new().get(server.url("/conan/v2/conans/fastmid/1.0/_/_/latest")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        if probe.status() == StatusCode::FORBIDDEN {
+            applied = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(applied, "the layer reached the firewall");
+    held.release.notify_one();
+    let (status, body) = search.await.unwrap();
+    assert!(!body.contains("fastmid") && !body.contains("slowmid"), "nothing judged under the old layer is listed under the new one: {status} {body}");
+}
+
+/// Recheck-5 R5-1: a Conan search re-reads the key's policy when it is done, and that costs the account no second token of its rate limit.
+#[tokio::test]
+async fn a_conan_search_costs_one_rate_token() {
+    let sync = FakeSyncServer::start().await;
+    sync.layer(PLATFORM, platform_layer());
+    sync.layer(org(ACME), org_blocking(Vec::new()));
+    sync.known_key_limited(&key_b(), &[PLATFORM, org(ACME)], Some(2));
+    let registry = FakeRegistry::new();
+    registry.answer(&common::conan::at("v2/conans/search"), FakeAnswer::Body(common::conan::search_doc(&["tok/1.0@_/_"])));
+    registry.answer(&common::conan::at(&format!("{}/revisions", common::conan::base("tok", "1.0"))), FakeAnswer::Body(common::conan::revisions_doc(("reference", "tok/1.0@_/_"), &[("aaaa0000000000000000000000000001", Some("2025-01-01T00:00:00Z"))])));
+    let dir = tempfile::tempdir().unwrap();
+    let config = sync.managed(config_with_open_blocklist(dir.path()));
+    let origins = fake_origins().with_conan(url::Url::parse(common::conan::REMOTE).unwrap(), url::Url::parse(common::conan::PUBLISH).unwrap());
+    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), registry as Arc<dyn Transport>, origins).await;
+    let get = |path: &'static str| {
+        let (url, key) = (server.url(path), key_b());
+        async move { reqwest::Client::new().get(url).header("authorization", bearer(&key)).send().await.unwrap().status().as_u16() }
+    };
+    assert_eq!(get("/conan/v2/conans/search?q=*").await, 200, "the first token");
+    assert_eq!(get("/conan/v2/users/check_credentials").await, 200, "the second token: the search did not take two");
+    assert_eq!(get("/conan/v2/users/check_credentials").await, 429, "the bucket of two is empty");
+}
+
+/// Row 23: a managed firewall authenticates every Conan read with the key (the password of `conan remote login`, which this firewall
+/// answers with the key itself as the token the client then sends as a Bearer), refuses an unknown key with the same 401, and the key's
+/// policy decides: one organisation's block refuses the package for its keys and leaves another's served. The refusal is local (no
+/// upstream call) and leaves one decision record per refusal; the key route serves no upload endpoint.
+#[tokio::test]
+async fn conan_key_route_authenticates_every_read_and_refuses_a_blocked_package_locally() {
+    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Conan, name: "evil".to_owned(), reason: None }], |_| {}).await;
+    let rev = "aaaa0000000000000000000000000001";
+    h.registry.answer("/v2/conans/evil/1.0/_/_/revisions", FakeAnswer::Body(common::conan::revisions_doc(("reference", "evil/1.0@_/_"), &[(rev, Some("2025-01-01T00:00:00Z"))])));
+    h.registry.answer(&format!("/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt"), FakeAnswer::Body(common::conan::manifest(rev)));
+    let paths = ["/conan/v2/conans/evil/1.0/_/_/revisions", "/conan/v2/conans/evil/1.0/_/_/latest", "/conan/v2/users/authenticate", &format!("/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt")];
+    for path in paths {
+        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    assert_eq!(h.get(paths[0], "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    // The login: the key as the Basic password comes back as the token (and a check of it is its admission).
+    let basic = format!("Basic {}", base64(format!("user:{}", key_b())));
+    let login = h.server.get_with_headers("/conan/v2/users/authenticate", &[("authorization", &basic)]).await;
+    assert_eq!((login.status(), login.text().await.unwrap()), (StatusCode::OK, key_b()));
+    assert_eq!(h.get("/conan/v2/users/check_credentials", &key_b()).await.status(), StatusCode::OK);
+    for path in &paths[..2] {
+        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the package: {path}");
+    }
+    assert_eq!(h.get(paths[3], &key_a()).await.status(), StatusCode::FORBIDDEN);
+    assert!(h.registry.calls().is_empty(), "a blocked package reaches no upstream call");
+    let served = h.get(paths[0], &key_b()).await;
+    assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps the package");
+    assert!(served.text().await.unwrap().contains(rev));
+    assert_eq!(h.get(paths[3], &key_b()).await.status(), StatusCode::OK);
+    let put = reqwest::Client::new().put(h.server.url(&format!("/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanfile.py"))).header("authorization", "Basic dTpw").body("x").send().await.unwrap();
+    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    let batch = h.server.app().managed().unwrap().activity().take_batch();
+    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Conan)).collect();
+    assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
+    assert!(events.iter().all(|e| e.package.as_deref() == Some("evil")), "{events:#?}");
+    h.server.shutdown().await;
 }

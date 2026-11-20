@@ -67,7 +67,7 @@ async fn snapshot_names_a_rubygems_registry() {
 }
 
 /// An old server binary decodes only the tags it knows. A row of a selected tag that this
-/// binary has no variant for (here `conan`) is refused with 503, never read as an npm
+/// binary has no variant for (here `swift`, which no family will ever be: the CHECK is dropped inside the test so such a row can exist) is refused with 503, never read as an npm
 /// registry or an npm block.
 #[tokio::test]
 async fn unknown_tag_rows_are_an_explicit_decode_refusal_never_npm() {
@@ -80,10 +80,14 @@ async fn unknown_tag_rows_are_an_explicit_decode_refusal_never_npm() {
     let http = client();
     let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
         .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
-    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name) VALUES ($1, 'conan', 'evil/1.0')")
+    // The CHECK of migration 0014 admits only the selected tags; a row of a tag the binary does not know is what an older or newer database
+    // could hold, so the constraint is dropped here (the database is this test's own).
+    sqlx::query("DO $$ DECLARE found text; BEGIN FOR found IN SELECT conname::text FROM pg_constraint WHERE conrelid = 'policy_blocks'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%ecosystem%' LOOP EXECUTE format('ALTER TABLE policy_blocks DROP CONSTRAINT %I', found); END LOOP; END $$")
+        .execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name) VALUES ($1, 'swift', 'evil/1.0')")
         .bind(layer).execute(&db.owner).await.unwrap();
     let response = http.get(url).bearer_auth(&key.secret).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "a conan block must not decode as an npm block");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "a swift block must not decode as an npm block");
 }
 
 /// Row 18: a Cargo registry and a Cargo block travel in the snapshot under the wire spelling
@@ -383,6 +387,74 @@ async fn snapshot_carries_the_archive_origin_of_a_maven_registry_and_the_constra
     assert_eq!(maven.len(), 2);
     let with = maven.iter().find(|r| r["target_url"] == "https://nexus.example/repository/releases/").unwrap();
     let without = maven.iter().find(|r| r["target_url"] == "https://nexus2.example/repository/releases/").unwrap();
+    assert_eq!(with["archive_origin"], "https://blobs.example/store");
+    assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
+}
+
+/// Row 23: a Conan registry and a Conan block travel in the snapshot under the wire spelling `Conan` (the tag in the database is
+/// `conan`, already carried by migration 0014), and the block keeps the package name's case.
+#[tokio::test]
+async fn snapshot_names_a_conan_registry_and_a_conan_block() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Cpp").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name) VALUES ($1, 'conan', 'Center')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    let layer: i32 = sqlx::query_scalar("SELECT l.id FROM policy_layers l WHERE l.place_kind = 'org' AND l.place_id = $1")
+        .bind(org.id as i32).fetch_one(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO policy_blocks (layer, ecosystem, name, version) VALUES ($1, 'conan', 'Evil_Pkg', '1.0')")
+        .bind(layer).execute(&db.owner).await.unwrap();
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(snapshot["registries"].as_array().unwrap().iter().any(|r| r["ecosystem"] == "Conan"), "{snapshot}");
+    let text = snapshot.to_string();
+    assert!(text.contains(r#""ecosystem":"Conan""#) && text.contains("Evil_Pkg"), "the block decodes as a Conan block: {snapshot}");
+}
+
+/// Row 23: a settings push may set the two Conan origins (an origin and a path prefix), and only to an https address.
+#[test]
+fn settings_push_accepts_https_conan_origins_and_refuses_the_rest() {
+    use probation_server::fleet::check_settings;
+    for key in ["conan_upstream_url", "conan_publish_url"] {
+        assert!(check_settings(&format!("{key} = \"https://conan.mirror.example/artifactory/api/conan/conan\"\n")).is_ok(), "{key}");
+        for refused in ["http://conan.mirror.example", "ftp://x", "mirror"] {
+            assert!(check_settings(&format!("{key} = \"{refused}\"\n")).is_err(), "{key} = {refused}");
+        }
+        assert!(check_settings(&format!("{key} = 7\n")).is_err(), "{key} must be a string");
+    }
+}
+
+/// Row 23 (migration 0021): the database lets a Conan registry with a target hold an archive origin and still refuses one on any
+/// other kind of registry, or without a target; the snapshot carries it for the Conan registry that has one and omits it for the one
+/// that has none.
+#[tokio::test]
+async fn snapshot_carries_the_archive_origin_of_a_conan_registry_and_the_constraint_still_refuses_the_rest() {
+    let db = Db::fresh().await;
+    let admin = db.global_admin().await;
+    let org = db.org("Conanarchives").await;
+    let (actor, place) = db.as_admin(admin, org).await;
+    let key = keys::create(&db.app, &actor, &place, "service").await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'conan', 'With', 'https://art.example/artifactory/api/conan/c/', 'https://blobs.example/store')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    sqlx::query("INSERT INTO registries (org_id, ecosystem, name, target_url) VALUES ($1, 'conan', 'Without', 'https://art2.example/artifactory/api/conan/c/')")
+        .bind(org.id as i32).execute(&db.owner).await.unwrap();
+    for bad in ["INSERT INTO registries (org_id, ecosystem, name, target_url, archive_origin) VALUES ($1, 'rubygems', 'Gems', 'https://n.example/', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, archive_origin) VALUES ($1, 'conan', 'NoTarget', 'https://x.example/')",
+                "INSERT INTO registries (org_id, ecosystem, name, target_url, resource_path_prefix) VALUES ($1, 'conan', 'Prefix', 'https://m.example/', '/x')"] {
+        assert!(sqlx::query(bad).bind(org.id as i32).execute(&db.owner).await.is_err(), "{bad}");
+    }
+    let url = common::serve(db.app.clone(), vec![]).await.join("api/v1/policy/snapshot").unwrap();
+    let response = client().get(url).bearer_auth(&key.secret).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    let conan: Vec<&serde_json::Value> = snapshot["registries"].as_array().unwrap().iter().filter(|r| r["ecosystem"] == "Conan").collect();
+    assert_eq!(conan.len(), 2);
+    let with = conan.iter().find(|r| r["target_url"] == "https://art.example/artifactory/api/conan/c/").unwrap();
+    let without = conan.iter().find(|r| r["target_url"] == "https://art2.example/artifactory/api/conan/c/").unwrap();
     assert_eq!(with["archive_origin"], "https://blobs.example/store");
     assert!(without.get("archive_origin").is_none(), "absent, never null: {without}");
 }

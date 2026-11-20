@@ -15,6 +15,7 @@ fn osv_key_valid_names_pass_for_every_family() {
             Ecosystem::Go => ("github.com/Azure/x~1", "1.2.3+incompatible"),
             Ecosystem::NuGet => ("Newtonsoft.Json_2-x", "13.0.3-beta.1"),
             Ecosystem::Maven => ("org.example:Lib_2-x", "1.0.0.Final"),
+            Ecosystem::Conan => ("zlib", "1.3.1"),
         };
         let key = osv_key(eco, name, version).expect("a valid key");
         assert_eq!((key.name.as_str(), key.version.as_str()), (name, version));
@@ -133,5 +134,15 @@ fn maven_keys_are_group_and_artifact_with_one_colon() {
     assert!(osv_key(Ecosystem::Maven, "Org.Example:Lib_2", "1.0-SNAPSHOT").is_ok());
     for bad in ["maven-core", "a:b:c", ":b", "a:", "a b:c", "a:b/c", "a..b:c", ".a:c", "a:.c", "a:c\n"] {
         assert_eq!(osv_key(Ecosystem::Maven, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
+    }
+}
+
+/// Row 23, LS-F6: a Conan key is the package name, `[A-Za-z0-9_][A-Za-z0-9_+.-]*`, case kept.
+#[test]
+fn conan_keys_are_the_package_name() {
+    assert!(osv_key(Ecosystem::Conan, "zlib", "1.3.1").is_ok());
+    assert!(osv_key(Ecosystem::Conan, "libc++", "cci.20230301").is_ok());
+    for bad in ["", ".x", "a b", "a/b", "a@b", "a:b", "a\n", "a#b"] {
+        assert_eq!(osv_key(Ecosystem::Conan, bad, "1.0.0"), Err(OsvKeyError::Name), "{bad:?}");
     }
 }

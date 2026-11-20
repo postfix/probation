@@ -74,7 +74,7 @@ async fn fixture(warm: bool) -> Fx {
         report: managed.report(probation_policy::api::Upstreams {
             npm: probation_policy::api::Reachability::Ok,
             pypi: probation_policy::api::Reachability::Ok,
-            osv: probation_policy::api::Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None,
+            osv: probation_policy::api::Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None,
         }),
         activity: vec![],
         activity_dropped: vec![],

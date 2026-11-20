@@ -161,6 +161,12 @@ osv_mode = "enforce"
 # shared service (no default: Maven Central has none, so without it a deploy to the public registry is a 404).
 # maven_upstream_url = "https://nexus.example.org/repository/maven-central"
 # maven_publish_url = "https://nexus.example.org/repository/maven-releases"
+# Conan 2: the public remote, an origin AND the path prefix of its `v2` tree (default https://center2.conan.io; an Artifactory
+# remote has a prefix of its own: https://artifactory.example.org/artifactory/api/conan/conan-center), and the upload URL
+# `conan upload` is forwarded to for the public registry through the shared service (no default: ConanCenter takes no uploads,
+# so without it an upload to the public registry is a 404).
+# conan_upstream_url = "https://artifactory.example.org/artifactory/api/conan/conan-center"
+# conan_publish_url = "https://artifactory.example.org/artifactory/api/conan/conan-local"
 
 # Shared-service mode ([service_policy], see docs/configuration.md) only: the load
 # balancers in front of this firewall. From these peers `X-Forwarded-For` names the

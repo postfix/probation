@@ -436,6 +436,7 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         Ecosystem::Go => &["proxy.golang.org", "sum.golang.org"],
         Ecosystem::NuGet => &["api.nuget.org", "azuresearch-usnc.nuget.org", "azuresearch-ussc.nuget.org", "www.nuget.org"],
         Ecosystem::Maven => &["repo.maven.apache.org", "repo1.maven.org"],
+        Ecosystem::Conan => &["center2.conan.io", "center.conan.io"],
     };
     let public_source = target_url
         .and_then(|text| Url::parse(text).ok())
@@ -1116,6 +1117,47 @@ mod tests {
             let (url, _server, count) = mode_server(true).await;
             let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
             let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &maven_candidate("org.apache.logging.log4j:log4j-core", "2.14.1"), scope).await;
+            shutdown.cancel();
+            let _ = handle.await;
+            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
+            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+        }
+    }
+
+    fn conan_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
+        Candidate { ecosystem: Ecosystem::Conan, ..candidate(name, version) }
+    }
+
+    /// Row 23, LS-F12 (`osv_skipped_for_private_registry_in_conan`): a Conan registry the operator sets Private is never asked
+    /// about (its names reach nothing); the fixed public sources ignore the field.
+    #[tokio::test]
+    async fn osv_skipped_for_private_registry_in_conan() {
+        let mirror = "https://art.corp.example/artifactory/api/conan/releases/";
+        let scope = effective_scope(Ecosystem::Conan, Some(mirror), Some(OsvScope::Private));
+        assert_eq!(scope, OsvScope::Private);
+        let (url, _server, count) = mode_server(true).await;
+        let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &conan_candidate("secret-lib", "1.0.0"), scope).await;
+        shutdown.cancel();
+        let _ = handle.await;
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's names reach no OSV server");
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+        for public in ["https://center2.conan.io/", "https://center.conan.io/v2/conans/zlib/1.3.1/_/_/latest"] {
+            assert_eq!(effective_scope(Ecosystem::Conan, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        }
+    }
+
+    /// Row 23, LS-F12 (`osv_public_mirror_with_explicit_scope_is_queried`): a mirror whose operator says Public, and one with no
+    /// field (the user decision of 2026-11-18), is queried, and a MAL match denies.
+    #[tokio::test]
+    async fn osv_public_mirror_with_explicit_scope_is_queried_in_conan() {
+        let mirror = "https://conan.mirror.example/conan/";
+        for explicit in [Some(OsvScope::Public), None] {
+            let scope = effective_scope(Ecosystem::Conan, Some(mirror), explicit);
+            assert_eq!(scope, OsvScope::Public, "{explicit:?}");
+            let (url, _server, count) = mode_server(true).await;
+            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &conan_candidate("log4j", "1.0.0"), scope).await;
             shutdown.cancel();
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");

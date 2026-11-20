@@ -6,6 +6,7 @@
   "client-host.test.mjs": 28,
   "clients.test.mjs": 513,
   "cloudflared.test.mjs": 30,
+  "conan-fake.test.mjs": 36,
   "crlf.test.py": 9,
   "dockerfile.test.mjs": 5,
   "encoding.test.py": 2,

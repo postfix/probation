@@ -55,6 +55,12 @@ dotnet nuget disable source nuget.org</pre>
   &lt;servers&gt;&lt;server&gt;&lt;id&gt;probation&lt;/id&gt;&lt;username&gt;key&lt;/username&gt;&lt;password&gt;{{ secret }}&lt;/password&gt;&lt;/server&gt;&lt;/servers&gt;
 &lt;/settings&gt;</pre>
 <p class="mut">Gradle: <code>maven { url = uri("{{ scheme }}://{{ host }}/maven/"); credentials { username = "key"; password = "{{ secret }}" } }</code> as the only repository.</p>
+<h3>Point Conan at Probation</h3>
+<pre># one protected remote: remove conancenter, or a refusal could be bypassed through it
+conan remote remove conancenter
+conan remote add probation {{ scheme }}://{{ host }}/conan
+conan remote login probation key -p {{ secret }}</pre>
+<p class="mut">The login returns the key as the token the client sends from then on (<code>Authorization: Bearer</code>); Conan reads and uploads through Probation need nothing else.</p>
 <p class="mut">{% if host == "FIREWALL" %}Replace FIREWALL with the address of your Probation firewall. {% endif %}</p>
 </section>
 {% endif %}

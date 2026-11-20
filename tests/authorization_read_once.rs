@@ -56,6 +56,7 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     ("src/http/nuget_routes.rs", "fn forward_write", "credential(&headers,\"authorization\")", 1),
     // Row 21: Maven's deploy endpoints forward the caller's own `Authorization` (Basic from `settings.xml`) to the registry's own origin.
     ("src/http/maven_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    ("src/http/conan_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
     // Fix round of row 21: the spool counts its places per credential presented (a hash of the header name and value, never sent or stored) ...
     ("src/http/spool.rs", "fn owner_in", "\"authorization\"", 1),
     // ... and `probe_file` reads a Maven file's headers with the caller's own read credential, as `fetch_metadata` does.

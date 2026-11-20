@@ -122,3 +122,22 @@ fn maven_reachability_is_additive_in_both_directions() {
     let older: OlderServer = serde_json::from_str(&text).unwrap();
     assert_eq!((older.npm, older.nuget), (Reachability::Ok, Some(Reachability::Ok)));
 }
+
+/// Row 23: the Conan upstream state is additive in the same way as the families before it.
+#[test]
+fn conan_reachability_is_additive_in_both_directions() {
+    use probation_policy::api::{Reachability, Upstreams};
+    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","maven":"ok"}"#).unwrap();
+    assert_eq!(old.conan, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("conan"));
+    let new = Upstreams { conan: Some(Reachability::Unreachable), ..old };
+    let text = serde_json::to_string(&new).unwrap();
+    assert!(text.contains(r#""conan":"unreachable""#), "{text}");
+    #[derive(serde::Deserialize)]
+    struct OlderServer {
+        npm: Reachability,
+        maven: Option<Reachability>,
+    }
+    let older: OlderServer = serde_json::from_str(&text).unwrap();
+    assert_eq!((older.npm, older.maven), (Reachability::Ok, Some(Reachability::Ok)));
+}

@@ -14,6 +14,9 @@
 //   POST /nuget/publish {...}         NuGet.publish; answers the package version made
 //   POST /maven/publish {...}         Maven.publish; answers the version (or snapshot build) made
 //   POST /maven/plugin {...}          a plugin the fake serves in its group's metadata
+//   POST /conan/publish {name, version, ageSeconds, binaries: {pkgid: ageSeconds}}   serves the real hello/1.0 or hello/2.0 files of fixtures/conan
+//   POST /conan/age {name, version, ageSeconds}   dates every revision of name/version that long ago (a REAL `conan upload` dates them now)
+//   GET  /conan/writes                every upload-endpoint call the fake center2.conan.io received (method, path, authorization, bytes)
 //   GET  /maven/writes                every deploy-endpoint call the fake repo.maven.apache.org received (method, path, authorization, size)
 //   POST /nuget/vulnerability {...}   a vulnerable range the fake vulnerability database reports
 //   GET  /nuget/writes                every publish-endpoint call the fake www.nuget.org received (key, authorization, size)
@@ -52,6 +55,7 @@ import { Cargo } from "./cargo.mjs";
 import { Go } from "./go.mjs";
 import { NuGet } from "./nuget.mjs";
 import { Maven } from "./maven.mjs";
+import { Conan } from "./conan.mjs";
 import { Hibp } from "./hibp.mjs";
 import { Issuer } from "./issuer.mjs";
 import { Npm } from "./npm.mjs";
@@ -62,7 +66,7 @@ import { RubyGems } from "./rubygems.mjs";
 import { Siem } from "./siem.mjs";
 
 const TLS_DIR = process.env.E2E_TLS_DIR ?? "/e2e/tls";
-const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), nuget: new NuGet(), maven: new Maven(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
+const fakes = { npm: new Npm(), npmB: new Npm("https://registry-b.e2e.test"), pypi: new Pypi(), rubygems: new RubyGems(), cargo: new Cargo(), go: new Go(), nuget: new NuGet(), maven: new Maven(), conan: new Conan(), osv: new Osv(), hibp: new Hibp(), oidc: new Oidc(), siem: new Siem() };
 const issuers = { a: new Issuer("a"), b: new Issuer("b") };
 const hosts = {
   "registry.npmjs.org": fakes.npm,
@@ -79,6 +83,7 @@ const hosts = {
   "azuresearch-usnc.nuget.org": fakes.nuget,
   "www.nuget.org": fakes.nuget,
   "repo.maven.apache.org": fakes.maven,
+  "center2.conan.io": fakes.conan,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,
@@ -245,6 +250,9 @@ const control = {
   "POST /maven/publish": (body) => fakes.maven.publish(body),
   "POST /maven/plugin": (body) => fakes.maven.plugin(body),
   "GET /maven/writes": () => fakes.maven.writes,
+  "POST /conan/publish": (body) => fakes.conan.publish(body),
+  "POST /conan/age": (body) => fakes.conan.age(body),
+  "GET /conan/writes": () => fakes.conan.writes,
   "POST /cargo/publish": (body) => fakes.cargo.publish(body),
   "GET /cargo/writes": () => fakes.cargo.writes,
   "POST /cargo/index": (body) => ({ index: fakes.cargo.index(body.name) }),

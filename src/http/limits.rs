@@ -405,7 +405,7 @@ mod tests {
         let limits = Limits::new(&config);
         assert_eq!(limits.spool_budget_total(), 800 << 20);
         assert_eq!(limits.spool_budget_free(), 800 << 20);
-        // R3-3: cargo, NuGet and Maven accept a body of twice the artifact cap (the artifact plus its envelope); one owner's half takes it.
+        // R3-3: cargo, NuGet, Maven and Conan accept a body of twice the artifact cap (the artifact plus its envelope); one owner's half takes it.
         assert!(limits.spool_reservation(1).grow((200 << 20) + 1024), "an artifact plus its envelope is accepted");
         assert!(limits.spool_reservation(1).grow(400 << 20), "and so is the whole 2 x cap a forwarder passes");
     }

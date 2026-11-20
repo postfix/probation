@@ -716,7 +716,7 @@ bring it back, register it again.
 ## 5. Selected package registries and certificates
 
 An org admin opens **Organisation → Package registries** to add an npm, PyPI,
-RubyGems, Cargo, Go, NuGet or Maven HTTPS target (a Maven registry's target is its repository root, for example `https://nexus.example/repository/maven-releases/`; a NuGet registry's target is its service index, `.../v3/index.json`). For each registry, the page can save a read-only credential and
+RubyGems, Cargo, Go, NuGet, Maven or Conan HTTPS target (a Conan registry's target is its remote root, for example `https://artifactory.example/artifactory/api/conan/conan-local/`; a Maven registry's target is its repository root, for example `https://nexus.example/repository/maven-releases/`; a NuGet registry's target is its service index, `.../v3/index.json`). For each registry, the page can save a read-only credential and
 choose whether to skip the release-age delay. For npm version removal, the admin
 can approve a separate HTTPS deletion destination and path, with an explicit
 choice about forwarding the developer's bearer token. A private registry or
@@ -725,7 +725,7 @@ registry whose crate files are not under its index URL (Artifactory) takes an
 **Archive origin**, an HTTPS URL its crate files are fetched from and only from (a Go
 registry takes one too: the storage its proxy redirects zips to, and so does a NuGet registry: the storage a feed redirects packages to; a NuGet registry also takes an optional **Resource path prefix**, whole path segments its feed's resources must lie under); Cargo
 signs in with an API key from the Keys page, not a certificate; so does Go (the Keys page
-shows the `GOPROXY` line) NuGet (the Keys page shows the `dotnet nuget add source` and `nuget.config` lines) and Maven (the Keys page shows the `settings.xml` mirror and server lines and the Gradle repository).
+shows the `GOPROXY` line) NuGet (the Keys page shows the `dotnet nuget add source` and `nuget.config` lines) Maven (the Keys page shows the `settings.xml` mirror and server lines and the Gradle repository) and Conan (the Keys page shows the `conan remote add` and `conan remote login` lines).
 
 **Organisation → Enterprise certificates** is for an organisation that issues
 its own client certificates. The admin saves the public CA and expected status

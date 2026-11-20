@@ -132,6 +132,7 @@ const ECOSYSTEM_CARGO: u8 = 4;
 const ECOSYSTEM_GO: u8 = 5;
 const ECOSYSTEM_NUGET: u8 = 6;
 const ECOSYSTEM_MAVEN: u8 = 7;
+const ECOSYSTEM_CONAN: u8 = 8;
 
 /// The request ID of the request being answered on this task.
 ///
@@ -165,6 +166,7 @@ pub fn record_ecosystem(ecosystem: Ecosystem) {
         Ecosystem::Go => ECOSYSTEM_GO,
         Ecosystem::NuGet => ECOSYSTEM_NUGET,
         Ecosystem::Maven => ECOSYSTEM_MAVEN,
+        Ecosystem::Conan => ECOSYSTEM_CONAN,
     };
     let _ = CONTEXT.try_with(|context| context.ecosystem.store(code, Ordering::Relaxed));
 }
@@ -313,6 +315,7 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
         ECOSYSTEM_GO => Ecosystem::Go.as_tag(),
         ECOSYSTEM_NUGET => Ecosystem::NuGet.as_tag(),
         ECOSYSTEM_MAVEN => Ecosystem::Maven.as_tag(),
+        ECOSYSTEM_CONAN => Ecosystem::Conan.as_tag(),
         _ => target.ecosystem,
     };
 
@@ -434,6 +437,7 @@ impl Target {
             Some("go") => "go",
             Some("nuget") => "nuget",
             Some("maven") => "maven",
+            Some("conan") => "conan",
             Some("health") => {
                 return Target {
                     ecosystem: "health",
@@ -458,6 +462,9 @@ impl Target {
         }
         if root == "maven" {
             return maven_target(path);
+        }
+        if root == "conan" {
+            return conan_target(path);
         }
         let first = segments.next();
         let second = segments.next();
@@ -582,6 +589,18 @@ fn maven_target(path: &str) -> Target {
         _ => (None, None),
     };
     Target { ecosystem: "maven", package: loggable(package.as_deref()), version: loggable(version.as_deref()) }
+}
+
+/// `/conan/v2/conans/{name}/{version}/{user}/{channel}/...`: the package name and the recipe version; a login, a ping and a search
+/// have no subject. The ecosystem is `conan`.
+fn conan_target(path: &str) -> Target {
+    let below = path.strip_prefix("/conan/").unwrap_or("");
+    let parts: Vec<&str> = below.split('/').collect();
+    let (package, version) = match parts.as_slice() {
+        ["v2", "conans", name, version, _, _, ..] if crate::conan::coords::parse(below, None).is_some() => (Some(*name), Some(*version)),
+        _ => (None, None),
+    };
+    Target { ecosystem: "conan", package: loggable(package), version: loggable(version) }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -826,6 +845,24 @@ mod tests {
         ] {
             let target = Target::of(path);
             assert_eq!(target.ecosystem, "nuget", "{path}");
+            assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
+            assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
+        }
+    }
+
+    /// Row 23: a Conan request names its package and recipe version, a login, a ping and a search have no subject.
+    #[test]
+    fn conan_paths_log_their_package_and_version() {
+        for (path, package, version) in [
+            ("/conan/v2/conans/zlib/1.3.1/_/_/revisions/abc/files/conanfile.py", Some("zlib"), Some("1.3.1")),
+            ("/conan/v2/conans/zlib/1.3.1/_/_/latest", Some("zlib"), Some("1.3.1")),
+            ("/conan/v2/conans/mylib/2.0/acme/stable/revisions", Some("mylib"), Some("2.0")),
+            ("/conan/v2/conans/search", None, None),
+            ("/conan/v2/ping", None, None),
+            ("/conan/v2/conans/not a/layout", None, None),
+        ] {
+            let target = Target::of(path);
+            assert_eq!(target.ecosystem, "conan", "{path}");
             assert_eq!(target.package, package.map(|p| format!("{p:?}")), "{path}");
             assert_eq!(target.version, version.map(|v| format!("{v:?}")), "{path}");
         }

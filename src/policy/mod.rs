@@ -24,6 +24,7 @@ pub(crate) const fn ecosystem_index(ecosystem: Ecosystem) -> usize {
         Ecosystem::Go => 4,
         Ecosystem::NuGet => 5,
         Ecosystem::Maven => 6,
+        Ecosystem::Conan => 7,
     }
 }
 

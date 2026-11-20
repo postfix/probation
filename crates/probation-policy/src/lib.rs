@@ -62,11 +62,12 @@ pub enum Ecosystem {
     Go,
     NuGet,
     Maven,
+    Conan,
 }
 
 impl Ecosystem {
     /// Every delivered family. Each row that adds a family adds its entry here.
-    pub const ALL: [Ecosystem; 7] = [Ecosystem::Npm, Ecosystem::PyPi, Ecosystem::RubyGems, Ecosystem::Cargo, Ecosystem::Go, Ecosystem::NuGet, Ecosystem::Maven];
+    pub const ALL: [Ecosystem; 8] = [Ecosystem::Npm, Ecosystem::PyPi, Ecosystem::RubyGems, Ecosystem::Cargo, Ecosystem::Go, Ecosystem::NuGet, Ecosystem::Maven, Ecosystem::Conan];
 
     /// The spelling used in the blocklist file (SPEC §8) and in log lines.
     pub const fn as_tag(self) -> &'static str {
@@ -78,6 +79,7 @@ impl Ecosystem {
             Ecosystem::Go => "go",
             Ecosystem::NuGet => "nuget",
             Ecosystem::Maven => "maven",
+            Ecosystem::Conan => "conan",
         }
     }
 
@@ -90,6 +92,7 @@ impl Ecosystem {
             "go" => Some(Ecosystem::Go),
             "nuget" => Some(Ecosystem::NuGet),
             "maven" => Some(Ecosystem::Maven),
+            "conan" => Some(Ecosystem::Conan),
             _ => None,
         }
     }

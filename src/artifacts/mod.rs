@@ -141,7 +141,7 @@ pub async fn serve_artifact_in(
         .and_then(|p| p.registry_archive_origin.as_ref())
         .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
     // A Go registry's declared archive origin, from the same principal the request was admitted under.
-    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet | Ecosystem::Maven));
+    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet | Ecosystem::Maven | Ecosystem::Conan));
     let (download_origin, download_authorization) = match archive {
         Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
         None => (origin, read_authorization),
@@ -226,6 +226,7 @@ async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Pri
         Ecosystem::Go => crate::go_modules::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
         Ecosystem::NuGet => crate::nuget::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
         Ecosystem::Maven => crate::maven::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
+        Ecosystem::Conan => crate::conan::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
     };
 
     if advertised.contains(&row.id) {

@@ -72,12 +72,18 @@ export function helpers(stack, { log = console.log } = {}) {
       mavenPlugin: (spec) => call("POST", `${FAKES}/maven/plugin`, spec),
       /// Every deploy-endpoint call the fake repo.maven.apache.org got: [{method, path, authorization, contentType, bytes}].
       mavenWrites: () => call("GET", `${FAKES}/maven/writes`),
+      /// Serves the real hello/1.0 or hello/2.0 files {name, version, ageSeconds, binaries: {pkgid: ageSeconds}}; answers the revisions and package ids.
+      /// Dates every revision of a Conan reference {name, version, ageSeconds} that long ago (a real `conan upload` dates them now).
+      publishConan: (spec) => call("POST", `${FAKES}/conan/publish`, spec),
+      conanAge: (spec) => call("POST", `${FAKES}/conan/age`, spec),
+      /// Every upload-endpoint call the fake center2.conan.io got: [{method, path, authorization, bytes, sha256}].
+      conanWrites: () => call("GET", `${FAKES}/conan/writes`),
       /// Every request the fake checksum database (sum.golang.org) got: [{path, authorization}].
       goSumdb: () => call("GET", `${FAKES}/go/sumdb`),
       /// The index file the fake serves for a crate: {index: text | null}.
       cargoWrites: () => call("GET", `${FAKES}/cargo/writes`),
       cargoIndex: (name) => call("POST", `${FAKES}/cargo/index`, { name }),
-      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io" | "Go" | "NuGet" | "Maven", name, version, ids: ["MAL-..."]}; [] clears.
+      /// {ecosystem: "npm" | "PyPI" | "RubyGems" | "crates.io" | "Go" | "NuGet" | "Maven" | "ConanCenter", name, version, ids: ["MAL-..."]}; [] clears.
       osvFlag: (spec) => call("POST", `${FAKES}/osv/flag`, spec),
       osvQueries: () => call("GET", `${FAKES}/osv/queries`),
       /// Replaces the fault list; see fixtures/fakes/main.mjs. faults([]) clears.

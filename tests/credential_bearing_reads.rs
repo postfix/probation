@@ -266,6 +266,44 @@ fn credential_bearing_read_never_enters_shared_caches_maven() {
     ));
 }
 
+/// Row 23, the Conan case of the same contract. A Conan client carries a credential as `Authorization` (Basic on `conan remote login`,
+/// then the Bearer token it returns), never in a path of this firewall's routes (a reference cannot hold one) and never in a query
+/// (the search takes `q` and `ignorecase` only); the real client's own non-secret headers keep a read cache-eligible
+/// (measured with conan 2.21.0, `conan_native_client_sends_only_allow_listed_headers` in tests/conan_native.rs).
+#[test]
+fn credential_bearing_read_never_enters_shared_caches_conan() {
+    let conan = |uri: &str, headers: &[(&str, &str)]| {
+        let uri: Uri = uri.parse().unwrap();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.append(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_str(value).unwrap());
+        }
+        matches!(classify_read(&RequestParts { uri: &uri, headers: &map, extra_pseudo_headers: &[] }, &FamilyReadRules::CONAN), ReadClass::CacheEligible(_))
+    };
+    for (name, value) in [
+        ("authorization", "Basic dXNlcjpwdw=="),
+        ("Authorization", "Bearer eyJ0b2tlbiI6IjEifQ"),
+        ("proxy-authorization", "Basic abc"),
+        ("cookie", "session=1"),
+        ("x-jfrog-art-api", "key"),
+        ("x-api-key", "key"),
+        ("x-probe-unknown", "1"),
+    ] {
+        assert!(!conan("/conan/v2/conans/zlib/1.3.1/_/_/revisions", &[(name, value)]), "{name} must be request-scoped");
+    }
+    assert!(!conan("/conan/v2/conans/zlib/1.3.1/_/_/revisions?token=abc", &[]));
+    assert!(!conan("/conan/v2/conans/search?q=zlib/*&access_token=abc", &[]));
+    for form in [
+        "https://TOKEN:@center.example.test/conan/v2/conans/zlib/1.3.1/_/_/latest",
+        "https://token@center.example.test/conan/v2/conans/zlib/1.3.1/_/_/revisions",
+        "https://user:pass@center.example.test/registry/conan/10/v2/conans/search?q=a",
+    ] {
+        assert!(!conan(form, &[]), "{form}: URL userinfo");
+    }
+    // Control: the search pattern and the client's own non-secret headers keep a read cache-eligible.
+    assert!(conan("/conan/v2/conans/search?q=zlib/*&ignorecase=False", &[("host", "x"), ("accept", "application/json"), ("accept-encoding", "gzip, deflate"), ("user-agent", "Conan/2.21.0 (Python 3.13.0)"), ("x-client-anonymous-id", "abc"), ("x-client-id", "def")]));
+}
+
 // ---- C1028 end to end: bytes fetched under credential A are never served without it ----
 
 /// A registry whose metadata is public but whose artifact needs `Bearer allowed`.
@@ -361,6 +399,9 @@ fn service_snapshot_with(freeze: u64, slow: bool) -> ServicePolicySnapshot {
             registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }, RegistryDescriptor {
             registry: RegistryId(10), ecosystem: probation_policy::Ecosystem::Maven, target_url: None, trusted: false,
+            registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
+        }, RegistryDescriptor {
+            registry: RegistryId(11), ecosystem: probation_policy::Ecosystem::Conan, target_url: None, trusted: false,
             registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None,
         }],
     };
@@ -531,6 +572,10 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
         registry.answer(&format!("/maven2/org/{name}/pkg/1.0/pkg-1.0.pom"), dated(common::maven::pom(&format!("org.{name}"), "pkg", "1.0").into_bytes()));
         registry.answer(&format!("/maven2/org/{name}/pkg/1.0/pkg-1.0.jar"), dated(format!("jar of {name}").into_bytes()));
     }
+    // Conan (row 23): two recipes, one of whose files need the caller's own credential.
+    for name in ["open", "secret"] {
+        common::conan::serve_recipe(&registry, name, "1.0", &[("aaaa0000000000000000000000000001", "2025-01-01T00:00:00Z")]);
+    }
     registry.answer("/gems/open-gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
     // A gem whose real name has capitals: files are case-exact upstream (N2).
     registry.answer("/gems/Open-Gem-1.0.0.gem", FakeAnswer::Bytes(b"g".to_vec()));
@@ -555,7 +600,8 @@ async fn service_server_full(freeze: u64, slow: bool) -> (TestServer, Arc<Privat
         Arc::clone(&transport) as Arc<dyn Transport>,
         fake_origins()
             .with_nuget(url::Url::parse(common::nuget::INDEX_ORIGIN).unwrap(), url::Url::parse(common::nuget::SEARCH_ORIGIN).unwrap(), url::Url::parse(common::nuget::PUBLISH_ORIGIN).unwrap())
-            .with_maven(url::Url::parse(common::maven::REPO).unwrap(), url::Url::parse(common::maven::PUBLISH).unwrap()),
+            .with_maven(url::Url::parse(common::maven::REPO).unwrap(), url::Url::parse(common::maven::PUBLISH).unwrap())
+            .with_conan(url::Url::parse(common::conan::REMOTE).unwrap(), url::Url::parse(common::conan::PUBLISH).unwrap()),
     ).await;
     (server, transport, policy_server)
 }
@@ -769,6 +815,46 @@ async fn credential_bearing_read_never_enters_shared_caches_maven_end_to_end() {
     // Path-embedded credential forms are no route and reach nothing.
     let asked = transport.0.calls().len();
     for path in ["/maven/tok3n@host/org/open/pkg/maven-metadata.xml", "/maven/org/open/pkg/maven-metadata.xml;token=abc", "/maven/%40token/org/open/pkg/maven-metadata.xml", "/maven/org/open/pkg/1.0/pkg-1.0.jar?access_token=abc"] {
+        let status = server.get(path).await.status();
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(transport.0.calls().len(), asked, "no upstream call for a path-embedded credential form");
+}
+
+/// Row 23: C1028 for Conan through the row 28 seam (shared service). A read that carries a credential leaves nothing in a shared
+/// cache (no unit table entry, no stored file), a file fetched under a credential is never served without it, and the control read
+/// does populate the caches.
+#[tokio::test]
+async fn credential_bearing_read_never_enters_shared_caches_conan_end_to_end() {
+    let (server, transport, _policy) = service_server().await;
+    let calls = |needle: &str| transport.0.calls().iter().filter(|u| u.path().ends_with(needle)).count();
+    let rev = "aaaa0000000000000000000000000001";
+    let revisions = "/v2/conans/open/1.0/_/_/revisions";
+    for _ in 0..2 {
+        assert_eq!(server.get_with_headers(&format!("/conan{revisions}"), &[("accept", "*/*")]).await.status(), StatusCode::OK);
+    }
+    assert_eq!(calls(revisions), 1, "an allow-listed read keeps what it learned: the second one asks nothing for the same unit");
+    for (n, carrier) in [("authorization", "Basic dXNlcjpwdw=="), ("authorization", "Bearer allowed"), ("cookie", "s=1"), ("x-jfrog-art-api", "k"), ("x-probe-unknown", "1")].into_iter().enumerate() {
+        let before = calls(revisions);
+        let response = server.get_with_headers(&format!("/registry/conan/11{revisions}"), &[carrier]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{carrier:?}");
+        assert_eq!(calls(revisions), before + 1, "carrier {n} {carrier:?}: a credential-bearing read reads and fills nothing shared");
+    }
+    // Its file never enters the shared store; the control read does.
+    let data = server.app().config.data_dir.clone();
+    let before = files_under(&data.join("content")).len();
+    let secret = format!("/conan/v2/conans/secret/1.0/_/_/revisions/{rev}/files/conan_export.tgz");
+    let file = server.get_with_headers(&secret, &[("authorization", "Bearer allowed")]).await;
+    assert_eq!(file.status(), StatusCode::OK);
+    assert_eq!(files_under(&data.join("content")).len(), before, "no credential-bearing artifact in the shared store");
+    assert!(files_under(&data.join("credential-reads")).is_empty());
+    assert_eq!(server.get(&secret).await.status(), StatusCode::FORBIDDEN, "bytes fetched under a credential are never served without it");
+    let eligible = server.get_with_headers(&format!("/conan/v2/conans/open/1.0/_/_/revisions/{rev}/files/conan_export.tgz"), &[("accept", "*/*")]).await;
+    assert_eq!(eligible.status(), StatusCode::OK);
+    assert!(files_under(&data.join("content")).len() > before, "an allow-listed read is cached");
+    // Path-embedded credential forms are no route and reach nothing.
+    let asked = transport.0.calls().len();
+    for path in ["/conan/tok3n@host/v2/conans/open/1.0/_/_/revisions", "/conan/v2/conans/open/1.0/_/_/revisions;token=abc", "/conan/%40token/v2/conans/open/1.0/_/_/revisions", "/conan/v2/conans/open/1.0/_/_/latest?access_token=abc", "/conan/v2/conans/open/1.0/_/_/revisions/tok3n@host/files"] {
         let status = server.get(path).await.status();
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
     }
@@ -990,7 +1076,7 @@ async fn a_publication_between_authorisation_and_release_is_admitted_again_for_e
     use std::sync::atomic::{AtomicUsize, Ordering};
     let (server, _transport, _policy) = service_server().await;
     let gate = Arc::clone(&server.app().service_policy().expect("service mode").publication_gate);
-    for path in ["/registry/npm/3/open-pkg", "/registry/pypi/4/simple/open-proj/", "/registry/rubygems/5/info/open-gem", "/cargo/config.json", "/go/open.example/mod/@v/list", "/go/open.example/mod/@v/v1.0.0.mod", "/nuget/v3-flatcontainer/open.pkg/index.json", "/nuget/v3-flatcontainer/open.pkg/1.0.0/open.pkg.nuspec", "/maven/org/open/pkg/maven-metadata.xml", "/maven/org/open/pkg/1.0/pkg-1.0.pom"] {
+    for path in ["/registry/npm/3/open-pkg", "/registry/pypi/4/simple/open-proj/", "/registry/rubygems/5/info/open-gem", "/cargo/config.json", "/go/open.example/mod/@v/list", "/go/open.example/mod/@v/v1.0.0.mod", "/nuget/v3-flatcontainer/open.pkg/index.json", "/nuget/v3-flatcontainer/open.pkg/1.0.0/open.pkg.nuspec", "/maven/org/open/pkg/maven-metadata.xml", "/maven/org/open/pkg/1.0/pkg-1.0.pom", "/conan/v2/conans/open/1.0/_/_/revisions", "/conan/v2/conans/open/1.0/_/_/revisions/aaaa0000000000000000000000000001/files/conanfile.py"] {
         // An artifact crosses two gates (its own receipt and the service layer's), so a count of publications is exact only for
         // metadata; 100 is "a change that keeps landing" for every route.
         for (publications, expected) in [(0usize, StatusCode::OK), (1, StatusCode::OK), (100, StatusCode::SERVICE_UNAVAILABLE)] {

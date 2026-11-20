@@ -57,6 +57,10 @@ const NUGET_PUBLISH: &str = "https://www.nuget.org";
 const MAVEN_REPO: &str = "https://repo.maven.apache.org/maven2";
 /// Where a deploy to the public registry goes when the operator names one (there is no default: Central has none).
 const MAVEN_PUBLISH: &str = "https://maven-publish.invalid";
+/// ConanCenter's Conan 2 remote (the client appends `v2/...`; an Artifactory remote has a path prefix of its own).
+const CONAN_REMOTE: &str = "https://center2.conan.io";
+/// Where an upload to the public registry goes when the operator names one (there is no default: ConanCenter takes no uploads).
+const CONAN_PUBLISH: &str = "https://conan-publish.invalid";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OriginKind {
@@ -74,10 +78,12 @@ pub enum OriginKind {
     NugetPublish,
     MavenRepo,
     MavenPublish,
+    ConanRemote,
+    ConanPublish,
 }
 
 impl OriginKind {
-    pub const ALL: [OriginKind; 14] = [
+    pub const ALL: [OriginKind; 16] = [
         OriginKind::NpmMetadata,
         OriginKind::PypiMetadata,
         OriginKind::PypiArtifacts,
@@ -92,6 +98,8 @@ impl OriginKind {
         OriginKind::NugetPublish,
         OriginKind::MavenRepo,
         OriginKind::MavenPublish,
+        OriginKind::ConanRemote,
+        OriginKind::ConanPublish,
     ];
 }
 
@@ -136,6 +144,8 @@ pub struct OriginSet {
     nuget_publish: Url,
     maven_repo: Url,
     maven_publish: Url,
+    conan_remote: Url,
+    conan_publish: Url,
     /// A selected Go registry that declared an archive origin: redirects from its own origin may land there.
     go_selected: bool,
     allow_private_addresses: bool,
@@ -196,6 +206,8 @@ impl OriginSet {
             nuget_publish: parse_origin(NUGET_PUBLISH),
             maven_repo: parse_origin(MAVEN_REPO),
             maven_publish: parse_origin(MAVEN_PUBLISH),
+            conan_remote: parse_origin(CONAN_REMOTE),
+            conan_publish: parse_origin(CONAN_PUBLISH),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -225,6 +237,8 @@ impl OriginSet {
             nuget_publish: pick(&config.nuget_publish_url, production.nuget_publish),
             maven_repo: pick(&config.maven_upstream_url, production.maven_repo),
             maven_publish: pick(&config.maven_publish_url, production.maven_publish),
+            conan_remote: pick(&config.conan_upstream_url, production.conan_remote),
+            conan_publish: pick(&config.conan_publish_url, production.conan_publish),
             go_selected: false,
             allow_private_addresses: false,
             private_cidrs: Vec::new(),
@@ -253,6 +267,8 @@ impl OriginSet {
             nuget_publish: parse_origin(NUGET_PUBLISH),
             maven_repo: parse_origin(MAVEN_REPO),
             maven_publish: parse_origin(MAVEN_PUBLISH),
+            conan_remote: parse_origin(CONAN_REMOTE),
+            conan_publish: parse_origin(CONAN_PUBLISH),
             go_selected: false,
             allow_private_addresses: true,
             private_cidrs: Vec::new(),
@@ -285,6 +301,13 @@ impl OriginSet {
     pub fn with_maven(mut self, repo: Url, publish: Url) -> OriginSet {
         self.maven_repo = repo;
         self.maven_publish = publish;
+        self
+    }
+
+    /// Tests only: where this set sends Conan remote and upload calls (the upstream fake).
+    pub fn with_conan(mut self, remote: Url, publish: Url) -> OriginSet {
+        self.conan_remote = remote;
+        self.conan_publish = publish;
         self
     }
 
@@ -350,12 +373,19 @@ impl OriginSet {
             OriginKind::NugetPublish => &self.nuget_publish,
             OriginKind::MavenRepo => &self.maven_repo,
             OriginKind::MavenPublish => &self.maven_publish,
+            OriginKind::ConanRemote => &self.conan_remote,
+            OriginKind::ConanPublish => &self.conan_publish,
         }
     }
 
     /// Whether a deploy URL for the public registry is configured (there is no default: Maven Central has no deploy endpoint).
     pub fn maven_publish_configured(&self) -> bool {
         self.maven_publish.host_str() != Some("maven-publish.invalid")
+    }
+
+    /// Whether an upload URL for the public registry is configured (there is no default: ConanCenter takes none).
+    pub fn conan_publish_configured(&self) -> bool {
+        self.conan_publish.host_str() != Some("conan-publish.invalid")
     }
 
     /// Read by the resolver and by the admission check. There is no setter.

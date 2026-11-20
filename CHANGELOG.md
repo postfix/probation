@@ -10,7 +10,7 @@ The next release must have a version above 0.2.2.
 
 ### Changed
 
-- Upload spool fairness (every publish forwarder: npm, PyPI, RubyGems, Cargo, NuGet, Maven):
+- Upload spool fairness (every publish forwarder: npm, PyPI, RubyGems, Cargo, NuGet, Maven, Conan):
   places and bytes are counted per real identity (the account in certificate mode, the
   client address in shared-service mode, plus the presented credential), at most half of
   the places and of the byte budget each; the rate clock starts at the first chunk and a
@@ -18,6 +18,15 @@ The next release must have a version above 0.2.2.
 
 ### Added
 
+- **Conan 2** through the firewall (docs/operations.md "Conan clients"). `conan_upstream_url` (an origin and the optional path prefix of the
+  remote's `v2` tree, default ConanCenter's `https://center2.conan.io`) and `conan_publish_url` (the upload URL of the public registry through
+  the shared service; none by default). Recipe and package revision lists (`revisions`, `latest`), the reference search and the binary search
+  are filtered by age, blocklist and OSV (`ConanCenter`, key the package name, case is identity); a revision is dated by the `time` of the
+  remote's own revision list (a new binary of an old recipe has its own age, no recipe date ever ages a binary); every file of a revision is
+  gated by the decision of its revision and delivered exactly; file lists name files only, so no location of the remote reaches a client; the
+  Conan 1 routes (`download_urls`, `upload_urls`) are not routed. A certificate-managed firewall answers `conan remote login` with the key as the
+  token; through the shared service the login and every later read and upload use the client's own token, and `conan upload` (a `PUT` of each file,
+  and a `DELETE`) is forwarded to the registry's own origin. A Conan search judges every result in batches of 5,000 without writing rows, in judging lanes of its own (half of `max_upstream_requests`), with verdicts renewed when read (at most 10 minutes), so a ConanCenter-size search converges at 200 ms of network (measured: 9,000 references in 66 s at 100 ms; two attempts at 200 ms); per-owner shares of the search slots. A Conan registry may declare an archive origin (migration 0021).
 - **RubyGems and Cargo** through the firewall (docs/operations.md "RubyGems clients" and
   "Cargo clients"). `rubygems_upstream_url`, `cargo_upstream_url` and `cargo_artifacts_url`
   name their origins like the npm and PyPI keys. Cargo's sparse index is filtered by age,

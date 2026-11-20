@@ -770,6 +770,8 @@ pub struct FakeRegistry {
     /// Every call fails once this is set, while still being recorded — so a test can
     /// assert both that upstream was unreachable and that nothing tried to reach it.
     offline: std::sync::atomic::AtomicBool,
+    /// Every metadata answer waits this many milliseconds first (a registry a network away).
+    delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl FakeRegistry {
@@ -813,6 +815,11 @@ impl FakeRegistry {
     /// Makes every later call fail, as an unreachable upstream does. PERF-01's test
     /// uses this: with upstream unreachable, a locally conclusive block must still
     /// answer.
+    /// Every later metadata answer is given after `ms` milliseconds.
+    pub fn set_delay_ms(&self, ms: u64) {
+        self.delay_ms.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn go_offline(&self) {
         self.offline
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -851,6 +858,10 @@ impl Transport for FakeRegistry {
         &self,
         req: MetadataRequest,
     ) -> Result<MetadataResponse, UpstreamError> {
+        let delay = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
         if let Some(validators) = req.validators.as_ref().filter(|v| !v.is_empty()) {
             self.conditional
                 .lock()
@@ -1202,6 +1213,7 @@ pub fn run<T>(body: impl Future<Output = T>) -> T {
 pub mod go;
 pub mod nuget;
 pub mod maven;
+pub mod conan;
 
 pub mod logs {
     use std::io;

@@ -22,6 +22,7 @@ pub mod cargo_registry;
 pub mod go_modules;
 pub mod nuget;
 pub mod maven;
+pub mod conan;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -181,6 +182,8 @@ pub struct App {
     pub(crate) nuget: nuget::serve::Shared,
     /// Maven: the per-artifact unit tables, shared documents and refresh places, process-owned.
     pub(crate) maven: maven::serve::Shared,
+    /// Conan: the per-package unit tables, refresh places and row gates, process-owned.
+    pub(crate) conan: conan::serve::Shared,
     /// The destinations a copy of each decision record is offered to. Empty unless
     /// an operator configured one.
     pub(crate) delivery: delivery::Sinks,
@@ -342,6 +345,7 @@ impl App {
         let content = ContentStore::new(&deps.config.data_dir, deps.config.cache_max_bytes.get());
         content.remove_temp_files();
         let limits = Limits::new(&deps.config);
+        let upstream_requests = deps.config.max_upstream_requests.get() as usize;
 
         // The drain token is not the shutdown token: the sinks must outlive the
         // requests that are still being answered when shutdown begins. The osv
@@ -442,6 +446,7 @@ impl App {
             go: go_modules::serve::Shared::default(),
             nuget: nuget::serve::Shared::default(),
             maven: maven::serve::Shared::default(),
+            conan: conan::serve::Shared::new(upstream_requests),
             delivery,
             osv,
             managed,

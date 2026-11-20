@@ -127,6 +127,7 @@ services:
           - azuresearch-usnc.nuget.org
           - www.nuget.org
           - repo.maven.apache.org
+          - center2.conan.io
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com
@@ -364,6 +365,17 @@ services:
       context: ./clients
       dockerfile: maven.Dockerfile
     image: localhost/probation-e2e-client:maven3.9.16
+    environment:
+      <<: *client-env
+
+  # Conan 2.21.0 on Python 3.13.0 (pip-installed at image build; the stack itself is offline). Python's TLS reads SSL_CERT_FILE and the
+  # `requests` library REQUESTS_CA_BUNDLE (both the E2E CA, from the shared environment).
+  client-conan:
+    <<: *client
+    build:
+      context: ./clients
+      dockerfile: conan.Dockerfile
+    image: localhost/probation-e2e-client:conan2.21.0
     environment:
       <<: *client-env
 

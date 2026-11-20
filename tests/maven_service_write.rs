@@ -371,7 +371,7 @@ async fn a_slow_start_is_allowed_a_mid_body_stall_is_not_and_the_deadline_follow
 /// R1: every publish forwarder counts its places the same way: through `spool::owner_of`, never by the service key alone.
 #[test]
 fn all_six_forwarders_count_their_spool_places_per_real_identity_and_credential() {
-    for file in ["registry_action", "pypi_routes", "rubygems_routes", "cargo_routes", "nuget_routes", "maven_routes"] {
+    for file in ["registry_action", "pypi_routes", "rubygems_routes", "cargo_routes", "nuget_routes", "maven_routes", "conan_routes"] {
         let text = std::fs::read_to_string(format!("{}/src/http/{file}.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
         let compact: String = text.split_whitespace().collect();
         assert!(compact.contains("spool::owner_of(&app,&principal,&") || compact.contains("spool::owner_of(app,&principal,&") || compact.contains("spool::owner_of(app,principal,&"), "{file} passes the real identity (account or address) and credential to the spool");

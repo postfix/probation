@@ -1788,3 +1788,37 @@ fn the_maven_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
     assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.jar")));
     assert!(!origins.admits_archive_redirect(OriginKind::MavenRepo, &parse("https://storage.example/x.jar")), "Central answers a file directly: no redirect is followed");
 }
+
+/// Row 23: the Conan remote origin is an origin AND an optional path prefix (an Artifactory repository has one), a URL built below
+/// it stays below it, the upload URL has no default, and a selected Conan registry's archive origin works as Maven's.
+#[test]
+fn the_conan_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
+    use probation::config::Config;
+    let origins = OriginSet::production();
+    assert_eq!(origins.origin(OriginKind::ConanRemote).as_str(), "https://center2.conan.io/");
+    assert!(!origins.conan_publish_configured(), "ConanCenter takes no upload: there is none until an operator names one");
+    assert_eq!(
+        origins.url_for(OriginKind::ConanRemote, &["v2", "conans", "zlib", "1.3.1", "_", "_", "revisions"]).unwrap().as_str(),
+        "https://center2.conan.io/v2/conans/zlib/1.3.1/_/_/revisions"
+    );
+    assert!(origins.url_for(OriginKind::ConanRemote, &["..", "x"]).is_err());
+    assert!(origins.url_for(OriginKind::ConanRemote, &[".", "x"]).is_err());
+    // A segment is data: a slash or a scheme in it is one encoded segment of the tree.
+    assert_eq!(origins.url_for(OriginKind::ConanRemote, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://center2.conan.io/a%2Fb/https:%2F%2Fevil.example%2Fx");
+    assert!(origins.admit(&parse("https://center2.conan.io/v2/conans/a"), OriginKind::ConanRemote).is_ok());
+    assert!(origins.admit(&parse("https://evil.example/v2/conans/a"), OriginKind::ConanRemote).is_err());
+    // Configuration: a mirror's origin and prefix are accepted, a userinfo, a query, http and a private address are not.
+    let sample = std::fs::read_to_string("config.sample.toml").unwrap();
+    assert!(Config::from_toml_str(&format!("{sample}\nconan_upstream_url = \"https://art.example/artifactory/api/conan/conan-center\"\n")).is_ok());
+    assert!(Config::from_toml_str(&format!("{sample}\nconan_publish_url = \"https://art.example/artifactory/api/conan/conan-local\"\n")).is_ok());
+    for bad in ["http://art.example/repo", "https://u:p@art.example/repo", "https://art.example/repo?x=1", "https://127.0.0.1/repo"] {
+        assert!(Config::from_toml_str(&format!("{sample}\nconan_upstream_url = \"{bad}\"\n")).is_err(), "{bad}");
+    }
+    // A selected Conan registry's archive origin is its own unless it declares one.
+    let selected = OriginSet::selected_npm_with_private(parse("https://art.corp.example/artifactory/api/conan/c/"), Vec::new()).unwrap();
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.tgz")));
+    let selected = selected.with_selected_archive(parse("https://blobs.corp.example/store"));
+    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.tgz?sig=s")));
+    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.tgz")));
+    assert!(!origins.admits_archive_redirect(OriginKind::ConanRemote, &parse("https://storage.example/x.tgz")), "ConanCenter answers a file directly: no redirect is followed");
+}

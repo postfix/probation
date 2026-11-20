@@ -511,6 +511,9 @@ async fn issue(
     let nuget_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'nuget' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
+    let conan_registry_id: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'conan' AND removed_at IS NULL ORDER BY id LIMIT 1)",
+    ).bind(org).fetch_one(&mut *tx).await?;
     let maven_registry_id: Option<i64> = sqlx::query_scalar(
         "SELECT (SELECT id FROM registries WHERE org_id = $1 AND ecosystem = 'maven' AND removed_at IS NULL ORDER BY id LIMIT 1)",
     ).bind(org).fetch_one(&mut *tx).await?;
@@ -603,6 +606,7 @@ async fn issue(
     script.push_str(&render_go(go_registry_id.is_some()));
     script.push_str(&render_nuget(nuget_registry_id.is_some()));
     script.push_str(&render_maven(maven_registry_id.is_some()));
+    script.push_str(&render_conan(conan_registry_id.is_some()));
     Ok(Some(script))
 }
 
@@ -664,6 +668,17 @@ fn render_nuget(has_registry: bool) -> String {
 fn render_maven(has_registry: bool) -> String {
     if has_registry {
         "echo 'Maven: signs in with an API key on the key route, not a client certificate (the Keys page shows the settings.xml lines).' >&2\n".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Conan logs in with an API key (`conan remote login`: the key is the password, and the login returns it as the token the client sends),
+/// never a client certificate, so the script points at the Keys page and writes no configuration that could never authenticate. Empty
+/// when the organisation has no Conan registry.
+fn render_conan(has_registry: bool) -> String {
+    if has_registry {
+        "echo 'Conan: signs in with an API key on the key route (conan remote login), not a client certificate (the Keys page shows the commands).' >&2\n".to_owned()
     } else {
         String::new()
     }
@@ -781,6 +796,14 @@ mod tests {
         let note = render_maven(true);
         assert!(note.contains("API key on the key route") && note.contains("settings.xml"), "{note}");
         assert!(!note.contains("<server>") && !note.contains("<password>"), "no configuration that could never authenticate is written");
+    }
+
+    #[test]
+    fn conan_setup_points_at_the_key_route() {
+        assert_eq!(render_conan(false), "");
+        let note = render_conan(true);
+        assert!(note.contains("API key on the key route") && note.contains("conan remote login"), "{note}");
+        assert!(!note.contains("remotes.json") && !note.contains("client-cert"), "no configuration that could never authenticate is written");
     }
 
     #[test]

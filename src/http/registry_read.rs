@@ -95,6 +95,18 @@ pub(super) async fn recheck_nuget(
     recheck_for(app, peer, registry, headers, Ecosystem::NuGet).await
 }
 
+pub(super) async fn admit_conan(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
+    admit_for(app, peer, registry, headers, Ecosystem::Conan).await
+}
+
+pub(super) async fn recheck_conan(
+    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    recheck_for(app, peer, registry, headers, Ecosystem::Conan).await
+}
+
 pub(super) async fn admit_maven(
     app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {

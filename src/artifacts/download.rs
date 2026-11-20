@@ -75,6 +75,8 @@ struct Computed {
     sha256: [u8; 32],
     sha512: [u8; 64],
     sha1: [u8; 20],
+    /// Only for Conan's manifest check (a manifest lists MD5 digests).
+    md5: [u8; 16],
     size: u64,
 }
 
@@ -266,6 +268,7 @@ async fn transfer(
         Ecosystem::Go => Call::Go,
         Ecosystem::NuGet => Call::Nuget,
         Ecosystem::Maven => Call::Maven,
+        Ecosystem::Conan => Call::Conan,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -284,6 +287,7 @@ async fn transfer(
     let mut sha256 = Sha256::new();
     let mut sha512 = Sha512::new();
     let mut sha1 = Sha1::new();
+    let mut md5 = <md5::Md5 as md5::Digest>::new();
     let mut size = 0u64;
 
     let mut stream = body.stream;
@@ -306,6 +310,7 @@ async fn transfer(
         sha256.update(&chunk);
         sha512.update(&chunk);
         sha1.update(&chunk);
+        md5::Digest::update(&mut md5, &chunk);
         content_write(app, temp.write_all(&chunk).await)?;
     }
 
@@ -313,6 +318,7 @@ async fn transfer(
         sha256: sha256.finalize().into(),
         sha512: sha512.finalize().into(),
         sha1: sha1.finalize().into(),
+        md5: md5::Digest::finalize(md5).into(),
         size,
     };
 
@@ -327,7 +333,8 @@ async fn transfer(
     }
 
     verify_advertised(&row.reference.expected, &computed)?;
-    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
+    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization.clone(), &computed).await?;
+    verify_conan_manifest(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
 
     // STATE-01. This runs before the policy re-check on purpose: SPEC §9 says
     // "persist computed digests, even when policy now blocks them", so a block
@@ -458,7 +465,7 @@ async fn transfer(
 /// The most a transfer may read: the configured artifact cap, and for a Go `.info` (a few hundred bytes) 256 KiB and for a
 /// `.mod` 16 MiB (what `go` itself accepts), so the small places cannot be held by a hostile upstream's large "tiny" file.
 fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
-    if is_nuget_small(row) || is_maven_small(row) {
+    if is_nuget_small(row) || is_maven_small(row) || is_conan_small(row) {
         // A nuspec, a readme and an icon are kilobytes; nuget.org limits an icon to 1 MB. A POM, a module file, a checksum
         // and a signature are kilobytes too (the largest real POM sampled is under 1 MB).
         return configured.min(16 << 20);
@@ -477,7 +484,7 @@ fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
 
 /// A Go `.info` or `.mod`: a few hundred bytes that precede every zip and must not queue behind the large transfers.
 fn is_small_metadata(row: &ReferenceRow) -> bool {
-    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row) || is_maven_small(row)
+    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row) || is_maven_small(row) || is_conan_small(row)
 }
 
 /// A NuGet `.nuspec`, `readme` or `icon`: the small files that accompany every `.nupkg`.
@@ -492,12 +499,19 @@ fn is_maven_small(row: &ReferenceRow) -> bool {
         && [".pom", ".module", ".sha1", ".md5", ".sha256", ".sha512", ".asc", ".xml"].iter().any(|ext| row.reference.filename.ends_with(ext))
 }
 
+/// A Conan recipe or package file that is not an archive (`conanfile.py`, `conanmanifest.txt`, `conaninfo.txt`, metadata): kilobytes that must
+/// not queue behind the `conan_export.tgz`, `conan_sources.tgz` and `conan_package.tgz` transfers.
+fn is_conan_small(row: &ReferenceRow) -> bool {
+    row.reference.ecosystem == Ecosystem::Conan && !row.reference.filename.ends_with(".tgz")
+}
+
 /// A Go `.zip` is the one transfer whose redirect may land on an archive origin (the proxy's bucket or
 /// the registry's declared one); `.info` and `.mod` never follow it.
 fn allows_archive_redirect(row: &ReferenceRow) -> bool {
     (row.reference.ecosystem == Ecosystem::Go && row.reference.filename.ends_with(".zip")) || (row.reference.ecosystem == Ecosystem::NuGet && row.reference.filename.ends_with(".nupkg"))
         // A registry's jar or archive may be answered with a redirect to its storage; its small files never are.
         || (row.reference.ecosystem == Ecosystem::Maven && !is_maven_small(row))
+        || (row.reference.ecosystem == Ecosystem::Conan && !is_conan_small(row))
 }
 
 fn selected_catalog_authorization(
@@ -515,6 +529,7 @@ fn selected_catalog_authorization(
             crate::policy::Ecosystem::Go => OriginKind::GoProxy,
             crate::policy::Ecosystem::NuGet => OriginKind::NugetIndex,
             crate::policy::Ecosystem::Maven => OriginKind::MavenRepo,
+            crate::policy::Ecosystem::Conan => OriginKind::ConanRemote,
         };
         let selected = origin.unwrap_or_else(|| app.origins.origin(metadata_kind));
         read_authorization.filter(|_| row.reference.upstream_url.origin() == selected.origin())
@@ -573,6 +588,7 @@ pub async fn fetch_request_scoped(
         Ecosystem::Go => Call::Go,
         Ecosystem::NuGet => Call::Nuget,
         Ecosystem::Maven => Call::Maven,
+        Ecosystem::Conan => Call::Conan,
     };
     app.upstreams.record_upstream(call, &opened);
     let body = opened.map_err(DownloadError::Upstream)?;
@@ -581,6 +597,7 @@ pub async fn fetch_request_scoped(
     }
     let mut temp = temp_dir.begin(body.declared_length).map_err(DownloadError::Temp)?;
     let (mut sha256, mut sha512, mut sha1, mut size) = (Sha256::new(), Sha512::new(), Sha1::new(), 0u64);
+    let mut md5 = <md5::Md5 as md5::Digest>::new();
     let mut stream = body.stream;
     while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
         let chunk = chunk.map_err(DownloadError::Upstream)?;
@@ -591,6 +608,7 @@ pub async fn fetch_request_scoped(
         sha256.update(&chunk);
         sha512.update(&chunk);
         sha1.update(&chunk);
+        md5::Digest::update(&mut md5, &chunk);
         // Off the async worker: the temporary file is a plain blocking file.
         temp = temp.write_blocking(chunk.to_vec()).await.map_err(DownloadError::Temp)?;
     }
@@ -600,10 +618,11 @@ pub async fn fetch_request_scoped(
         return Err(DownloadError::SizeMismatch { declared, actual: size });
     }
     let completed = temp.into_file();
-    let computed = Computed { sha256: sha256.finalize().into(), sha512: sha512.finalize().into(), sha1: sha1.finalize().into(), size };
+    let computed = Computed { sha256: sha256.finalize().into(), sha512: sha512.finalize().into(), sha1: sha1.finalize().into(), md5: md5::Digest::finalize(md5).into(), size };
     let (sha256, sha512) = (computed.sha256, computed.sha512);
     verify_advertised(&row.reference.expected, &computed)?;
-    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
+    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization.clone(), &computed).await?;
+    verify_conan_manifest(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
     match app.store().pin_computed_digests(row.id, sha256, sha512, size).await.map_err(DownloadError::Storage)? {
         PinOutcome::Established => {
             app.store().caches().projects.remove(&ProjectKey::in_registry(
@@ -649,6 +668,8 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         Ecosystem::NuGet => &[OriginKind::NugetIndex, OriginKind::NpmMetadata],
         // Every file of a version is in the repository's own tree; a selected registry travels in the npm slot.
         Ecosystem::Maven => &[OriginKind::MavenRepo, OriginKind::NpmMetadata],
+        // Every file of a recipe or package revision is under the remote's own `v2/conans` tree; a selected registry travels in the npm slot.
+        Ecosystem::Conan => &[OriginKind::ConanRemote, OriginKind::NpmMetadata],
     };
     let url = &row.reference.upstream_url;
     // Admitted against each own origin rather than by `kind_of`, which names only the
@@ -741,6 +762,53 @@ async fn verify_maven_sidecar(
         return Ok(());
     }
     Err(DownloadError::IntegrityMismatch { expected: published, computed: ours })
+}
+
+/// A Conan file is checked against the `conanmanifest.txt` of its own revision (`name: md5` lines) before its digests are pinned, when the
+/// manifest lists it: corruption or substitution is then a refusal, not a permanent pin. A manifest itself, a nested (metadata) file, a file the
+/// manifest does not list and a manifest the remote does not have (404, 403) are no check; any other failure to read it fails closed.
+async fn verify_conan_manifest(
+    app: &App,
+    row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<String>,
+    computed: &Computed,
+) -> Result<(), DownloadError> {
+    let name = row.reference.filename.as_str();
+    let Some((_, file)) = name.rsplit_once("/files/") else { return Ok(()) };
+    if row.reference.ecosystem != Ecosystem::Conan || file == "conanmanifest.txt" || file.contains('/') {
+        return Ok(());
+    }
+    // The manifest is the file's sibling: the last path segment of the URL (percent-encoded as it is) is replaced.
+    let mut url = row.reference.upstream_url.clone();
+    let Ok(mut segments) = url.path_segments_mut() else { return Ok(()) };
+    segments.pop().push("conanmanifest.txt");
+    drop(segments);
+    let fetched = app
+        .transport
+        .fetch_metadata(crate::upstream::MetadataRequest { url, origin: origin.cloned(), private_cidrs: private_cidrs.to_vec(), read_authorization, accept: "text/plain", validators: None, max_bytes: 1 << 20 })
+        .await;
+    app.upstreams.record_upstream(Call::Conan, &fetched);
+    let body = match fetched {
+        Ok(crate::upstream::MetadataResponse::Fresh { body, .. }) => body,
+        Ok(crate::upstream::MetadataResponse::Missing) | Err(UpstreamError::Status(403)) => return Ok(()),
+        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => return Err(DownloadError::Upstream(UpstreamError::Status(304))),
+        Err(error) => return Err(DownloadError::Upstream(error)),
+    };
+    let Ok(text) = std::str::from_utf8(&body) else { return Ok(()) };
+    let ours: String = computed.md5.iter().map(|b| format!("{b:02x}")).collect();
+    for line in text.lines() {
+        if let Some((listed, digest)) = line.rsplit_once(": ")
+            && listed == file
+            && digest.trim().len() == 32
+            && !digest.trim().eq_ignore_ascii_case(&ours)
+        {
+            // ponytail: no HashAlgorithm for MD5, so the mismatch is reported as the remote's bad answer (502), still fail closed.
+            return Err(DownloadError::Upstream(UpstreamError::Status(502)));
+        }
+    }
+    Ok(())
 }
 
 fn verify_advertised(expected: &[Digest], computed: &Computed) -> Result<(), DownloadError> {
@@ -856,6 +924,7 @@ mod tests {
             sha256: [1; 32],
             sha512: [2; 64],
             sha1: [3; 20],
+            md5: [4; 16],
             size: 10,
         }
     }

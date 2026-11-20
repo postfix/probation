@@ -15,6 +15,7 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
     (Ecosystem::Go, Some("Go")),
     (Ecosystem::NuGet, Some("NuGet")),
     (Ecosystem::Maven, Some("Maven")),
+    (Ecosystem::Conan, Some("ConanCenter")),
 ];
 
 #[test]
@@ -78,4 +79,14 @@ fn osv_ecosystem_mapping_per_family_maven() {
     assert_eq!(Ecosystem::Maven.as_tag(), "maven");
     assert_eq!(Ecosystem::from_tag("maven"), Some(Ecosystem::Maven));
     assert!(Ecosystem::ALL.contains(&Ecosystem::Maven));
+}
+
+/// Row 23: names `Ecosystem::Conan`, so it does not compile before this row adds the variant. OSV spells the ecosystem
+/// `ConanCenter` and keys it by the package name; the blocklist tag is `conan`.
+#[test]
+fn osv_ecosystem_mapping_per_family_conan() {
+    assert_eq!(osv_ecosystem(Ecosystem::Conan), Some("ConanCenter"));
+    assert_eq!(Ecosystem::Conan.as_tag(), "conan");
+    assert_eq!(Ecosystem::from_tag("conan"), Some(Ecosystem::Conan));
+    assert!(Ecosystem::ALL.contains(&Ecosystem::Conan));
 }

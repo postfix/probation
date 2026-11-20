@@ -18,6 +18,8 @@ const MAX_NUGET_NAME_LENGTH: usize = 128;
 const MAX_NUGET_VERSION_LENGTH: usize = 256;
 /// `groupId:artifactId` together (each part is bounded by what a repository path can carry).
 const MAX_MAVEN_NAME_LENGTH: usize = 512;
+/// A Conan name, version, user or channel (the client's own limit is 101 bytes; this is above every real one).
+const MAX_CONAN_NAME_LENGTH: usize = 200;
 
 /// PEP 503: lowercase, and each run of `-`, `_` or `.` becomes a single `-`.
 pub fn normalize(raw: &str) -> String {
@@ -56,6 +58,9 @@ pub fn canonical_name(ecosystem: Ecosystem, name: &str) -> String {
         Ecosystem::NuGet => name.to_ascii_lowercase(),
         // `groupId:artifactId` is case-sensitive on every Maven repository (the path is the identity) and OSV's own key.
         Ecosystem::Maven => name.to_owned(),
+        // A Conan remote may fold case (Artifactory repositories can): policy sees the lower-case name, so `Zlib` cannot get round a block on
+        // `zlib`. URLs and rows keep the remote's own spelling.
+        Ecosystem::Conan => name.to_ascii_lowercase(),
     }
 }
 
@@ -69,6 +74,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         Ecosystem::Go => MAX_GO_NAME_LENGTH,
         Ecosystem::NuGet => MAX_NUGET_NAME_LENGTH,
         Ecosystem::Maven => MAX_MAVEN_NAME_LENGTH,
+        Ecosystem::Conan => MAX_CONAN_NAME_LENGTH,
         _ => MAX_NAME_LENGTH,
     };
     if name.is_empty() || name.len() > limit {
@@ -97,6 +103,7 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
         // A dot-only id and an id that starts or ends with a dot are refused (nuget.org refuses them too).
         Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) && !name.starts_with('.') && !name.ends_with('.'),
         Ecosystem::Maven => valid_maven_name(name),
+        Ecosystem::Conan => valid_conan_part(name),
     }
 }
 
@@ -161,6 +168,8 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
         // A Maven version keeps its native spelling: the repository's directory name is the identity and the build
         // tool decides ordering, so only the exact text matches.
         Ecosystem::Maven => None,
+        // A Conan recipe version keeps its native spelling too (the client's version ranges decide ordering).
+        Ecosystem::Conan => None,
     }
 }
 
@@ -288,4 +297,13 @@ fn maven_part_ok(part: &str) -> bool {
 pub fn valid_maven_name(name: &str) -> bool {
     let Some((group, artifact)) = name.split_once(':') else { return false };
     name.len() <= MAX_MAVEN_NAME_LENGTH && maven_part_ok(group) && maven_part_ok(artifact) && group.split('.').all(|element| !element.is_empty())
+}
+
+/// One part of a Conan reference (name, version, user, channel) as the Conan 2 client accepts it:
+/// `[A-Za-z0-9_][A-Za-z0-9_+.-]*`, at most `MAX_CONAN_NAME_LENGTH` bytes.
+pub fn valid_conan_part(part: &str) -> bool {
+    let mut bytes = part.bytes();
+    part.len() <= MAX_CONAN_NAME_LENGTH
+        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'.' | b'-'))
 }

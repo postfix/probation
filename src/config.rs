@@ -141,6 +141,10 @@ pub struct Config {
     /// Central has no deploy endpoint of its own, a registry with a target of its own is deployed to at that target).
     pub maven_upstream_url: Option<Url>,
     pub maven_publish_url: Option<Url>,
+    /// Conan: the public remote (https://center2.conan.io by default; an origin AND a path prefix, as an Artifactory remote lays it
+    /// out) and the one URL `conan upload` is forwarded to for the public registry (none by default: ConanCenter takes no uploads).
+    pub conan_upstream_url: Option<Url>,
+    pub conan_publish_url: Option<Url>,
     /// The file this configuration was read from, as written: a settings push is
     /// validated merged over it (C105).
     pub local: LocalText,
@@ -395,6 +399,8 @@ struct RawConfig {
     nuget_publish_url: Option<String>,
     maven_upstream_url: Option<String>,
     maven_publish_url: Option<String>,
+    conan_upstream_url: Option<String>,
+    conan_publish_url: Option<String>,
 }
 
 /// `[management]` as written. `url` and `token_file` are optional here only so their
@@ -504,6 +510,8 @@ const OPTIONAL_KEYS: &[&str] = &[
     "nuget_publish_url",
     "maven_upstream_url",
     "maven_publish_url",
+    "conan_upstream_url",
+    "conan_publish_url",
 ];
 
 /// The keys a managed firewall may leave out, because it ignores its local blocklist
@@ -600,6 +608,8 @@ impl RawConfig {
         let nuget_publish_url = upstream_origin("nuget_publish_url", self.nuget_publish_url)?;
         let maven_upstream_url = upstream_origin_with("maven_upstream_url", self.maven_upstream_url, true)?;
         let maven_publish_url = upstream_origin_with("maven_publish_url", self.maven_publish_url, true)?;
+        let conan_upstream_url = upstream_origin_with("conan_upstream_url", self.conan_upstream_url, true)?;
+        let conan_publish_url = upstream_origin_with("conan_publish_url", self.conan_publish_url, true)?;
 
         if self.cooldown_seconds > MAX_COOLDOWN_SECONDS {
             return Err(invalid(
@@ -896,6 +906,8 @@ impl RawConfig {
             nuget_publish_url,
             maven_upstream_url,
             maven_publish_url,
+            conan_upstream_url,
+            conan_publish_url,
             local: LocalText::default(),
         })
     }

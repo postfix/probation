@@ -47,7 +47,9 @@ pub async fn respond(
     // C1028 / LS-F4: a read is cache-eligible only on the allow-list; anything else is
     // request-scoped and never touches a shared cache.
     if matches!(*request.method(), Method::GET | Method::HEAD) {
-        let rules = if request.uri().path().starts_with("/maven/") || request.uri().path().starts_with("/registry/maven/") {
+        let rules = if request.uri().path().starts_with("/conan/") || request.uri().path().starts_with("/registry/conan/") {
+            &super::credential_read::FamilyReadRules::CONAN
+        } else if request.uri().path().starts_with("/maven/") || request.uri().path().starts_with("/registry/maven/") {
             &super::credential_read::FamilyReadRules::MAVEN
         } else if request.uri().path().starts_with("/nuget/") || request.uri().path().starts_with("/registry/nuget/") {
             &super::credential_read::FamilyReadRules::NUGET
@@ -68,7 +70,7 @@ pub async fn respond(
         }
     }
     // (RubyGems' `gem yank` is its own class-W route, forwarded by the family handler.)
-    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") && !request.uri().path().starts_with("/registry/maven/") && !request.uri().path().starts_with("/maven/") {
+    if request.method() == Method::DELETE && !request.uri().path().starts_with("/registry/rubygems/") && !request.uri().path().starts_with("/rubygems/") && !request.uri().path().starts_with("/registry/cargo/") && !request.uri().path().starts_with("/cargo/") && !request.uri().path().starts_with("/registry/go/") && !request.uri().path().starts_with("/go/") && !request.uri().path().starts_with("/registry/nuget/") && !request.uri().path().starts_with("/nuget/") && !request.uri().path().starts_with("/registry/maven/") && !request.uri().path().starts_with("/maven/") && !request.uri().path().starts_with("/registry/conan/") && !request.uri().path().starts_with("/conan/") {
         let route = classify_direct_or_whole_package_delete(&request)?;
         dispatch_npm_delete_route(route)?;
     }
@@ -111,6 +113,7 @@ fn classify_selected_registry(
             Some("go") => Ecosystem::Go,
             Some("nuget") => Ecosystem::NuGet,
             Some("maven") => Ecosystem::Maven,
+            Some("conan") => Ecosystem::Conan,
             _ => return Err(ApiError::NotFound),
         };
         let registry = super::registry_read::registry_id(parts.next().ok_or(ApiError::NotFound)?)?;
@@ -130,6 +133,8 @@ fn classify_selected_registry(
             (Ecosystem::NuGet, rest)
         } else if let Some(rest) = path.strip_prefix("/maven/") {
             (Ecosystem::Maven, rest)
+        } else if let Some(rest) = path.strip_prefix("/conan/") {
+            (Ecosystem::Conan, rest)
         } else {
             return Err(ApiError::NotFound);
         };
@@ -198,6 +203,13 @@ fn classify_selected_registry(
     if ecosystem == Ecosystem::Maven && !matches!(*request.method(), Method::GET | Method::HEAD | Method::PUT | Method::DELETE) {
         return Err(ApiError::MethodNotAllowed);
     }
+    // Conan's upload (`PUT` of a file of a revision) and its clean-up (`DELETE`) are class-W routes the family handler forwards (with the
+    // caller's own token); any other non-read is refused here.
+    if ecosystem == Ecosystem::Conan && !matches!(*request.method(), Method::GET | Method::HEAD | Method::PUT | Method::DELETE) {
+        return Err(ApiError::MethodNotAllowed);
+    }
+    // Conan's search is the one Conan read with a query string (the handler parses `q` and `ignorecase` only).
+    let conan_search = ecosystem == Ecosystem::Conan && rest == "v2/conans/search" && request.method() == Method::GET;
     // NuGet's search and autocomplete are the two reads with a query string (the handler keeps the known keys only).
     let nuget_query = ecosystem == Ecosystem::NuGet && matches!(rest, "v3/query" | "v3/autocomplete") && request.method() == Method::GET;
     let search = ecosystem == Ecosystem::Npm && rest == "-/v1/search";
@@ -209,7 +221,7 @@ fn classify_selected_registry(
         && parse_uri_package(rest).is_ok();
     // Cargo's search is the one Cargo read with a query string (the handler keeps the known keys only).
     let cargo_search = cargo_api && rest == "api/v1/crates" && request.method() == Method::GET;
-    if request.uri().query().is_some() && !search && !write_preflight && !named_action && !cargo_search && !nuget_query {
+    if request.uri().query().is_some() && !search && !write_preflight && !named_action && !cargo_search && !nuget_query && !conan_search {
         return Err(ApiError::NotFound);
     }
     // Existing action handlers classify named operations and credentials before I/O.
