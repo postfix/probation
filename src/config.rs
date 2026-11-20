@@ -1019,14 +1019,15 @@ impl RawServicePolicy {
         let file = std::fs::File::open(&self.service_key_file)
             .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
         let metadata = file.metadata().map_err(|_| invalid("service_policy.service_key_file", "cannot read permissions".to_owned()))?;
-        // Windows has no mode bits; the operator must restrict the key file's ACL to the
-        // service account. Only the regular-file check can be made there.
         #[cfg(unix)]
         let shared = {
             use std::os::unix::fs::PermissionsExt;
             metadata.permissions().mode() & 0o077 != 0
         };
-        #[cfg(not(unix))]
+        // Windows: the DACL of the file must grant nobody but SYSTEM, the Administrators and the account running the service.
+        #[cfg(windows)]
+        let shared = crate::key_acl::is_shared(&self.service_key_file);
+        #[cfg(not(any(unix, windows)))]
         let shared = false;
         if !metadata.is_file() || shared {
             return Err(invalid("service_policy.service_key_file", "requires a private regular file".to_owned()));

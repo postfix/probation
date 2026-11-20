@@ -21,7 +21,25 @@ const NOW: &str = "2026-04-06T12:00:00Z";
 const OLD: &str = "2025-01-01T00:00:00Z";
 const YOUNG: &str = "2026-04-05T12:00:00Z";
 
+/// Row 25: `PROBATION_NATIVE_HOST=1` drives the host's own `mvn` (pinned 3.9.16 on Java 21) instead of the podman image, with the plugin
+/// repository seeded in `PROBATION_MAVEN_SEED` by the CI job (provisioning, never at test time). It never skips: the tool must be the
+/// pinned one, or the lane fails. The mirror and the firewall are plain HTTP on loopback, so no truststore needs a CA on any OS.
+fn host_mode() -> bool {
+    std::env::var("PROBATION_NATIVE_HOST").is_ok_and(|value| value == "1")
+}
+
+fn host_tool_ready() -> bool {
+    let output = std::process::Command::new("mvn").arg("--version").output().unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but mvn does not run: {err}"));
+    let version = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(version.contains("Apache Maven 3.9.16") && version.contains("Java version: 21."), "the pinned toolchain is Maven 3.9.16 on Java 21; the host has: {version}");
+    assert!(std::env::var("PROBATION_MAVEN_SEED").is_ok(), "PROBATION_MAVEN_SEED names the seeded plugin repository");
+    true
+}
+
 fn client_available() -> bool {
+    if host_mode() {
+        return host_tool_ready();
+    }
     std::process::Command::new("podman").args(["image", "exists", IMAGE]).status().is_ok_and(|status| status.success())
 }
 
@@ -37,6 +55,18 @@ macro_rules! need_mvn {
 /// Runs `script` in the client container in `dir` (mounted as `/work`), with its own home and local repository seeded with the
 /// plugins from the image; returns whether it succeeded and everything it printed.
 async fn mvn(dir: &Path, script: &str) -> (bool, String) {
+    if host_mode() {
+        let here = dir.display().to_string().replace('\\', "/");
+        let seed = std::env::var("PROBATION_MAVEN_SEED").unwrap().replace('\\', "/");
+        let script = format!("trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home; rm -rf {here}/.m2repo {here}/out; mkdir -p {here}/.m2repo {here}/home && cp -r {seed}/. {here}/.m2repo/ && {}", script.replace("/work", &here));
+        let dir = dir.to_path_buf();
+        return tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("bash").current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host mvn");
+            (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+        })
+        .await
+        .unwrap();
+    }
     let dir = dir.to_path_buf();
     let script = format!("export HOME=/work/home; rm -rf /work/.m2repo /work/out; mkdir -p /work/.m2repo /work/home && cp -r /opt/seed-m2/. /work/.m2repo/ && {script}");
     tokio::task::spawn_blocking(move || {

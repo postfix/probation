@@ -25,6 +25,42 @@ jobs:
       - run: docker compose -f docker-compose.test.yml up -d --wait postgres
       - run: cargo test --workspace --locked
 
+  # The static OpenSSL link of the release builds, compiled on every pull request (not only on a tag): a failing link must fail here.
+  # macOS links Homebrew's libcrypto.a of the runner's own architecture (the Intel runner builds the x86_64 target); Windows MSVC links
+  # vcpkg's x64-windows-static-md. The default `cargo build` of the `build` job above is unchanged: the feature is off.
+  static-link:
+    name: static-link ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    env:
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      OPENSSL_STATIC: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      - run: rustup target add ${{ matrix.target }}
+      - run: node tests/e2e/native/openssl-setup.mjs apply
+        shell: bash
+      - run: cargo build --locked --bin probation --target ${{ matrix.target }} --features static-openssl
+      - name: The binary names no OpenSSL library (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          otool -L "target/${{ matrix.target }}/debug/probation" | tee otool.txt
+          if grep -E "/opt/homebrew|/usr/local/(opt|Cellar)|libcrypto" otool.txt; then echo "libcrypto is linked dynamically"; exit 1; fi
+
   coverage:
     runs-on: ubuntu-latest
     steps:

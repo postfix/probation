@@ -224,7 +224,21 @@ impl Drop for Store { fn drop(&mut self) { if !self.0.is_null() { unsafe { X509_
 struct Stack(*mut c_void);
 impl Drop for Stack { fn drop(&mut self) { if !self.0.is_null() { unsafe { OPENSSL_sk_free(self.0); } } } }
 
-#[link(name = "crypto")]
+// The `static-openssl` cargo feature (release builds and the PR static-link jobs set it) links libcrypto STATICALLY: macOS from the
+// Homebrew formula's libcrypto.a of the TARGET architecture, Windows MSVC from vcpkg's `x64-windows-static-md` (static libraries, dynamic
+// CRT, which is rustc's default /MD), so a release binary names no OpenSSL dylib or DLL and starts on a machine without it. Without the
+// feature (every ordinary `cargo build`) the system's library is linked dynamically, as before, and nothing needs an archive on a -L path.
+// OpenSSL's documented static link set on Windows is ws2_32, gdi32, advapi32, crypt32 and user32.
+#[cfg_attr(feature = "static-openssl", link(name = "crypto", kind = "static"))]
+#[cfg_attr(not(feature = "static-openssl"), link(name = "crypto"))]
+// libcrypto.a is built with zlib compression support on some platforms: the Linux experiment (cargo build --features static-openssl) stopped at
+// undefined `inflate`/`deflate`, so libz is linked with it on macOS, where the system provides it. (-ldl and -lpthread are already in rustc's set.)
+#[cfg_attr(all(feature = "static-openssl", target_os = "macos"), link(name = "z"))]
+#[cfg_attr(all(feature = "static-openssl", windows, target_env = "msvc"), link(name = "ws2_32"))]
+#[cfg_attr(all(feature = "static-openssl", windows, target_env = "msvc"), link(name = "gdi32"))]
+#[cfg_attr(all(feature = "static-openssl", windows, target_env = "msvc"), link(name = "advapi32"))]
+#[cfg_attr(all(feature = "static-openssl", windows, target_env = "msvc"), link(name = "crypt32"))]
+#[cfg_attr(all(feature = "static-openssl", windows, target_env = "msvc"), link(name = "user32"))]
 unsafe extern "C" {
     fn d2i_X509(a: *mut *mut X509, input: *mut *const u8, len: c_long) -> *mut X509;
     fn X509_free(cert: *mut X509);

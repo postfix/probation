@@ -3,7 +3,7 @@
 // path, Windows needs an MSVC import library named crypto.lib (OpenSSL ships it as libcrypto.lib) and its DLL on PATH.
 // node tests/e2e/native/openssl-setup.test.mjs
 import assert from "node:assert/strict";
-import { assertSingleLine, buildPlan, findImportLibrary, windowsRoots } from "./openssl-setup.mjs";
+import { assertSingleLine, buildPlan, findImportLibrary, staticRoots, windowsRoots } from "./openssl-setup.mjs";
 
 // macOS: Homebrew's lib directory is added to the linker's search path.
 const US = "\x1f"; // CARGO_ENCODED_RUSTFLAGS separates flags with it, so a path may hold spaces
@@ -75,4 +75,12 @@ assert.throws(() => assertSingleLine({ env: { X: "a\nEVIL=1" }, path: [] }), /li
 assert.throws(() => assertSingleLine({ env: { X: "a\rb" }, path: [] }), /line break/);
 assert.throws(() => assertSingleLine({ env: {}, path: ["C:\\x\nC:\\evil"] }), /line break/);
 assert.throws(() => assertSingleLine(buildPlan({ platform: "darwin", brewPrefix: "/p\nX=1" })), /line break/);
+// Static linking: no DLL, nothing on PATH, only the library directory for the linker.
+const staticPlan = buildPlan({ platform: "win32", found: { lib: "C:\\vcpkg\\installed\\x64-windows-static-md\\lib\\libcrypto.lib", bin: null, dll: null }, shimDir: "D:\\t\\openssl-shim", staticLib: true });
+assert.deepEqual(staticPlan.path, []);
+assert.equal(staticPlan.dll, null);
+assert.equal(staticPlan.shim.to, "D:\\t\\openssl-shim\\crypto.lib");
+assert.throws(() => buildPlan({ platform: "win32", found: null, shimDir: "x", staticLib: true }), /static OpenSSL/);
+assert.deepEqual(staticRoots({ VCPKG_INSTALLATION_ROOT: "C:\\vcpkg" }), ["C:\\vcpkg\\installed\\x64-windows-static-md"]);
+assert.deepEqual(staticRoots({}), []);
 console.log("openssl-setup.test: ok");

@@ -44,6 +44,8 @@ const BUILTIN: &[&str] = &[
 
 impl Denylist {
     pub fn new(listener: Option<SocketAddr>, control_plane_cidrs: Vec<IpNet>) -> Denylist {
+        // The `test-support` build has one more field; a release build (and `cargo clippy --lib`) has none to default.
+        #[allow(clippy::needless_update)]
         Denylist { listener, control_plane_cidrs, ..Denylist::default() }
     }
 

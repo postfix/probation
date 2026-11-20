@@ -41,10 +41,20 @@ const withLibraryDir = (dir, { encoded, rustflags }) => {
   return { CARGO_ENCODED_RUSTFLAGS: [...existing, "-L", `native=${dir}`].join(US) };
 };
 
-export function buildPlan({ platform, brewPrefix, found, shimDir, encoded, rustflags }) {
+/// Static linking (OPENSSL_STATIC=1, the release build): vcpkg's `x64-windows-static-md` triplet (static libraries, DYNAMIC CRT = rustc's default /MD for MSVC, so the CRT of the libraries and of the binary agree; vcpkg's plain static triplet would need `+crt-static` everywhere), whose libcrypto.lib holds the code itself.
+/// The binary then needs no OpenSSL DLL at all, so nothing is shipped, installed or found through a PATH.
+export function staticRoots(env) {
+  return env.VCPKG_INSTALLATION_ROOT ? [`${env.VCPKG_INSTALLATION_ROOT}\\installed\\x64-windows-static-md`] : [];
+}
+
+export function buildPlan({ platform, brewPrefix, found, shimDir, encoded, rustflags, staticLib = false }) {
   if (platform === "darwin") {
     if (!brewPrefix) throw new Error("Homebrew's openssl@3 prefix is unknown: is openssl@3 installed?");
     return { env: withLibraryDir(`${brewPrefix}/lib`, { encoded, rustflags }), path: [], shim: null };
+  }
+  if (platform === "win32" && staticLib) {
+    if (!found) throw new Error("no static OpenSSL library (libcrypto.lib of openssl:x64-windows-static-md) was found or built");
+    return { env: withLibraryDir(shimDir.replaceAll("\\", "/"), { encoded, rustflags }), path: [], shim: { from: found.lib, to: `${shimDir}\\crypto.lib` }, dll: null };
   }
   if (platform === "win32") {
     if (!found) throw new Error("no OpenSSL import library (libcrypto.lib) was found or built");
@@ -82,6 +92,15 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     plan = buildPlan({ platform, brewPrefix: run("brew", ["--prefix", "openssl@3"]), ...inherited });
   } else if (platform === "win32") {
     const fs = { list: (d) => { try { return readdirSync(d); } catch { return null; } }, join: (...p) => win32.join(...p) };
+    if (process.env.OPENSSL_STATIC === "1") {
+      if (!process.env.VCPKG_INSTALLATION_ROOT) throw new Error("OPENSSL_STATIC=1 needs the image's vcpkg (VCPKG_INSTALLATION_ROOT)");
+      run(join(process.env.VCPKG_INSTALLATION_ROOT, "vcpkg.exe"), ["install", "openssl:x64-windows-static-md", "--clean-after-build"], { show: true });
+      const shimDir = join(process.env.RUNNER_TEMP ?? process.env.TEMP, "openssl-shim");
+      mkdirSync(shimDir, { recursive: true });
+      plan = buildPlan({ platform, found: findImportLibrary(staticRoots(process.env), fs), shimDir, staticLib: true, ...inherited });
+      copyFileSync(plan.shim.from, plan.shim.to);
+      console.log(`static crypto.lib <- ${plan.shim.from}`);
+    } else {
     let found = findImportLibrary(windowsRoots(process.env), fs);
     if (!found && process.env.VCPKG_INSTALLATION_ROOT) {
       console.log("no preinstalled OpenSSL import library: building openssl:x64-windows with the image's vcpkg");
@@ -95,6 +114,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     copyFileSync(plan.shim.from, plan.shim.to);
     copyFileSync(plan.dll.from, plan.dll.to);
     console.log(`crypto.lib <- ${plan.shim.from}`);
+    }
   } else {
     plan = buildPlan({ platform });
   }

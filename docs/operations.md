@@ -169,6 +169,92 @@ every start, runs `serve` as the user `probation`, and sets:
 `scripts/install-local.sh` installs its own unit and gives the service its own
 journal namespace: read it with `journalctl --namespace=probation -u probation`.
 
+### Native service: Linux, macOS, Windows
+
+A release package holds the binary, `config.sample.toml`, `blocklist.sample.json`, `deploy/` and the installer for its
+OS (`install-service.sh` on Linux and macOS, `install-service.ps1` on Windows). Run it from the unpacked directory:
+
+```
+sudo ./install-service.sh install            # Linux (systemd) or macOS (LaunchDaemon)
+sudo ./install-service.sh upgrade --binary ./probation
+sudo ./install-service.sh uninstall
+.\install-service.ps1 install                # Windows, from an elevated PowerShell
+```
+
+`--scope user` installs a service for the login that runs it (`systemd --user`, a LaunchAgent), for a developer machine.
+Every flag is in `install-service.sh --help`.
+
+What the installer guarantees:
+
+- **First install creates only what is absent.** `config.toml` and `blocklist.json` come from the samples only when there
+  is no file, with a loopback listener (`127.0.0.1:8080`, never widened by the installer). TLS material is never generated or
+  replaced (`install-local.sh` makes a certificate; `--tls-cert/--tls-key` name an existing one). Package-manager settings
+  (npm, pip: registry URLs and credential entries) are edited only by `install-local.sh` and `install-service.ps1
+  -ConfigureTools`, and only the `registry`, `audit` and `index-url` lines they own; every other line stays as it was.
+- **Upgrade changes the binary and the service definition and nothing else.** It checks that the new binary accepts the
+  existing configuration, stops the service, keeps the old binary as `probation.prev`, installs the new one, validates it
+  again (restoring the old one if that fails) and starts the service on the same data directory. It never writes a sample
+  over a missing config.
+- **Uninstall stops and disables the service and removes only what install recorded** (the definition, the installed binary,
+  the journald or newsyslog file). Configuration, blocklist, TLS files and data stay; delete them yourself.
+- **A second owner is refused.** An install over a service of that name the installer did not create is refused, and a second
+  `probation serve` on a held data directory exits 1 naming the lock without touching anything. The first keeps serving.
+- **Permissions.** System scope: the config directory is `root:<service account>` mode 0750 (the service reads its policy and
+  cannot change it), the data directory is the service account's alone at 0700, and the service runs with umask 0077. Windows:
+  the service runs as the virtual account `NT SERVICE\Probation` (no password stored); ACLs give it read and execute on the
+  configuration and modify only on data and logs; nobody else is granted anything.
+- **Supervision.** Linux: `Restart=on-failure`, `RestartSec=2`, `TimeoutStopSec=45`. macOS: `KeepAlive` with
+  `SuccessfulExit` false (a failure and exit 75 restart; a stop, which exits 0, does not), `ThrottleInterval` 5, `ExitTimeOut`
+  45; stdout goes to a file `newsyslog` rotates. Windows: the service reports `Running` once the listener is up; Stop,
+  Pre-shutdown (45 s) and Shutdown take the same graceful path as `SIGTERM`; exit 75 and any fatal error end the process
+  without reporting `Stopped`, which the service control manager treats as a failure and answers with a restart after 5 s
+  (then 5 s, then 60 s, reset after a day). Under the service control manager stdout goes nowhere: use `log_file_path`
+  (the installer sets it) for the decision log.
+- **Upgrade is undone on any failure.** The new binary must accept the existing config (checked from a copy in the bin directory,
+  not the package directory), then, after the swap, the service must start and stay up for five seconds; if the copy, the
+  validation or the start fails the previous binary and definition (`.prev`) are put back and the previous service is started
+  again, on Linux and Windows. An upgrade re-applies the service definition (failure actions, stop allowance) as well.
+- **Uninstall and installer arguments are contained.** Only paths the installer itself computes can be removed, and only when the
+  install record names them and this install created them (an identical program, journald or newsyslog file that was already
+  there is never recorded as ours); a record naming anything else, or a `..` or relative path, is refused and nothing outside is
+  deleted. Names, users and paths are limited to a plain alphabet (no spaces, quotes, `&`, `\\`), `--root /` needs `--no-staging`,
+  and a system install refuses a certificate, key or directory under `/home`, `/root` or `/run/user` (`ProtectHome=yes` hides them).
+- **Windows directories are the installer's.** `C:\ProgramData` lets any user create folders, so the installer creates the
+  `Probation` directories itself with a protected ACL (SYSTEM and Administrators, then the service account) before writing
+  anything, and uses an existing directory or `config.toml` only if Administrators or SYSTEM own it and no component is a junction
+  or other reparse point. The service is registered Disabled as `NT SERVICE\Probation`, becomes Automatic only after its ACLs are
+  verified, and a failed install removes what it created. The release zip carries no OpenSSL DLL (it is linked into `probation.exe`); the exe is verified against
+  `SHA256SUMS`, a package that carries a library is refused, and `check-config` runs with a clean PATH. A failure before the log sink
+  exists leaves `service-failure.txt` (at most 4 KiB, replaced by the next failure) in the log directory and ends the service
+  with exit code 78 (invalid configuration), 70 (cannot start) or 73 (log unavailable). The operational log is
+  `<log dir>\probation.log` (50 MiB, three backups); a key file whose DACL grants anyone but SYSTEM, Administrators and the
+  service account is refused like a group-readable key file on Unix. Retry: the service control manager restarts a failure
+  after 5 s, 5 s, then 60 s (reset after a day), without end; a stop by an operator is reported `Stopped` even when the shutdown
+  was unclean, so it is not restarted. Recovery for a process that dies before reporting `Running` is not documented by
+  Microsoft and is expected to take the same path.
+- **Retry limits differ per OS.** systemd gives up after ten starts in a minute (`StartLimitBurst=10`, `StartLimitIntervalSec=60`;
+  then `systemctl reset-failed`); launchd retries every 5 s without end (`ThrottleInterval`), and so does the Windows service
+  manager at its 5 s, 5 s, 60 s steps. A bad config therefore stops on Linux and keeps retrying, with a diagnostic in the log,
+  on macOS and Windows.
+- **The Linux unit is sandboxed** (`systemd-analyze security` exposure 1.2): no capabilities, no raw sockets (only AF_INET,
+  AF_INET6, AF_UNIX), a system-call filter (`@system-service`, no `@privileged` or `@resources`), no kernel, clock, hostname or
+  cgroup access, no namespaces, no W+X memory, `ProtectProc=invisible`. A user-scope unit keeps the directives a user manager can
+  apply (system-call filter, address families, W^X, personality).
+- **Low ports.** The unit keeps no capability, so a port below 1024 cannot be bound. `--listen` with such a port on a Linux system
+  service installs a drop-in (`probation.service.d/10-low-port.conf`) that grants exactly `CAP_NET_BIND_SERVICE`; a user service and a
+  macOS daemon cannot be given that right, and the installer refuses a low port there (use 1024 or more behind a TLS proxy).
+- **Release provenance.** Each release has a GitHub build-provenance attestation for the archives and the binaries (beside the
+  same-origin `.sha256` files). A release package carries a `RELEASE-PACKAGE` marker; for it the installers REQUIRE `gh attestation verify` (pinned to this
+  repository and `.github/workflows/release.yml`) and the cosign bundle below, and refuse when `gh`, `cosign` or the bundle is
+  missing or does not verify, unless `--allow-unverified` / `-NoVerify` is given (a loud warning). A binary named with `--binary`, or a
+  package without the marker, is checked softly when the tools are there. The Windows installer also requires `SHA256SUMS` and checks
+  it before copying anything. Every binary also has a keyless cosign signature, the release asset
+  `probation-<version>-<target>.sigstore.json`: with `cosign` installed, `install-service.sh` verifies it (save it beside the binary as
+  `probation.sigstore.json`, or `--cosign-bundle FILE`) against this repository's release workflow and refuses a bundle that does not
+  verify; without cosign or a bundle it says so. `install-service.ps1` does not run cosign.
+- **The listener stays on loopback.** Reaching it from another machine needs the deliberate TLS plus `allowed_peer_cidrs`
+  setup of the shared service (section 6); the installer does not open it.
+
 ### Running the management server
 
 `deploy/docker-compose.yml` runs the server and one managed firewall side by side.

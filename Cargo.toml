@@ -57,6 +57,8 @@ bench = false
 # control surface no consumer of this crate should be handed. The self dev-dependency
 # below turns it on for `cargo test` without a flag on any witness command.
 test-support = []
+# Links OpenSSL's libcrypto statically (src/managed/enterprise_certificate.rs). Off by default: a plain `cargo build` needs no archive.
+static-openssl = []
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -109,6 +111,13 @@ url = "2.5.8"
 percent-encoding = "=2.3.2"
 # The RubyGems index and quick-gemspec inflater (LS-F7); already in the lockfile through reqwest.
 flate2 = "1.1.10"
+
+# The service control manager adapter (src/main.rs `service`): the maintained binding rather than hand-written SCM FFI
+# (03-program-design.md, "Configuration, data and platform contract"). Pinned exactly, Windows builds only.
+[target.'cfg(windows)'.dependencies]
+windows-service = "=0.8.1"
+# The DACL of the service key file (src/key_acl.rs); already in the lockfile through other crates.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # No `criterion`. The Gate 3 dependency table named it for the SPEC §12 benchmarks,

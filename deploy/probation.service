@@ -1,9 +1,14 @@
-# Example systemd unit for a managed firewall run from the binary
-# (docs/management-server.md). Install as /etc/systemd/system/probation.service.
+# The systemd unit for the firewall run from the binary (docs/management-server.md, docs/operations.md "Native service").
+# scripts/install-service.sh installs it, replacing only the example paths and account below; copied by hand it is
+# /etc/systemd/system/probation.service. Pinned by tests/service_scripts.rs: the generated unit is this file.
 [Unit]
 Description=Probation package firewall
+# A crash loop is bounded: ten starts in a minute and systemd stops trying (macOS retries every 5 s and the Windows service
+# manager at 5 s, 5 s, 60 s, none of them without delay; docs/operations.md). Exit 75 (settings push) is one start per push.
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 User=probation
@@ -14,18 +19,45 @@ ExecStart=/usr/local/bin/probation serve --config /etc/probation/config.toml
 # firewall exits with code 75 for systemd to restart it onto the new settings (C105).
 # An overlay that fails validation at start is swapped back for the previous one, so
 # this never loops on a bad push.
+# on-failure: exit 75, a crash and a signal restart; an operator's `systemctl stop` (SIGTERM, exit 0) stays stopped.
 Restart=on-failure
 RestartSec=2
 # Longer than the 30 s the firewall gives requests in flight, so its log drain runs.
 TimeoutStopSec=45
 # data_dir = "/var/lib/probation" in config.toml.
 StateDirectory=probation
+StateDirectoryMode=0700
 # The sample's log_file_path, /var/log/probation/…, writable under ProtectSystem=strict.
 LogsDirectory=probation
+LogsDirectoryMode=0750
+# Nothing the service writes is readable by another account.
+UMask=0077
+# The service parses untrusted registry answers: it keeps no capability, no raw sockets, no kernel interfaces, no namespaces.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 
 [Install]
 WantedBy=multi-user.target

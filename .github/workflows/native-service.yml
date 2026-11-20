@@ -1,0 +1,340 @@
+name: Native service
+
+# Row 25: the machine-wide native lifecycle and the native package tools on Linux, macOS and Windows, and the pinned Docker Engine
+# daemon pull against the OCI routes. Every job runs the real probation binary under the runner's own service manager (systemd,
+# launchd, the Windows service control manager) or the real pinned client against it; a missing runner, daemon, tool or version FAILS
+# the job, and a test that reports SKIPPED fails it too (the lane did not run). Called from release.yml; also runnable by hand.
+#   service-linux    systemd, system scope, default locations: install, start, stop, restart, crash, exit 75, second owner,
+#                    permissions, upgrade, uninstall, with the pinned native npm and pip through the shared service
+#   service-macos    launchd LaunchDaemon, the same lifecycle (macOS 26 records its launchd manual and sw_vers)
+#   service-windows  the Windows SCM service as NT SERVICE\Probation, the same lifecycle
+#   tools            native Cargo, Go, NuGet and RubyGems clients against the firewall on each OS
+#   tools-linux      the Maven and Conan pinned client images and the podman OCI engine (Linux only: those clients run in images)
+#   docker-engine    Docker Engine 29.9.2 pinned, daemon pull through tests/oci_native.rs
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# bash runs with -eo pipefail: `cargo test | tee` fails when cargo test does (the default `bash -e` would report tee's status).
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  PIN_NODE: "24.22.1"
+  PIN_NPM: "11.21.1"
+  PIN_PYTHON: "3.15.1"
+  PIN_GO: "1.26.0"
+  PIN_DOTNET: "8.0.416"
+  PIN_RUBY: "3.4.11"
+  PIN_RUBYGEMS: "3.6.9"
+  PIN_DOCKER_ENGINE: "29.9.2"
+
+jobs:
+  service-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NATIVE_PLATFORM: linux-x64
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PIN_PYTHON }}
+      - name: Install pinned clients
+        run: |
+          npm install --global "npm@$PIN_NPM"
+          python -m pip install --only-binary=:all: --require-hashes -r tests/e2e/native/ci-requirements.txt
+      - name: Verify exact client versions
+        run: node tests/e2e/native/clients.mjs
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - name: Build the native service
+        run: cargo build --locked --bin probation
+      - name: The host's service manager
+        run: |
+          systemctl --version | head -n 1
+          cat /etc/os-release
+      # As root, so the system service, /etc/probation and /var/lib/probation are the real ones an operator gets.
+      - name: Native lifecycle and native package tools (system scope, systemd)
+        env:
+          E2E_SERVICE_SCOPE: system
+          E2E_SERVICE_DIRS: system
+          PROBATION_BIN: ${{ github.workspace }}/target/debug/probation
+        run: >
+          sudo -E env "PATH=$PATH" "VIRTUAL_ENV=${VIRTUAL_ENV:-}"
+          node tests/e2e/harness/run.mjs --only E2E-service-native --client-host native
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-service-linux
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  service-macos:
+    name: service-macos ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      AWS_LC_SYS_USE_SYSTEM: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - name: Provide OpenSSL's libcrypto for the OCSP code (for the linker only, the binary links it statically)
+        run: node tests/e2e/native/openssl-setup.mjs apply
+      # The RELEASE binary, in the released package layout: the gate tests what is shipped.
+      - name: Build the native service (release)
+        run: cargo build --release --locked --bin probation --features static-openssl
+      - name: Package it as the release does
+        run: scripts/package-release.sh ${{ matrix.target }} target/release/probation "$RUNNER_TEMP/pkg"
+      # The package must not depend on Homebrew's OpenSSL: no dylib path of it in the binary, and the formula hidden while it runs.
+      - name: The packaged binary needs no OpenSSL dylib
+        run: |
+          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
+          otool -L "$pkg/probation" | tee "$RUNNER_TEMP/otool.txt"
+          if grep -E "/opt/homebrew|/usr/local/(opt|Cellar)|libcrypto" "$RUNNER_TEMP/otool.txt"; then echo "the binary links libcrypto dynamically"; exit 1; fi
+          prefix=$(brew --prefix openssl@3)
+          sudo mv "$prefix" "$prefix.hidden"
+          "$pkg/probation" --version
+          sudo mv "$prefix.hidden" "$prefix"
+      # The launchd keys this lane relies on are those of the installed manual: record them with the OS version.
+      - name: Record the OS and the installed launchd manual
+        run: |
+          mkdir -p "$RUNNER_TEMP/record"
+          sw_vers | tee "$RUNNER_TEMP/record/sw_vers.txt"
+          man launchd.plist | col -b > "$RUNNER_TEMP/record/launchd.plist.5.txt"
+          man launchctl | col -b > "$RUNNER_TEMP/record/launchctl.1.txt"
+          grep -n "SuccessfulExit\|ExitTimeOut\|ThrottleInterval\|Umask" "$RUNNER_TEMP/record/launchd.plist.5.txt"
+      - name: Native lifecycle from the package (LaunchDaemon)
+        env:
+          E2E_SERVICE_SCOPE: system
+          E2E_SERVICE_DIRS: system
+          NATIVE_TEST_SCRATCH: ${{ runner.temp }}
+        run: |
+          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
+          sudo -E env "PATH=$PATH" "E2E_SERVICE_PACKAGE=$pkg" node tests/e2e/native/service-lifecycle-run.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-service-macos-${{ matrix.target }}
+          path: ${{ runner.temp }}/record
+          if-no-files-found: ignore
+
+  service-windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      AWS_LC_SYS_USE_SYSTEM: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - name: Provide a static OpenSSL libcrypto for the OCSP code
+        env:
+          OPENSSL_STATIC: "1"
+        run: node tests/e2e/native/openssl-setup.mjs apply
+      - name: Build the native service (release)
+        run: cargo build --release --locked --bin probation --features static-openssl
+      - name: Package it as the release does (the exe with OpenSSL linked in, SHA256SUMS, the installer)
+        run: scripts/package-release.sh x86_64-pc-windows-msvc target/release/probation.exe "$RUNNER_TEMP/pkg"
+      # No OpenSSL, and no DLL of any kind that is not part of Windows or the C runtime, in what the binary imports.
+      - name: The packaged exe imports only system libraries
+        shell: powershell
+        run: |
+          $exe = (Get-ChildItem "$env:RUNNER_TEMP\pkg\probation-*\probation.exe").FullName
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = (Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1).FullName
+          $deps = & $dumpbin /dependents $exe | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLower() }
+          $deps
+          $system = '^(kernel32|ntdll|advapi32|ws2_32|crypt32|user32|gdi32|bcrypt|ncrypt|secur32|userenv|ole32|oleaut32|shell32|shlwapi|setupapi|iphlpapi|mswsock|dbghelp|psapi|winmm|rpcrt4|sechost|combase|cfgmgr32|win32u|cryptbase|ucrtbase|vcruntime140(_1)?|msvcp140|api-ms-win-[a-z0-9-]+)\.dll$'
+          $bad = @($deps | Where-Object { $_ -notmatch $system -or $_ -match 'libcrypto|libssl' })
+          if ($bad.Count -gt 0) { throw "the binary imports non-system libraries: $($bad -join ', ')" }
+      - name: Record the OS
+        shell: powershell
+        run: |
+          [Environment]::OSVersion | Format-List
+          (Get-CimInstance Win32_OperatingSystem).Caption
+          Get-Command sc.exe, icacls.exe | Format-Table Name, Version
+      # The hosted runner's user is an administrator. The installed service is tested with nothing of the build on PATH: a DLL the
+      # installer failed to put beside probation.exe is a failed start here, not a hidden success.
+      - name: Native lifecycle from the package (Windows service as NT SERVICE\Probation, clean PATH)
+        env:
+          E2E_SERVICE_SCOPE: system
+          E2E_SERVICE_DIRS: system
+          NATIVE_TEST_SCRATCH: ${{ runner.temp }}
+        run: |
+          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
+          node_dir=$(dirname "$(command -v node)")
+          PATH="$node_dir:/c/Windows/System32:/c/Windows" E2E_SERVICE_PACKAGE="$pkg" node tests/e2e/native/service-lifecycle-run.mjs
+
+  tools:
+    name: tools ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: macos-26
+            platform: darwin-arm64
+          - runner: windows-2025
+            platform: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      AWS_LC_SYS_USE_SYSTEM: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.PIN_GO }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ env.PIN_DOTNET }}
+      - uses: ruby/setup-ruby@341b6d4d1c7bdbe628940ab4e27cbdc9c97950cc # v1.340.0
+        with:
+          ruby-version: ${{ env.PIN_RUBY }}
+          rubygems: ${{ env.PIN_RUBYGEMS }}
+      - name: Provide OpenSSL's libcrypto for the OCSP code
+        shell: bash
+        run: node tests/e2e/native/openssl-setup.mjs apply
+      - name: Verify the pinned tool versions
+        shell: bash
+        run: |
+          [ "$(go env GOVERSION)" = "go$PIN_GO" ] || { echo "go: want $PIN_GO, got $(go env GOVERSION)"; exit 1; }
+          [ "$(cargo --version | cut -d' ' -f2)" = "1.96.0" ] || { echo "cargo: want 1.96.0, got $(cargo --version)"; exit 1; }
+          [ "$(dotnet --version)" = "$PIN_DOTNET" ] || { echo "dotnet: want $PIN_DOTNET, got $(dotnet --version)"; exit 1; }
+          [ "$(ruby -e 'print RUBY_VERSION')" = "$PIN_RUBY" ] || { echo "ruby: want $PIN_RUBY"; exit 1; }
+          [ "$(gem --version)" = "$PIN_RUBYGEMS" ] || { echo "rubygems: want $PIN_RUBYGEMS, got $(gem --version)"; exit 1; }
+      # The tests skip loudly where their tool is absent; a skipped lane is a failed lane here.
+      - name: Native Cargo, Go, NuGet and RubyGems clients against the firewall
+        shell: bash
+        run: |
+          cargo test --locked --test cargo_native --test go_native --test nuget_native --test rubygems_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/tools.log"; then echo "a native lane did NOT run"; grep "SKIPPED" "$RUNNER_TEMP/tools.log"; exit 1; fi
+          grep -c "^test .* ok$" "$RUNNER_TEMP/tools.log"
+
+  # Maven and Conan with the host's own pinned tools (the podman-image lane above is Linux only).
+  tools-host:
+    name: tools-host ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: macos-26
+            platform: darwin-arm64
+          - runner: windows-2025
+            platform: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      PROBATION_NATIVE_HOST: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13.0"
+      - name: Provide OpenSSL's libcrypto for the OCSP code
+        run: node tests/e2e/native/openssl-setup.mjs apply
+      # Maven 3.9.16 from the Apache archive, verified against the published SHA-512 (recorded here).
+      - name: Install the pinned Maven
+        run: |
+          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz
+          echo "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6  $RUNNER_TEMP/maven.tar.gz" | sha512sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/maven" && tar xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
+          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+      # Conan and every dependency by exact version and sha256 (generated with `uv pip compile --universal --generate-hashes`).
+      - name: Install the pinned Conan (hash-locked)
+        run: python -m pip install --require-hashes -r tests/e2e/native/conan-requirements.txt
+      - name: Verify the pinned tool versions
+        run: |
+          mvn --version | tee "$RUNNER_TEMP/mvn-version.txt"
+          grep -q "Apache Maven 3.9.16" "$RUNNER_TEMP/mvn-version.txt"
+          conan --version | grep -q "2.21.0"
+      # Provisioning: the plugin the test's goals need is fetched once into a seed repository; the test itself never downloads.
+      - name: Seed the Maven plugin repository
+        run: |
+          mkdir -p "$RUNNER_TEMP/seed-m2" "$RUNNER_TEMP/seedproj"
+          printf '<project><modelVersion>4.0.0</modelVersion><groupId>seed</groupId><artifactId>seed</artifactId><version>1</version><packaging>pom</packaging></project>' > "$RUNNER_TEMP/seedproj/pom.xml"
+          (cd "$RUNNER_TEMP/seedproj" && mvn -B -Dmaven.repo.local="$RUNNER_TEMP/seed-m2" org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies -DoutputDirectory="$RUNNER_TEMP/seedproj/out")
+      - name: Native Maven and Conan clients (host tools) against the firewall
+        env:
+          PROBATION_MAVEN_SEED: ${{ runner.temp }}/seed-m2
+        run: |
+          cargo test --locked --test maven_native --test conan_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-host.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/tools-host.log"; then echo "a native lane did NOT run"; exit 1; fi
+
+  tools-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build the pinned Maven and Conan client images
+        run: |
+          podman build -f tests/e2e/compose/clients/maven.Dockerfile -t localhost/probation-e2e-client:maven3.9.16 tests/e2e/compose/clients
+          podman build -f tests/e2e/compose/clients/conan.Dockerfile -t localhost/probation-e2e-client:conan2.21.0 tests/e2e/compose/clients
+      - name: Native Maven, Conan and podman OCI clients against the firewall
+        run: |
+          cargo test --locked --test maven_native --test conan_native --test oci_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-linux.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/tools-linux.log"; then echo "a native lane did NOT run"; grep "SKIPPED" "$RUNNER_TEMP/tools-linux.log"; exit 1; fi
+
+  docker-engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install and start the pinned Docker Engine
+        run: tests/e2e/native/docker-engine.sh install
+      - name: Docker Engine daemon pull against the OCI routes
+        env:
+          PROBATION_OCI_ENGINE: docker
+        run: |
+          cargo test --locked --test oci_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/docker-engine.log"
+          grep -q "DOCKER ENGINE WITNESS: version $PIN_DOCKER_ENGINE" "$RUNNER_TEMP/docker-engine.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/docker-engine.log"; then echo "the Docker lane did NOT run"; exit 1; fi

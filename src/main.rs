@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use probation::AppDeps;
 use probation::clock::{Clock, SystemClock};
 use probation::config::Config;
+use probation::lifecycle::{StopOutcome, exit_plan};
 use probation::policy::blocklist;
 use probation::upstream::{OriginSet, ReqwestTransport};
 #[cfg(unix)]
@@ -59,27 +60,55 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         config: PathBuf,
     },
+    /// Windows only: `serve` under the service control manager (the installer registers this
+    /// command; running it from a console fails). Stop, shutdown and pre-shutdown reach the same
+    /// graceful path as a signal.
+    #[cfg(windows)]
+    Service {
+        /// Path to the TOML configuration file.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+        /// Directory for the operational log (`probation.log`, 50 MiB, three backups); the installer passes its log directory.
+        #[arg(long, value_name = "DIR")]
+        log_dir: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
-                .add_directive(
-                    "probation::http::logging=info"
-                        .parse()
-                        .expect("static directive"),
-                ),
-        )
-        .init();
+    let filter = || {
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info"))
+            .add_directive("probation::http::logging=info".parse().expect("static directive"))
+    };
+    // Under the Windows service control manager stdout goes nowhere: the events go to a bounded, self-rotating file in the
+    // installer's access-controlled log directory (src/service_log.rs). If it cannot be opened they fall back to stdout.
+    #[cfg(windows)]
+    let sink = match &cli.command {
+        Command::Service { log_dir: Some(dir), .. } => {
+            probation::service_log::RotatingFile::open(&dir.join("probation.log"), 50 << 20, 3).ok().map(probation::service_log::SharedLog::new)
+        }
+        _ => None,
+    };
+    #[cfg(not(windows))]
+    let sink: Option<probation::service_log::SharedLog> = None;
+    match sink {
+        Some(sink) => tracing_subscriber::fmt().json().with_env_filter(filter()).with_writer(move || sink.clone()).init(),
+        None => tracing_subscriber::fmt().json().with_env_filter(filter()).init(),
+    }
 
     match cli.command {
-        Command::Serve { config } => serve(&config).await,
+        Command::Serve { config } => match ShutdownSignals::install() {
+            Ok(mut signals) => finish(serve(&config, async move { signals.received().await }, || {}).await),
+            Err(err) => {
+                tracing::error!(error = %err, "cannot listen for the shutdown signal");
+                ExitCode::FAILURE
+            }
+        },
+        #[cfg(windows)]
+        Command::Service { config, log_dir } => windows_service_host::run(config, log_dir).await,
         Command::CheckConfig { path, config } => {
             // clap guarantees exactly one of the two forms is present.
             match path.or(config) {
@@ -163,22 +192,27 @@ fn check_blocklist(path: &Path) -> ExitCode {
     }
 }
 
-async fn serve(config_path: &Path) -> ExitCode {
-    // Installed before anything else, so a stop requested while startup is still
+/// The process exit for how `serve` ended (`probation::lifecycle` holds the rule every supervisor shares).
+fn finish(outcome: StopOutcome) -> ExitCode {
+    ExitCode::from(exit_plan(outcome).code)
+}
+
+/// Runs the firewall until `stop` resolves (a signal, a console control event or the service manager's stop) or a settings
+/// push asks for a restart. `ready` runs once the listener is up, for a supervisor that wants to be told.
+async fn serve(
+    config_path: &Path,
+    stop: impl std::future::Future<Output = &'static str>,
+    ready: impl FnOnce(),
+) -> StopOutcome {
+    // The stop source is installed by the caller before anything else, so a stop requested while startup is still
     // running is caught and acted on once it finishes rather than killing the process.
-    let mut signals = match ShutdownSignals::install() {
-        Ok(signals) => signals,
-        Err(err) => {
-            tracing::error!(error = %err, "cannot listen for the shutdown signal");
-            return ExitCode::FAILURE;
-        }
-    };
+    tokio::pin!(stop);
 
     let config = match Config::load(config_path) {
         Ok(config) => config,
         Err(err) => {
             tracing::error!(path = %config_path.display(), error = %err, "invalid configuration");
-            return ExitCode::FAILURE;
+            return StopOutcome::Failed;
         }
     };
 
@@ -211,36 +245,34 @@ async fn serve(config_path: &Path) -> ExitCode {
         Ok(running) => running,
         Err(err) => {
             tracing::error!(error = %err, "cannot start");
-            return ExitCode::FAILURE;
+            return StopOutcome::Failed;
         }
     };
 
     tracing::info!(addr = %running.local_addr, "listening");
+    ready();
 
     // A managed firewall that wrote a settings push drains and exits 75, for its
     // supervisor to start it again on the new settings (C105).
-    let exit = tokio::select! {
-        signal = signals.received() => {
+    let outcome = tokio::select! {
+        signal = &mut stop => {
             tracing::info!(signal, "shutting down");
-            ExitCode::SUCCESS
+            StopOutcome::Stopped
         }
         () = running.restart_requested() => {
             tracing::info!("restarting to apply pushed settings");
-            ExitCode::from(RESTART_FOR_SETTINGS)
+            StopOutcome::SettingsRestart
         }
     };
 
     match running.shutdown().await {
-        Ok(()) => exit,
+        Ok(()) => outcome,
         Err(err) => {
             tracing::error!(error = %err, "unclean shutdown");
-            ExitCode::FAILURE
+            probation::lifecycle::after_shutdown(outcome, false)
         }
     }
 }
-
-/// The exit code that asks the supervisor for a restart after a settings push: EX_TEMPFAIL.
-const RESTART_FOR_SETTINGS: u8 = 75;
 
 /// `SIGTERM` is what a service manager sends — systemd's `stop` and a container
 /// runtime's `stop` both do — so it must reach the same graceful path as `SIGINT`.
@@ -298,6 +330,117 @@ impl ShutdownSignals {
             _ = self.brk.recv() => "CTRL_BREAK",
             _ = self.close.recv() => "CTRL_CLOSE",
             _ = self.shutdown.recv() => "CTRL_SHUTDOWN",
+        }
+    }
+}
+
+/// The Windows service host: the service control manager starts `probation service --config PATH`, this reports its state
+/// and turns Stop, Pre-shutdown and Shutdown into the same graceful path as a signal. Facts used (research-native-supervision.md,
+/// Microsoft docs): the control handler only signals and returns; `Running` is reported after the listener is up; a stop reports
+/// `StopPending` with the 45 s allowance; a settings restart (exit 75) or a failure ends the process WITHOUT reporting `Stopped`,
+/// which the manager counts as a failure and answers with the restart action the installer configured (5 s delay).
+#[cfg(windows)]
+mod windows_service_host {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::process::ExitCode;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    use probation::lifecycle::{Control, StopChannel, StopOutcome, exit_plan};
+    use probation::service_failure::FailureKind;
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+    };
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
+    use windows_service::{define_windows_service, service_dispatcher};
+
+    const NAME: &str = "Probation";
+    /// The stop allowance the installer also configures as the pre-shutdown timeout.
+    const STOP_WAIT: Duration = Duration::from_secs(45);
+
+    static HOST: OnceLock<(tokio::runtime::Handle, PathBuf, Option<PathBuf>)> = OnceLock::new();
+
+    define_windows_service!(ffi_service_main, service_main);
+
+    /// Hands a blocking thread to the dispatcher, which returns when the service has stopped.
+    pub async fn run(config: PathBuf, log_dir: Option<PathBuf>) -> ExitCode {
+        let _ = HOST.set((tokio::runtime::Handle::current(), config, log_dir));
+        match tokio::task::spawn_blocking(|| service_dispatcher::start(NAME, ffi_service_main)).await {
+            Ok(Ok(())) => ExitCode::SUCCESS,
+            Ok(Err(err)) => {
+                tracing::error!(error = %err, "not started by the service control manager");
+                ExitCode::FAILURE
+            }
+            Err(_) => ExitCode::FAILURE,
+        }
+    }
+
+    fn service_main(_arguments: Vec<OsString>) {
+        let (runtime, config, log_dir) = HOST.get().expect("set before the dispatcher starts").clone();
+        let (channel, mut waiter) = StopChannel::new();
+        let handler = move |control| {
+            let kind = match control {
+                ServiceControl::Stop => Control::Stop,
+                ServiceControl::Preshutdown => Control::Preshutdown,
+                ServiceControl::Shutdown => Control::Shutdown,
+                ServiceControl::Interrogate => Control::Interrogate,
+                _ => Control::Other,
+            };
+            channel.control(kind);
+            match kind {
+                Control::Other => ServiceControlHandlerResult::NotImplemented,
+                _ => ServiceControlHandlerResult::NoError,
+            }
+        };
+        let status = match service_control_handler::register(NAME, handler) {
+            Ok(status) => status,
+            Err(err) => fail(log_dir.as_deref(), FailureKind::CannotStart, &format!("cannot register the service control handler: {err}")),
+        };
+        report(status, ServiceState::StartPending, ServiceControlAccept::empty(), 1, STOP_WAIT);
+        // A configuration the service cannot load ends it here, with a documented exit code and a file in the log directory,
+        // before any log sink could have said why.
+        if let Err(err) = probation::config::Config::load(&config) {
+            fail(log_dir.as_deref(), FailureKind::InvalidConfig, &format!("{}: {err}", config.display()));
+        }
+        let stopping = async move { waiter.next(|| report(status, ServiceState::StopPending, ServiceControlAccept::empty(), 1, STOP_WAIT)).await };
+        let ready = move || {
+            let accepted = ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN;
+            report(status, ServiceState::Running, accepted, 0, Duration::default());
+        };
+        let outcome = runtime.block_on(super::serve(&config, stopping, ready));
+        let plan = exit_plan(outcome);
+        if plan.report_stopped {
+            report(status, ServiceState::Stopped, ServiceControlAccept::empty(), 0, Duration::default());
+        } else {
+            // Ending without `Stopped` is how the manager is told this was a failure and the restart action runs.
+            if outcome == StopOutcome::Failed {
+                fail(log_dir.as_deref(), FailureKind::CannotStart, "the service stopped on a failure; see probation.log");
+            }
+            std::process::exit(i32::from(plan.code));
+        }
+    }
+
+    /// Leaves the failure file, if the log directory can take it, and ends the process with the failure's own exit code.
+    fn fail(log_dir: Option<&std::path::Path>, kind: FailureKind, message: &str) -> ! {
+        if let Some(dir) = log_dir {
+            let _ = probation::service_failure::record(dir, kind, message);
+        }
+        std::process::exit(i32::from(kind.code()))
+    }
+
+    fn report(status: ServiceStatusHandle, state: ServiceState, accepted: ServiceControlAccept, checkpoint: u32, wait_hint: Duration) {
+        let result = status.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: state,
+            controls_accepted: accepted,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint,
+            wait_hint,
+            process_id: None,
+        });
+        if let Err(err) = result {
+            tracing::error!(error = %err, "cannot report the service state");
         }
     }
 }

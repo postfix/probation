@@ -3,6 +3,11 @@
 //! distribution protocol: `/v2/` answers a Bearer challenge for a token service on its own origin, a blob answers a 307 to a signed
 //! URL on another origin (the storage host), and the image is the REAL tiny image of tests/e2e/fixtures/oci (a gzip layer whose
 //! `diff_id` the engine verifies). A host without `podman` skips loudly (the lane did NOT run).
+//!
+//! Row 25: the same three tests run against a REAL Docker Engine daemon with `PROBATION_OCI_ENGINE=docker`. That mode never skips:
+//! the daemon must be Docker Engine exactly 29.9.2 (not a podman front end), or the lane fails. The CI job that sets it installs
+//! the pinned engine (tests/e2e/native/docker-engine.sh, `.github/workflows/native-service.yml`). `docker pull 127.0.0.1:<port>/..`
+//! reaches the firewall over plain HTTP because the engine treats loopback registries as insecure by default.
 
 mod common;
 
@@ -22,14 +27,41 @@ use url::Url;
 const NOW: &str = "2026-04-06T12:00:00Z";
 const DAY: i64 = 86_400;
 
-fn podman_available() -> bool {
-    std::process::Command::new("podman").arg("--version").output().is_ok_and(|output| output.status.success())
+/// The pinned Docker Engine of the native OCI lane (03-program-design.md, "Exact native test baseline").
+const DOCKER_ENGINE: &str = "29.9.2";
+
+fn docker_mode() -> bool {
+    std::env::var("PROBATION_OCI_ENGINE").is_ok_and(|value| value == "docker")
+}
+
+/// `docker version` fields of the daemon this lane would use, or why there is none.
+fn docker_server(format: &str) -> Result<String, String> {
+    let output = std::process::Command::new("docker").args(["version", "--format", format]).output().map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Docker mode: the daemon is Docker Engine at the pinned version, or the lane FAILS. Podman mode: skip loudly without podman.
+fn engine_ready() -> bool {
+    if docker_mode() {
+        let version = docker_server("{{.Server.Version}}").unwrap_or_else(|err| panic!("PROBATION_OCI_ENGINE=docker but no Docker Engine daemon answers: {err}"));
+        let platform = docker_server("{{.Server.Platform.Name}}").unwrap_or_default();
+        assert_eq!(version, DOCKER_ENGINE, "the pinned Docker Engine is {DOCKER_ENGINE}; this daemon is {version} ({platform})");
+        assert!(platform.contains("Docker Engine"), "a real Docker Engine daemon, not a front end for another runtime: {platform:?}");
+        return true;
+    }
+    let found = std::process::Command::new("podman").arg("--version").output().is_ok_and(|output| output.status.success());
+    if !found {
+        eprintln!("SKIPPED: no podman on this host; the native OCI lane did NOT run");
+    }
+    found
 }
 
 macro_rules! need_podman {
     () => {
-        if !podman_available() {
-            eprintln!("SKIPPED: no podman on this host; the native OCI lane did NOT run");
+        if !engine_ready() {
             return;
         }
     };
@@ -119,7 +151,22 @@ async fn serve(router: Router) -> String {
     url
 }
 
+/// Docker mode: the daemon is long-lived and shares layer content between images, so a test that pulled leaves its layers for the
+/// next one, whose pull would then fetch no blob and prove nothing about the storage host. Every reference a lane pulled is
+/// removed when the lane ends (only those references: nothing else on the daemon is touched).
+#[derive(Default)]
+struct DockerForget(Arc<Mutex<Vec<String>>>);
+
+impl Drop for DockerForget {
+    fn drop(&mut self) {
+        for reference in self.0.lock().unwrap().iter() {
+            let _ = std::process::Command::new("docker").args(["image", "rm", "--force", reference]).output();
+        }
+    }
+}
+
 struct Lane {
+    forget: DockerForget,
     firewall: TestServer,
     registry: Registry,
     clock: Arc<TestClock>,
@@ -170,7 +217,7 @@ async fn lane_with(blocked: &str) -> Lane {
     std::fs::create_dir_all(&base).unwrap();
     let scratch = tempfile::tempdir_in(base).unwrap();
     let _cleanup = Cleanup(scratch.path().to_path_buf());
-    Lane { firewall, registry, clock, _cleanup, scratch, old: digests[0].clone() }
+    Lane { forget: DockerForget::default(), firewall, registry, clock, _cleanup, scratch, old: digests[0].clone() }
 }
 
 async fn dispatch(State(r): State<Registry>, UrlPath(rest): UrlPath<String>, headers: HeaderMap) -> Response {
@@ -195,8 +242,30 @@ impl Drop for Cleanup {
 }
 
 impl Lane {
+    /// `docker <args>` against the pinned daemon. The podman spellings the tests use are translated: the engine verifies TLS the
+    /// way it always does (loopback is insecure by default), and `Digest` is spelled through `RepoDigests`.
+    async fn docker(&self, args: &[&str]) -> (bool, String) {
+        let args: Vec<String> = args
+            .iter()
+            .filter(|arg| **arg != "--tls-verify=false")
+            .map(|arg| if arg.contains("{{.Digest}}") { "{{range .RepoDigests}}{{.}} {{end}}{{.Os}} {{.Architecture}}".to_owned() } else { (*arg).to_owned() })
+            .collect();
+        if args.first().is_some_and(|verb| verb == "pull") {
+            self.forget.0.lock().unwrap().push(args.last().expect("a reference").clone());
+        }
+        tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("docker").args(&args).output().expect("docker runs");
+            (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+        })
+        .await
+        .unwrap()
+    }
+
     /// `podman <args>` with a private storage root on disk; returns (success, everything it printed).
     async fn podman(&self, args: &[&str]) -> (bool, String) {
+        if docker_mode() {
+            return self.docker(args).await;
+        }
         let root = self.scratch.path().join("root");
         let run = self.scratch.path().join("run");
         let (args, root, run) = (args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(), root, run);
@@ -274,4 +343,18 @@ async fn a_real_podman_pull_of_a_blocked_repository_or_tag_is_refused_before_the
     }
     assert!(lane.registry.requests("registry").is_empty(), "nothing was asked: {:?}", lane.registry.requests("registry"));
     lane.firewall.shutdown().await;
+}
+
+/// Docker mode only: the witness that the daemon the other tests pull through is the pinned Docker Engine (its version, platform and
+/// API are recorded in the test output). Without `PROBATION_OCI_ENGINE=docker` it records that the Docker lane did NOT run.
+#[test]
+fn the_docker_lane_runs_against_the_pinned_engine_daemon() {
+    if !docker_mode() {
+        eprintln!("NOT SELECTED: PROBATION_OCI_ENGINE is not docker, so this run used podman and the Docker Engine {DOCKER_ENGINE} lane did NOT run");
+        return;
+    }
+    assert!(engine_ready());
+    let record = docker_server("version {{.Server.Version}}, api {{.Server.APIVersion}}, platform {{.Server.Platform.Name}}, os/arch {{.Server.Os}}/{{.Server.Arch}}").expect("the daemon answers");
+    eprintln!("DOCKER ENGINE WITNESS: {record}");
+    assert!(record.contains(&format!("version {DOCKER_ENGINE}")), "{record}");
 }

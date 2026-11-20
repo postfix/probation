@@ -152,20 +152,22 @@ pub fn render_matches(entries: &[(Ecosystem, String, String, u64)]) -> Rendered 
     Rendered { bytes, dropped: entries.len() - kept }
 }
 
-/// Temp file in the same directory, mode 0600, fsync, rename, directory fsync.
+/// Temp file in the same directory, owner-only (0600 on Unix, the directory's restricted ACL on Windows), fsync, rename,
+/// directory fsync (a documented no-op on Windows, `crate::config::sync_directory`).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     // A name of its own per write, so two writers can never share an inode.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temp = dir.join(format!(".osv-matches.{}.{unique}.tmp", std::process::id()));
     let result = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        let mut file = crate::delivery::owner_only(&mut options).open(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
-        std::fs::File::open(dir)?.sync_all()
+        crate::config::sync_directory(dir)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);

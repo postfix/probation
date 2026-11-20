@@ -275,6 +275,12 @@ def needed(job_name, seen=None):
     return seen
 
 
+# Slice 25: the native service lifecycle lanes gate everything that publishes. `build` waits for them, and release, publish and
+# images wait for build, so they are in each publishing job's transitive needs.
+need(release.get("native-service", {}).get("uses") == "./.github/workflows/native-service.yml", "release.yml's native-service job must call native-service.yml")
+for gated in ("release", "publish", "images"):
+    need("native-service" in needed(gated), f"release.yml's {gated} job must transitively need native-service (needs: {sorted(needed(gated))})")
+
 PUBLISHING = re.compile(r"cargo\s+(publish|release)|gh\s+(release|api|workflow)|docker\s+(push|login)|npm\s+(run\s+)?publish|uv\s+publish|twine\s+upload|ghcr\.io|git\s+push"
                         r"|crane\s+(push|copy)|skopeo\s+(copy|sync)|build-push-action|docker/login-action|action-gh-release|gh-action-pypi-publish|--push\b")
 HIDES_FAILURE = re.compile(r"\|\||\bset\s+\+e|\bset\s+\+o\s+errexit|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
@@ -307,6 +313,63 @@ for job_name, job in release.items():
     if sensitive:
         chain = needed(job_name)
         need({"native", "e2e"} <= chain, f"release.yml job {job_name} writes, publishes or uses secrets or an environment, so it must transitively need native and e2e (it needs {sorted(chain)})")
+
+# Slice 25: native-service.yml gates the release (release.yml's native-service job calls it), so it is held to the same rules as the
+# workflows above: SHA-pinned actions, read-only token, callable only by release.yml or by hand, and no step whose failure can be
+# hidden. A `cargo test | tee` without pipefail reports tee's status, so a failing Docker Engine or tool lane would pass.
+service_path = option("--native-service", root / ".github/workflows/native-service.yml")
+service_text = service_path.read_text(encoding="utf-8")
+try:
+    service = load_strict(service_text)
+except yaml.YAMLError as error:
+    need(False, f"native-service.yml is not plain YAML: {error}")
+    service = {}
+need(set(service.get(True, {})) == {"workflow_call", "workflow_dispatch"}, f"native-service.yml triggers must be exactly workflow_call and workflow_dispatch, found {sorted(map(str, service.get(True, {})))}")
+need("pull_request_target" not in service_text, "native-service.yml must not use pull_request_target")
+need(service.get("permissions") == {"contents": "read"}, f"native-service.yml top-level permissions must be exactly contents: read, found {service.get('permissions')!r}")
+need("secrets:" not in service_text and "secrets." not in service_text, "native-service.yml must not use secrets")
+service_shell = (service.get("defaults") or {}).get("run", {}).get("shell")
+SERVICE_HIDES = re.compile(r"\|\|\s*(true|:|/bin/true)\b|\bset\s+\+e|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
+for job_name, job in (service.get("jobs") or {}).items():
+    need("continue-on-error" not in job, f"native-service.yml job {job_name} must not continue-on-error")
+    need("if" not in job, f"native-service.yml job {job_name} must have no job-level if")
+    need("permissions" not in job or job["permissions"] == {"contents": "read"}, f"native-service.yml job {job_name} may only hold contents: read")
+    for step in job.get("steps", []) or []:
+        need("continue-on-error" not in step, f"native-service.yml job {job_name} has a step with continue-on-error")
+        if "if" in step:
+            need(str(step.get("if")) == "always()" and str(step.get("uses", "")).startswith("actions/upload-artifact@"), f"native-service.yml job {job_name} has a step `if: {step['if']}` (only upload-artifact may use always())")
+        if "uses" in step:
+            need(re.search(r"@[0-9a-f]{40}$", str(step["uses"])) is not None, f"native-service.yml action not pinned to a commit SHA: {step['uses']}")
+        run = str(step.get("run", ""))
+        need(not SERVICE_HIDES.search(run), f"native-service.yml job {job_name} hides a failure (`|| true`, `set +e`, `; true`, `exit 0`)")
+        shell = step.get("shell", service_shell)
+        if PIPE.search(run) and "pipefail" not in run and shell not in ("powershell", "pwsh"):
+            need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
+        need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
+
+# Recheck 1 (RC1-2): the static OpenSSL of the Windows release is vcpkg's x64-windows-static-md (static libraries, dynamic CRT = rustc's
+# default /MD). The plain x64-windows-static triplet links the static CRT, which the Rust binary does not use. Every Windows and macOS
+# release or gate build turns the feature on, so the default dev build is the only one without it.
+setup_text = option("--openssl-setup", root / "tests/e2e/native/openssl-setup.mjs").read_text(encoding="utf-8")
+need("x64-windows-static-md" in setup_text and not re.search(r"x64-windows-static(?!-md)", setup_text), "openssl-setup.mjs must use the x64-windows-static-md vcpkg triplet only (static libraries, /MD runtime)")
+for label, text_ in (("release.yml", release_path.read_text(encoding="utf-8")), ("native-service.yml", service_text)):
+    for build in re.findall(r"cargo build --release[^\n]*", text_):
+        if "windows" in build or "apple" in build or "matrix.target" in build:
+            need("static-openssl" in build or "matrix.features" in build, f"{label}: a release build for Windows or macOS must pass --features static-openssl: {build.strip()[:90]}")
+# One naming scheme for the sigstore bundles (RC2-9), and the release is a DRAFT until it is attested.
+release_text_ = release_path.read_text(encoding="utf-8")
+need('--bundle "$name.sigstore.json"' in release_text_ and "probation-*.sigstore.json" in release_text_, "release.yml must sign <package>.sigstore.json and publish probation-*.sigstore.json")
+for label_, path_ in (("install-service.sh", root / "scripts/install-service.sh"), ("operations.md", root / "docs/operations.md"), ("release.yml", release_path)):
+    need("probation-<version>-<target>.sigstore.json" in path_.read_text(encoding="utf-8"), f"{label_} must name the bundle probation-<version>-<target>.sigstore.json")
+need("--draft --generate-notes" in release_text_, "release.yml must create the release as a draft")
+need("publish-release" in release and "attest" in (release.get("publish-release", {}).get("needs") or []), "release.yml must publish the draft only after attest")
+# id-token: write exists only on the jobs that sign or attest (RC1-5).
+for job_name, job in release.items():
+    perms = job.get("permissions") or {}
+    if isinstance(perms, dict) and perms.get("id-token") == "write":
+        need(job_name in ("release", "attest"), f"release.yml: id-token: write is allowed only on the release and attest jobs, found on {job_name}")
+for job_name, job in (service.get("jobs") or {}).items():
+    need("id-token" not in json.dumps(job.get("permissions", {})), f"native-service.yml job {job_name} must not hold id-token")
 
 # Every scenario ID the workflow names exists: in the scenario files, and (where the harness
 # dependencies are installed) as `run.mjs --list --only <id>` says.
@@ -373,6 +436,9 @@ for problem in requirement_findings(option("--ci-requirements", root / "tests/e2
     need(False, problem)
 for problem in requirement_findings(option("--checker-requirements", root / "tests/e2e/native/checker-requirements.txt").read_text(encoding="utf-8"), "checker-requirements.txt", want_extra=("pyyaml",), tools=False):
     need(False, problem)
+for problem in requirement_findings(option("--conan-requirements", root / "tests/e2e/native/conan-requirements.txt").read_text(encoding="utf-8"), "conan-requirements.txt", want_extra=("conan",), tools=False):
+    need(False, problem)
+need("--require-hashes -r tests/e2e/native/conan-requirements.txt" in service_text, "native-service.yml must install Conan from the hash-locked conan-requirements.txt")
 for problem in requirement_findings(option("--native-requirements", root / "tests/e2e/compose/clients/native-requirements.txt").read_text(encoding="utf-8"), "native-requirements.txt"):
     need(False, problem)
 
@@ -380,7 +446,7 @@ for problem in requirement_findings(option("--native-requirements", root / "test
 # tests" step): the wrapper must discover them all, and judge them by behaviour.
 wrapper = option("--run-tests", root / "tests/e2e/native/run_tests.py").read_text(encoding="utf-8")
 # Floors the registry may not go below (F9): raise them with the tests, never lower them or drop an entry.
-MIN_FLOORS = {"assertions.test.mjs": 192, "ca-script.test.mjs": 3, "check_workflow.test.py": 160, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 37, "pf.test.mjs": 35, "rendezvous-cli.test.mjs": 80, "rendezvous.test.mjs": 89, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "snapshot-proxy.test.mjs": 58, "spawn-args.test.mjs": 38, "stack.test.mjs": 24}
+MIN_FLOORS = {"assertions.test.mjs": 192, "ca-script.test.mjs": 3, "check_workflow.test.py": 160, "clients.test.mjs": 513, "cloudflared.test.mjs": 30, "crlf.test.py": 9, "dockerfile.test.mjs": 5, "encoding.test.py": 2, "harness-engine.test.mjs": 3, "linux-exec.test.mjs": 3, "lockfile.test.mjs": 11, "openssl-setup.test.mjs": 43, "pf.test.mjs": 35, "rendezvous-cli.test.mjs": 80, "rendezvous.test.mjs": 89, "run-ids.test.mjs": 6, "run_tests.test.py": 11, "scope.test.mjs": 3, "service-lifecycle.test.mjs": 69, "snapshot-proxy.test.mjs": 58, "spawn-args.test.mjs": 38, "stack.test.mjs": 24}
 SKIP_ON_LITERAL = '{"win32": {"clients.test.mjs", "rendezvous-cli.test.mjs"}}'
 expected_path = option("--expected", root / "tests/e2e/native/expected-asserts.json")
 registry = json.loads(expected_path.read_text(encoding="utf-8"))

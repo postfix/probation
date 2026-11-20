@@ -286,6 +286,17 @@ exposes that tunnel to the network segment: bind a private interface only.
   and a control without `server` proves the recorder sees a fallback. It fails if
   `containerd`/`ctr` are absent. Findings: `evidence/spike-native-cluster.md`.
 
+## Native service lifecycle (slice 25)
+
+`E2E-service-native` (only with `--client-host native`) installs the REAL `probation` binary as a service under the host's own service
+manager with `scripts/install-service.sh` or `install-service.ps1`, exercises install, permissions, start, second owner, stop (it must
+stay stopped past the restart delay), restart on the same state, crash restart, the supervisor's reaction to exit 75, upgrade and
+uninstall (`native/service-lifecycle.mjs`), then runs the pinned native npm and pip through the shared service. `PROBATION_BIN` names the
+built binary (default `target/debug/probation`); `E2E_SERVICE_SCOPE=system|user` picks the scope (default: system as root or on Windows, else
+user); `E2E_SERVICE_DIRS=system` uses the platform's own locations (a disposable runner VM) instead of directories under the work dir. A
+developer host runs it with `systemd --user` under a unique unit name that is removed afterwards. The macOS and Windows runner lanes run
+`node tests/e2e/native/service-lifecycle-run.mjs` (no container stack). `.github/workflows/native-service.yml` holds the CI jobs.
+
 ## Suites
 
 | Suite | When | Clients | Blocks |

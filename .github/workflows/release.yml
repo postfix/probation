@@ -68,6 +68,14 @@ jobs:
       actions: read
     uses: ./.github/workflows/native-clients.yml
 
+  # Row 25: the machine-wide native service lifecycle on Linux, macOS and Windows, the native package tools on all three, and the
+  # pinned Docker Engine daemon pull. Nothing is released unless every one of them passes (a skipped lane fails it).
+  native-service:
+    needs: test
+    permissions:
+      contents: read
+    uses: ./.github/workflows/native-service.yml
+
   codeql:
     needs: test
     runs-on: ubuntu-latest
@@ -84,8 +92,10 @@ jobs:
       - run: cargo build --locked
       - uses: github/codeql-action/analyze@b31ef66637df4fc5b5e4a89d0cc94f8eeb46a04d # v3.39.0
 
+  # `build` waits for native-service (and for build-windows, so the release job sees every artifact): release, publish and images
+  # need build, so none of them runs unless the native service lifecycle lane passed.
   build:
-    needs: codeql
+    needs: [codeql, native-service, build-windows]
     strategy:
       matrix:
         include:
@@ -95,21 +105,30 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-latest
+            features: "--features static-openssl"
+          # An Intel runner: Homebrew's libcrypto.a is of the runner's own architecture, so the x86_64 binary links an x86_64 archive.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
+            features: "--features static-openssl"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --locked --bin probation --target ${{ matrix.target }}
+      # src/managed/enterprise_certificate.rs links OpenSSL's libcrypto by name: macOS needs Homebrew's openssl@3 on the linker path
+      # (Linux has the system library), and aws-lc-sys must build its bundled source, as native-clients.yml does.
+      - run: node tests/e2e/native/openssl-setup.mjs apply
+      - run: cargo build --release --locked --bin probation --target ${{ matrix.target }} ${{ matrix.features }}
+        env:
+          AWS_LC_SYS_USE_SYSTEM: "0"
+      # The package is the binary, the service installer and the files it installs from: a downloaded release installs as a
+      # service with ./install-service.sh install (docs/operations.md, "Native service").
       - name: Package
         run: |
           set -euo pipefail
-          pkg="probation-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir "$pkg"
-          cp "target/${{ matrix.target }}/release/probation" README.md LICENSE "$pkg/"
+          dir=$(VERSION="${{ github.ref_name }}" scripts/package-release.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release/probation" .)
+          pkg=$(basename "$dir")
           tar czf "$pkg.tar.gz" "$pkg"
           shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,17 +138,110 @@ jobs:
             probation-*.tar.gz
             probation-*.tar.gz.sha256
 
+  # Windows: a zip with probation.exe, the OpenSSL DLL it loads, the service installer (install-service.ps1) and the files it
+  # installs from. Built after the same gate as the other targets.
+  build-windows:
+    needs: [codeql, native-service]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      # OPENSSL_STATIC=1: vcpkg's x64-windows-static-md libcrypto is linked into probation.exe; no OpenSSL DLL is shipped or needed.
+      - name: Provide a static OpenSSL libcrypto for the OCSP code
+        shell: bash
+        env:
+          OPENSSL_STATIC: "1"
+        run: node tests/e2e/native/openssl-setup.mjs apply
+      - run: cargo build --release --locked --bin probation --target x86_64-pc-windows-msvc --features static-openssl
+        env:
+          AWS_LC_SYS_USE_SYSTEM: "0"
+      - name: Package
+        shell: bash
+        run: |
+          dir=$(VERSION="${{ github.ref_name }}" scripts/package-release.sh x86_64-pc-windows-msvc target/x86_64-pc-windows-msvc/release/probation.exe .)
+          pkg=$(basename "$dir")
+          7z a "$pkg.zip" "$pkg"
+          sha256sum "$pkg.zip" > "$pkg.zip.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: probation-x86_64-pc-windows-msvc
+          path: |
+            probation-*.zip
+            probation-*.zip.sha256
+
   release:
     needs: [build, e2e, native]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: probation-*
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes probation-*.tar.gz probation-*.tar.gz.sha256
+      # Keyless cosign signature of every binary (the Sigstore bundle is the signature, the certificate and the transparency-log proof).
+      # install-service.sh verifies it when cosign is installed: save probation-<version>-<target>.sigstore.json beside the binary as
+      # probation.sigstore.json, or pass --cosign-bundle (docs/operations.md).
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign the binaries
+        run: |
+          mkdir sign
+          for archive in probation-*.tar.gz; do
+            name="${archive%.tar.gz}"
+            tar xzf "$archive" -C sign
+            cosign sign-blob --yes --bundle "$name.sigstore.json" "sign/$name/probation"
+          done
+          for archive in probation-*.zip; do
+            name="${archive%.zip}"
+            unzip -q "$archive" -d sign
+            cosign sign-blob --yes --bundle "$name.sigstore.json" "sign/$name/probation.exe"
+          done
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes probation-*.tar.gz probation-*.tar.gz.sha256 probation-*.zip probation-*.zip.sha256 probation-*.sigstore.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # Provenance for what was released: GitHub's build-provenance attestation for the binaries and archives, stored with the
+  # repository next to the same-origin .sha256 files. install-service.sh and .ps1 check it with `gh attestation verify` when gh is
+  # installed (docs/operations.md).
+  attest:
+    needs: [e2e, native, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: probation-*
+          merge-multiple: true
+      - name: Unpack the binaries to attest
+        run: |
+          mkdir attest
+          for archive in probation-*.tar.gz; do tar xzf "$archive" -C attest; done
+          for archive in probation-*.zip; do unzip -q "$archive" -d attest; done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            probation-*.tar.gz
+            probation-*.zip
+            attest/*/probation
+            attest/*/probation.exe
+
+  # The release is created as a DRAFT and published only after its attestations exist: there is no window in which an unattested
+  # asset is downloadable as a release.
+  publish-release:
+    needs: [attest, e2e, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
         env:
           GH_TOKEN: ${{ github.token }}
 

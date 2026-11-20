@@ -158,9 +158,15 @@ release_mutations = {
     "job-level if on the native job (C6)": good_release.replace("  native:\n    needs: test\n", "  native:\n    needs: test\n    if: false\n", 1),
     "native job passes secrets (C6)": good_release.replace("    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n    secrets: inherit\n", 1),
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
+    "id-token: write on the test job (RC1-5)": good_release.replace("  test:\n    runs-on: ubuntu-latest\n", "  test:\n    runs-on: ubuntu-latest\n    permissions:\n      id-token: write\n", 1),
+    "the release is published immediately, not as a draft (RC2-9)": good_release.replace("--verify-tag --draft --generate-notes", "--verify-tag --generate-notes", 1),
+    "the bundle is named another way (RC2-9)": good_release.replace('--bundle "$name.sigstore.json"', '--bundle "$name.sig.json"'),
+    "a Windows release build without the static feature (RC1-2)": good_release.replace(" --target x86_64-pc-windows-msvc --features static-openssl", " --target x86_64-pc-windows-msvc", 1),
     "top-level permissions contents: write (F5r2)": good_release.replace("permissions:\n  contents: read\n\nenv:", "permissions:\n  contents: write\n\nenv:", 1),
     "test job with a write grant and no native/e2e chain (F5r2)": good_release.replace("  test:\n    runs-on: ubuntu-latest\n", "  test:\n    runs-on: ubuntu-latest\n    permissions:\n      packages: write\n", 1),
-    "build job with id-token: write (F5r2)": good_release.replace("  build:\n    needs: codeql\n", "  build:\n    needs: codeql\n    permissions:\n      id-token: write\n", 1),
+    "build job with id-token: write (F5r2)": good_release.replace("  build:\n    needs: [codeql, native-service, build-windows]\n", "  build:\n    needs: [codeql, native-service, build-windows]\n    permissions:\n      id-token: write\n", 1),
+    "release no longer gated by the native service lanes (slice 25)": good_release.replace("    needs: [codeql, native-service, build-windows]\n", "    needs: [codeql, build-windows]\n").replace("    needs: [codeql, native-service]\n", "    needs: codeql\n"),
+    "native-service job removed (slice 25)": good_release.replace(good_release[good_release.index("  native-service:\n"):good_release.index("  codeql:")], "", 1),
     "cargo test piped without pipefail (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: cargo test --workspace --locked | cat\n", 1),
     "cargo test inside an if (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: if cargo test --workspace --locked; then echo ok; fi\n", 1),
     "cargo test with a trailing & (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: cargo test --workspace --locked &\n", 1),
@@ -177,6 +183,52 @@ release_mutations = {
 }
 failed = []
 extra_checks = []  # the mutations of the loops below, counted into the final line (run_tests pins the total)
+good_service = (root / ".github/workflows/native-service.yml").read_text(encoding="utf-8")
+
+
+def check_service(text):
+    with tempfile.TemporaryDirectory(dir=scratch) as d:
+        path = pathlib.Path(d) / "native-service.yml"
+        path.write_text(text, encoding="utf-8")
+        r = subprocess.run([sys.executable, str(checker), "--native-service", str(path)], capture_output=True, encoding="utf-8", errors="replace")
+        return r.returncode, r.stdout + r.stderr
+
+
+def swap(old, new):
+    assert old in good_service, f"mutation anchor missing: {old!r}"
+    return good_service.replace(old, new, 1)
+
+
+service_mutations = {
+    "native-service: no pipefail (defaults.run.shell removed) (slice 25)": swap("defaults:\n  run:\n    shell: bash\n", ""),
+    "native-service: pull_request_target trigger": swap("on:\n  workflow_call:\n", "on:\n  pull_request_target:\n  workflow_call:\n"),
+    "native-service: a push trigger": swap("on:\n  workflow_call:\n", "on:\n  push:\n  workflow_call:\n"),
+    "native-service: write permission": swap("permissions:\n  contents: read\n\n# bash", "permissions:\n  contents: write\n\n# bash"),
+    "native-service: unpinned action": swap("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0", "actions/setup-node@v4"),
+    "native-service: || true on the cargo test": swap("-- --nocapture --test-threads=1 2>&1 | tee \"$RUNNER_TEMP/docker-engine.log\"", "-- --nocapture --test-threads=1 2>&1 | tee \"$RUNNER_TEMP/docker-engine.log\" || true"),
+    "native-service: continue-on-error on a step": swap("      - name: Install and start the pinned Docker Engine\n", "      - name: Install and start the pinned Docker Engine\n        continue-on-error: true\n"),
+    "native-service: a job-level if": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    if: false\n    runs-on: ubuntu-24.04\n"),
+    "native-service: Conan installed without the hash-locked file (slice 25)": swap("python -m pip install --require-hashes -r tests/e2e/native/conan-requirements.txt", 'python -m pip install "conan==2.21.0"'),
+    "native-service: a secret": swap("env:\n  CARGO_TERM_COLOR: always\n", "env:\n  CARGO_TERM_COLOR: always\n  TOKEN: ${{ secrets.X }}\n"),
+}
+with tempfile.TemporaryDirectory(dir=scratch) as d:
+    bad_setup = pathlib.Path(d) / "openssl-setup.mjs"
+    bad_setup.write_text((here / "openssl-setup.mjs").read_text(encoding="utf-8").replace("x64-windows-static-md", "x64-windows-static"), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(checker), "--openssl-setup", str(bad_setup)], capture_output=True, encoding="utf-8", errors="replace")
+    extra_checks.append("the plain x64-windows-static triplet (RC1-2)")
+    if r.returncode == 0:
+        failed.append("the plain x64-windows-static triplet (RC1-2)")
+        print("BYPASS (checker passed): the plain x64-windows-static triplet")
+code, out = check_service(good_service)
+assert code == 0, f"the known-good native-service.yml must pass: {out}"
+for name, text in service_mutations.items():
+    assert text != good_service, f"{name}: mutation changed nothing"
+    extra_checks.append(name)
+    code, out = check_service(text)
+    if code == 0:
+        failed.append(name)
+        print(f"BYPASS (checker passed): {name}")
+
 # The call probe was temporary: its presence is rejected, its absence is the permanent shape.
 probe_mutations = {"native-call-probe.yml present": None}
 with tempfile.TemporaryDirectory(dir=scratch) as d:

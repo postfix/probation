@@ -12,6 +12,10 @@ pub mod config;
 /// public Rust surface.
 pub(crate) mod delivery;
 pub mod http;
+pub mod key_acl;
+pub mod lifecycle;
+pub mod service_failure;
+pub mod service_log;
 pub mod managed;
 pub mod npm;
 pub mod osv;

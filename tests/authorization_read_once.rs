@@ -74,6 +74,9 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     // (firewall token or service key) to its configured policy server only, origin-checked.
     ("src/osv/batcher.rs", "", "usereqwest::header::{AUTHORIZATION,CONTENT_TYPE,HeaderValue};", 1),
     ("src/osv/batcher.rs", "fn send_central", "header(AUTHORIZATION,value)", 1),
+    // Row 25 fix round: not HTTP at all. `Win32::Security::Authorization` is the Windows access-control API module (it reads the DACL of the
+    // service key file, src/key_acl.rs); the word is the module's name and no header or credential is involved.
+    ("src/key_acl.rs", "", "usewindows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW,ConvertSidToStringSidW,GetNamedSecurityInfoW,SDDL_REVISION_1,SE_FILE_OBJECT,};", 1),
     ("src/config.rs", "struct Config", "siem_auth_header", 1),
     ("src/config.rs", "struct RawConfig", "siem_auth_header", 1),
     ("src/config.rs", "fn validate", "siem_auth_header", 4),

@@ -21,7 +21,24 @@ const NOW: &str = "2026-04-06T12:00:00Z";
 const OLD: &str = "2025-01-01T00:00:00Z";
 const YOUNG: &str = "2026-04-05T12:00:00Z";
 
+/// Row 25: `PROBATION_NATIVE_HOST=1` drives the host's own `conan` (pinned 2.21.0, installed by the CI job on Linux, macOS and
+/// Windows) instead of the podman image. It never skips: the tool must be the pinned one, or the lane fails. The remote and the
+/// firewall are plain HTTP on loopback, so no certificate authority needs trusting on any OS.
+fn host_mode() -> bool {
+    std::env::var("PROBATION_NATIVE_HOST").is_ok_and(|value| value == "1")
+}
+
+fn host_tool_ready() -> bool {
+    let output = std::process::Command::new("conan").arg("--version").output().unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but conan does not run: {err}"));
+    let version = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(version.contains("2.21.0"), "the pinned Conan is 2.21.0; the host has: {version}");
+    true
+}
+
 fn client_available() -> bool {
+    if host_mode() {
+        return host_tool_ready();
+    }
     std::process::Command::new("podman").args(["image", "exists", IMAGE]).status().is_ok_and(|status| status.success())
 }
 
@@ -36,6 +53,18 @@ macro_rules! need_conan {
 
 /// Runs `script` in the client container in `dir` (mounted as `/work`); returns whether it succeeded and everything it printed.
 async fn conan(dir: &Path, script: &str) -> (bool, String) {
+    if host_mode() {
+        // The scripts name the container's /work; on the host that is the directory itself (forward slashes on Windows too).
+        let here = dir.display().to_string().replace('\\', "/");
+        let script = format!("trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home CONAN_HOME={here}/home/.conan2 CONAN_LOGIN_USERNAME=user CONAN_PASSWORD=pass; mkdir -p $HOME; {}", script.replace("/work", &here));
+        let dir = dir.to_path_buf();
+        return tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("bash").current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host conan");
+            (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+        })
+        .await
+        .unwrap();
+    }
     let dir = dir.to_path_buf();
     let script = format!("export HOME=/work/home CONAN_HOME=/work/home/.conan2 CONAN_LOGIN_USERNAME=user CONAN_PASSWORD=pass; mkdir -p $HOME; {script}");
     tokio::task::spawn_blocking(move || {
