@@ -132,6 +132,7 @@ services:
           - auth.docker.io
           - production.cloudfront.docker.com
           - mcr.microsoft.com
+          - ghcr.io
           - files.pythonhosted.org
           - api.osv.dev
           - api.pwnedpasswords.com

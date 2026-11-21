@@ -509,6 +509,51 @@ for forbidden in ["continue-on-error", "client_cert", "TWINE_CERT", "TWINE_CLIEN
                   "NODE_TLS_REJECT_UNAUTHORIZED", "NATIVE_PINS_FILE", "curl ", "wget ", "Invoke-WebRequest", "releases/latest", "E2E_TUNNEL", "NATIVE_RENDEZVOUS", "secrets.", "vars.", "NATIVE_E2E", "secrets:"]:
     need(forbidden not in text, f"workflow must not contain {forbidden}")
 
+# ---- cluster.yml (slice 26): a workflow of its own, held to the same rules as the pinned ones ----
+cluster_path = option("--cluster", root / ".github/workflows/cluster.yml")
+cluster_raw = cluster_path.read_bytes()
+cluster_text = cluster_raw.decode("utf-8", "replace")
+odd = sorted({chr(b) if b < 128 else f"0x{b:02x}" for b in cluster_raw if not (0x20 <= b <= 0x7E or b in (0x0A, 0x0D))})
+need(not odd, f"cluster.yml holds characters outside printable ASCII: {odd[:6]}")
+need(re.search(rb"(^|[\s:\[,{])!!?[A-Za-z]", cluster_raw, re.M) is None, "cluster.yml uses an explicit YAML tag")
+try:
+    cwf = load_strict(cluster_text)
+except yaml.YAMLError as error:
+    cwf = {}
+    need(False, f"cluster.yml is not plain YAML: {error}")
+ctriggers = cwf.get(True, cwf.get("on", {})) or {}
+need(set(ctriggers) == {"pull_request", "schedule", "workflow_dispatch"}, f"cluster.yml triggers must be exactly pull_request, schedule and workflow_dispatch, found {sorted(map(str, ctriggers))}")
+need(bool((ctriggers.get("pull_request") or {}).get("paths")), "cluster.yml: the pull_request trigger must be path-filtered")
+need(cwf.get("permissions") == {"contents": "read"}, "cluster.yml: top-level permissions must be exactly contents: read")
+need("pipefail" in str(((cwf.get("defaults") or {}).get("run") or {}).get("shell", "")), "cluster.yml: defaults.run.shell must set pipefail")
+cjobs = cwf.get("jobs") or {}
+need(set(cjobs) == {"static", "netns", "e2e-service-cluster", "kind", "cri-node"}, f"cluster.yml jobs must be exactly static, netns, e2e-service-cluster, kind and cri-node, found {sorted(cjobs)}")
+for cname, cjob in cjobs.items():
+    need("permissions" not in cjob, f"cluster.yml job {cname}: no job-level permissions")
+    need("if" not in cjob and "continue-on-error" not in cjob, f"cluster.yml job {cname}: no job-level if or continue-on-error")
+    need(isinstance(cjob.get("timeout-minutes"), int), f"cluster.yml job {cname}: needs a timeout-minutes")
+    csteps = cjob.get("steps") or []
+    checkouts = [st for st in csteps if str(st.get("uses", "")).startswith("actions/checkout@")]
+    need(len(checkouts) == 1 and (checkouts[0].get("with") or {}).get("persist-credentials") is False, f"cluster.yml job {cname}: one checkout with persist-credentials: false")
+    for st in csteps:
+        run = str(st.get("run", ""))
+        if re.search(r"\bcurl\b", run):
+            need(len(re.findall(r"\bcurl\b", run)) <= run.count("sha256sum --check"), f"cluster.yml job {cname}: every download needs its own sha256sum --check: {run[:60]!r}")
+        need(not re.search(r"\|\s*(sudo\s+)?(ba)?sh\b", run) or "curl" not in run, f"cluster.yml job {cname}: nothing is piped from the network into a shell")
+        need(not re.search(r"\bset\s+\+e|\|\|\s*true|;\s*exit\s+0", run), f"cluster.yml job {cname}: a step hides a failure")
+        need("secrets." not in run and "continue-on-error" not in st, f"cluster.yml job {cname}: no secrets and no step continue-on-error")
+        need("if" not in st or st.get("if") == "always()", f"cluster.yml job {cname}: a step condition other than always() can skip a check")
+def cjob_text(name):
+    return "\n".join(str(st.get("run", "")) for st in (cjobs.get(name) or {}).get("steps", []))
+need("check_kubernetes.py" in cjob_text("static") and "kubeconform -strict" in cjob_text("static") and "kubectl kustomize" in cjob_text("static"), "cluster.yml static: check_kubernetes.py, kubectl kustomize and kubeconform -strict are required")
+need("kernel.apparmor_restrict_unprivileged_userns=0" in cjob_text("netns") and "cargo test --locked --test cluster_peer -- --include-ignored" in cjob_text("netns"), "cluster.yml netns: the sysctl step and the ignored cluster_peer test are required")
+need("run.mjs --only E2E-service-cluster-probe --only E2E-service-cluster" in cjob_text("e2e-service-cluster"), "cluster.yml e2e-service-cluster: both scenarios are required")
+need("run-kind-lane.sh" in cjob_text("kind") and "run-kind-lane.sh" in cjob_text("cri-node"), "cluster.yml kind and cri-node: both run tests/e2e/cluster/run-kind-lane.sh")
+for line in re.findall(r"uses:\s*(\S+)", cluster_text):
+    need(re.search(r"@[0-9a-f]{40}$", line) is not None, f"cluster.yml: action not pinned to a commit SHA: {line}")
+for forbidden in ("pull_request_target", "workflow_run", "secrets.", "vars.", "continue-on-error", "NODE_TLS_REJECT_UNAUTHORIZED", "releases/latest", "wget ", "curl -k", "--insecure"):
+    need(forbidden not in cluster_text, f"cluster.yml must not contain {forbidden}")
+
 if bad:
     print("\n".join(f"FAIL {b}" for b in bad))
     sys.exit(1)

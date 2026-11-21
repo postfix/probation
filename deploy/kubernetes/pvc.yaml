@@ -1,0 +1,20 @@
+# The store's volume: ReadWriteOncePod, so the kubelet and the API server refuse to attach it to a second pod on any node. Apply it ONCE
+# (`kubectl apply -f pvc.yaml`) before the kustomization; it is deliberately not listed in kustomization.yaml, so `kubectl delete -k`
+# and a pruning controller never delete the data. Use a storage class whose reclaimPolicy is Retain and whose CSI driver supports
+# ReadWriteOncePod and is NOT backed by a shared network file system (docs/operations.md, "One active store owner"). Size it for
+# `cache_max_bytes` plus headroom: the state database and its log are not inside the cache budget.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: probation-data
+  namespace: probation
+  labels:
+    app.kubernetes.io/name: probation
+  annotations:
+    helm.sh/resource-policy: keep
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes: ["ReadWriteOncePod"]
+  resources:
+    requests:
+      storage: 200Gi

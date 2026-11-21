@@ -1,0 +1,200 @@
+name: Cluster
+
+# Slice 26: the cluster endpoint, approved-node trust and no upstream fallback. A NEW file on purpose: the workflows that
+# tests/e2e/native/check_workflow.py pins are not edited. check_workflow.py validates this file too (pinned actions, least privilege,
+# pipefail, hashed downloads, the job set). Every tool is a pinned release whose sha256 is checked before it runs.
+#
+# Honest status of the jobs (docs/plans/package-firewall-mvp-lf/evidence/slice-26.md, "Lanes"): `static`, `netns` and
+# `e2e-service-cluster` run the same commands that were run on the development host. `kind` and `cri-node` have NOT been run by
+# anybody yet: they are authored against kind and Calico/Cilium and prove nothing until a hosted run passes.
+
+on:
+  pull_request:
+    paths:
+      - deploy/kubernetes/**
+      - src/http/**
+      - src/oci/**
+      - tests/e2e/**
+      - tests/cluster_peer.rs
+      - tests/node_scripts.rs
+      - .github/workflows/cluster.yml
+      - docs/operations.md
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -eo pipefail {0}
+
+env:
+  KUBECTL_VERSION: v1.36.5
+  KUBECTL_SHA256: 33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
+  KUBECONFORM_SHA256: c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3
+  KIND_SHA256: eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa
+  KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+  CONTAINERD_SHA256: b9626a94ab93b00bcbcbf13d98deef972c6fb064690e57940632df54ad39ee71
+  CRICTL_SHA256: a8ff2a3edb37a98daf3aba7c3b284fe0aa5bff24166d896ab9ef64c8913c9f51
+  CALICO_SHA256: 1990b1cec14002790718bb960b1b8445eb7b896cd16c32e952309f35a9026981
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --only-binary ":all:" --require-hashes -r tests/e2e/native/checker-requirements.txt
+      - name: Install kubectl and kubeconform (pinned, sha256 checked)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/bin/kubectl"
+          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tgz" "https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz"
+          echo "$KUBECONFORM_SHA256  $RUNNER_TEMP/kubeconform.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/kubeconform.tgz" -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: python tests/e2e/native/check_kubernetes.py
+      - run: python tests/e2e/native/check_kubernetes.test.py
+      - name: Render the kustomization and validate every object against the Kubernetes schema
+        run: |
+          kubectl kustomize deploy/kubernetes > "$RUNNER_TEMP/render.yaml"
+          kubeconform -strict -summary -kubernetes-version 1.36.0 "$RUNNER_TEMP/render.yaml" deploy/kubernetes/pvc.yaml
+      - run: sh -n deploy/kubernetes/node/install-node.sh && sh -n deploy/kubernetes/node/verify-node.sh && sh -n deploy/kubernetes/node/install-firewall.sh
+
+  netns:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # ubuntu-24.04 restricts unprivileged user namespaces; the real-TCP peer test (tests/cluster_peer.rs) needs them.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: cargo test --locked --test cluster_peer -- --include-ignored
+      - run: cargo test --locked --test node_scripts
+
+  e2e-service-cluster:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install containerd 2.2.0 and crictl (pinned, sha256 checked; checkPinned also verifies the commit)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/containerd.tgz" "https://github.com/containerd/containerd/releases/download/v2.2.0/containerd-2.2.0-linux-amd64.tar.gz"
+          echo "$CONTAINERD_SHA256  $RUNNER_TEMP/containerd.tgz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/containerd"
+          tar -xzf "$RUNNER_TEMP/containerd.tgz" -C "$RUNNER_TEMP/containerd"
+          echo "$RUNNER_TEMP/containerd/bin" >> "$GITHUB_PATH"
+          curl -fsSL -o "$RUNNER_TEMP/crictl.tgz" "https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.34.0/crictl-v1.34.0-linux-amd64.tar.gz"
+          echo "$CRICTL_SHA256  $RUNNER_TEMP/crictl.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/crictl.tgz" -C "$RUNNER_TEMP/containerd/bin" crictl
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: localhost/probation:e2e
+          cache-from: type=gha,scope=probation
+          cache-to: type=gha,scope=probation,mode=max
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
+          cache-to: type=gha,scope=probation-server,mode=max
+      - run: node tests/e2e/harness/run.mjs --only E2E-service-cluster-probe --only E2E-service-cluster
+        env:
+          E2E_PREBUILT: "1"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-service-cluster
+          path: target/e2e/out
+          if-no-files-found: ignore
+
+  # NOT RUN BY ANYBODY YET. kind with three workers and Calico (a policy-enforcing CNI); the script is tests/e2e/cluster/run-kind-lane.sh.
+  # Cilium is a CNI the guide names (optional/cilium-networkpolicy.yaml) and no job runs it.
+  kind:
+    name: kind ${{ matrix.cni }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        cni: [calico]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --only-binary ":all:" --require-hashes -r tests/e2e/native/checker-requirements.txt
+      - name: Install kubectl and kind (pinned, sha256 checked)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64"
+          echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/kind"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: bash tests/e2e/cluster/run-kind-lane.sh
+        env:
+          CNI: ${{ matrix.cni }}
+          WORK_DIR: ${{ runner.temp }}/kind-lane
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: kind-${{ matrix.cni }}
+          path: ${{ runner.temp }}/kind-lane/logs
+          if-no-files-found: ignore
+
+  # NOT RUN BY ANYBODY YET. One kind node: a control `crictl pull` of a public registry image, then the SHIPPED install-node.sh, verify-node.sh and
+  # install-firewall.sh on the node's own containerd, a restart, and the same `crictl pull` (the kubelet's PullImage call), which must now go to the
+  # endpoint, fail there and never reach the registry. NO pod is run and no registry fixture is served: the pull of a mapped registry through a
+  # service is in the e2e-service-cluster job (the CRI plugin's image service of containerd 2.2.0 on the runner).
+  cri-node:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install kubectl and kind (pinned, sha256 checked)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64"
+          echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/kind"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: bash tests/e2e/cluster/run-kind-lane.sh
+        env:
+          LANE: cri
+          WORK_DIR: ${{ runner.temp }}/cri-lane
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cri-node
+          path: ${{ runner.temp }}/cri-lane/logs
+          if-no-files-found: ignore

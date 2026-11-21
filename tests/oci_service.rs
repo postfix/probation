@@ -113,6 +113,44 @@ async fn two_registries_make_the_plain_root_ambiguous_and_the_selected_one_is_st
     f.server.shutdown().await;
 }
 
+/// Slice 26 (H2): `ns` (containerd and the Docker daemon send the original registry as `ns`) selects the registry whose configured host
+/// equals it; one no registry serves is refused before anything is asked, with one registry as with several (an `ns` of another
+/// registry must never be answered from this registry's same-named repository).
+#[tokio::test]
+async fn the_ns_a_client_sends_selects_the_registry_whose_host_it_names_and_an_unserved_ns_is_refused() {
+    let f = start_n(0, Some(&target()), None, 2).await;
+    f.oci.put_image("app", Some("v1"), &image("a", &[&layer("one")]));
+    assert_eq!(f.server.get("/v2/app/manifests/v1?ns=oci.invalid").await.status().as_u16(), 200, "the registry whose host is ns");
+    let before = f.oci.seen().len();
+    for ns in ["quay.io", "registry.k8s.io", "reg1.invalid.evil"] {
+        assert_eq!(f.server.get(&format!("/v2/app/manifests/v1?ns={ns}")).await.status().as_u16(), 404, "{ns} is served by no registry");
+    }
+    assert_eq!(f.oci.seen().len(), before, "an unserved ns asked nothing of any registry");
+    assert_eq!(f.server.get("/v2/app/manifests/v1").await.status().as_u16(), 404, "several registries and no ns: none is named");
+    f.server.shutdown().await;
+
+    let f = start(0, Some(&target()), None).await;
+    f.oci.put_image("app", Some("v1"), &image("a", &[&layer("one")]));
+    let before = f.oci.seen().len();
+    assert_eq!(f.server.get("/v2/app/manifests/v1?ns=ghcr.io").await.status().as_u16(), 404, "the only registry does not answer for another registry's ns");
+    assert_eq!(f.oci.seen().len(), before);
+    assert_eq!(f.server.get("/v2/app/manifests/v1?ns=oci.invalid").await.status().as_u16(), 200);
+    assert_eq!(f.server.get("/v2/app/manifests/v1").await.status().as_u16(), 200, "no ns (podman, skopeo, a plain mirror): the only registry serves");
+    f.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_docker_hub_names_are_one_registry_that_has_no_target() {
+    for ns in ["docker.io", "registry-1.docker.io", "index.docker.io"] {
+        let f = start(0, None, None).await;
+        f.oci.set_prefix("");
+        f.oci.put_image("library/app", Some("v1"), &image("a", &[&layer("one")]));
+        assert_eq!(f.server.get(&format!("/v2/library/app/manifests/v1?ns={ns}")).await.status().as_u16(), 200, "{ns}");
+        assert_eq!(f.server.get("/v2/library/app/manifests/v1?ns=ghcr.io").await.status().as_u16(), 404, "{ns}: another registry's ns");
+        f.server.shutdown().await;
+    }
+}
+
 /// The caller's own credential goes to the registry's origin and nowhere else, is request-scoped (shares nothing), and the service
 /// key never leaves.
 #[tokio::test]
@@ -198,6 +236,26 @@ async fn a_private_repository_is_answered_with_the_challenge_a_client_waits_for(
     assert_eq!(response.status().as_u16(), 401);
     assert!(response.headers().get("www-authenticate").unwrap().to_str().unwrap().starts_with("Basic"), "{:?}", response.headers());
     g.server.shutdown().await;
+}
+
+/// Slice 26 (H2): the token realm of a client that reached the service through the plain `/v2/` root carries its `ns`, so the client's own
+/// token request (which sends no `ns` of its own) lands on the same registry when there are several.
+#[tokio::test]
+async fn the_challenge_realm_keeps_the_ns_so_the_token_request_selects_the_same_registry() {
+    let f = start_n(0, Some(&target()), None, 2).await;
+    f.oci.require_token();
+    f.oci.deny_anonymous();
+    f.oci.put_image("app", Some("v1"), &image("a", &[&layer("one")]));
+    let response = f.server.get("/v2/app/manifests/v1?ns=oci.invalid").await;
+    assert_eq!(response.status().as_u16(), 401);
+    let challenge = response.headers().get("www-authenticate").unwrap().to_str().unwrap().to_owned();
+    assert!(challenge.contains("/v2/token?ns=oci.invalid\""), "the realm names the registry the client meant: {challenge}");
+    // That realm, asked as a client asks it (with scope and service added), is served by the registry whose host is the ns.
+    let token = f.server.get_with_headers("/v2/token?ns=oci.invalid&service=probation&scope=repository:app:pull", &[("authorization", "Basic dXNlcjpwdw==")]).await;
+    assert_eq!(token.status().as_u16(), 200, "{}", token.text().await.unwrap());
+    // Without the ns two registries are ambiguous for the token endpoint too; the selected route needs none.
+    assert_eq!(f.server.get_with_headers("/v2/token?service=probation", &[("authorization", "Basic dXNlcjpwdw==")]).await.status().as_u16(), 404);
+    f.server.shutdown().await;
 }
 
 /// An existence check by a caller with a credential (a push asks before it uploads) is the registry's answer and delivers no
@@ -1147,12 +1205,13 @@ async fn a_client_that_leaves_a_first_pull_cancels_the_transfer_nobody_else_wait
     let app = image("leaves", &[&layer("leaves")]);
     f.oci.put_image("pub/app", Some("v1"), &app);
     assert_eq!(f.server.get("/v2/pub/app/manifests/v1").await.status().as_u16(), 200);
-    f.oci.set_artifact_delay_ms(1_000);
+    let (entered, dropped) = f.oci.hold_next_blob();
     let response = f.server.get(&format!("/v2/pub/app/blobs/{}", app.layer_digests[0])).await;
     assert_eq!(response.status().as_u16(), 200);
+    tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified()).await.expect("the transfer opened the layer");
     drop(response);
-    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
-    f.oci.set_artifact_delay_ms(0);
+    // The transfer lets go of its body only because its last waiter left: the held body never ends by itself.
+    tokio::time::timeout(std::time::Duration::from_secs(30), dropped.notified()).await.expect("the transfer was cancelled when its last waiter left");
     let again = f.server.get(&format!("/v2/pub/app/blobs/{}", app.layer_digests[0])).await;
     assert_eq!(again.bytes().await.unwrap().to_vec(), app.layers[0]);
     assert_eq!(f.oci.artifact_requests().len(), 2, "the first transfer was cancelled, not completed for nobody: the layer was fetched again");

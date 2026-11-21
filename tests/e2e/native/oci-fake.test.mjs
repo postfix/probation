@@ -24,6 +24,16 @@ assert.equal(call("auth.docker.io", "GET", "/token", { authorization: `Basic ${B
 assert.equal(fake.tokens.length, 3);
 assert.deepEqual(fake.tokens.map((t) => t.basic), [false, true, true]);
 
+// The second registry (ghcr.io) has repositories of its own, its own token endpoint on its own host, and shares nothing with the Hub.
+const second = fake.publish({ repo: "team/app", tag: "v1", image: "hello-2", host: "ghcr.io" });
+assert.notEqual(second.digest, published0().digest, "the same repository name holds another image on the second registry");
+function published0() { return fake.publish({ repo: "team/app", tag: "v1", image: "hello-1" }); }
+const ghcr = (method, path, headers = {}) => call("ghcr.io", method, path, headers);
+assert.match(ghcr("GET", "/v2/").headers["www-authenticate"], /^Bearer realm="https:\/\/ghcr\.io\/token"/, "its realm is its own host");
+assert.equal(JSON.parse(Buffer.from(ghcr("GET", "/token?scope=repository:team/app:pull").body).toString()).token, "tok-anon");
+assert.equal(ghcr("GET", "/v2/team/app/manifests/v1", { authorization: "Bearer tok-anon" }).headers["docker-content-digest"], second.digest);
+assert.equal(ghcr("GET", "/v2/library/alpine/manifests/latest", { authorization: "Bearer tok-anon" }).status, 404, "the Hub's seeded image is not on the second registry");
+
 // The seeded public image: tag and digest answer the same bytes and name their digest.
 const published = fake.publish({ repo: "team/app", tag: "v1", image: "hello-1" });
 const byTag = hub("GET", "/v2/team/app/manifests/v1", "tok-anon");

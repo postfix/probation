@@ -1460,6 +1460,8 @@ fn token_scopes(query: &str) -> Result<Vec<String>, ApiError> {
         match key.as_ref() {
             "scope" if scope_ok(&value) && scopes.len() < 8 => scopes.push(value.into_owned()),
             "service" | "account" | "client_id" | "offline_token" => {}
+            // The realm a plain-root client was given names its registry (the route has already chosen it): checked for its shape only.
+            "ns" if value.len() <= 255 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_')) => {}
             _ => return Err(ApiError::NotFound),
         }
     }

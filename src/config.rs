@@ -109,6 +109,9 @@ pub struct Config {
     /// default, so the disk itself is the limit and no function is lost.
     pub credential_temp_max_request_bytes: Option<u64>,
     pub credential_temp_max_total_bytes: Option<u64>,
+    /// Slice 26 (sec F11): start on a data directory that is on a network file system (NFS, CIFS, FUSE and the like, where the
+    /// exclusive lock is not reliable across hosts) only when this is true. Default false: refuse.
+    pub allow_network_data_dir: bool,
     /// LS-F9: deployment-supplied cluster control-plane ranges a snapshot registry may
     /// never name or dial.
     pub control_plane_cidrs: Vec<ipnet::IpNet>,
@@ -392,6 +395,8 @@ struct RawConfig {
     credential_temp_max_request_bytes: Option<u64>,
     credential_temp_max_total_bytes: Option<u64>,
     #[serde(default)]
+    allow_network_data_dir: bool,
+    #[serde(default)]
     control_plane_cidrs: Vec<String>,
     npm_upstream_url: Option<String>,
     pypi_upstream_url: Option<String>,
@@ -529,6 +534,7 @@ const OPTIONAL_KEYS: &[&str] = &[
     "allowed_peer_cidrs",
     "credential_temp_max_request_bytes",
     "credential_temp_max_total_bytes",
+    "allow_network_data_dir",
     "control_plane_cidrs",
     "npm_upstream_url",
     "pypi_upstream_url",
@@ -933,6 +939,7 @@ impl RawConfig {
             allowed_peer_cidrs,
             credential_temp_max_request_bytes: self.credential_temp_max_request_bytes,
             credential_temp_max_total_bytes: self.credential_temp_max_total_bytes,
+            allow_network_data_dir: self.allow_network_data_dir,
             control_plane_cidrs,
             npm_upstream_url,
             pypi_upstream_url,

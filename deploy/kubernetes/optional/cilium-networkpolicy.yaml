@@ -1,0 +1,32 @@
+# Guidance for clusters whose CNI is Cilium: plain `ipBlock` peers of a NetworkPolicy do not match a node (host) source unless Cilium's
+# `policy-cidr-match-mode` includes `nodes`, so networkpolicy.yaml's ingress rule can refuse the very nodes it lists (an outage, not a
+# leak). Cilium selects nodes by label instead. Label each approved node `probation.example/approved-node=true`; the service itself
+# still decides by the source address (allowed_peer_cidrs), this policy is the second layer. Not applied by the kustomization and not
+# validated by kubeconform (a CRD); check it with your Cilium version. The FQDN egress shows how to narrow the public https rule of
+# networkpolicy.yaml to the hosts the service really needs (use the registries of your policy, OSV and your policy server).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: probation-ingress-nodes
+  namespace: probation
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: probation
+  ingress:
+    - fromNodes:
+        - matchLabels:
+            probation.example/approved-node: "true"
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toFQDNs:
+        - matchName: api.osv.dev
+        - matchName: registry-1.docker.io
+        - matchName: production.cloudfront.docker.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

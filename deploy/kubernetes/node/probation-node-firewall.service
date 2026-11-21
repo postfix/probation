@@ -1,0 +1,27 @@
+# Loads the node's egress and ingress rules at boot, before the kubelet and containerd start pulling. Installed (with the rendered
+# rule files) by install-firewall.sh; `systemctl disable --now probation-node-firewall` plus install-firewall.sh --rollback removes it.
+[Unit]
+Description=Probation node egress and NodePort ingress rules
+# After nftables.service: its start begins with `flush ruleset` on Debian-style systems, which would remove these tables if they were
+# loaded first. Before kubelet and containerd: the runtime never pulls on a node without the rules.
+After=nftables.service
+# PartOf: a stop or restart of nftables.service (its rule file starts with `flush ruleset`, which removes these tables) stops and restarts
+# this unit too, so the tables come back. ReloadPropagatedFrom: so does `systemctl reload nftables`, through ExecReload below.
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Before=kubelet.service containerd.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/probation/node-egress.nft
+ExecStart=/usr/sbin/nft -f /etc/probation/node-ingress.nft
+ExecReload=/usr/sbin/nft -f /etc/probation/node-egress.nft
+ExecReload=/usr/sbin/nft -f /etc/probation/node-ingress.nft
+# a leading `-`: the tables may already be gone (a flush), and a stop must not end in the failed state
+ExecStop=-/usr/sbin/nft delete table inet probation_node_egress
+ExecStop=-/usr/sbin/nft delete table inet probation_node_ingress
+
+[Install]
+WantedBy=multi-user.target

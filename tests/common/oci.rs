@@ -85,6 +85,7 @@ struct State {
     subject_answers: bool,
     foreign: HashMap<String, Vec<u8>>,
     artifact_delay_ms: u64,
+    hold: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
 }
 
 #[derive(Default)]
@@ -210,6 +211,14 @@ impl FakeOci {
     /// A blob download (the registry's, or a foreign layer's) waits this long before it answers (a layer a network away).
     pub fn set_artifact_delay_ms(&self, ms: u64) {
         self.with(|s| s.artifact_delay_ms = ms);
+    }
+
+    /// The next registry blob download opens and then never delivers a byte: the returned pair is (`entered`, `dropped`). `entered` is
+    /// notified once the download is open, `dropped` when the transfer lets go of its body (cancelled, or finished with it). No timing.
+    pub fn hold_next_blob(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let pair = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        self.with(|s| s.hold = Some(pair.clone()));
+        pair
     }
 
     /// A layer served from a URL of its own (a foreign layer); the fake answers it for any credential-free request.
@@ -416,6 +425,26 @@ impl Transport for FakeOci {
         let Some(Parsed::Blob { name, digest }) = stripped.strip_prefix("/v2/").and_then(parse) else { return Err(UpstreamError::Status(404)) };
         let Some(bytes) = state.blobs.get(&(name, digest.to_string())).cloned() else { return Err(UpstreamError::Status(404)) };
         let declared = bytes.len() as u64;
+        if let Some((entered, dropped)) = state.hold.take() {
+            entered.notify_one();
+            return Ok(ArtifactBody { declared_length: Some(declared), stream: probation::upstream::capped(Box::pin(Held(dropped)), req.max_bytes) });
+        }
         Ok(ArtifactBody { declared_length: Some(declared), stream: probation::upstream::capped(Box::pin(futures_util::stream::once(async move { Ok(Bytes::from(bytes)) })), req.max_bytes) })
+    }
+}
+
+/// A body that never yields; letting go of it is the signal.
+struct Held(Arc<tokio::sync::Notify>);
+
+impl futures_util::Stream for Held {
+    type Item = Result<Bytes, UpstreamError>;
+    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.notify_one();
     }
 }

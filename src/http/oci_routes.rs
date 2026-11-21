@@ -81,7 +81,13 @@ fn with_api_version(mut response: Response) -> Response {
 }
 
 /// `Bearer realm=<this firewall's token endpoint>` (the client logs in there with its own credential), or the registry's own Basic.
-async fn challenge_header(app: &App, principal: Option<&crate::managed::Principal>, prefix: &Prefix, scope: Option<&str>, probe: bool) -> String {
+/// The registry host a client named in `ns` (containerd and the Docker daemon send it), in the shape the route already accepted.
+fn ns_of(uri: &axum::http::Uri) -> Option<String> {
+    let (_, ns) = url::form_urlencoded::parse(uri.query()?.as_bytes()).find(|(key, _)| key == "ns")?;
+    (!ns.is_empty() && ns.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_'))).then(|| ns.into_owned())
+}
+
+async fn challenge_header(app: &App, principal: Option<&crate::managed::Principal>, prefix: &Prefix, scope: Option<&str>, probe: bool, ns: Option<&str>) -> String {
     let basic = "Basic realm=\"probation\"".to_owned();
     if app.service_policy().is_some() {
         // A shared service's registry decides: a Basic-only registry gets the Basic challenge. A write that has no credential yet asks
@@ -93,6 +99,13 @@ async fn challenge_header(app: &App, principal: Option<&crate::managed::Principa
     let mut realm = app.config.public_url.clone();
     realm.set_path(&format!("{}/v2/token", prefix.0));
     realm.set_query(None);
+    // A client that used the plain `/v2/` root asks the realm without an `ns` of its own: the realm carries it, so that, with several
+    // registries, the token request selects the same registry as the request it answers.
+    if prefix.0.is_empty()
+        && let Some(ns) = ns
+    {
+        realm.query_pairs_mut().append_pair("ns", ns);
+    }
     match scope {
         Some(scope) => format!("Bearer realm=\"{realm}\",service=\"probation\",scope=\"{scope}\""),
         None => format!("Bearer realm=\"{realm}\",service=\"probation\""),
@@ -375,7 +388,7 @@ pub async fn legacy(State(app): State<Arc<App>>, method: Method, headers: Header
     match result {
         Ok(response) => response,
         Err(error @ (ApiError::Unauthenticated | ApiError::UpstreamUnauthenticated)) => {
-            let challenge = challenge_header(&app, None, &prefix, scope.as_deref(), true).await;
+            let challenge = challenge_header(&app, None, &prefix, scope.as_deref(), true, None).await;
             error_response(error, subject, Some(challenge))
         }
         Err(error) => error_response(error, subject, None),
@@ -431,7 +444,7 @@ pub async fn selected(
         Ok(response) => response,
         Err((error @ (ApiError::UpstreamUnauthenticated | ApiError::Unauthenticated), written)) => {
             let selected = challenge_principal(&app, peer_again, &registry, &headers_again).await;
-            let challenge = challenge_header(&app, selected.as_ref(), &prefix, scope.as_deref(), !written).await;
+            let challenge = challenge_header(&app, selected.as_ref(), &prefix, scope.as_deref(), !written, ns_of(&uri).as_deref()).await;
             error_response(error, subject, Some(challenge))
         }
         Err((error, _)) => error_response(error, subject, None),
@@ -648,7 +661,7 @@ async fn forward_write(app: Arc<App>, peer: Peer, headers: HeaderMap, uri: &axum
     }
     if status == StatusCode::UNAUTHORIZED {
         let scope = scope_of(&parsed, true);
-        let challenge = challenge_header(&app, Some(&principal), prefix, scope.as_deref(), false).await;
+        let challenge = challenge_header(&app, Some(&principal), prefix, scope.as_deref(), false, ns_of(uri).as_deref()).await;
         response.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_str(&challenge).map_err(|_| ApiError::InternalFailure)?);
     }
     Ok(response)

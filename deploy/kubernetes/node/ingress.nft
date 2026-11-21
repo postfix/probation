@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# Node ingress for the Probation NodePort: only the approved nodes' addresses may reach it (a backstop for D1 on a node whose address
+# is public or routed from networks that should not see the service: with a source-rewriting hop or a wrong externalTrafficPolicy the
+# service's own check admits whoever arrives as an approved address, this rule drops everything else before kube-proxy's DNAT).
+# It runs in `prerouting` at raw priority, i.e. BEFORE the NodePort is translated, so the destination port is still the NodePort. Only traffic
+# whose destination is an address of THIS node (`fib daddr type local`) is judged: a pod's connection that merely passes through the node
+# to port 30443 of another host is forwarded traffic and is not touched. Who reaches the NodePort of this node: the approved node
+# addresses and nobody else. A pod on an approved node that connects to this node's address arrives with its node's address after the
+# CNI's masquerade (approved) or with its pod address (dropped here and, if it is not listed, refused by the service as well).
+#
+# Edit the defines (install-firewall.sh does it from arguments), then   nft -c -f ingress.nft   and   nft -f ingress.nft
+define nodeport = 30443
+define approved4 = { 192.0.2.11, 192.0.2.12, 192.0.2.13 }
+define approved6 = { 2001:db8:11::1 }
+
+table inet probation_node_ingress
+delete table inet probation_node_ingress
+table inet probation_node_ingress {
+  chain prerouting {
+    type filter hook prerouting priority raw; policy accept;
+    fib daddr type local tcp dport $nodeport ip saddr $approved4 accept
+    fib daddr type local tcp dport $nodeport ip6 saddr $approved6 accept
+    fib daddr type local tcp dport $nodeport drop
+  }
+}

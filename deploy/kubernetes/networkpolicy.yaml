@@ -1,0 +1,98 @@
+# Default deny for the namespace, then exactly what the service needs. Enforcement needs a CNI that implements NetworkPolicy;
+# a cluster without one enforces nothing here (docs/operations.md, "NetworkPolicy is not host control"). The nodes' own egress is
+# a host matter (node/egress.nft): a pod policy cannot restrict the container runtime on the node.
+#
+# CNI dependence (unexecuted here): an `ipBlock` that names a node address matches node traffic on some CNIs (Calico by default) and
+# not on others (Cilium needs policy-cidr-match-mode "nodes", or the label-based optional/cilium-networkpolicy.yaml). When a CNI does
+# not match it, approved nodes are refused at the policy: an outage, never a leak, and the service's own source check still decides.
+# IPv6 is denied on purpose (the Service is SingleStack IPv4): no v6 peer appears below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: probation
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: probation-ingress
+  namespace: probation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: probation
+  policyTypes: ["Ingress"]
+  ingress:
+    # The approved nodes (the same addresses as allowed_peer_cidrs in config.toml), on the service port only. Kubelet probes
+    # come from the pod's own node; the usual CNIs (Calico, Cilium) allow that regardless of policy, check yours.
+    - from:
+        - ipBlock:
+            cidr: 192.0.2.11/32
+        - ipBlock:
+            cidr: 192.0.2.12/32
+        - ipBlock:
+            cidr: 192.0.2.13/32
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: probation-egress
+  namespace: probation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: probation
+  policyTypes: ["Egress"]
+  egress:
+    # Cluster DNS: the kube-dns pods, and NodeLocal DNSCache's link-local address where a cluster runs it.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Why any public https: the service fetches package metadata and artifacts from the registries of the org's policy, the storage
+    # hosts they redirect to (a CDN with changing addresses), and api.osv.dev. A NetworkPolicy cannot name hosts, so this is the
+    # narrowest portable rule; a CNI with FQDN policy can narrow it (optional/cilium-networkpolicy.yaml). The private, link-local
+    # (cloud metadata), shared, loopback, documentation, benchmarking, multicast and reserved ranges are excluded.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 0.0.0.0/8
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 198.18.0.0/15
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - protocol: TCP
+          port: 443
+    # The policy server. Replace with its address when it is private (a public one is already covered by the rule above).
+    - to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+      ports:
+        - protocol: TCP
+          port: 443

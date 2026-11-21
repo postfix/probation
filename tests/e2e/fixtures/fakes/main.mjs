@@ -14,7 +14,7 @@
 //   POST /nuget/publish {...}         NuGet.publish; answers the package version made
 //   POST /maven/publish {...}         Maven.publish; answers the version (or snapshot build) made
 //   POST /oci/publish-foreign {repo, tag, image}   the same image with its layer named by a download URL on mcr.microsoft.com (a foreign layer)
-//   POST /oci/publish {repo, tag, image}   serves the REAL tiny image hello-1 or hello-2 of fixtures/oci as repo:tag on the fake Docker Hub
+//   POST /oci/publish {repo, tag, image, host?}   (host "ghcr.io": the second registry, whose repositories are its own) serves the REAL tiny image hello-1 or hello-2 of fixtures/oci as repo:tag on the fake Docker Hub
 //   POST /oci/move {repo, tag, image}      points a tag at another image
 //   GET  /oci/writes                       every write the fake registry-1.docker.io received (method, path, authorization, bytes)
 //   GET  /oci/seen                         every request any of its three hosts received (host, method, path, authorization)
@@ -95,6 +95,7 @@ const hosts = {
   "auth.docker.io": fakes.oci,
   "production.cloudfront.docker.com": fakes.oci,
   "mcr.microsoft.com": fakes.oci,
+  "ghcr.io": fakes.oci,
   "files.pythonhosted.org": fakes.pypi,
   "api.osv.dev": fakes.osv,
   "api.pwnedpasswords.com": fakes.hibp,

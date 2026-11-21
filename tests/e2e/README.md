@@ -286,6 +286,25 @@ exposes that tunnel to the network segment: bind a private interface only.
   and a control without `server` proves the recorder sees a fallback. It fails if
   `containerd`/`ctr` are absent. Findings: `evidence/spike-native-cluster.md`.
 
+## One cluster endpoint (slice 26)
+
+`E2E-service-cluster` (`--only E2E-service-cluster`, own stack, in no suite: it needs the pinned `containerd`, `ctr` and `crictl` on the host, podman
+and root-less network namespaces, none of which the hosted jobs of the shared suites provide; `.github/workflows/cluster.yml` runs it with
+containerd 2.2.0 installed) runs the shared service with a real policy server and TWO fake registries (the Docker Hub and `ghcr.io`, each
+with repositories of its own), and the pinned containerd 2.2.0 as the node's runtime, configured by the SHIPPED
+`deploy/kubernetes/node/install-node.sh` (per-registry routes, the `imports` line, the CA pin) and checked by `verify-node.sh` against the
+real runtime's effective configuration. A recording proxy sees every connection the runtime makes: anything but the service is a
+direct-origin attempt and fails the scenario. Steps: the shipped pod spec started by `podman kube play` (`fixtures/kube-play/render.py`
+lists its test-only changes; the port is bound to loopback), fresh tag and digest allow and deny with the origin healthy, two registries
+with a same-named repository that never cross (per-registry routes and the `?ns=` layout), an unserved registry refused, a credentialed
+pull, a legacy `certs.d` layout reproduced and refused, CA pinning against a second CA (`pin_legacy`), a tag judged by the digest it
+names now, the cached boundary, the service image preloaded by digest, `crictl pull` through the CRI plugin's image service of a second containerd (mapped and unmapped registries, credentials), main containerd configs of version 2 and 3 dumped before and after the installer, the CA pin proved with a populated system-style certificate directory, service down, the control layout without `server`, an unapproved
+peer refused with `NETWORK_NOT_ALLOWED` and the same host admitted through a source-rewriting hop, and the rules of
+`deploy/kubernetes/node/install-firewall.sh` loaded into a throwaway network namespace (`fixtures/node-egress`, its base image pinned by
+digest). `tests/e2e/cluster/run-kind-lane.sh` is the kind and CRI lane: AUTHORED, not run. What none of this shows (no Kubernetes here)
+is listed in `docs/plans/package-firewall-mvp-lf/evidence/slice-26.md`. Static checks that run anywhere:
+`python3 tests/e2e/native/check_kubernetes.py [--deployable]` and the native test list.
+
 ## Native service lifecycle (slice 25)
 
 `E2E-service-native` (only with `--client-host native`) installs the REAL `probation` binary as a service under the host's own service

@@ -380,6 +380,47 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         if code == 0 or tool not in out:
             failed.append(f"pins.json {tool}={bad_value}")
             print(f"BYPASS: pins.json {tool}={bad_value}: {out[-200:]}")
+    # Slice 26: cluster.yml is held to the same rules (pins, least privilege, pipefail, hashed downloads, the job set).
+    good_cluster = (root / ".github/workflows/cluster.yml").read_text(encoding="utf-8")
+    def csub(old, new, count=1):
+        assert old in good_cluster, f"cluster mutation anchor missing: {old!r}"
+        return good_cluster.replace(old, new, count)
+    cluster_mutations = {
+        "pull_request_target": csub("on:\n  pull_request:\n", "on:\n  pull_request_target:\n  pull_request:\n"),
+        "workflow_run trigger": csub("  workflow_dispatch:\n\npermissions", "  workflow_dispatch:\n  workflow_run:\n    workflows: [Rust]\n\npermissions"),
+        "an unfiltered pull_request": csub("    paths:\n      - deploy/kubernetes/**\n      - src/http/**\n      - src/oci/**\n      - tests/e2e/**\n      - tests/cluster_peer.rs\n      - tests/node_scripts.rs\n      - .github/workflows/cluster.yml\n      - docs/operations.md\n", ""),
+        "write permissions": csub("permissions:\n  contents: read\n\ndefaults", "permissions:\n  contents: write\n\ndefaults"),
+        "a job-level permission": csub("    timeout-minutes: 15\n", "    timeout-minutes: 15\n    permissions:\n      contents: write\n"),
+        "no pipefail": csub("shell: bash -eo pipefail {0}", "shell: bash -e {0}"),
+        "an unpinned action": csub("actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0", "actions/setup-python@v5", 1),
+        "checkout keeps credentials": csub("        with:\n          persist-credentials: false\n", "", 1),
+        "a download with no hash check": csub('          echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check\n', "", 1),
+        "a pipe into a shell": csub('          chmod +x "$RUNNER_TEMP/bin/kubectl"\n          curl', '          curl -fsSL https://example.test/x | sh\n          curl', 1),
+        "|| true on a check": csub("      - run: python tests/e2e/native/check_kubernetes.py\n", "      - run: python tests/e2e/native/check_kubernetes.py || true\n"),
+        "a step that may be skipped": csub("      - run: python tests/e2e/native/check_kubernetes.py\n", "      - if: github.event_name == 'schedule'\n        run: python tests/e2e/native/check_kubernetes.py\n"),
+        "continue-on-error": csub("    timeout-minutes: 40\n", "    timeout-minutes: 40\n    continue-on-error: true\n"),
+        "no timeout": csub("    timeout-minutes: 40\n", ""),
+        "the kind job removed": good_cluster[:good_cluster.index("  # NOT RUN BY ANYBODY YET. kind with")] + good_cluster[good_cluster.index("  # NOT RUN BY ANYBODY YET. One kind node"):],
+        "an extra job": good_cluster + "\n  extra:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n        with:\n          persist-credentials: false\n      - run: echo hi\n",
+        "the sysctl step removed": csub("      # ubuntu-24.04 restricts unprivileged user namespaces; the real-TCP peer test (tests/cluster_peer.rs) needs them.\n      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n      - run: cargo test --locked --test cluster_peer", "      - run: cargo test --locked --test cluster_peer"),
+        "the ignored test not included": csub("cluster_peer -- --include-ignored", "cluster_peer"),
+        "kubeconform not strict": csub("kubeconform -strict -summary", "kubeconform -summary"),
+        "one scenario dropped": csub("--only E2E-service-cluster-probe --only E2E-service-cluster", "--only E2E-service-cluster"),
+        "a secret": csub("      - run: sh -n deploy/kubernetes/node/install-node.sh", "      - run: echo ${{ secrets.TOKEN }}\n      - run: sh -n deploy/kubernetes/node/install-node.sh"),
+        "curl -k": csub('curl -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"', 'curl -k -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"'),
+    }
+    for name, text in cluster_mutations.items():
+        extra_checks.append(f"cluster.yml: {name}")
+        (d / "cluster.yml").write_text(text, encoding="utf-8")
+        code, out = run_checker("--cluster", str(d / "cluster.yml"))
+        if code == 0:
+            failed.append(f"cluster.yml: {name}")
+            print(f"BYPASS: cluster.yml {name}")
+    (d / "cluster.yml").write_text(good_cluster, encoding="utf-8")
+    code, out = run_checker("--cluster", str(d / "cluster.yml"))
+    if code != 0:
+        failed.append("the known-good cluster.yml")
+        print(f"the known-good cluster.yml must pass: {out}")
     # G10: a scenario meta inside a block comment declares nothing.
     scenarios = d / "scenarios"
     scenarios.mkdir()

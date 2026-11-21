@@ -1,0 +1,159 @@
+# ONE active store owner (02-architecture.md: one Recreate Deployment, one ReadWriteOncePod claim). The service keeps an embedded
+# database in its data directory and refuses a second owner (an exclusive lock), so this is a single-replica Deployment with strategy
+# Recreate over a ReadWriteOncePod claim (pvc.yaml): Kubernetes itself refuses to mount the claim into a second pod, on any node, while
+# the first one exists. Never raise `replicas`; scale-out is a different design.
+#
+#  * Recreate stops the old pod and waits for it to be gone before it creates the new one (never two at once), and a bad image or
+#    configuration cannot wedge a rollout: with the old pod already gone, applying a corrected manifest simply creates the next pod.
+#  * After a node loss the Deployment creates a replacement pod at once; it stays Pending/ContainerCreating on the ReadWriteOncePod
+#    claim until the old pod is confirmed gone. That is the fence: docs/operations.md, "Fencing and replacement".
+#  * The claim (pvc.yaml) is NOT part of the kustomization, so `kubectl delete -k` and a pruning controller leave the data alone.
+#
+# The two image references are the same digest (a digest of a build of this repository); the placeholder below never exists and
+# `check_kubernetes.py --deployable` refuses it. Replace it with `kustomize edit set image` or by hand in BOTH places.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probation
+  namespace: probation
+  labels:
+    app.kubernetes.io/name: probation
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: probation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: probation
+    spec:
+      serviceAccountName: probation
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      # The service pool: nodes the operator labelled and tainted for this one workload.
+      nodeSelector:
+        probation.example/service-node: "true"
+      tolerations:
+        - key: probation.example/service
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # With fsGroup set the kubelet makes every file of a Secret volume group-readable, and the service refuses a service key
+        # that is not private (mode 0600). The init container copies the key into an in-memory volume as a private file.
+        - name: stage-service-key
+          image: registry.example.invalid/probation/probation@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ec", "umask 077; cp /secrets/service-key/service-key /run/probation/service.key; chmod 0600 /run/probation/service.key"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: service-key
+              mountPath: /secrets/service-key
+              readOnly: true
+            - name: runtime
+              mountPath: /run/probation
+      containers:
+        - name: probation
+          image: registry.example.invalid/probation/probation@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "--config", "/etc/probation/config.toml"]
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+          # The kubelet probes from the node's own address and sends the pod address as Host. /health/* answers every peer and
+          # is exempt from the Host check (only the detail of /health/ready is for admitted peers), so no probe needs a header.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: https
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/probation
+              readOnly: true
+            - name: tls
+              mountPath: /etc/probation/tls
+              readOnly: true
+            - name: runtime
+              mountPath: /run/probation
+            - name: data
+              mountPath: /var/lib/probation
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: probation-config
+            defaultMode: 0444
+        - name: tls
+          secret:
+            secretName: probation-tls
+            defaultMode: 0440
+        - name: service-key
+          secret:
+            secretName: probation-service-key
+            defaultMode: 0400
+        - name: runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: data
+          persistentVolumeClaim:
+            claimName: probation-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

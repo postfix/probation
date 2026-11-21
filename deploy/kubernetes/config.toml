@@ -1,0 +1,39 @@
+# The service's configuration file, turned into the ConfigMap `probation-config-<hash>` by the kustomization's configMapGenerator: the
+# name carries a hash of this file, so editing it (a node added to allowed_peer_cidrs) changes the pod template and the Deployment rolls
+# by itself (a brief outage: Recreate; docs/operations.md, "Changing the approved nodes"). Everything here is public; the two secrets
+# (the service key and the TLS key) are Secrets the operator creates, never part of these manifests.
+#
+# Replace before applying (the values below are documentation addresses and names that never route):
+#   public_url          the one endpoint every approved node's container runtime uses (DNS name of the service pool + the NodePort)
+#   allowed_peer_cidrs  the node addresses (one /32 or /128 each) of the APPROVED nodes, as the service sees them with
+#                       externalTrafficPolicy Local; the same list is the ipBlocks of networkpolicy.yaml. NEVER a pod range, a node
+#                       subnet that holds an unapproved node, or the address of a balancer, NAT gateway or proxy.
+#   server_url          the policy server (an https origin)
+# `trusted_proxies` stays absent: nothing in front of this listener may speak for a client.
+listen = "0.0.0.0:8443"
+public_url = "https://probation.cluster.example:30443"
+data_dir = "/var/lib/probation"
+tls_cert_path = "/etc/probation/tls/tls.crt"
+tls_key_path = "/etc/probation/tls/tls.key"
+allowed_peer_cidrs = ["192.0.2.11/32", "192.0.2.12/32", "192.0.2.13/32"]
+cooldown_seconds = 86400
+metadata_ttl_seconds = 300
+metadata_max_age_seconds = 86400
+cache_max_bytes = 107374182400
+memory_cache_max_bytes = 268435456
+max_artifact_bytes = 5368709120
+max_metadata_bytes = 67108864
+max_blocklist_bytes = 134217728
+max_upstream_requests = 32
+max_artifact_downloads = 8
+download_wait_seconds = 5
+max_download_waiters = 64
+max_active_requests = 1024
+max_references_per_project = 20000
+osv_cache_ttl_seconds = 300
+osv_request_timeout_ms = 2000
+osv_mode = "enforce"
+
+[service_policy]
+server_url = "https://policy.example.org"
+service_key_file = "/run/probation/service.key"

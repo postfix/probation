@@ -1,8 +1,7 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import http from "node:http";
-import net from "node:net";
 import { join } from "node:path";
+import { checkPinned, hostNames, startNode } from "../harness/containerd-node.mjs";
 import { startCommonService } from "../harness/service-setup.mjs";
 
 // Slice 29 risk spike (C1023): does containerd route an image pull for the ORIGINAL registry (docker.io) to the shared
@@ -24,51 +23,8 @@ export const meta = {
 const SERVICE_HOST = "fw-standalone.e2e.test";
 const IMAGE = "docker.io/library/alpine:latest";
 
-// ctr must not block this process (spawnSync would freeze the proxy that serves it).
-function ctr(args, env, timeout = 120_000) {
-  return new Promise((resolve) => {
-    const child = spawn("ctr", args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout += d; });
-    child.stderr.on("data", (d) => { stderr += d; });
-    let killed = false;
-    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, timeout);
-    child.on("close", (status) => { clearTimeout(timer); resolve({ status: status ?? 1, stdout, stderr, killed }); });
-  });
-}
-
-function recordingProxy(bridgePort) {
-  const connects = [];
-  const server = http.createServer((_, res) => res.writeHead(405).end());
-  server.on("connect", (req, client, head) => {
-    const target = req.url;
-    connects.push(target);
-    if (!target.startsWith(`${SERVICE_HOST}:`)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
-    const bridge = net.connect(bridgePort, "127.0.0.1", () => bridge.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
-    let answered = false;
-    bridge.on("data", (chunk) => {
-      if (answered) return client.write(chunk);
-      answered = true;
-      const at = chunk.indexOf("\r\n\r\n");
-      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (at + 4 < chunk.length) client.write(chunk.subarray(at + 4));
-      if (head.length) bridge.write(head);
-      client.on("data", (d) => bridge.write(d));
-    });
-    bridge.on("error", () => client.destroy());
-    client.on("error", () => bridge.destroy());
-    bridge.on("close", () => client.destroy());
-    client.on("close", () => bridge.destroy());
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ connects, port: server.address().port, close: () => server.close() })));
-}
-
 export default async function clusterProbe(h) {
-  for (const tool of ["containerd", "ctr"]) {
-    h.expect(spawnSync(tool, ["--version"], { encoding: "utf8" }).status === 0, `${tool} is installed (a missing runtime fails the probe, it never skips)`);
-  }
-  const version = spawnSync("containerd", ["--version"], { encoding: "utf8" }).stdout;
-  h.expect(version.includes("1c4457e00facac03ce1d75f7b6777a7a851e5c41"), `containerd is the pinned 2.2.0 commit: ${version.trim()}`);
+  checkPinned(h);
   const standalone = join(h.stack.work, "firewall-standalone.toml");
   writeFileSync(standalone, readFileSync(standalone, "utf8").replace(/^cooldown_seconds = .*$/m, "cooldown_seconds = 0"));
   await startCommonService(h);
@@ -77,35 +33,17 @@ export default async function clusterProbe(h) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "hosts", "_default"), { recursive: true });
   mkdirSync(join(dir, "hosts-none", "_default"), { recursive: true });
-  const sock = join(dir, "c.sock");
   const ca = join(h.stack.work, "ca", "ca.pem");
-  writeFileSync(join(dir, "config.toml"), `version = 3
-root = "${dir}/root"
-state = "${dir}/state"
-disabled_plugins = ["io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images", "io.containerd.snapshotter.v1.overlayfs", "io.containerd.snapshotter.v1.blockfile", "io.containerd.snapshotter.v1.erofs", "io.containerd.nri.v1.nri"]
-[grpc]
-  address = "${sock}"
-  uid = ${process.getuid()}
-  gid = ${process.getgid()}
-[ttrpc]
-  address = "${sock}.ttrpc"
-  uid = ${process.getuid()}
-  gid = ${process.getgid()}
-`);
   // C1023's candidate: the service is the `server`, capabilities pull+resolve, the e2e CA trusted.
   writeFileSync(join(dir, "hosts", "_default", "hosts.toml"), `server = "https://${SERVICE_HOST}"\ncapabilities = ["pull", "resolve"]\nca = "${ca}"\n`);
   // Control: the same runtime without a `server` goes to the origin, which proves the recorder would see a fallback.
   writeFileSync(join(dir, "hosts-none", "_default", "hosts.toml"), `capabilities = ["pull", "resolve"]\nca = "${ca}"\n`);
 
-  const proxy = await recordingProxy(h.stack.bridgePort);
-  const daemon = spawn("containerd", ["-c", join(dir, "config.toml")], { stdio: ["ignore", "ignore", "pipe"] });
-  let daemonLog = "";
-  daemon.stderr.on("data", (d) => { daemonLog += d; });
+  const node = await startNode(h, join(dir, "node"), SERVICE_HOST);
+  const { proxy } = node;
   try {
-    await h.waitFor("containerd serves", async () => spawnSync("ctr", ["-a", sock, "version"], { encoding: "utf8" }).status === 0, { timeout: 30_000 });
-    const env = { ...process.env, HTTPS_PROXY: `http://127.0.0.1:${proxy.port}`, https_proxy: `http://127.0.0.1:${proxy.port}`, HTTP_PROXY: "", http_proxy: "", NO_PROXY: "", no_proxy: "" };
-    const fetch = (hosts, timeout) => ctr(["--debug", "-a", sock, "content", "fetch", "--hosts-dir", join(dir, hosts), IMAGE], env, timeout);
-    const hosts = (list) => [...new Set(list.map((t) => t.split(":")[0]))].sort();
+    const fetch = (hostsName, timeout) => node.fetch(join(dir, hostsName), IMAGE, timeout);
+    const hosts = hostNames;
 
     // The service's own request log: count of HEAD requests it decided as 200 (its log carries the ecosystem and the repository, not the verb's path).
     const decidedHeads = () => {
@@ -149,9 +87,7 @@ disabled_plugins = ["io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images
     h.log(`control (no server) contacted: ${direct}`);
     h.expect(direct.some((t) => /docker\.io|docker\.com/.test(t)), "the control run attempts the origin (registry-1.docker.io), so the recorder detects fallback");
   } finally {
-    daemon.kill("SIGTERM");
-    proxy.close();
-    await new Promise((resolve) => (daemon.exitCode === null ? daemon.once("exit", resolve) : resolve()));
+    await node.stop();
     rmSync(dir, { recursive: true, force: true });
   }
 }

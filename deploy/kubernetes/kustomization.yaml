@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: probation
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - admission-policy.yaml
+  - pdb.yaml
+  - deployment.yaml
+# The name gets a hash suffix on purpose (do not set disableNameSuffixHash): a changed config.toml renames the ConfigMap, which
+# changes the pod template, which rolls the Deployment.
+configMapGenerator:
+  - name: probation-config
+    files:
+      - config.toml

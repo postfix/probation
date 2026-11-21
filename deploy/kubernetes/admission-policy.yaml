@@ -1,0 +1,37 @@
+# A backstop for D1 in the cluster itself: the namespace may hold exactly one Service, named `probation`, a NodePort with
+# `externalTrafficPolicy: Local` and no externalIPs. A `kubectl edit`, an overlay or a second Service (a LoadBalancer with the default
+# `Cluster` policy) is refused at admission instead of silently admitting every host that can reach any NodePort. Needs the
+# ValidatingAdmissionPolicy API (admissionregistration.k8s.io/v1, GA in Kubernetes 1.30).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: probation-one-local-service
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["services"]
+  validations:
+    - expression: "object.metadata.name == 'probation'"
+      message: "the probation namespace holds exactly one Service, named probation (D1: no second way in)"
+    - expression: "object.spec.type == 'NodePort'"
+      message: "the probation Service is a NodePort"
+    - expression: "has(object.spec.externalTrafficPolicy) && object.spec.externalTrafficPolicy == 'Local'"
+      message: "externalTrafficPolicy must be Local: with Cluster every host that reaches a NodePort is admitted as an approved node (D1)"
+    - expression: "!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0"
+      message: "the probation Service has no externalIPs"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: probation-one-local-service
+spec:
+  policyName: probation-one-local-service
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: probation

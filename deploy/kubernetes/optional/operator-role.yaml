@@ -1,0 +1,26 @@
+# Guidance, not applied by the kustomization: what the people who run the service need in namespace `probation` and nothing more.
+# `pods/portforward`, `pods/exec` and `pods/ephemeralcontainers` are deliberately absent: a connection made through any of them
+# arrives at the service from the pod's own loopback address, which the service always admits (a loopback peer cannot be anyone else),
+# so holding one of them is holding an approved node. Do not grant them in this namespace, to people, controllers or debug roles.
+# The same is true of `patch` or `update` on `deployments` (a sidecar or a changed command puts a process on that loopback): whoever can change
+# the Deployment can run anything next to the service and belongs to the cluster-admin trust boundary, so this Role is read-only on it; the
+# image is changed by the people who may apply the kustomization, who are cluster administrators for this purpose. Deleting a pod only makes
+# the Deployment create the same pod again (the fence procedure), so it stays.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: probation-operator
+  namespace: probation
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]

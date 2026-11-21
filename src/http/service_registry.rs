@@ -13,7 +13,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use probation_policy::{Ecosystem, api::ServicePolicySnapshot};
+use probation_policy::{Ecosystem, api::{RegistryDescriptor, RegistryId, ServicePolicySnapshot}};
 use std::sync::Arc;
 
 pub async fn respond(
@@ -92,6 +92,38 @@ struct SelectedRegistry {
     uri: Uri,
 }
 
+/// The one registry of a family, or none when there are several (which one is not a guess).
+fn ns_registry<'a>(registries: impl Iterator<Item = &'a RegistryDescriptor>, ns: &str) -> Result<RegistryId, ApiError> {
+    only_registry(registries.filter(|item| oci_hosts(item.target_url.as_deref()).iter().any(|host| host == ns)))
+}
+
+fn only_registry<'a>(mut registries: impl Iterator<Item = &'a RegistryDescriptor>) -> Result<RegistryId, ApiError> {
+    let registry = registries.next().ok_or(ApiError::NotFound)?.registry;
+    if registries.next().is_some() {
+        return Err(ApiError::NotFound);
+    }
+    Ok(registry)
+}
+
+/// The value of the query's `ns`, lower case (its shape is checked by the OCI route itself).
+fn oci_ns(query: Option<&str>) -> Option<String> {
+    query.and_then(|query| url::form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == "ns")).map(|(_, value)| value.to_ascii_lowercase())
+}
+
+/// The names a client uses for an OCI registry: the host (and port) of its target, and for a registry that targets Docker Hub (by any of its host names) the three names Hub goes by.
+fn oci_hosts(target: Option<&str>) -> Vec<String> {
+    const HUB: [&str; 3] = ["docker.io", "registry-1.docker.io", "index.docker.io"];
+    let Some(target) = target else { return HUB.iter().map(|name| (*name).to_owned()).collect() };
+    let Ok(url) = url::Url::parse(target) else { return Vec::new() };
+    let Some(host) = url.host_str() else { return Vec::new() };
+    let host = host.to_ascii_lowercase();
+    let mut names = vec![match url.port() { Some(port) => format!("{host}:{port}"), None => host.clone() }];
+    if matches!(host.as_str(), "registry-1.docker.io" | "index.docker.io" | "registry.hub.docker.com") {
+        names.extend(HUB.iter().map(|name| (*name).to_owned()));
+    }
+    names
+}
+
 fn classify_selected_registry(
     request: &Request,
     policy: &ServicePolicySnapshot,
@@ -147,14 +179,17 @@ fn classify_selected_registry(
         } else {
             return Err(ApiError::NotFound);
         };
-        let mut registries = policy
+        let registries = policy
             .registries
             .iter()
             .filter(|registry| registry.ecosystem == ecosystem);
-        let registry = registries.next().ok_or(ApiError::NotFound)?.registry;
-        if registries.next().is_some() {
-            return Err(ApiError::NotFound);
-        }
+        let registry = match (ecosystem, oci_ns(request.uri().query())) {
+            // `ns` names the registry the client meant (containerd and the Docker daemon send it): the one registry whose configured
+            // host it is, or none (never another registry that happens to have the same repository path).
+            // Two registries on one host are ambiguous, and an ambiguity is a refusal, never a guess (`/registry/oci/{id}/v2` disambiguates).
+            (Ecosystem::Oci, Some(ns)) => ns_registry(registries, &ns)?,
+            _ => only_registry(registries)?,
+        };
         (ecosystem, registry, rest)
     };
     if !policy
@@ -394,5 +429,43 @@ mod delete_route_tests {
                 "the foundation must distinguish DELETE routes before refusing unsupported writes"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ns_tests {
+    use super::*;
+
+    #[test]
+    fn a_percent_encoded_ns_with_a_port_names_the_registry() {
+        // Go's url.Values.Encode (containerd, the Docker daemon) writes the colon of `host:5000` as %3A.
+        assert_eq!(oci_ns(Some("ns=localhost%3A5000")).as_deref(), Some("localhost:5000"));
+        assert_eq!(oci_ns(Some("n=5&ns=Docker.IO")).as_deref(), Some("docker.io"), "case folds, other keys are skipped");
+        assert_eq!(oci_ns(Some("n=5")), None);
+        assert!(oci_hosts(Some("https://registry.example:5000/repo/")).contains(&"registry.example:5000".to_owned()));
+    }
+
+    #[test]
+    fn a_registry_targeting_any_docker_hub_host_answers_to_every_hub_name() {
+        // containerd sends `ns=docker.io` for Hub; a registry that targets Hub through another of its host names must still serve it (L-1).
+        for target in ["https://registry-1.docker.io", "https://index.docker.io", "https://registry.hub.docker.com"] {
+            let hosts = oci_hosts(Some(target));
+            for name in ["docker.io", "registry-1.docker.io", "index.docker.io"] {
+                assert!(hosts.contains(&name.to_owned()), "{target} answers to {name}: {hosts:?}");
+            }
+        }
+        assert!(!oci_hosts(Some("https://mirror.example")).contains(&"docker.io".to_owned()), "an unrelated host is not Hub");
+    }
+
+    fn oci(id: u64, url: &str) -> RegistryDescriptor {
+        RegistryDescriptor { registry: RegistryId(id), ecosystem: Ecosystem::Oci, target_url: Some(url.to_owned()), trusted: false, registry_private_cidrs: vec![], deletion_scopes: vec![], osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None }
+    }
+
+    #[test]
+    fn two_registries_on_one_host_are_an_ambiguity_not_a_first_match() {
+        let both = [oci(1, "https://ghcr.io/org-a"), oci(2, "https://ghcr.io/org-b"), oci(3, "https://quay.io")];
+        assert!(matches!(ns_registry(both.iter(), "ghcr.io"), Err(ApiError::NotFound)), "two registries claim ghcr.io");
+        assert_eq!(ns_registry(both.iter(), "quay.io").unwrap(), RegistryId(3), "a unique host still routes");
+        assert!(matches!(ns_registry(both.iter(), "other.io"), Err(ApiError::NotFound)));
     }
 }

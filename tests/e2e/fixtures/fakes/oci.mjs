@@ -18,14 +18,20 @@ const MANIFEST = "application/vnd.oci.image.manifest.v1+json";
 const REGISTRY = "registry-1.docker.io";
 const AUTH = "auth.docker.io";
 const STORAGE = "production.cloudfront.docker.com";
+const SECOND = "ghcr.io"; // a second registry with repositories of its own and its own token endpoint (/token on the same host)
 const FOREIGN = "mcr.microsoft.com"; // where a foreign layer's own URL points (the firewall's default foreign-layer host list names it)
 
 export class Oci {
-  constructor() {
+  constructor(second = false) {
+    this.second = second; // true: this object IS the second registry (host ghcr.io); false: the fake Docker Hub, which owns one
+    this.auth = second ? SECOND : AUTH;
+    this.regHost = second ? SECOND : REGISTRY;
     this.reset();
   }
 
   reset() {
+    if (!this.second) this.other = new Oci(true);
+    else this.other = null;
     this.repos = new Map(); // repo -> {tags: Map(tag -> digest), manifests: Map(digest -> {bytes, media}), blobs: Map(digest -> bytes)}
     this.seen = []; // every request: {host, method, path, authorization}
     this.tokens = []; // every token request: {scope, service, basic}
@@ -42,11 +48,13 @@ export class Oci {
 
   /// A small public image every scenario can read (the registry-loaded probe of the service scenario asks for it).
   seed() {
+    if (this.second) return;
     this.publish({ repo: "library/alpine", tag: "latest", image: "hello-1" });
   }
 
   /// Serves the real files of fixture image `image` (hello-1 or hello-2) as `repo:tag`.
-  publish({ repo, tag, image = "hello-1" }) {
+  publish({ repo, tag, image = "hello-1", host }) {
+    if (host === SECOND) return this.other.publish({ repo, tag, image });
     const read = (kind) => readFileSync(join(FIXTURES, `${image}-${kind}`));
     const [manifest, config, layer] = [read("manifest"), read("config"), read("layer")];
     const target = this.repo(repo);
@@ -76,8 +84,8 @@ export class Oci {
   }
 
   /// A tag that points at another image (a moved tag).
-  move({ repo, tag, image }) {
-    return this.publish({ repo, tag, image });
+  move({ repo, tag, image, host }) {
+    return this.publish({ repo, tag, image, host });
   }
 
   bearer(req) {
@@ -86,7 +94,7 @@ export class Oci {
   }
 
   challenge(host) {
-    return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${AUTH}/token",service="registry.docker.io"`, "content-type": "application/json" }, body: JSON.stringify({ errors: [{ code: "UNAUTHORIZED" }] }) };
+    return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${this.auth}/token",service="registry.docker.io"`, "content-type": "application/json" }, body: JSON.stringify({ errors: [{ code: "UNAUTHORIZED" }] }) };
   }
 
   token(req, url) {
@@ -109,10 +117,17 @@ export class Oci {
   handle(req, path, host, body) {
     const url = new URL(path, `https://${host}`);
     this.seen.push({ host, method: req.method, path: url.pathname, authorization: req.headers.authorization ?? null });
+    if (host === SECOND && !this.second) return this.other.handleSecond(req, url, body, this.seen);
     if (host === AUTH) return url.pathname === "/token" ? this.token(req, url) : json({}, 404);
     if (host === STORAGE) return this.storage(url);
     if (host === FOREIGN) return this.foreign(url);
     return this.registry(req, url, body);
+  }
+
+  /// A request for the second registry's host: its own token endpoint and its own repositories (never the Hub's).
+  handleSecond(req, url, body, seen) {
+    seen.push({ host: SECOND, method: req.method, path: url.pathname, authorization: req.headers.authorization ?? null });
+    return url.pathname === "/token" ? this.token(req, url) : this.registry(req, url, body);
   }
 
   foreign(url) {
@@ -122,7 +137,7 @@ export class Oci {
 
   storage(url) {
     const digest = url.pathname.replace(/^\/registry-v2\//, "");
-    for (const repo of this.repos.values()) {
+    for (const repo of [...this.repos.values(), ...(this.other ? this.other.repos.values() : [])]) {
       const bytes = repo.blobs.get(digest);
       if (bytes) return { status: 200, headers: { "content-type": "application/octet-stream" }, body: bytes };
     }
@@ -139,7 +154,7 @@ export class Oci {
     if (uploads) return this.upload(req, url, uploads[1], uploads[2], token, body);
     if (!m) return json({ errors: [{ code: "NAME_UNKNOWN" }] }, 404);
     const [, name, kind, rest] = m;
-    if (!this.allowed(name, token)) return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${AUTH}/token",service="registry.docker.io",scope="repository:${name}:pull"`, "content-type": "application/json" }, body: JSON.stringify({ errors: [{ code: "UNAUTHORIZED" }] }) };
+    if (!this.allowed(name, token)) return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${this.auth}/token",service="registry.docker.io",scope="repository:${name}:pull"`, "content-type": "application/json" }, body: JSON.stringify({ errors: [{ code: "UNAUTHORIZED" }] }) };
     const repo = this.repos.get(name);
     if (req.method === "PUT" || req.method === "DELETE") return this.write(req, url, name, kind, rest, token, body);
     if (!repo) return json({ errors: [{ code: "NAME_UNKNOWN" }] }, 404);
@@ -159,7 +174,7 @@ export class Oci {
       const last = url.searchParams.get("last");
       const from = last ? all.findIndex((tag) => tag > last) : 0;
       const page = from < 0 ? [] : all.slice(from, from + n);
-      const headers = page.length && from + n < all.length ? { link: `<https://${REGISTRY}/v2/${name}/tags/list?last=${page.at(-1)}&n=${n}>; rel="next"` } : {};
+      const headers = page.length && from + n < all.length ? { link: `<https://${this.regHost}/v2/${name}/tags/list?last=${page.at(-1)}&n=${n}>; rel="next"` } : {};
       return json({ name, tags: page }, 200, headers);
     }
     return json({ errors: [{ code: "UNSUPPORTED" }] }, 404);
@@ -170,17 +185,17 @@ export class Oci {
   }
 
   upload(req, url, name, session, token, body) {
-    if (token === "tok-anon") return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${AUTH}/token",service="registry.docker.io",scope="repository:${name}:pull,push"` }, body: "{}" };
+    if (token === "tok-anon") return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${this.auth}/token",service="registry.docker.io",scope="repository:${name}:pull,push"` }, body: "{}" };
     this.record(req, url, body, token);
     const repo = this.repo(name);
     const id = session || `up-${this.uploads.size + 1}`;
-    const location = `https://${REGISTRY}/v2/${name}/blobs/uploads/${id}?_state=s${this.uploads.size}`;
+    const location = `https://${this.regHost}/v2/${name}/blobs/uploads/${id}?_state=s${this.uploads.size}`;
     if (req.method === "POST") {
       this.uploads.set(id, []);
       const mount = url.searchParams.get("mount");
       if (mount && this.repos.get(url.searchParams.get("from"))?.blobs.has(mount)) {
         repo.blobs.set(mount, this.repos.get(url.searchParams.get("from")).blobs.get(mount));
-        return { status: 201, headers: { location: `https://${REGISTRY}/v2/${name}/blobs/${mount}`, "docker-content-digest": mount }, body: "" };
+        return { status: 201, headers: { location: `https://${this.regHost}/v2/${name}/blobs/${mount}`, "docker-content-digest": mount }, body: "" };
       }
       return { status: 202, headers: { location, "docker-upload-uuid": id, range: "0-0" }, body: "" };
     }
@@ -193,20 +208,20 @@ export class Oci {
       const digest = url.searchParams.get("digest");
       if (digest !== sha(bytes)) return json({ errors: [{ code: "DIGEST_INVALID" }] }, 400);
       repo.blobs.set(digest, bytes);
-      return { status: 201, headers: { location: `https://${REGISTRY}/v2/${name}/blobs/${digest}`, "docker-content-digest": digest }, body: "" };
+      return { status: 201, headers: { location: `https://${this.regHost}/v2/${name}/blobs/${digest}`, "docker-content-digest": digest }, body: "" };
     }
     return json({}, 405);
   }
 
   write(req, url, name, kind, rest, token, body) {
-    if (token === "tok-anon") return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${AUTH}/token",service="registry.docker.io",scope="repository:${name}:pull,push"` }, body: "{}" };
+    if (token === "tok-anon") return { status: 401, headers: { "www-authenticate": `Bearer realm="https://${this.auth}/token",service="registry.docker.io",scope="repository:${name}:pull,push"` }, body: "{}" };
     this.record(req, url, body, token);
     const repo = this.repo(name);
     if (kind === "manifests" && req.method === "PUT") {
       const digest = sha(body);
       repo.manifests.set(digest, { bytes: body, media: req.headers["content-type"] ?? MANIFEST });
       if (!rest.includes(":")) repo.tags.set(rest, digest);
-      return { status: 201, headers: { location: `https://${REGISTRY}/v2/${name}/manifests/${digest}`, "docker-content-digest": digest }, body: "" };
+      return { status: 201, headers: { location: `https://${this.regHost}/v2/${name}/manifests/${digest}`, "docker-content-digest": digest }, body: "" };
     }
     if (req.method === "DELETE") {
       repo.manifests.delete(rest);

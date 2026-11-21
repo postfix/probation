@@ -328,6 +328,8 @@ impl App {
     /// be recovered is not a reason to refuse to start — it is a reason to start with
     /// readiness false, which is the only way to say so.
     pub async fn start(deps: AppDeps) -> Result<Running, StartupError> {
+        store::lock::refuse_network_filesystem(&deps.config.data_dir, deps.config.allow_network_data_dir)
+            .map_err(|err| StartupError::DataDir(store::startup::StartupError::Lock(err)))?;
         let opened = store::startup::open_and_recover(&deps.config.data_dir)
             .await
             .map_err(StartupError::DataDir)?;

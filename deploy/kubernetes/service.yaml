@@ -1,0 +1,24 @@
+# The one cluster endpoint. NodePort with externalTrafficPolicy Local (D1): kube-proxy keeps the client's source address and delivers
+# only to an endpoint on the node that was addressed, so the service sees the real peer and allowed_peer_cidrs decides on the node
+# that connects. With the default policy (Cluster) kube-proxy rewrites the source to the address of the node that received the packet,
+# which is an approved node address: every host that can reach any NodePort would then be admitted.
+apiVersion: v1
+kind: Service
+metadata:
+  name: probation
+  namespace: probation
+  labels:
+    app.kubernetes.io/name: probation
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  sessionAffinity: None
+  ipFamilyPolicy: SingleStack
+  selector:
+    app.kubernetes.io/name: probation
+  ports:
+    - name: https
+      protocol: TCP
+      port: 8443
+      targetPort: https
+      nodePort: 30443

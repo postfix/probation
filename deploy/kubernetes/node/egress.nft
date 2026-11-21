@@ -1,0 +1,41 @@
+#!/usr/sbin/nft -f
+# Node egress: new outbound TCP connections made BY THE NODE (its container runtime, kubelet, anything on the host) may go only to
+# the Probation endpoint, to the cluster's own ranges and to the destinations the operator lists in `extra`. A registry origin is none
+# of these, so a runtime that is told to fall back to the origin gets a reset, not an image. Pod traffic is forwarded, not output, and
+# is not affected: a pod policy cannot restrict the runtime, this host rule does. DNS (UDP and TCP 53) may go only to the resolvers
+# listed in `dns`; the rest of UDP and ICMP (NTP) is not touched.
+#
+# Edit the defines for the cluster (install-firewall.sh does it from arguments and loads the result at boot), then
+#   nft -c -f egress.nft   (syntax check)   and   nft -f egress.nft
+# Add what the host must reach over TCP (the API server if it is outside `cluster`, an OS update mirror, the cloud metadata address
+# 169.254.169.254 for a credential provider, a metrics sink) to `extra`: everything else on TCP is closed on purpose.
+define service4 = { 192.0.2.20 }
+define service6 = { 2001:db8:20::1 }
+define service_port = 30443
+define cluster4 = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
+define cluster6 = { fd00::/8 }
+define dns4 = { 192.0.2.53 }
+define dns6 = { 2001:db8:53::1 }
+define extra4 = { 192.0.2.54 }
+define extra6 = { 2001:db8:54::1 }
+
+table inet probation_node_egress
+delete table inet probation_node_egress
+table inet probation_node_egress {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    ct state established,related accept
+    ip daddr 127.0.0.0/8 accept
+    ip6 daddr ::1 accept
+    meta l4proto { tcp, udp } th dport 53 ip daddr $dns4 accept
+    meta l4proto { tcp, udp } th dport 53 ip6 daddr $dns6 accept
+    meta l4proto { tcp, udp } th dport 53 reject
+    ip daddr $service4 tcp dport $service_port accept
+    ip6 daddr $service6 tcp dport $service_port accept
+    ip daddr $extra4 accept
+    ip6 daddr $extra6 accept
+    ip daddr $cluster4 accept
+    ip6 daddr $cluster6 accept
+    meta l4proto tcp ct state new reject with tcp reset
+  }
+}

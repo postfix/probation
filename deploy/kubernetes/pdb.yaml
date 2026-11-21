@@ -1,0 +1,14 @@
+# One replica, one store owner: a voluntary eviction (kubectl drain) of the pod is refused until the operator moves the service on
+# purpose (docs/operations.md, "Planned replacement"). Deleting the pod is not an eviction and is how that procedure replaces it.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: probation
+  namespace: probation
+  labels:
+    app.kubernetes.io/name: probation
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: probation
