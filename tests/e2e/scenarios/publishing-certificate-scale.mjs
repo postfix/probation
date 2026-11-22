@@ -37,17 +37,29 @@ const identities = [];
 for await (const line of createInterface({ input: createReadStream(file) })) identities.push(JSON.parse(line));
 const fingerprints = identities.map((identity) => new X509Certificate(identity.cert).fingerprint256);
 if (new Set(fingerprints).size !== identities.length) throw new Error("duplicate certificate identity in client manifest");
+// argv[4]: milliseconds between the starts of two identities (default 20); argv[5]: concurrent workers (default 32); argv[6]: how many
+// identities to try (default all of the manifest).
+const pace = Number(process.argv[4] ?? 20);
+const workers = Number(process.argv[5] ?? 32);
+const limit = Number(process.argv[6] ?? identities.length);
+const ceiling = Math.max(3, Math.ceil(limit / 500));
 const started = Date.now();
 let next = 0;
+let nextSlot = started;
 let passed = 0;
+let retried = 0;
 const admittedFingerprints = new Set();
 async function worker() {
-  while (next < identities.length) {
+  while (next < limit) {
     const index = next++;
     const identity = identities[index];
-    const wait = index * 20 - (Date.now() - started);
+    // The pace is a floor between two starts: a worker that is behind never bursts to catch up (the 32 workers would
+    // then offer the responder every identity at once after any stall of it).
+    const slot = Math.max(nextSlot, Date.now());
+    nextSlot = slot + pace;
+    const wait = slot - Date.now();
     if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    const status = await new Promise((resolve, reject) => {
+    const attempt = () => new Promise((resolve, reject) => {
       const request = https.get(url, { ca, cert: identity.cert, key: identity.key, agent: false, timeout: 15_000 }, (res) => {
         res.resume();
         res.on("end", () => resolve(res.statusCode));
@@ -55,13 +67,24 @@ async function worker() {
       request.on("timeout", () => request.destroy(new Error("TLS probe timed out")));
       request.on("error", reject);
     });
-    if (status !== 200) throw new Error("identity " + index + " was denied: " + status);
+    let status = await attempt();
+    // An organisation-issuer admission asks the issuer's responder live and, by contract (D35), a failed ask is REFUSED with 401: the
+    // refusal is the product doing what the contract says, and the second try below is a PROBE TOLERANCE of this scenario, not a product
+    // behaviour. A lost DNS answer or SYN toward the responder costs one 5 s connect timeout and so one 401 (measured: about 1 in 1,400
+    // on this host, 7 in 10,000). Only a 401 is tried again: any other status (a 5xx, a 429, a 503 LOOKUP_BUSY) is a product failure
+    // and fails at once. A deterministic refusal (revoked, wrong leaf, wrong issuer) fails again and fails the probe.
+    // The ceiling on first refusals is 0.2 percent (20 of 10,000, never fewer than 3 in a smaller run): about 2.8 times the measured mean
+    // of 7, so a Poisson run of 10,000 exceeds it with probability near 1 in 50,000, while a regression to 0.9 percent (90 refused) fails.
+    const again = status === 401;
+    if (again) { retried++; await new Promise((resolve) => setTimeout(resolve, 250)); status = await attempt(); }
+    if (status !== 200) throw new Error("identity " + index + " was denied: " + status + (again ? " (after the 401 retry)" : ""));
+    if (retried > ceiling) throw new Error("more than 0.2 percent of the identities were refused at first: " + retried + " of " + (index + 1) + " (ceiling " + ceiling + ")");
     admittedFingerprints.add(fingerprints[index]);
     passed++;
   }
 }
-await Promise.all(Array.from({ length: 32 }, worker));
-console.log(JSON.stringify({ admitted: passed, distinct: admittedFingerprints.size }));
+await Promise.all(Array.from({ length: workers }, worker));
+console.log(JSON.stringify({ admitted: passed, distinct: admittedFingerprints.size, retried, ceiling, ms: Date.now() - started }));
 `;
 
 function installManifest(h, name, identities) {
@@ -76,18 +99,54 @@ function installManifest(h, name, identities) {
   return path;
 }
 
-function admitAll(h, name, identities, url) {
+/// The pace, in milliseconds between two identities, at which the live OCSP check of the organisation-issuer admissions is sustained here.
+/// The product guarantee (D35, enterprise_certificate.rs) is that every admission asks the issuer's OCSP responder live with a fresh nonce
+/// and is refused (401) when the signed answer is not there inside 10 s (5 s to connect); nothing is cached and there is no per-account cap.
+/// Root cause of the earlier refusals at 20 ms (identity 517, 703, 4768 and 6358 in four runs): the FAKE responder signed each answer
+/// with a synchronous `openssl` spawn in the one thread that also serves every other fake (its answers took 305 ms at the median under 32
+/// workers, with stalls of 1.5 to 2.9 s), and the probe's schedule (`index * pace`) let 32 workers burst at the responder's full rate after
+/// any stall. The fake now signs with at most four asynchronous children, the probe's pace is a floor between two starts, and one
+/// refusal in about 1,400 (one 5 s connect timeout toward the responder, measured with the firewall's own timing) is tried once more.
+/// Still, the probe measures instead of assuming: 150 identities at each of 20, 40, 80, 160 and 320 ms, the first pace that admits all of
+/// them, and the probe runs at 1.5 times that pace.
+async function ocspPaceMs(h, identities, url) {
+  const sample = identities.slice(0, 150);
+  const path = installManifest(h, "pace-calibration", sample);
+  let chosen = null;
+  for (const pace of [20, 40, 80, 160, 320]) {
+    const result = h.client("client-npm", `node batch-probe.mjs '${url}' '${path}' ${pace} 32 ${sample.length}`, { files: { "batch-probe.mjs": BATCH_PROBE } });
+    let summary = null;
+    try { summary = JSON.parse(result.stdout.trim()); } catch { /* denied: the probe threw */ }
+    const ok = result.status === 0 && summary?.admitted === sample.length;
+    h.log(`calibration: ${sample.length} organisation-issuer admissions at ${pace} ms per identity: ${ok ? "all admitted" : `refused (${(result.stderr.match(/was denied: \d+/) ?? ["no summary"])[0]})`}`);
+    // Let the responder's backlog (10 s timeouts) drain before the next trial.
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+    if (ok) { chosen = pace; break; }
+  }
+  h.stack.exec("client-npm", ["rm", "-f", path]);
+  // The floor: X09 states no rate (10,000 distinct admissions inside the scenario's 30-minute enrollment deadline), so this harness states
+  // one. The recorded runs sustained 20 to 30 ms per identity; 80 ms (12.5 per second, 4 times slower than measured) is the floor, and a
+  // calibrated pace above it FAILS instead of being logged: the probe may run slower only because the host is, never because the product is.
+  const FLOOR_MS = 80;
+  h.expect(chosen !== null && chosen <= FLOOR_MS, `the organisation-issuer admission path sustains at least 12.5 identities per second (a pace of ${FLOOR_MS} ms or better); calibrated: ${chosen ?? "none of 20, 40, 80, 160, 320 ms"}`);
+  const pace = Math.ceil(chosen * 1.5);
+  h.log(`certificate-scale pace result: ${JSON.stringify({ calibratedMs: chosen, floorMs: FLOOR_MS, probeMs: pace, sample: sample.length })}`);
+  h.log(`organisation-issuer admissions are sustained at ${chosen} ms per identity here; probing 10,000 at ${pace} ms (about ${Math.round(pace * 10)} s)`);
+  return pace;
+}
+
+function admitAll(h, name, identities, url, paceMs = 20) {
   const distinctFingerprints = new Set(identities.map((identity) => new X509Certificate(identity.cert).fingerprint256));
   h.expect(distinctFingerprints.size === identities.length,
     `${name}: ${distinctFingerprints.size}/${identities.length} unique certificate fingerprints before client transfer`);
   const path = installManifest(h, name, identities);
   const started = Date.now();
-  const result = h.client("client-npm", `node batch-probe.mjs '${url}' '${path}'`, { files: { "batch-probe.mjs": BATCH_PROBE } });
+  const result = h.client("client-npm", `node batch-probe.mjs '${url}' '${path}' ${paceMs}`, { files: { "batch-probe.mjs": BATCH_PROBE } });
   let summary;
   try { summary = JSON.parse(result.stdout.trim()); } catch { /* Failure below includes the client diagnostic. */ }
   h.expect(result.status === 0 && summary?.admitted === identities.length && summary?.distinct === identities.length,
     `${name}: ${identities.length} distinct TLS identities admitted through package client: ${result.stderr} ${result.stdout}`);
-  h.log(`${name}: ${identities.length} distinct TLS admissions in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  h.log(`${name}: ${identities.length} distinct TLS admissions in ${((Date.now() - started) / 1000).toFixed(1)}s, ${summary?.retried} refused with 401 once and admitted on the second try (ceiling ${summary?.ceiling})`);
   h.stack.exec("client-npm", ["rm", "-f", path]);
 }
 
@@ -141,18 +200,30 @@ export default async function certificateScale(h) {
   for (let index = 0; index < count; index++) {
     if (Date.now() > deadline) throw new Error(`scale enrollment exceeded 30 minutes at ${index}/${count}`);
     const email = `scale-${index}@example.e2e.test`;
-    await h.fakes.oidcNext({ sub: `scale-member-${index}`, email });
-    const member = new h.Portal(undefined, clientIp(index));
-    const begun = await member.get(`/sso/${org}/start`);
-    h.expect(begun.status === 303, `scale member ${index} SSO start: ${begun.status}`);
-    const issuer = await h.request(begun.location);
-    h.expect(issuer.status === 302, `scale member ${index} IdP redirect: ${issuer.status}`);
-    const callback = new URL(issuer.headers.location);
-    const signedIn = await member.get(callback.pathname + callback.search);
-    h.expect(signedIn.status === 303 && signedIn.location === "/account",
-      `scale member ${index} signed in: ${signedIn.status} ${signedIn.location}`);
-    const setup = await member.get("/certificates/setup");
-    h.expect(setup.status === 200, `scale member ${index} setup page: ${setup.status}`);
+    // The portal answers 503 ("unavailable") when the database is slow (a COMMIT over its alert threshold on a loaded
+    // disk). The member's sign-in, which creates nothing but the membership, is restarted up to three times; the certificate
+    // POST below is never repeated, so no member can hold two leaves.
+    let member, setup;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await h.fakes.oidcNext({ sub: `scale-member-${index}`, email });
+        member = new h.Portal(undefined, clientIp(index));
+        const begun = await member.get(`/sso/${org}/start`);
+        h.expect(begun.status === 303, `scale member ${index} SSO start: ${begun.status}`);
+        const issuer = await h.request(begun.location);
+        h.expect(issuer.status === 302, `scale member ${index} IdP redirect: ${issuer.status}`);
+        const callback = new URL(issuer.headers.location);
+        const signedIn = await member.get(callback.pathname + callback.search);
+        h.expect(signedIn.status === 303 && signedIn.location === "/account",
+          `scale member ${index} signed in: ${signedIn.status} ${signedIn.location}`);
+        setup = await member.get("/certificates/setup");
+        h.expect(setup.status === 200, `scale member ${index} setup page: ${setup.status}`);
+        break;
+      } catch (error) {
+        if (attempt >= 3 || !/ 503\b/.test(String(error?.message))) throw error;
+        h.log(`scale member ${index}: the portal answered 503 (attempt ${attempt}); signing in again`);
+      }
+    }
     const bundle = await member.post("/certificates/setup", { csrf: hidden(setup.body, "csrf") });
     h.expect(bundle.status === 200 && bundle.body.includes("client-key.pem"),
       `scale member ${index} issued own bundle: ${bundle.status}`);
@@ -268,7 +339,7 @@ export default async function certificateScale(h) {
     }
   }
   h.expect(issuerIds.size === 10_000, "10,000 distinct members receive issuer leaves");
-  admitAll(h, "organization-issuer-admission", issuerIdentities, url);
+  admitAll(h, "organization-issuer-admission", issuerIdentities, url, await ocspPaceMs(h, issuerIdentities, url));
   configure({ bridgePort: h.stack.bridgePort, caFile: join(h.stack.work, "ca", "ca.pem") });
   h.log("issuer admission complete; host tunnel pool refreshed");
   const issuerInstall = h.stack.exec("client-npm", ["sh"], { input: `set -eu\numask 077\nmkdir -p ${home}/.config/probation\ncat >${home}/.config/probation/client-cert.pem <<'LEAF'\n${selectedLeaf.leafPem}LEAF\ncat >${home}/.config/probation/client-key.pem <<'KEY'\n${selectedLeaf.keyPem}KEY\n` });

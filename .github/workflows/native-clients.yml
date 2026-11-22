@@ -107,8 +107,9 @@ jobs:
         env:
           AWS_LC_SYS_USE_SYSTEM: "0"
         run: cargo build --locked --bin probation
-      # The fake PyPI answers as pypi.org:443 on loopback (the service admits no other PyPI
-      # file host); a Linux runner needs the low port opened to unprivileged processes.
+      # The fake PyPI answers as pypi.org:443 on the lane address 10.254.77.1 (the service admits no other PyPI
+      # file host; stack.mjs assigns the address to the loopback interface, because the service refuses 127.0.0.0/8
+      # registry targets); a Linux runner needs the low port opened to unprivileged processes.
       - name: Allow the low loopback port
         shell: bash
         run: |

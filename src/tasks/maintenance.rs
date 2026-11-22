@@ -23,7 +23,7 @@ use crate::App;
 /// order approximate and Gate 3 records the lag as accepted — and nothing on the
 /// request path waits for a pass, so the cost of a longer interval is bounded while
 /// the cost of a shorter one is a write every few seconds on an idle instance.
-const INTERVAL: Duration = Duration::from_secs(30);
+pub const INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn run(app: Arc<App>, shutdown: CancellationToken) {
     loop {

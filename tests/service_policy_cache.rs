@@ -746,7 +746,8 @@ fn config_server_url_rejects_path_query_userinfo_fragment_and_http() {
         "https://user:pw@policy.example.test",
         "https://policy.example.test/#frag",
     ] {
-        assert!(service_config(bad, b"prb_01234567890123456789012345678901").is_err(), "{bad}");
+        let error = service_config(bad, b"prb_01234567890123456789012345678901").expect_err(bad).to_string();
+        assert!(!error.contains("pw@") && !error.contains("user:pw"), "the message never echoes a URL with credentials: {error}");
     }
 }
 

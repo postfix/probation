@@ -17,7 +17,9 @@ index-url = https://packages.example.org/pypi/simple/
 
 In managed mode, sign in, choose your personal account or organisation, and open **API keys**. Create a key and copy the npm or pip settings shown there. The key is displayed once. A managed firewall refuses requests without a valid key. Revoking a key stops it after the next firewall sync, normally within a minute.
 
-For pnpm, Yarn, Bun, pipx, uv, and Poetry, use the settings in the [client reference](operations.md#clients). A client may reuse packages already in its own cache without contacting Probation.
+For pnpm, Yarn, Bun, pipx, uv, and Poetry, use the settings in the [client reference](operations.md#clients).
+
+npm and PyPI are set up above. The other families connect the same way, each through its own client settings in the [operations reference](operations.md): RubyGems (`gem`, Bundler), Cargo, Go modules (`GOPROXY`), NuGet, Maven and Gradle, OCI images (Docker, Podman, containerd) and Conan 2. Every family has the same checks: the release-age delay, blocks, OSV and verified downloads. A shared service needs no sign-in: the client keeps its own registry credential, and Probation forwards a publish only with the credential the client sent. A client may reuse packages already in its own cache without contacting Probation.
 
 ## Set rules
 
@@ -28,13 +30,15 @@ See [Policy](policy.md) for the rules, who can change them, and how to check the
 
 An administrator can update a layer's blocks from automation. Create a token in the portal and use the [automation API](api.md#1-the-automation-api-blocklists-from-ci).
 
-## Use a selected npm or PyPI registry
+## Use a selected registry
 
-An organisation administrator opens **Organisation → Package registries** and adds an npm or PyPI HTTPS target. The page also controls its read credential, whether to skip the age delay, approved npm deletion destinations, and requests to allow private destinations. The registry's own permissions still govern writes.
+An organisation administrator opens **Organisation → Package registries** and adds an HTTPS target for any of the nine families. The page also controls its read credential, whether to skip the age delay, approved npm deletion destinations, and requests to allow private destinations. The registry's own permissions still govern writes.
 
 For an organisation using Probation-issued client certificates, members open **Package client setup** and download their personal setup bundle. Run its script on the intended machine to write user-local certificate and client settings for the selected registry. Keep its private key and any publishing token private. When the organisation uses its own certificate issuer, follow its administrator's certificate setup instead.
 
 Selected clients use `/registry/npm/<id>/` or `/registry/pypi/<id>/simple/`, with the ID and host supplied by the setup. Legacy `/npm/` and `/pypi/simple/` paths continue to serve ordinary downloads. For publishing, use the selected URL and credentials authorized by the upstream registry. A denied upstream write stays denied. An npm registry without a bulk audit endpoint returns that upstream error to npm; Probation cannot make the registry support it.
+
+The same page lists the OSV coverage of each family and shows, for every registry, whether its package names are sent to OSV. A registry on its family's public source is queried. A registry on any other address is queried by default, and its package names then reach the shared policy server and OSV; an administrator can set it **Private**, and it then reads **OSV not applicable**. An OCI registry always reads **OSV not applicable**, because OSV has no image ecosystem.
 
 ## Manage people and firewalls
 

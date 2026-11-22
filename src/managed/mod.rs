@@ -257,7 +257,11 @@ impl Managed {
         if let Some(status) = enterprise_status.as_ref() {
             enterprise_certificate::resolve_enterprise_certificate(
                 &enterprise_certificate::EnterprisePeer { chain: peer, status },
-            ).await.map_err(|_| Refusal::Unauthenticated)?;
+            ).await.map_err(|error| {
+                // The refusal kind only (invalid answer, nonce or signature mismatch, unavailable responder), never the chain.
+                tracing::warn!(?error, "the organization issuer's live status check refused the certificate");
+                Refusal::Unauthenticated
+            })?;
         }
         let registry_private_cidrs = registry_private_cidrs.iter()
             .map(|cidr| cidr.parse::<ipnet::IpNet>().map_err(|_| Refusal::Unauthenticated))

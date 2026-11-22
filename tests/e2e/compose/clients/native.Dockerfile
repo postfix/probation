@@ -1,6 +1,6 @@
 # One container with every pinned client and the native stack's runtime (tests/e2e/native):
 # Node and npm from the pinned Node image, Python/pip/Twine/uv from the pinned Python image,
-# bash and openssl for the test CA script. Base images are pinned by digest and the Python
+# bash and openssl for the test CA script, iproute2 (`ip addr add`) for the lane address of the registry fakes. Base images are pinned by digest and the Python
 # tools by exact version and hash (native-requirements.txt). npm is installed by exact
 # version from the npm registry, whose own integrity checks apply. The stack itself is offline.
 ARG NODE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
@@ -9,7 +9,7 @@ FROM ${NODE_IMAGE} AS node
 FROM ${PYTHON_IMAGE}
 ARG NPM_VERSION=11.21.1
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends bash openssl ca-certificates libssl3 libstdc++6 \
+ && apt-get install --yes --no-install-recommends bash openssl ca-certificates libssl3 libstdc++6 iproute2 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules

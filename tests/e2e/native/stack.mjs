@@ -139,30 +139,58 @@ function flushResolverCache() {
   else if (process.platform === "win32") run("ipconfig", ["/flushdns"]);
 }
 
+/// The address every fake registry of the lane listens on. The service's absolute denylist
+/// (LS-F9: 127.0.0.0/8 and others, whatever the registry's own private CIDRs say) refuses a
+/// loopback registry, so the lane uses a private address that is assigned to the loopback
+/// INTERFACE (nothing leaves the machine) and approved as one exact /32 per registry.
+export const laneAddr = () => process.env.NATIVE_LANE_ADDR ?? "10.254.77.1";
+
+/// Makes `laneAddr()` a local address: nothing to do when a socket can already bind it;
+/// otherwise `ip addr add` (Linux, root or sudo), `ifconfig lo0 alias` (macOS, sudo) or
+/// `netsh` on the loopback pseudo-interface (Windows). Only Linux has run here (macOS and
+/// Windows are authored). Returns the undo.
+async function ensureLaneAddress() {
+  const addr = laneAddr();
+  const bindable = () => new Promise((resolve) => { const s = net.createServer(); s.once("error", () => resolve(false)); s.listen(0, addr, () => s.close(() => resolve(true))); });
+  if (await bindable()) return () => {};
+  const root = process.getuid?.() === 0;
+  const sudo = (cmd, args) => (root || process.platform === "win32" ? [cmd, args] : ["sudo", ["-n", cmd, ...args]]);
+  const [add, del] = {
+    linux: [["ip", ["addr", "add", `${addr}/32`, "dev", "lo"]], ["ip", ["addr", "del", `${addr}/32`, "dev", "lo"]]],
+    darwin: [["ifconfig", ["lo0", "alias", `${addr}/32`]], ["ifconfig", ["lo0", "-alias", addr]]],
+    win32: [["netsh", ["interface", "ip", "add", "address", "Loopback Pseudo-Interface 1", addr, "255.255.255.255"]], ["netsh", ["interface", "ip", "delete", "address", "Loopback Pseudo-Interface 1", addr]]],
+  }[process.platform] ?? [null, null];
+  if (!add) throw new Error(`no way to assign ${addr} to the loopback interface on ${process.platform}`);
+  const done = run(...sudo(...add));
+  if (done.status !== 0 || !(await bindable())) throw new Error(describeFailure(`assigning the lane address ${addr} to the loopback interface (the lane needs CAP_NET_ADMIN or sudo; set NATIVE_LANE_ADDR to an existing local non-loopback address to skip this)`, done));
+  return () => { run(...sudo(...del)); };
+}
+
 /// A selected PyPI registry fetches its files only from the public PyPI origins (the
 /// service admits no other file host), so the fake PyPI answers as https://pypi.org:443
-/// on loopback, with the registry's operator-approved CIDR covering 127.0.0.1. The
+/// on the lane address, with the registry's operator-approved /32 covering it. The
 /// system hosts file is only touched in CI (GITHUB_ACTIONS) or with the explicit opt-in
-/// NATIVE_E2E_MAP_HOSTS=1, and not at all when the name already resolves to loopback (a
+/// NATIVE_E2E_MAP_HOSTS=1, and not at all when the name already resolves to the lane address (a
 /// pre-mapped namespace or container). Returns the undo.
 async function mapPypiHost({ hostsFile, lookup, allowMap }) {
   let address = null;
   try { address = await lookup(); } catch { /* unresolved here */ }
-  if (address === "127.0.0.1") return () => {};
+  const lane = laneAddr();
+  if (address === lane) return () => {};
   if (!allowMap) {
-    throw new Error(`pypi.org does not resolve to loopback (${address ?? "unresolved"}); this run maps it only in CI (GITHUB_ACTIONS) or with NATIVE_E2E_MAP_HOSTS=1`);
+    throw new Error(`pypi.org does not resolve to the lane address ${lane} (${address ?? "unresolved"}); this run maps it only in CI (GITHUB_ACTIONS) or with NATIVE_E2E_MAP_HOSTS=1`);
   }
   const strip = (text) => text.split("\n").filter((l) => !l.includes(MARK)).join("\n");
   const original = readFileSync(hostsFile, "utf8");
-  writeHostsAtomically(hostsFile, `${strip(original).replace(/\n*$/, "\n")}127.0.0.1 pypi.org ${MARK}\n`);
+  writeHostsAtomically(hostsFile, `${strip(original).replace(/\n*$/, "\n")}${lane} pypi.org ${MARK}\n`);
   flushResolverCache();
   const undo = () => { writeHostsAtomically(hostsFile, strip(readFileSync(hostsFile, "utf8")).replace(/\n*$/, "\n")); flushResolverCache(); };
   // C4: the line is only useful if the resolver reads it.
   let now = null;
   try { now = await lookup(); } catch (error) { now = `unresolved (${error.code ?? error})`; }
-  if (now !== "127.0.0.1") {
+  if (now !== lane) {
     undo();
-    throw new Error(`pypi.org still does not resolve to loopback after the hosts file was written (got ${now}); the system resolver does not read ${hostsFile}`);
+    throw new Error(`pypi.org still does not resolve to the lane address ${lane} after the hosts file was written (got ${now}); the system resolver does not read ${hostsFile}`);
   }
   return undo;
 }
@@ -217,7 +245,7 @@ export function composeTrustBundle({ nativePem, extraPem = null, publicTrust = f
 
 /// `real` (optional) replaces the in-process policy endpoint with a real policy server:
 /// `{ url, key, npmId, pypiId, extraCa }` — its catalog already lists the two registries
-/// (npm at https://127.0.0.1:<npmPort>/, PyPI at https://pypi.org/) with the loopback CIDR
+/// (npm at https://<lane address>:<npmPort>/, PyPI at https://pypi.org/) with the lane /32
 /// approved; `extraCa` is the PEM that makes the server's certificate trusted.
 /// Signals that end the run through the same cleanup. (SIGBREAK is Windows' console break;
 /// SIGKILL and a hard Windows kill cannot be caught, which is what the stale-entry cleanup at the start is for.)
@@ -277,6 +305,8 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   const tls = { cert: readFileSync(join(work, "tls", "cert.pem")), key: readFileSync(join(work, "tls", "key.pem")) };
   undo.push((hooks.trust ?? trust)(caFile));
   const inCi = Boolean(process.env.GITHUB_ACTIONS);
+  undo.push(await ensureLaneAddress());
+  const lane = laneAddr();
   undo.push(await mapPypiHost({
     hostsFile: hooks.hostsFile ?? HOSTS,
     lookup: hooks.lookup ?? (async () => (await dns.lookup("pypi.org")).address),
@@ -287,11 +317,11 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   const log = [];
   const servers = [];
   undo.push(() => { for (const server of servers) { server.close(); server.closeAllConnections?.(); } });
-  const npm = new Npm(`https://127.0.0.1:${npmPort}`);
+  const npm = new Npm(`https://${lane}:${npmPort}`);
   const pypi = new Pypi("https://pypi.org");
 
   let serviceKey = null; // set below; rows are classified against it
-  const listen = (name, port, handler, host = "127.0.0.1") => new Promise((resolve, reject) => {
+  const listen = (name, port, handler, host = lane) => new Promise((resolve, reject) => {
     const server = https.createServer(tls, async (req, res) => {
       const body = await readBody(req);
       const entry = { server: name, method: req.method, path: req.url, credential: credential(req.headers.authorization), bodyBytes: body.length, status: 0,
@@ -309,21 +339,14 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
     server.once("error", reject);
     server.listen(port, host, resolve);
   });
-  // S3/SEC4: loopback only. On a macOS CI runner an unprivileged process can bind a port below
-  // 1024 only on the wildcard address, so the fake listens on a high loopback port and pf
-  // redirects 127.0.0.1:443 to it (pf.mjs); the redirect is probed, and only if it does not work
-  // (or pf cannot be configured) is the fake served on all interfaces of this ephemeral runner,
-  // with a warning. Neither path is taken outside macOS CI.
-  const listenLoopback = async (name, port, handler) => {
+  // S3/SEC4: the fakes listen on the lane address (loopback interface, see laneAddr). On a macOS CI
+  // runner an unprivileged process can bind a port below 1024 only on the wildcard address, so the
+  // fake PyPI on :443 is served on all interfaces of that ephemeral runner (the lane address is an
+  // alias of lo0, so the wildcard covers it). The earlier pf redirect of 127.0.0.1:443 (pf.mjs)
+  // cannot serve a lane address and is no longer used here.
+  const listenLoopback = (name, port, handler) => {
     const mac = process.platform === "darwin" && process.env.GITHUB_ACTIONS && port === 443 && !hooks.noPf;
-    if (!mac) return listen(name, port, handler);
-    const high = await freePort();
-    await listen(name, high, handler);
-    const redirected = await redirectWithPf(port, high, undo);
-    if (redirected) return;
-    console.warn(`warning: the pf redirect of 127.0.0.1:${port} did not work; serving the fake ${name} on all interfaces of this CI runner`);
-    servers.pop().close();
-    return listen(name, port, handler, "0.0.0.0");
+    return listen(name, port, handler, mac ? "0.0.0.0" : lane);
   };
   await listen("npm", npmPort, (req, body) => npm.handle(req, req.url, "native", body));
   await listenLoopback("pypi", pypiPort, (req, body) => pypi.handle(req, req.url, "native", body));
@@ -344,13 +367,13 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
     ],
     account: { kind: "Org", id: 1 }, rate_limit: null, rate_limit_source: "default",
     registries: [
-      { registry: npmId, ecosystem: "Npm", target_url: `https://127.0.0.1:${npmPort}/`, trusted: false, registry_private_cidrs: ["127.0.0.1/32"], deletion_scopes: [] },
-      { registry: pypiId, ecosystem: "PyPi", target_url: "https://pypi.org/", trusted: false, registry_private_cidrs: ["127.0.0.1/32"], deletion_scopes: [] },
+      { registry: npmId, ecosystem: "Npm", target_url: `https://${lane}:${npmPort}/`, trusted: false, registry_private_cidrs: [`${lane}/32`], deletion_scopes: [] },
+      { registry: pypiId, ecosystem: "PyPi", target_url: "https://pypi.org/", trusted: false, registry_private_cidrs: [`${lane}/32`], deletion_scopes: [] },
     ],
   });
   if (!real) await listen("policy", policyPort, (req) => req.url === "/api/v1/policy/snapshot" && req.headers.authorization === `Bearer ${serviceKey}`
     ? { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(snapshot()) }
-    : { status: 401, body: "unauthorized" });
+    : { status: 401, body: "unauthorized" }, "127.0.0.1");
 
   const data = join(work, "data");
   mkdirSync(data, { recursive: true });

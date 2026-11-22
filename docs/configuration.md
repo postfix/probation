@@ -55,3 +55,21 @@ the listener's own port; anything else gets `400`. Registry targets named by the
 point at loopback, link-local, cloud-metadata addresses, the firewall's own listener or `control_plane_cidrs`,
 whatever private CIDRs the registry lists. To recover from a restored or rolled-back policy server see
 `probation reset-revision-floor` in `operations.md`.
+
+## Package families (`config.sample.toml`)
+
+Each family has its own optional keys in the firewall file. A key left out keeps the family's built-in default, which is its public registry. Every key is read at start; change it and restart.
+
+| Family | Keys |
+| --- | --- |
+| npm | `npm_upstream_url` |
+| PyPI | `pypi_upstream_url`, `pypi_artifacts_url` |
+| RubyGems | `rubygems_upstream_url` |
+| Cargo | `cargo_upstream_url`, `cargo_artifacts_url` |
+| Go modules | `go_upstream_url`, `go_artifacts_url` |
+| NuGet | `nuget_upstream_url`, `nuget_publish_url` |
+| Maven | `maven_upstream_url`, `maven_publish_url` |
+| Conan | `conan_upstream_url`, `conan_publish_url` |
+| OCI | `oci_upstream_url`, `oci_artifacts_url`, `oci_token_url`, `oci_foreign_layer_hosts` |
+
+The `nuget_publish_url`, `maven_publish_url` and `conan_publish_url` keys set where the shared service forwards a publish to the public registry; without one, such a publish is answered `404` and nothing is forwarded. The [operations reference](operations.md#14-firewall-configuration-reference) describes each key and its limits.

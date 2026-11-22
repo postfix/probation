@@ -8,7 +8,7 @@ import { modelProperty, settings } from "../harness/pbt.mjs";
 export const meta = {
   id: "PBT-smoke",
   title: "Portal model, smoke: one fixed-seed command sequence",
-  suites: ["pr"],
+  suites: ["pr", "release"],
 };
 
 export default async function (h) {

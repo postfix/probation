@@ -206,7 +206,7 @@ fn unavailable(error: sqlx::Error) -> StatusCode {
 /// Sets (`Some`) or clears (`None`) a registry's OSV scope (LS-F12). False when the
 /// registry is not this organisation's live registry.
 pub async fn set_osv_scope(
-    pool: &sqlx::PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     org: i32,
     registry: i64,
     scope: Option<OsvScope>,
@@ -219,7 +219,7 @@ pub async fn set_osv_scope(
         .bind(column)
         .bind(registry)
         .bind(org)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(done.rows_affected() == 1)
 }
@@ -240,7 +240,7 @@ pub fn valid_archive_origin(text: &str) -> Option<url::Url> {
 /// Sets (`Some`) or clears (`None`) a registry's archive origin. False when the registry is not this
 /// organisation's live Cargo, Go, NuGet, Maven, Conan or OCI registry with a target (the column only exists for those).
 pub async fn set_archive_origin(
-    pool: &sqlx::PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     org: i32,
     registry: i64,
     origin: Option<&str>,
@@ -249,7 +249,7 @@ pub async fn set_archive_origin(
         .bind(origin)
         .bind(registry)
         .bind(org)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(done.rows_affected() == 1)
 }
@@ -270,24 +270,24 @@ pub fn valid_token_origin(text: &str) -> Option<url::Url> {
 
 /// Sets (`Some`) or clears (`None`) an OCI registry's token origin. False when the registry is not this organisation's live OCI
 /// registry with a target.
-pub async fn set_token_origin(pool: &sqlx::PgPool, org: i32, registry: i64, origin: Option<&str>) -> Result<bool, sqlx::Error> {
+pub async fn set_token_origin(executor: impl sqlx::PgExecutor<'_>, org: i32, registry: i64, origin: Option<&str>) -> Result<bool, sqlx::Error> {
     let done = sqlx::query("UPDATE registries SET token_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'oci' AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
         .bind(registry)
         .bind(org)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(done.rows_affected() == 1)
 }
 
 /// Sets (`Some`) or clears (`None`) a NuGet registry's resource path prefix. False when the registry is not this
 /// organisation's live NuGet registry with a target.
-pub async fn set_resource_prefix(pool: &sqlx::PgPool, org: i32, registry: i64, prefix: Option<&str>) -> Result<bool, sqlx::Error> {
+pub async fn set_resource_prefix(executor: impl sqlx::PgExecutor<'_>, org: i32, registry: i64, prefix: Option<&str>) -> Result<bool, sqlx::Error> {
     let done = sqlx::query("UPDATE registries SET resource_path_prefix = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'nuget' AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(prefix)
         .bind(registry)
         .bind(org)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(done.rows_affected() == 1)
 }

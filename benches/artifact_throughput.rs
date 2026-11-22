@@ -264,8 +264,12 @@ async fn through_firewall(
     );
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server =
-        TestServer::start_with_upstream(config, clock.shared(), registry, fake_origins()).await;
+    // OSV is REACHABLE and answers "no match", which is the production steady state: the answer is cached for the negative TTL, so a warm
+    // request does not ask again. (The default test server's OSV client is an OFFLINE one; since slice 16 a failed lookup is never cached
+    // (C-S16-1), so every artifact request would wait out the 10 ms batch window twice, about +23 ms: that is the cost of an OSV
+    // OUTAGE, which is documented in docs/operations.md section 10 and is not what SPEC §12 row 3 measures.)
+    let (osv_url, _osv) = common::osv_flagging(&[]).await;
+    let server = TestServer::start_with_upstream_and_osv(config, clock.shared(), registry, fake_origins(), reqwest::Client::new(), osv_url).await;
 
     // The URL a client is actually given, taken out of the rendered document rather
     // than constructed here.

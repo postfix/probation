@@ -6,11 +6,13 @@ import net from "node:net";
 import { join } from "node:path";
 import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
 
+// The lane address: 127.0.0.2 is bindable on Linux without privileges (the real lane assigns 10.77.0.1).
+process.env.NATIVE_LANE_ADDR ??= "127.0.0.2";
 const scratch = process.env.NATIVE_TEST_SCRATCH;
 assert(scratch, "set NATIVE_TEST_SCRATCH");
 const free = () => new Promise((resolve) => { const s = net.createServer().listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 // pypi.org resolves to a public address until the hosts line is written, then to loopback.
-const resolvesAfterTheHostsLine = () => { let calls = 0; return async () => (calls++ === 0 ? "203.0.113.9" : "127.0.0.1"); };
+const resolvesAfterTheHostsLine = () => { let calls = 0; return async () => (calls++ === 0 ? "203.0.113.9" : process.env.NATIVE_LANE_ADDR); };
 const refused = (port) => new Promise((resolve) => { const c = net.connect(port, "127.0.0.1"); c.on("connect", () => { c.destroy(); resolve(false); }); c.on("error", () => resolve(true)); });
 
 // S1: a throw after trust() and the hosts mapping restores both and closes every server.
@@ -78,11 +80,11 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
 {
   const dir = mkdtempSync(join(scratch, "stack-"));
   const hostsFile = join(dir, "hosts");
-  writeFileSync(hostsFile, "127.0.0.1 localhost\n127.0.0.1 pypi.org # probation-native-e2e\n10.0.0.1 keep.example\n");
+  writeFileSync(hostsFile, "127.0.0.1 localhost\n127.0.0.2 pypi.org # probation-native-e2e\n10.0.0.1 keep.example\n");
   const events = [];
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
-    hooks: { trust: () => () => {}, staleTrust: () => events.push("stale trust removed"), lookup: async () => "127.0.0.1", hostsFile, mapHosts: true },
+    hooks: { trust: () => () => {}, staleTrust: () => events.push("stale trust removed"), lookup: async () => process.env.NATIVE_LANE_ADDR, hostsFile, mapHosts: true },
   }), /probation exited/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n10.0.0.1 keep.example\n", "the stale marked line is gone, other lines are kept");
   assert.deepEqual(events, ["stale trust removed"]);
@@ -90,7 +92,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) assert.ok(HANDLED_SIGNALS.includes(signal), `${signal} is handled`);
 }
 
-// C4: the hosts line is written but pypi.org still does not resolve to loopback (an nsswitch or resolver
+// C4: the hosts line is written but pypi.org still does not resolve to the lane address (an nsswitch or resolver
 // that ignores it): the run stops with a clear message and puts the file back.
 {
   const dir = mkdtempSync(join(scratch, "stack-"));
@@ -99,7 +101,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
     hooks: { trust: () => () => {}, staleTrust: () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: true },
-  }), /still does not resolve to loopback after the hosts file was written.*203\.0\.113\.9/);
+  }), /still does not resolve to the lane address .* after the hosts file was written.*203\.0\.113\.9/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n", "the hosts file is put back");
   rmSync(dir, { recursive: true, force: true });
 }
@@ -112,7 +114,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
     hooks: { trust: () => () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: false },
-  }), /pypi\.org does not resolve to loopback/);
+  }), /pypi\.org does not resolve to the lane address/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n", "the hosts file was not touched");
   if (process.platform !== "win32") chmodSync(hostsFile, 0o640);
   const before = statSync(hostsFile).ino;

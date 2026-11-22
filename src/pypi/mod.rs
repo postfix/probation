@@ -227,10 +227,18 @@ async fn current_project(
     monotonic: Instant,
     registry_id: u64,
     principal: Option<&Principal>,
+    metadata: bool,
 ) -> Result<Arc<CachedProject>, ApiError> {
     let key = ProjectKey::in_registry(registry_id, Ecosystem::PyPi, name.as_str());
     if app.service_policy().is_some() {
-        // Do not coalesce or reuse one caller's upstream permission for another request.
+        // A credential-bearing read neither reads nor fills the share (one caller's upstream permission is never
+        // another's), and neither does an ARTIFACT request (it always revalidates upstream); a credential-free
+        // metadata read shares one fetch (single flight) for `service_share::TTL`.
+        let shareable = metadata && principal.is_none_or(|p| p.registry_read_authorization.is_none()) && crate::http::credential_read::cache_token(app).is_some();
+        if shareable {
+            let share = ("pypi", registry_id, principal.and_then(|p| p.registry_origin.as_ref()).map(ToString::to_string), name.as_str().to_owned());
+            return app.service_share.get_or_fetch(share, monotonic, || refresh(app, name, &key, now, monotonic, true, None, principal)).await;
+        }
         return refresh(app, name, &key, now, monotonic, true, None, principal).await;
     }
     let caches = app.store().caches();
@@ -319,6 +327,7 @@ pub async fn ensure_fresh_project_in(app: &App, name: &str, registry_id: u64, pr
         app.clock.now_monotonic(),
         registry_id,
         principal,
+        false,
     )
     .await?;
 
@@ -349,7 +358,7 @@ async fn resolve(
     registry_id: u64,
     principal: Option<&Principal>,
 ) -> Result<Resolved, ApiError> {
-    let cached = current_project(app, name, now, monotonic, registry_id, principal).await?;
+    let cached = current_project(app, name, now, monotonic, registry_id, principal, true).await?;
     let ttl_micros =
         i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
             .unwrap_or(i64::MAX);

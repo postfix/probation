@@ -242,15 +242,25 @@ const req=https.request(process.argv[2],{method:"POST",ca:readFileSync("/e2e/ca/
   } finally {
     await h.fakes.faults([]);
   }
-  const loginRate = h.client("client-npm", `node login-rate.mjs 'https://fw1.e2e.test/registry/npm/${id}/-/v1/login'`, {
+  // The limit is 120 starts per minute. The 118 starts of one probe must fall inside one window, so a probe that took longer than
+  // 45 s (a host whose database commits in seconds) says nothing about the limiter: the window is let to expire and the probe
+  // repeated, at most three times. The assertion on a probe that was fast enough is exact.
+  let loginRate, loginAnswer;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    loginRate = h.client("client-npm", `node login-rate.mjs 'https://fw1.e2e.test/registry/npm/${id}/-/v1/login'`, {
     files: { "login-rate.mjs": `import https from "node:https"; import {readFileSync} from "node:fs";
 const agent=new https.Agent({keepAlive:true,ca:readFileSync("/e2e/ca/ca.pem"),cert:readFileSync(process.env.HOME+"/.config/probation/client-cert.pem"),key:readFileSync(process.env.HOME+"/.config/probation/client-key.pem")});
 const start=()=>new Promise((resolve,reject)=>{const req=https.request(process.argv[2],{agent,method:"POST",headers:{"content-type":"application/json"}},res=>{res.resume();res.on("end",()=>resolve(res.statusCode));});req.on("error",reject);req.end("{}");});
-const statuses=[];for(let i=0;i<118;i++){statuses.push(await start());await new Promise(resolve=>setTimeout(resolve,20));}agent.destroy();console.log(JSON.stringify(statuses));` },
-  });
-  h.expect(loginRate.status === 0, `login rate probe completes: ${loginRate.stderr}`);
-  const loginStatuses = JSON.parse(loginRate.stdout.trim());
-  h.expect(loginStatuses.slice(0, 117).every(status => status === 200) && loginStatuses[117] === 429,
+const t0=Date.now();const statuses=[];for(let i=0;i<118;i++){statuses.push(await start());await new Promise(resolve=>setTimeout(resolve,20));}agent.destroy();console.log(JSON.stringify({statuses,ms:Date.now()-t0}));` },
+    });
+    h.expect(loginRate.status === 0, `login rate probe completes: ${loginRate.stderr}`);
+    loginAnswer = JSON.parse(loginRate.stdout.trim());
+    if (loginAnswer.ms <= 45_000) break;
+    h.log(`login rate probe took ${loginAnswer.ms} ms (attempt ${attempt}), longer than one window allows; waiting for the window to expire`);
+    await new Promise((resolve) => setTimeout(resolve, 65_000));
+  }
+  const loginStatuses = loginAnswer.statuses;
+  h.expect(loginAnswer.ms <= 45_000 && loginStatuses.slice(0, 117).every(status => status === 200) && loginStatuses[117] === 429,
     `121st web-login start is rate-limited before upstream: ${loginRate.stdout}`);
   const token = h.stack.exec("client-npm", ["sh", "-c", `printf '\n//fw1.e2e.test/registry/npm/${id}/:_authToken=e2e-owner\n' >> /root/.npmrc`]);
   h.expect(token.status === 0, "developer token configured in user-local npm config");
@@ -1009,7 +1019,7 @@ const req=https.request(process.argv[2], {method:"GET",ca:readFileSync("/e2e/ca/
     const slowStatus = slowRun.status === 0 ? JSON.parse(slowRun.stdout.trim()).status : null;
     h.expect((slowStatus === 504 || (slowStatus === null && slowRun.stderr.includes("socket hang up")))
       && Date.now() - slowStarted < 45_000,
-    `stalled action response ends within the deadline: ${slowRun.status} ${slowRun.stderr}`);
+    `stalled action response ends within the deadline: exit ${slowRun.status}, answer ${slowStatus}, ${Date.now() - slowStarted} ms with the exec, stderr ${slowRun.stderr}, stdout ${slowRun.stdout.slice(0, 300)}`);
     await h.waitFor("firewall action upstream timeout", async () =>
       (h.stack.logs("firewall-1").match(/UPSTREAM_TIMEOUT/g) ?? []).length > priorTimeouts,
     { timeout: 15_000, every: 500 });

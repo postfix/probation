@@ -1,6 +1,6 @@
 // Disposable nonce-capable issuer. OpenSSL signs live OCSP responses from its
 // on-disk revocation index, so a control revocation changes the next answer.
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +10,24 @@ const BASE = process.env.E2E_ISSUER_DIR ?? "/e2e/issuer";
 function openssl(dir, ...args) {
   const run = spawnSync("openssl", args, { cwd: dir, encoding: "utf8", maxBuffer: 1024 * 1024 });
   if (run.status !== 0) throw new Error(`fake issuer openssl ${args[0]}: ${run.stderr}`);
+}
+
+// An OCSP answer is signed by an `openssl` child that does not block the fake's event loop (a synchronous spawn stalled every
+// other fake for as long as the queue of answers was long, and the firewall's 5 s connect to this responder timed out under
+// a sustained organisation-issuer load). At most four children at once.
+let waiting = [];
+let running = 0;
+async function opensslAsync(dir, ...args) {
+  if (running >= 4) await new Promise((resolve) => waiting.push(resolve));
+  running++;
+  try {
+    await new Promise((resolve, reject) => execFile("openssl", args, { cwd: dir, maxBuffer: 1024 * 1024 }, (error, _out, stderr) => {
+      if (error) reject(new Error(`fake issuer openssl ${args[0]}: ${stderr}`)); else resolve();
+    }));
+  } finally {
+    running--;
+    waiting.shift()?.();
+  }
 }
 
 function derAt(bytes, offset) {
@@ -123,13 +141,15 @@ export class Issuer {
     return { ok: true };
   }
 
-  respond(request) {
-    if (this.statusMode === "replay" && this.previousResponse) return this.previousResponse;
+  async respond(request) {
+    // One read, before the first await: a control call that changes the mode while an answer is being signed must not change this answer.
+    const mode = this.statusMode;
+    if (mode === "replay" && this.previousResponse) return this.previousResponse;
     const token = randomBytes(8).toString("hex");
     const requestFile = `${token}.req`;
     const responseFile = `${token}.resp`;
     let signedRequest = request;
-    if (this.statusMode === "wrong-nonce") {
+    if (mode === "wrong-nonce") {
       signedRequest = Buffer.from(request);
       // The firewall sends 32 bytes; OpenSSL CLI probes send 16.
       let length = 32;
@@ -137,7 +157,7 @@ export class Issuer {
       if (at < 0) { length = 16; at = signedRequest.lastIndexOf(Buffer.from([0x04, length])); }
       if (at < 0 || at + 2 + length > signedRequest.length) throw new Error("OCSP request lacks nonce");
       signedRequest[at + 2] ^= 1;
-    } else if (this.statusMode === "wrong-serial") {
+    } else if (mode === "wrong-serial") {
       signedRequest = Buffer.from(request);
       const serial = Buffer.from([0x02, 0x02, 0x10]);
       const at = signedRequest.indexOf(serial);
@@ -146,7 +166,7 @@ export class Issuer {
     }
     writeFileSync(join(this.dir, requestFile), signedRequest);
     const args = ["ocsp", "-index", "index.txt", "-rsigner", "ca.pem", "-rkey", "ca.key", "-CA", "ca.pem"];
-    if (this.statusMode === "no-nonce") {
+    if (mode === "no-nonce") {
       // -reqin copies the request nonce even with -no_nonce. Generate by issuer
       // and serial instead, keeping the CertID while omitting the nonce.
       args.push("-issuer", "ca.pem", "-serial", `0x${requestSerial(request)}`, "-no_nonce");
@@ -155,9 +175,9 @@ export class Issuer {
     }
     args.push("-nmin", "2", "-respout", responseFile);
     try {
-      openssl(this.dir, ...args);
+      await opensslAsync(this.dir, ...args);
       const response = readFileSync(join(this.dir, responseFile));
-      if (this.statusMode === "bad-signature") {
+      if (mode === "bad-signature") {
         return corruptSignature(response);
       }
       this.previousResponse = response;

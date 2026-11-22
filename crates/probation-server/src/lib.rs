@@ -7,6 +7,7 @@ pub mod audit;
 pub mod fleet;
 pub mod keys;
 pub mod osv;
+pub mod osv_view;
 pub(crate) mod order_guards;
 pub mod policy;
 pub mod portal;

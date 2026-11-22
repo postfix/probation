@@ -247,6 +247,13 @@ for gated in ("release", "publish"):
     needs = [needs] if isinstance(needs, str) else (needs or [])
     need("native" in needs, f"release.yml's {gated} job must need native (needs: {needs})")
 need("e2e" in (release.get("release", {}).get("needs") or []), "release.yml's release job must need e2e directly")
+# Slice 27: the release test job runs the workspace tests (which hold tests/cross_plan_acceptance.rs and the rated-load test) and the
+# transport hot-path bench with its bounds asserted; neither may be dropped or made advisory.
+test_runs = [str(step.get("run", "")) for step in release.get("test", {}).get("steps", [])]
+# Exact command lines: a substring match would accept `cargo test --workspace --locked --no-run` or `... -- --assert --list`.
+test_lines = [line.strip() for run in test_runs for line in run.splitlines()]
+need("cargo test --workspace --locked" in test_lines, "release.yml's test job must run exactly the line `cargo test --workspace --locked` (no --no-run, --list or other flag)")
+need("cargo bench --locked --bench transport_hot_paths -- --assert" in test_lines, "release.yml's test job must run exactly the line `cargo bench --locked --bench transport_hot_paths -- --assert` (no --list or other flag)")
 
 # The hosted-run call probe was temporary scaffolding: the permanent shape is that it does not exist.
 need(not probe_path.exists(), "native-call-probe.yml must be absent (it was temporary; remove it)")
@@ -310,6 +317,8 @@ for job_name, job in release.items():
         need(not PIPE.search(run) or "pipefail" in run or step.get("shell") == "bash", f"release.yml job {job_name} pipes a command without pipefail (`shell: bash` or `set -o pipefail`)")
         need(not CONDITIONAL.search(run), f"release.yml job {job_name} runs a command as an if/while condition, which swallows its failure")
         need(not BACKGROUND.search(run), f"release.yml job {job_name} backgrounds a command with `&`")
+        # Attacker-chosen text (a tag or branch name, an event payload) must reach a shell through `env:`, never interpolated into the script.
+        need(not re.search(r"\$\{\{[^}]*\bgithub\.(event|ref_name|ref|head_ref|base_ref)\b", run), f"release.yml job {job_name} interpolates github.event or a ref name into a run script: pass it through env:")
     if sensitive:
         chain = needed(job_name)
         need({"native", "e2e"} <= chain, f"release.yml job {job_name} writes, publishes or uses secrets or an environment, so it must transitively need native and e2e (it needs {sorted(chain)})")

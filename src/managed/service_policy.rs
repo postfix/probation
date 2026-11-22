@@ -299,13 +299,18 @@ impl ServicePolicy {
                 .bearer_auth(self.config.service_key.expose())
                 .send()
                 .await
-                .map_err(|_| ServicePolicyError)?;
+                .map_err(|error| {
+                    tracing::warn!(error = %error.without_url(), "the policy server could not be reached for a snapshot");
+                    ServicePolicyError
+                })?;
             if matches!(response.status().as_u16(), 401 | 403) {
+                tracing::warn!(status = response.status().as_u16(), "the policy server refused the service key");
                 refused = true;
                 self.refuse()?;
                 return Err(ServicePolicyError);
             }
             if !response.status().is_success() {
+                tracing::warn!(status = response.status().as_u16(), "the policy server answered a snapshot request with an error status");
                 return Err(ServicePolicyError);
             }
             let mut bytes = Vec::new();
@@ -315,14 +320,16 @@ impl ServicePolicy {
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            let (reply, unavailable, skipped) = classify_snapshot(&bytes)?;
+            let (reply, unavailable, skipped) = classify_snapshot(&bytes).inspect_err(|_| tracing::warn!("the policy snapshot was rejected as malformed; the last good one stays"))?;
             // Structural rejection (LS-F8): last good retained, no refusal change.
             if self.binding.mode != "service_policy" {
                 return Err(ServicePolicyError);
             }
             let floor = self.floor.lock().map_err(|_| ServicePolicyError)?.clone();
-            super::order_guards::activation_order(&reply, &self.deny, floor.as_ref())?;
-            check_hostnames(&reply, &self.deny).await?;
+            super::order_guards::activation_order(&reply, &self.deny, floor.as_ref())
+                .inspect_err(|_| tracing::warn!("the policy snapshot was not activated: it failed the activation order checks (revision floor, own listener, control-plane or loopback targets)"))?;
+            check_hostnames(&reply, &self.deny).await
+                .inspect_err(|_| tracing::warn!("the policy snapshot was not activated: a registry hostname resolves to a refused address"))?;
             Ok((reply, unavailable, skipped))
         }
         .await;

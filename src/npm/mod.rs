@@ -241,10 +241,18 @@ async fn current_project(
     origin: Option<&url::Url>,
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<&str>,
+    metadata: bool,
 ) -> Result<Arc<CachedProject>, ApiError> {
     let key = ProjectKey::in_registry(registry_id, Ecosystem::Npm, name.as_str());
     if app.service_policy().is_some() {
-        // Request credentials must be accepted upstream before any shared cached bytes are used.
+        // A credential-bearing read must be accepted upstream before any shared bytes are used, so it neither reads
+        // nor fills the share; an ARTIFACT request always revalidates upstream (never reads or fills it); a
+        // credential-free metadata read shares one fetch (single flight) for `service_share::TTL`.
+        let shareable = metadata && read_authorization.is_none() && crate::http::credential_read::cache_token(app).is_some();
+        if shareable {
+            let share = ("npm", registry_id, origin.map(ToString::to_string), name.as_str().to_owned());
+            return app.service_share.get_or_fetch(share, monotonic, || refresh(app, name, &key, now, monotonic, true, None, origin, private_cidrs, read_authorization)).await;
+        }
         return refresh(app, name, &key, now, monotonic, true, None, origin, private_cidrs, read_authorization).await;
     }
     let caches = app.store().caches();
@@ -355,6 +363,7 @@ pub async fn ensure_fresh_project_at(
         origin,
         private_cidrs,
         read_authorization,
+        false,
     )
     .await?;
     advertised(app, &name, &cached, registry_id)
@@ -462,7 +471,7 @@ async fn resolve(
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<&str>,
 ) -> Result<Resolved, ApiError> {
-    let cached = current_project(app, name, now, monotonic, registry_id, origin, private_cidrs, read_authorization).await?;
+    let cached = current_project(app, name, now, monotonic, registry_id, origin, private_cidrs, read_authorization, true).await?;
     let ttl_micros =
         i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
             .unwrap_or(i64::MAX);

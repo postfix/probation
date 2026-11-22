@@ -238,8 +238,11 @@ async fn run() -> Vec<(String, bool)> {
     );
 
     let clock = TestClock::at_rfc3339(NOW);
-    let server =
-        TestServer::start_with_upstream(config, clock.shared(), registry, fake_origins()).await;
+    // OSV is reachable and answers "no match" (production's steady state; cached for the negative TTL). The default test server's OSV is an
+    // OFFLINE client, and since slice 16 a failed lookup is never cached (C-S16-1), so every request that asks OSV would wait out the 10 ms
+    // batch window: that is the cost of an OSV outage (docs/operations.md section 10), not the warm path SPEC §12 measures.
+    let (osv_url, _osv) = common::osv_flagging(&[]).await;
+    let server = TestServer::start_with_upstream_and_osv(config, clock.shared(), registry, fake_origins(), reqwest::Client::new(), osv_url).await;
 
     println!("SPEC §12 warm metadata and warm policy denial");
     println!(
@@ -257,6 +260,7 @@ async fn run() -> Vec<(String, bool)> {
     warm(&server, &document).await;
     warm(&server, &denial).await;
     let commands_before = server.store_commands();
+    let window = Instant::now();
 
     let metadata = latency(&server, "warm metadata, p95 target 5 ms", &document, 200).await;
     let denial = latency(&server, "warm policy denial, p95 target 2 ms", &denial, 403).await;
@@ -267,10 +271,15 @@ async fn run() -> Vec<(String, bool)> {
     )
     .await;
 
-    assert_eq!(
-        server.store_commands(),
-        commands_before,
-        "the measured window issued a database command, so it was not warm"
+    // The only commands a warm window may see are the background maintenance passes (one WAL checkpoint every
+    // `INTERVAL`, a pass possibly in flight at each end), never a request's: on a slow or loaded host the window
+    // spans several intervals, and counting those as "not warm" made this bench fail for the host's sake. A request
+    // that wrote to the database would add thousands, so the bound still catches it.
+    let passes = window.elapsed().as_secs() / probation::tasks::maintenance::INTERVAL.as_secs() + 2;
+    let issued = server.store_commands() - commands_before;
+    assert!(
+        issued <= passes,
+        "the measured window issued {issued} database commands, more than the {passes} maintenance passes it spanned, so it was not warm"
     );
 
     server.shutdown().await;

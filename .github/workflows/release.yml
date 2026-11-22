@@ -24,6 +24,9 @@ jobs:
       # `probation-server`'s tests need Postgres; each makes its own database in it.
       - run: docker compose -f docker-compose.test.yml up -d --wait postgres
       - run: cargo test --workspace --locked
+      # Slice 27: the nine transports' hot paths in a release build; a missed bound (docs/operations.md, "Rated load per transport")
+      # fails the gate. The cross-plan acceptance walk (tests/cross_plan_acceptance.rs) is part of the test run above.
+      - run: cargo bench --locked --bench transport_hot_paths -- --assert
 
   # The release e2e gate (D6): the release suite on the stack of the exact images,
   # offline against the fakes. It includes E2E-signup-to-install and M-propagation
@@ -125,9 +128,12 @@ jobs:
       # The package is the binary, the service installer and the files it installs from: a downloaded release installs as a
       # service with ./install-service.sh install (docs/operations.md, "Native service").
       - name: Package
+        # The tag name reaches the shell through the environment, never by interpolation into the script (a tag name is attacker-chosen text).
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          dir=$(VERSION="${{ github.ref_name }}" scripts/package-release.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release/probation" .)
+          dir=$(VERSION="$REF_NAME" scripts/package-release.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release/probation" .)
           pkg=$(basename "$dir")
           tar czf "$pkg.tar.gz" "$pkg"
           shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
@@ -161,8 +167,10 @@ jobs:
           AWS_LC_SYS_USE_SYSTEM: "0"
       - name: Package
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          dir=$(VERSION="${{ github.ref_name }}" scripts/package-release.sh x86_64-pc-windows-msvc target/x86_64-pc-windows-msvc/release/probation.exe .)
+          dir=$(VERSION="$REF_NAME" scripts/package-release.sh x86_64-pc-windows-msvc target/x86_64-pc-windows-msvc/release/probation.exe .)
           pkg=$(basename "$dir")
           7z a "$pkg.zip" "$pkg"
           sha256sum "$pkg.zip" > "$pkg.zip.sha256"

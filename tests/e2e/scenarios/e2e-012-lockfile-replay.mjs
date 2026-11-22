@@ -126,8 +126,8 @@ export default async function lockfileReplay(h) {
   expect(hashes.length === 2, `pypi.org lists the wheel and the sdist of e2e-left 1.1.0: ${pypiPage.body}`);
 
   // `@FRESH@` in a script becomes a new name each run: a fresh client cache.
-  const run = (client, step) =>
-    h.client(client.service, `${step.script.replaceAll("@FRESH@", h.unique("cache"))}\necho "exit=$?"\necho "lock=$(sha256sum ${client.lock} | cut -c1-64)"`, {
+  const run = (client, step, hosts) =>
+    h.client(client.service, `${hosts ? hosts.before : ""}${step.script.replaceAll("@FRESH@", h.unique("cache"))}\n${hosts ? hosts.after : ""}echo "exit=$?"\necho "lock=$(sha256sum ${client.lock} | cut -c1-64)"`, {
       dir: client.dir,
       files: step.files,
     });
@@ -135,25 +135,38 @@ export default async function lockfileReplay(h) {
   const lockOf = (answer) => answer.stdout.match(/^lock=([0-9a-f]{64})$/m)?.[1];
   const said = (answer) => `${answer.stdout}\n${answer.stderr}`;
 
-  // Only lockfile creation may reach the fake public registries directly.
+  // Only lockfile creation may reach the fake public registries directly. They are named by the client's own hosts
+  // file for the length of that step, never by a DNS alias: `podman network connect --alias` leaves aardvark-dns
+  // records that send the firewall's own name to the fakes afterwards (E2E-012, observed on podman 5.4.2).
+  const connectFakes = (ops, network, container) => {
+    ops.engine(["network", "connect", network, container]);
+    const ip = JSON.parse(ops.engine(["inspect", container, "--format", "{{json .NetworkSettings.Networks}}"]).stdout)[network]?.IPAddress;
+    expect(ip, `the fakes have an address on ${network}`);
+    const names = "registry.npmjs.org pypi.org files.pythonhosted.org";
+    return {
+      before: `echo '${ip} ${names} # e2e-012' >> /etc/hosts\n`,
+      // Restores the hosts file in place (it is a bind mount: no rename), keeping the step's own exit status.
+      after: `status=$?; grep -v '# e2e-012' /etc/hosts > /tmp/hosts.e2e012; cat /tmp/hosts.e2e012 > /etc/hosts; (exit $status)\n`,
+    };
+  };
   const operator = ops(h);
   const clientNetwork = `${h.stack.project}_clients`;
   const fakes = operator.id("fakes");
-  operator.engine(["network", "connect", "--alias", "registry.npmjs.org", "--alias", "pypi.org",
-    "--alias", "files.pythonhosted.org", clientNetwork, fakes]);
+  const toFakes = connectFakes(operator, clientNetwork, fakes);
   try {
     for (const client of clients) {
       client.dir = `/work/${h.unique("lock")}`;
       if (client.lock === "requirements.txt") client.make.files["requirements.txt"] = `e2e-left==1.1.0 ${hashes.join(" ")}\n`;
-      const made = run(client, client.make);
+      const made = run(client, client.make, toFakes);
       expect(exitOf(made) === 0 && lockOf(made), `${client.name}: the lockfile against the public registry: ${said(made)}`);
-      if (client.relock) {
-        const relocked = run(client, client.relock);
-        expect(exitOf(relocked) === 0, `${client.name}: lock against the firewall: ${said(relocked)}`);
-      }
     }
   } finally {
     operator.engine(["network", "disconnect", clientNetwork, fakes]);
+  }
+  // The re-lock against the firewall needs only the firewall: it runs after the fakes have left the client network.
+  for (const client of clients.filter((c) => c.relock)) {
+    const relocked = run(client, client.relock);
+    expect(exitOf(relocked) === 0, `${client.name}: lock against the firewall: ${said(relocked)}`);
   }
 
   // 2. Replayed through firewall-1 with fresh caches.
@@ -191,13 +204,13 @@ export default async function lockfileReplay(h) {
   // 4. yarn 1. Its lockfile from the public registry names registry.yarnpkg.com, yarn's
   //    default (made here through registry.npmjs.org, then given yarn's own host).
   const yarn = { service: "client-js", lock: "yarn.lock", dir: `/work/${h.unique("yarn1")}` };
-  operator.engine(["network", "connect", "--alias", "registry.npmjs.org", clientNetwork, fakes]);
+  const yarnToFakes = connectFakes(operator, clientNetwork, fakes);
   let made;
   try {
     made = run(yarn, {
       files: { "package.json": packageJson },
       script: "yarn install --registry https://registry.npmjs.org/ --cache-folder $PWD/.y0 --non-interactive && rm -rf node_modules && sed -i 's#https://registry.npmjs.org/#https://registry.yarnpkg.com/#g' yarn.lock",
-    });
+    }, yarnToFakes);
   } finally {
     operator.engine(["network", "disconnect", clientNetwork, fakes]);
   }

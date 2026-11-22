@@ -13,7 +13,7 @@ import { runLifecycle } from "../native/service-lifecycle.mjs";
 export const meta = {
   id: "E2E-service-native",
   title: "native service lifecycle and native package tools on this OS",
-  suites: [],
+  suites: ["release-native"],
   stack: "own",
   clientHost: "native",
   native: { npm: 2, pip: 2 },

@@ -1,6 +1,7 @@
 // Release aggregation runs the actual client scenarios and records assertions that
 // completed. Every required row must be observed in every certificate mode. Missing
 // witnesses fail the scenario; a source file or an attempted command is not a pass.
+import { join } from "node:path";
 import certificateNpm from "./publishing-certificate-npm.mjs";
 import certificateScale from "./publishing-certificate-scale.mjs";
 import enterpriseRegistry from "./publishing-enterprise-registry.mjs";
@@ -391,7 +392,11 @@ export default async function fullMatrix(h) {
   const observed = new Set();
   const egressPassed = new Set();
   const runnerFailures = [];
+  // E2E_MATRIX_ONLY="npm-read-disabled,certificate-scale" runs only those runners (isolation of a failing runner;
+  // the witness check at the end then reports the rows the others would have covered).
+  const only = process.env.E2E_MATRIX_ONLY?.split(",").filter(Boolean);
   for (const [position, [scenario, run]] of runners.entries()) {
+    if (only && !only.includes(scenario)) continue;
     h.log(`matrix runner ${position + 1}/${runners.length}: ${scenario}`);
     await h.stack.up({ build: false });
     const runH = helpers(h.stack, { log: h.log });
@@ -445,6 +450,14 @@ export default async function fullMatrix(h) {
       const failure = `${scenario}: ${error?.stack ?? error}`;
       runnerFailures.push(failure);
       h.log(`matrix runner failed: ${failure}`);
+      // Every runner brings up a fresh stack, so the failed runner's firewall, server, fakes and management logs
+      // are gone at the next runner's `down`: keep them next to the other failure logs.
+      try {
+        const out = process.env.E2E_OUT ?? join(h.stack.work, "out");
+        await h.stack.collect(join(out, "logs", `${meta.id}-${scenario}`));
+      } catch (collectError) {
+        h.log(`${scenario}: log collection failed: ${collectError}`);
+      }
     } finally {
       runH.stack.restart = originalRestart;
       runH.stack.start = originalStart;

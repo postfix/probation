@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The e2e runner (tests/e2e/README.md).
 //
-//   node tests/e2e/harness/run.mjs --suite pr|nightly|release|canary|pbt|pbt-weekly [--only ID] [--list]
+//   node tests/e2e/harness/run.mjs --suite pr|nightly|release|release-native|release-cluster|canary|pbt|pbt-weekly [--only ID] [--list]
 //                                  [--skip-build] [--keep]
 //
 // Brings the stack up once, runs every scenario of the suite against it (a scenario
@@ -20,10 +20,15 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { checkNativeCounts, junitProperties, nativeClients, parseClientHost, requireNativeLane } from "./client-host.mjs";
 import { helpers } from "./helpers.mjs";
+import { netStats } from "./net.mjs";
 import { ROOT, Stack } from "./stack.mjs";
 
 // pbt and pbt-weekly: the property-based portal tests (harness/pbt.mjs), a shard of their own.
-const SUITES = ["pr", "nightly", "release", "canary", "pbt", "pbt-weekly"];
+// release-native and release-cluster are the parts of the release gate a container stack cannot run: the native service lifecycle
+// on the host's own service manager (needs --client-host native) and the shared service behind a pinned containerd node. The
+// release runbook (docs/operations.md, "Release acceptance") runs all three; tests/cross_plan_acceptance.rs checks that every
+// scenario belongs to one of them or is a named exception.
+const SUITES = ["pr", "nightly", "release", "release-native", "release-cluster", "canary", "pbt", "pbt-weekly"];
 const { values: args } = parseArgs({
   options: {
     suite: { type: "string", default: "pr" },
@@ -90,7 +95,7 @@ const stack = new Stack({
   net: process.env.E2E_NET ?? "11.220.0",
   bridgePort: Number(process.env.E2E_BRIDGE_PORT ?? 18128),
   canary: args.suite === "canary",
-  nightly: args.suite === "nightly" || args.suite === "release",
+  nightly: args.suite === "nightly" || args.suite === "release", // release-native and release-cluster start no nightly client container
 });
 
 const results = [];
@@ -147,6 +152,7 @@ try {
     console.log(`e2e: ${scenario.id} ${error ? "FAILED" : "passed"} in ${seconds.toFixed(1)} s`);
   }
 } finally {
+  writeHarnessEvents();
   writeJunit();
   if (!args.keep && !interrupted) stack.down();
 }
@@ -157,6 +163,14 @@ const incomplete = clientHostKind === "native" ? checkNativeCounts({ selected, r
 for (const problem of incomplete) console.error(`e2e: native run incomplete: ${problem}`);
 console.log(`e2e: ${results.length - failed.length} passed, ${failed.length} failed, ${selected.length - results.length} not run (suite ${args.suite})`);
 process.exit(failed.length || incomplete.length || results.length < selected.length ? 1 : 0);
+
+/// What the harness did that a green result could hide: stack bring-ups retried on an engine or one-off failure, requests sent a second
+/// time on a stale kept-alive connection, stale DNS records removed. Printed and written next to junit.xml.
+function writeHarnessEvents() {
+  const events = { upRetries: stack.upRetries ?? [], netResends: netStats().resends, purgedDnsRecords: stack.purgedDns ?? [] };
+  writeFileSync(join(out, "harness-events.json"), `${JSON.stringify(events, null, 2)}\n`);
+  console.log(`e2e: harness events: ${events.upRetries.length} stack-up retries${events.upRetries.map((r) => ` [attempt ${r.attempt}: ${r.error}]`).join("")}, ${events.netResends} idempotent resends, ${events.purgedDnsRecords.length} stale DNS records removed`);
+}
 
 function writeJunit() {
   const xml = (text) => String(text).replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[c]);

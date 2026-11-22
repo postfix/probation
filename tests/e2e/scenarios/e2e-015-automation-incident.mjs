@@ -131,7 +131,8 @@ export default async function incident(h) {
     ["malformed JSON", json, '{"schema_version": 1, "blocked_packages": [', 422, /./],
     ["schema_version 2", json, JSON.stringify({ ...file({}), schema_version: 2 }), 422, /schema_version 2 is not 1/],
     ["a bad digest", json, JSON.stringify(file({ blocked_hashes: [{ algorithm: "sha512", digest: "abc" }] })), 422, /blocked_hashes\[0\]/],
-    ["an unknown ecosystem", json, JSON.stringify(file({ blocked_packages: [{ ecosystem: "maven", name: "x" }] })), 422, /blocked_packages\[0\]/],
+    // `swift` is no family and never will be (maven was used before slice 21 made it one: a known ecosystem with an invalid name answers a different line).
+    ["an unknown ecosystem", json, JSON.stringify(file({ blocked_packages: [{ ecosystem: "swift", name: "x" }] })), 422, /blocked_packages\[0\]/],
     ["a body not in UTF-8", json, Buffer.from([0x7b, 0xff, 0xfe, 0x7d]), 422, /UTF-8/],
   ];
   for (const [what, headers, body, status, text] of refusals) {

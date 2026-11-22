@@ -13,8 +13,9 @@ const options = { method: process.argv[3] || "GET",
   headers: { ...(process.argv[4] === "none" ? {} : { authorization: "Bearer " + process.argv[4] }),
     ...(process.env.HEADER_BYTES ? { "x-oversized": "x".repeat(Number(process.env.HEADER_BYTES)) } : {}) },
 };
+const t0 = Date.now();
 const req = https.request(process.argv[2], options, (res) => { const chunks = []; res.on("data", x => chunks.push(x));
-  res.on("end", () => console.log(JSON.stringify({status: res.statusCode, body: Buffer.concat(chunks).toString()}))); });
+  res.on("end", () => console.log(JSON.stringify({status: res.statusCode, ms: Date.now() - t0, body: Buffer.concat(chunks).toString()}))); });
 req.on("error", e => { console.error(e); process.exitCode = 2; });
 req.end(process.env.BODY_BYTES ? Buffer.alloc(Number(process.env.BODY_BYTES), 120) : undefined);
 `;
@@ -352,7 +353,8 @@ export default async function npmRead(h) {
   h.expect((await h.fakes.requests("registry.npmjs.org")).length === beforeRefusedActions, "refused alternate routes do no upstream I/O");
   await h.fakes.faults([{ host: "registry.npmjs.org", path: "/-/npm/v1/security/advisories/bulk", method: "POST", mode: "delay", ms: 31_000, times: 1 }]);
   const auditStarted = Date.now();
-  h.expect(probe("-/npm/v1/security/advisories/bulk", "none", "POST").status === 504 && Date.now() - auditStarted < 38_000, "audit fetch and filter share one 30-second deadline");
+  const audit = probe("-/npm/v1/security/advisories/bulk", "none", "POST");
+  h.expect(audit.status === 504 && audit.ms < 38_000, `audit fetch and filter share one 30-second deadline: ${audit.status} after ${audit.ms} ms in the client (${Date.now() - auditStarted} ms with the exec)`);
   h.expect(probe("-/ping").status === 200, "audit timeout releases the sole active request permit");
   const traces = await h.fakes.requests("registry.npmjs.org");
   h.expect(traces.every(row => ["none", "developer-owner", "developer-denied"].includes(row.credential)), "only package-manager credentials reach the selected registry");
@@ -374,8 +376,9 @@ if (!process.env.NO_CERT) {
   options.cert = readFileSync(home + "/.config/probation/client-cert.pem");
   options.key = readFileSync(home + "/.config/probation/client-key.pem");
 }
+const t0 = Date.now();
 const req = https.request(process.argv[2], options, (res) => { const chunks = []; res.on("data", x => chunks.push(x));
-  res.on("end", () => console.log(JSON.stringify({status: res.statusCode, body: Buffer.concat(chunks).toString()}))); });
+  res.on("end", () => console.log(JSON.stringify({status: res.statusCode, ms: Date.now() - t0, body: Buffer.concat(chunks).toString()}))); });
 req.on("error", e => { console.error(e); process.exitCode = 2; });
 req.end(process.env.BODY_BYTES ? Buffer.alloc(Number(process.env.BODY_BYTES), 120) : undefined);
 `;
@@ -954,8 +957,9 @@ req.on("error",e=>{console.error(e);process.exitCode=2});`;
     return searchSlowNames.every(searchName => requests.some(r => r.path === `/${searchName}` && r.fault === "delay"));
   }, { timeout: 25_000, every: 500 });
   const slowSearch = await searching;
-  h.expect(slowSearch.status === 0 && JSON.parse(slowSearch.stdout.trim()).status === 504
-    && Date.now() - searchStarted < 38_000, "cold search has one 30-second total deadline");
+  const slowSearchAnswer = slowSearch.status === 0 ? JSON.parse(slowSearch.stdout.trim()) : {};
+  h.expect(slowSearchAnswer.status === 504 && slowSearchAnswer.ms < 38_000,
+    `cold search has one 30-second total deadline: exit ${slowSearch.status}, ${slowSearchAnswer.status} after ${slowSearchAnswer.ms} ms in the client (${Date.now() - searchStarted} ms with the exec) ${slowSearch.stderr}`);
   h.expect(registryProbe(foreignId, "-/ping", "none", foreignHome).status === 200,
     "search deadline releases the sole active request permit");
   const stalled = registryProbe(foreignId, foreignBoundedPath, "none", foreignHome);
@@ -966,9 +970,9 @@ req.on("error",e=>{console.error(e);process.exitCode=2});`;
   const auditStarted = Date.now();
   const timedAudit = h.client("client-npm", `HOME=${foreignHome} node probe.mjs 'https://fw1.e2e.test/registry/npm/${foreignId}/-/npm/v1/security/advisories/bulk' POST none`,
     { files: { "probe.mjs": HISTORICAL_PROBE } });
-  h.expect(timedAudit.status === 0 && JSON.parse(timedAudit.stdout.trim()).status === 504
-    && Date.now() - auditStarted < 38_000,
-    "audit fetch and filter share one 30-second deadline");
+  const timedAnswer = timedAudit.status === 0 ? JSON.parse(timedAudit.stdout.trim()) : {};
+  h.expect(timedAnswer.status === 504 && timedAnswer.ms < 38_000,
+    `audit fetch and filter share one 30-second deadline: exit ${timedAudit.status}, ${timedAnswer.status} after ${timedAnswer.ms} ms in the client (${Date.now() - auditStarted} ms with the exec) ${timedAudit.stderr}`);
   h.expect(registryProbe(foreignId, "-/ping", "none", foreignHome).status === 200,
     "audit timeout releases the sole active request permit");
 }

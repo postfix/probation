@@ -16,7 +16,7 @@ import { startCommonService } from "../harness/service-setup.mjs";
 export const meta = {
   id: "E2E-service-cluster-probe",
   title: "containerd explicit-server routing probe against the shared service",
-  suites: [],
+  suites: ["release-cluster"],
   stack: "own",
 };
 

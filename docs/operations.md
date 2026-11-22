@@ -1201,21 +1201,42 @@ Two of these need a person, not a client retry:
 ## 10. Performance numbers
 
 Measured with `cargo bench` on a 32-core / 124 GB RAM machine, local SSD, no
-TLS, against an in-process fake registry.
+TLS, against an in-process fake registry and an in-process OSV that answers "no
+match" (the production steady state: the answer is cached for 30 seconds). The
+host was shared with other work (load average 30 to 60), which is why the figures
+below are not the quietest ones this machine has given; every artifact figure is
+a PAIRED ratio against a plain file server sampled in the same loop, so host load
+cancels out of it.
 
 | Scenario | Target | Measured |
 | --- | --- | --- |
-| Warm metadata responses | ≥1,000/s, p95 ≤5ms | 120,000–144,000/s, p95 0.09–0.12ms — met |
-| Warm policy denial | p95 ≤2ms | p95 1.19–1.31ms — met |
-| Extra delay vs. plain file server, small project | p95 ≤5ms | +0.12–0.16ms — met |
-| Same, medium project | p95 ≤5ms | +0.11–0.16ms — met |
-| Same, large project | p95 ≤5ms | +0.09–0.15ms — met |
-| Download throughput vs. plain file server | ≥85% | 109–113% — met |
-| Blocklist update takes effect under load | within 2 poll intervals (10s) | 5.0s — met |
+| Warm metadata responses | ≥1,000/s, p95 ≤5ms | 82,000–122,000/s, p95 0.107–0.269 ms — met |
+| Warm policy denial | p95 ≤2ms | p95 1.49–1.81 ms — met (narrowly, on a loaded host) |
+| Extra delay vs. plain file server, small project | p95 ≤5ms | +0.11–0.16 ms — met |
+| Same, medium project | p95 ≤5ms | +0.26–0.38 ms — met |
+| Same, large project | p95 ≤5ms | +0.31–0.43 ms — met |
+| Download throughput vs. plain file server | ≥85% | 105–111% — met |
+| Blocklist update takes effect under load | within 2 poll intervals (10s) | 5.35–5.78 s — met |
 
 All targets are met with margin across projects of 100 to 5,000 package
 versions. Memory under load with a 100,000-entry blocklist: 357 to 374 MB
 resident.
+
+**What an OSV outage costs.** Since slice 16 a failed OSV lookup is never cached
+(an unreachable or erroring OSV answers "no match" for that request, and the next
+request asks again), so while OSV does not answer, each artifact request and each
+metadata request that needs a verdict waits for its lookups: a lookup is queued
+for a 10 ms batch window and then fails (at once for an unreachable address; after
+`osv_request_timeout_ms` when the endpoint hangs). An artifact request makes two
+lookups, so with OSV unreachable the same benchmark reads +23 to +25 ms at p95 and
+14 to 36% of the plain file server's throughput, and the warm policy denial reads
+p95 14.9 ms; with OSV off (`osv_mode = "off"`) or answering, the figures above
+hold. These outage figures were measured on this host with the default offline
+test client (they are what the benchmark printed before it was given a reachable
+OSV; `git bisect` between the first commit and the commit before slice 17 puts the
+first slower commit at the one that made failed lookups uncached, and the figure is
+the same at the commit before slice 17). If downloads must not slow down while OSV
+is down, set `osv_mode = "off"`; `"diagnostic"` still asks.
 
 The raw numbers, the method, and why the throughput ratio reads above 100% (a
 quirk in how the baseline streams, not evidence this service speeds downloads
@@ -2168,3 +2189,37 @@ Policy server outage: the service remembers its last policy; a restart during th
 ### Not run on a cluster (what the repository's tests do not show)
 
 There is no Kubernetes in the test environment. NOT run, and therefore not claimed: that kube-proxy preserves the source address with `Local` on your CNI, that a pod on an unapproved node and an external host are refused at a NodePort (the service's refusal of an unlisted source and of a source-rewriting forwarder's victims is run; the packet path is not); the admission policy, the namespace's Pod Security enforcement and `kubectl apply` (kubeconform validated the rendered objects against the schema only); the kubelet's own pull and a pod start through the CRI `config_path` directory, and the kubelet's credential matching (the explicit-server behaviour is run with `ctr` and with the CRI plugin's image service through `crictl pull` against containerd 2.2.0, with `crictl`'s credentials, which carry no server address; the kubelet and a pod runtime are not run); `ReadWriteOncePod` enforcement, Deployment replacement and the fence, the PodDisruptionBudget, claim retention; NetworkPolicy enforcement by a CNI; the init container and the read-only root file system under Kubernetes (the same pod spec ran under `podman kube play`); multi-node behaviour; the node firewall on a real node and its boot persistence (the rules were loaded into a throwaway network namespace); `verify-node.sh --online --check-egress` on a real node (only with fake `curl` and `getent`). `.github/workflows/cluster.yml` has jobs for the ones a hosted runner can give (kind with Calico, a CRI node); none of them has been run. Each of these is the first thing to check in a real cluster, in this order: `check_kubernetes.py --deployable`, `kubeconform` on the render, the D1 checks with the negative control, `verify-node.sh --online --check-egress` on every approved node, one pull of a fresh tag and one of a blocked tag, a credentialed pull, then a planned replacement and a fence drill.
+
+## 22. Release acceptance and rated load
+
+### Release acceptance
+
+A release is judged by four things, each a command that fails by itself. What `release.yml` enforces is only the first three (the `test` job: items 1 and 2; the `e2e` job: item 3; the `native-service` job it needs, which runs the `release-native` scenarios by ID on every operating system). Item 4's `release-cluster` suite (and `cluster.yml`) is in no `needs` chain of `release.yml`: it is a RUNBOOK STEP the releaser runs by hand on the release commit, and a tag can be published without it unless it is wired in:
+
+1. `cargo test --workspace` (in the release workflow's `test` job): among its tests, `tests/cross_plan_acceptance.rs` walks all nine families (npm, PyPI, RubyGems, Cargo, Go modules, NuGet, Maven, Conan, OCI) against one table of contract rows: tag and identity, an unknown tag refused, the publication gate, the OSV mapping and default scope, credential-bearing reads never cached, the shared-service listener (an unlisted peer, a write without the caller's own credential, an unknown registry, no administrative routes), migrations 0001 to the last with no gap, every configuration key in `config.sample.toml` and in these docs, the README, the routes on both prefixes, the release suites, and the write and spool witnesses. A tenth family added to `Ecosystem::ALL` fails it until its row exists.
+2. `cargo bench --bench transport_hot_paths -- --assert` (the same job): the hot path of every transport against the bounds below.
+3. `node tests/e2e/harness/run.mjs --suite release` (the `e2e` job, on the stack of the exact images): every container scenario, including the seven per-family scenarios, E2E-publishing-* for every publishing family and the portal scenarios.
+4. The two suites the container stack cannot run: `--suite release-native --client-host native` (the native service lifecycle on the host's own service manager, `native-service.yml` runs the same scenarios by ID on each operating system) and `--suite release-cluster` (the shared service behind a pinned containerd; `cluster.yml` job `e2e-service-cluster` runs the same two scenarios by ID). The Kubernetes, macOS and Windows parts of these are listed in `docs/plans/package-firewall-mvp-lf/evidence/slice-27.md` ("Lane ledger") with the runner each needs; none of them is claimed run until a hosted run passes.
+
+The portal's registry page (Organisation, Package registries) shows the OSV coverage of every family (the table is produced from the shared mapping, so a new family appears in it without an edit) and, for each registry, whether its names are sent to OSV: a registry on its family's public source reads "OSV queried: public registry", any other address with the default or Public scope reads "OSV queried: names reach the shared server", a Private one reads "OSV not applicable", and an OCI registry always reads "OSV not applicable". Fleet health reads "Healthy; OSV warning: ..." when more than 5% of the OSV lookups of a firewall degrade.
+
+### Rated load per transport
+
+Measured on the development host (32 cores, a load average of 30 to 60 from other work during the runs), in-process against the fake registry, no socket, no TLS, a release build, 32 concurrent clients; `cargo bench --bench transport_hot_paths` prints the table. The ranges are the lowest and highest of five runs. The status column says what the read answered, and the bench and the debug test FAIL when a read answers anything else (a fast 404 cannot pass as a hot path): npm is the real warm 100-version document (200, 96 versions after the cooldown), Conan's ping is served by the firewall itself, and every other family's read is its own route answered by whatever the fake has (404 or 502, an upstream miss): admission, routing, registry resolution and the policy path without a family-specific metadata rewrite. A per-family warm metadata figure needs that family's own fixture and is not claimed. The bench harness (tests/common/transport_load.rs) turns OSV off for every registry, so these figures exclude the OSV batch and its outage cost (section 10 has those, measured with the real OSV client); read them as a transport floor, not an end-to-end rate.
+
+| Family | Read | Read p50 / p95 | Refusal p95 (unlisted peer) | Write refusal p95 | Reads per second |
+| --- | --- | --- | --- | --- | --- |
+| npm (selected registry) | 200 | 0.956 to 1.434 / 1.184 to 1.861 ms | 0.005 ms | 0.015 ms | 4,698 to 10,633 |
+| PyPI | 404 | 0.006 to 0.009 / 0.007 to 0.012 ms | 0.005 ms | 0.007 ms | 268,052 to 764,185 |
+| RubyGems | 404 | 0.006 to 0.007 / 0.009 to 0.017 ms | 0.006 ms | 0.007 ms | 193,460 to 800,807 |
+| Cargo | 502 | 0.010 / 0.011 to 0.023 ms | 0.005 ms | 0.007 ms | 26,787 to 86,130 |
+| Go modules | 404 | 0.009 to 0.016 / 0.013 to 0.029 ms | 0.005 ms | no write route | 193,704 to 752,463 |
+| NuGet | 502 | 0.010 to 0.015 / 0.015 to 0.027 ms | 0.005 ms | 0.007 ms | 29,540 to 74,020 |
+| Maven | 404 | 0.011 to 0.017 / 0.013 to 0.027 ms | 0.005 ms | 0.007 ms | 22,557 to 65,511 |
+| Conan | 200 | 0.007 to 0.010 / 0.010 to 0.014 ms | 0.005 ms | 0.007 ms | 347,036 to 567,957 |
+| OCI | 502 | 0.012 to 0.017 / 0.020 to 0.029 ms | 0.005 ms | 0.017 ms | 70,546 to 145,983 |
+
+The stated bounds follow ONE rule, in `tests/common/transport_load.rs` (`RUNS` = 5, `MARGIN` = 4) and used by both the release bench and the debug test: run five times on the development host, take the WORST value of each kind, multiply a ceiling (or divide a floor) by four, and round in the safe direction. Release bench: the eight cheap reads p95 worst 0.029 ms, so at most 0.12 ms, and worst-run throughput 22,557 per second, so at least 5,600 per second; npm's warm document p95 worst 1.861 ms, so at most 7.5 ms, and 4,698 per second, so at least 1,100 per second; refusal p95 worst 0.006 ms, so at most 0.025 ms; write refusal p95 worst 0.017 ms, so at most 0.07 ms; the firewall's resident set under several million refused requests did not grow in any run (the figure's resolution is 1 MiB, so the bound is 4 MiB). Debug test (`tests/transport_rated_load.rs`, 16 clients): the cheap reads p95 worst 0.457 ms, bound 1.9 ms; npm p95 worst 27.6 ms, bound 110 ms; refusal p95 worst 0.096 ms, bound 0.4 ms; write refusal p95 worst 0.424 ms, bound 1.7 ms; cheap reads at least 2,903 per second, floor 700; npm at least 122 per second, floor 30; resident growth worst 8.2 MiB, bound 34 MiB. The bench exits non-zero on a miss with `-- --assert`, and the release `test` job runs it. A runner that is more than four times slower than the development host in its worst run fails the bound: re-derive it with the same rule from five runs on that runner and say so here; do not loosen a bound by hand.
+
+Two honest limits. First, **in shared-service mode a metadata read that carries the caller's own credential is revalidated upstream every time** (a credential presented to the service must be accepted by the registry before any shared bytes are used, C1028), so it costs a fetch, a store commit and a render per request: at 32 clients with an in-process upstream that was 14 to 23 ms at p50 and 48 to 78 reads per second for npm. A credential-free npm or PyPI METADATA read shares one fetched project for 5 seconds per registry, origin and project (`src/service_share.rs`; concurrent first reads of one project share one upstream fetch; the policy is judged on every read, so a published block governs the next read, and a metadata listing may show an upstream yank or new version up to 5 seconds late). The share is bounded by memory as well as by count: at most 256 projects and 256 MiB in all (the accounted bytes are each project's upstream payload plus its first-seen map, so retained memory is about that; a request in flight holds its own document up to `max_metadata_bytes` as before), a document above 32 MiB is served but never kept (the packuments of aws-sdk, @types/node and typescript, several MiB to about 30 MiB, are shared), expired cells are dropped on every put, and the oldest cell goes first when the table is full. **An ARTIFACT request (a tarball, wheel or sdist download) never reads or fills the share: it always revalidates the project upstream, so an upstream takedown is seen by the next download (C1028 and SPEC section 9 hold for every artifact request).** The same measurement for the metadata read then reads 0.90 to 0.93 ms at p50 and 8,388 to 10,940 reads per second (three runs). Size the service for the credentialed figure when the clients send credentials; a real registry adds its own latency to every fetch. Second, the in-process fake upstream records every call it answers (about 110 bytes each), so a bench that reads through it shows a resident set that grows by about 100 MiB per million reads; the firewall's own memory is the figure under refused load.
+

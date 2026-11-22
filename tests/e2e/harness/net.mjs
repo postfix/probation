@@ -35,9 +35,9 @@ function tunnel(host, port, callback) {
 }
 
 /// A keep-alive agent whose connections are tunnels through the bridge.
-function tunnelAgent(secure) {
+function tunnelAgent(secure, keepAlive = true) {
   const Base = secure ? https.Agent : http.Agent;
-  const agent = new Base({ keepAlive: true, maxSockets: 64 });
+  const agent = new Base({ keepAlive, maxSockets: 64 });
   agent.createConnection = (options, callback) => {
     tunnel(options.host, options.port, (err, socket) => {
       if (err) return callback(err);
@@ -58,15 +58,41 @@ function tunnelAgent(secure) {
   return agent;
 }
 
-function agentFor(url) {
-  if (!agents.has(url.protocol)) agents.set(url.protocol, tunnelAgent(url.protocol === "https:"));
-  return agents.get(url.protocol);
+// POST and PATCH are not idempotent: they never ride a kept-alive connection (a stale one would fail AFTER the request was written, and
+// whether the server processed it is unknowable), so each opens its own and a hang-up on it is a real failure, not a resend.
+const IDEMPOTENT = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+const stats = { resends: 0 };
+/// How many requests were sent a second time (an idempotent request that hit a stale kept-alive connection); run.mjs prints it.
+export function netStats() {
+  return { ...stats };
+}
+
+function agentFor(url, method) {
+  const kind = IDEMPOTENT.has(method.toUpperCase()) ? url.protocol : `${url.protocol}fresh`;
+  if (!agents.has(kind)) {
+    agents.set(kind, tunnelAgent(url.protocol === "https:", !kind.endsWith("fresh")));
+  }
+  return agents.get(kind);
 }
 
 /// One request: {method, headers, body (string | Buffer | object as JSON), timeout ms}.
 /// Answers {status, headers, body (string), bytes (Buffer), json()}; never follows a
 /// redirect.
-export function request(target, { method = "GET", headers = {}, body, timeout = 30_000 } = {}) {
+export function request(target, options = {}) {
+  // A keep-alive connection the bridge or the server closed while idle fails the first request written to it with
+  // "socket hang up" before any byte of an answer; Node documents `reusedSocket` for exactly this. The request WAS written to
+  // that socket, so only an idempotent method (GET, HEAD, OPTIONS, PUT, DELETE) is sent again, once, on a new connection, and the
+  // resend is counted (netStats). POST and PATCH never reuse a connection (agentFor), so they are never resent. Nothing else is retried.
+  return send(target, options).catch((err) => {
+    if (err?.reusedSocketHangup && IDEMPOTENT.has((options.method ?? "GET").toUpperCase())) {
+      stats.resends += 1;
+      return send(target, options);
+    }
+    throw err;
+  });
+}
+
+function send(target, { method = "GET", headers = {}, body, timeout = 30_000 } = {}) {
   const url = new URL(target);
   let payload = body;
   const sent = { ...headers };
@@ -76,7 +102,7 @@ export function request(target, { method = "GET", headers = {}, body, timeout = 
   }
   return new Promise((resolve, reject) => {
     const lib = url.protocol === "https:" ? https : http;
-    const req = lib.request(url, { method, headers: sent, agent: agentFor(url), timeout }, (res) => {
+    const req = lib.request(url, { method, headers: sent, agent: agentFor(url, method), timeout }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => {
@@ -87,7 +113,10 @@ export function request(target, { method = "GET", headers = {}, body, timeout = 
       res.on("error", reject);
     });
     req.on("timeout", () => req.destroy(new Error(`${method} ${target}: no answer in ${timeout} ms`)));
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (req.reusedSocket && !req.res && (err.code === "ECONNRESET" || /socket hang up/.test(err.message))) err.reusedSocketHangup = true;
+      reject(err);
+    });
     req.end(payload);
   });
 }

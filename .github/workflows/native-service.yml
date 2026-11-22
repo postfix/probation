@@ -283,7 +283,8 @@ jobs:
         run: |
           curl --fail --silent --show-error --location -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz
           echo "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6  $RUNNER_TEMP/maven.tar.gz" | sha512sum --check --strict -
-          mkdir -p "$RUNNER_TEMP/maven" && tar xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
+          # relative paths: GNU tar reads `D:\a\...` (a drive letter) as host:path, and bsdtar has no --force-local
+          (cd "$RUNNER_TEMP" && mkdir -p maven && tar xzf maven.tar.gz -C maven --strip-components=1)
           echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
       # Conan and every dependency by exact version and sha256 (generated with `uv pip compile --universal --generate-hashes`).
       - name: Install the pinned Conan (hash-locked)
@@ -294,16 +295,21 @@ jobs:
           grep -q "Apache Maven 3.9.16" "$RUNNER_TEMP/mvn-version.txt"
           conan --version | grep -q "2.21.0"
       # Provisioning: the plugin the test's goals need is fetched once into a seed repository; the test itself never downloads.
+      # Slice 27 (found by running this lane on a Linux host): Maven records the id of the repository an artifact came from, and the
+      # test's mirror is named `probation`, so the seed is fetched through a mirror of that id (as tests/e2e/compose/clients/maven.Dockerfile
+      # does); seeded through the default `central` id, the plugin was "unavailable in current build context" and the test failed
+      # (maven_native runs only the dependency plugin, so the image's second plugin is not needed here).
       - name: Seed the Maven plugin repository
         run: |
           mkdir -p "$RUNNER_TEMP/seed-m2" "$RUNNER_TEMP/seedproj"
+          printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2/</url></mirror></mirrors></settings>' > "$RUNNER_TEMP/seedproj/settings.xml"
           printf '<project><modelVersion>4.0.0</modelVersion><groupId>seed</groupId><artifactId>seed</artifactId><version>1</version><packaging>pom</packaging></project>' > "$RUNNER_TEMP/seedproj/pom.xml"
-          (cd "$RUNNER_TEMP/seedproj" && mvn -B -Dmaven.repo.local="$RUNNER_TEMP/seed-m2" org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies -DoutputDirectory="$RUNNER_TEMP/seedproj/out")
+          (cd "$RUNNER_TEMP/seedproj" && mvn -B -q -s settings.xml -Dmaven.repo.local="$RUNNER_TEMP/seed-m2" org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies)
       - name: Native Maven and Conan clients (host tools) against the firewall
         env:
           PROBATION_MAVEN_SEED: ${{ runner.temp }}/seed-m2
         run: |
-          cargo test --locked --test maven_native --test conan_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-host.log"
+          PROBATION_NATIVE_STRICT=1 cargo test --locked --test maven_native --test conan_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-host.log"
           if grep -q "SKIPPED" "$RUNNER_TEMP/tools-host.log"; then echo "a native lane did NOT run"; exit 1; fi
 
   tools-linux:
@@ -319,7 +325,7 @@ jobs:
           podman build -f tests/e2e/compose/clients/conan.Dockerfile -t localhost/probation-e2e-client:conan2.21.0 tests/e2e/compose/clients
       - name: Native Maven, Conan and podman OCI clients against the firewall
         run: |
-          cargo test --locked --test maven_native --test conan_native --test oci_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-linux.log"
+          PROBATION_NATIVE_STRICT=1 cargo test --locked --test maven_native --test conan_native --test oci_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools-linux.log"
           if grep -q "SKIPPED" "$RUNNER_TEMP/tools-linux.log"; then echo "a native lane did NOT run"; grep "SKIPPED" "$RUNNER_TEMP/tools-linux.log"; exit 1; fi
 
   docker-engine:

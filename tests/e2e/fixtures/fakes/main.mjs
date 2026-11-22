@@ -188,7 +188,7 @@ async function serve(req, res) {
   } else if (host in { "ocsp-a.e2e.test": 1, "ocsp-b.e2e.test": 1, "private-ocsp.e2e.test": 1 } && req.method === "POST" && req.url === "/status") {
     const issuer = issuers[host === "ocsp-b.e2e.test" ? "b" : "a"];
     const signer = issuer.statusMode === "wrong-issuer" ? issuers[issuer.name === "a" ? "b" : "a"] : issuer;
-    answer = { status: 200, headers: { "content-type": "application/ocsp-response" }, body: signer.respond(body) };
+    answer = { status: 200, headers: { "content-type": "application/ocsp-response" }, body: await signer.respond(body) };
   } else if (host === "private-registry.e2e.test" && req.method === "POST" && req.url === "/") {
     answer = fakes.pypi.handle(req, req.url, host, body);
   } else {

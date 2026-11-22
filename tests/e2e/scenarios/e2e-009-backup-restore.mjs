@@ -182,8 +182,10 @@ export default async function restoreDrill(h) {
       h.stack.compose(["up", "-d", "--no-deps", "--force-recreate", "server"]);
       await h.waitFor("the server refuses a mismatched secret key", () =>
         /PROBATION_SERVER_SECRET_KEY does not match/.test(o.logs(o.id("server"))), { timeout: 20_000 });
-      expect(o.state(o.id("server")).exitCode !== 0,
-        "the server fails closed when restored secrets cannot be opened");
+      // `restart: unless-stopped` starts the failing server again and again: a single sample can land while it is
+      // being started (exit code 0 of the previous start is not reported then), so wait for a sample of the failure.
+      await h.waitFor("the server fails closed when restored secrets cannot be opened",
+        () => o.state(o.id("server")).exitCode !== 0, { timeout: 30_000, every: 250 });
     } finally {
       h.stack.secretKey = secretKey;
       h.stack.compose(["up", "-d", "--no-deps", "--force-recreate", "server"]);

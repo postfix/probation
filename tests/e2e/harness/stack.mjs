@@ -3,7 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -150,6 +150,10 @@ export class Stack {
   restart(...services) {
     // Rootless Podman can drop a restarted container's DNS registration. A new
     // container keeps each service's named data volume and registers its name.
+    // The recreated container's log starts empty: keep what the replaced one wrote, for `collect` (a failed scenario that
+    // restarts a firewall is otherwise left with the log of its last incarnation only).
+    this.retired ??= [];
+    for (const service of services) this.retired.push([service, this.logs(service)]);
     this.compose(["up", "-d", "--force-recreate", "--no-deps", ...services]);
   }
 
@@ -232,8 +236,44 @@ trusted_proxies = ["${gateway}/32"]
 
   /// Brings the stack up from nothing and does the operator's one-time steps; leaves
   /// `this.operator` (signed in, with an authenticator) and `this.bootstrap`.
-  async up({ build = true } = {}) {
+  /// Retries the whole bring-up ONLY when the container engine or the harness's own one-off step failed, never when the product did:
+  /// podman-compose leaves a fixed address allocated after a `down` (IPAM, "already allocated"), a one-off container can lose its
+  /// route (No route to host, netavark, aardvark), or the database of a one-off `migrate`/`admin bootstrap` step was too slow
+  /// (`pool timed out`, a reset, "cannot connect": those steps are wrapped by `oneOff`, so the message says where it came from).
+  /// ECONNREFUSED, "socket hang up", a readiness timeout or a failing health check come from the product starting badly and are
+  /// NEVER retried, so a flaky start cannot be retried into a pass. Each retry is recorded in `this.upRetries` (run.mjs writes it into
+  /// harness-events.json and the summary line). Each retry starts from a clean `down()`.
+  async up(options = {}) {
+    const engine = /IPAM|already allocated|No route to host|netavark|aardvark/i;
+    const oneOffStep = /^harness one-off step [a-z ]+: .*(pool timed out|ECONNRESET|connection reset|cannot connect with PROBATION_SERVER_DATABASE_URL)/is;
+    this.upRetries ??= [];
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.bringUp(options);
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        if (attempt >= 3 || !(engine.test(message) || oneOffStep.test(message))) throw err;
+        const first = message.split("\n")[0];
+        this.upRetries.push({ project: this.project, attempt, error: first });
+        process.stderr.write(`e2e: stack up attempt ${attempt} failed on the container engine or a one-off step (${first}); cleaning and retrying\n`);
+        this.down();
+      }
+    }
+  }
+
+  /// A harness one-off container step (`compose run`): a failure is labelled so `up()` can tell it from a product failure.
+  oneOff(label, args) {
+    try {
+      return this.compose(args);
+    } catch (err) {
+      err.message = `harness one-off step ${label}: ${err.message}`;
+      throw err;
+    }
+  }
+
+  async bringUp({ build = true } = {}) {
     this.secretKey = randomBytes(32).toString("hex");
+    this.retired = [];
     mkdirSync(this.work, { recursive: true });
     this.down();
     this.writeFiles();
@@ -242,9 +282,9 @@ trusted_proxies = ["${gateway}/32"]
 
     this.start(...CORE, ...(this.canary ? [] : ["fakes"]));
     await waitFor("postgres", () => this.exec("postgres", ["pg_isready", "-U", "probation"]).status === 0);
-    this.compose(["run", "--rm", "-T", "--no-deps", "server", "migrate"]);
+    this.oneOff("migrate", ["run", "--rm", "-T", "--no-deps", "server", "migrate"]);
     this.sql("CREATE ROLE probation_e2e LOGIN PASSWORD 'probation' IN ROLE probation_app");
-    const bootstrap = this.compose([
+    const bootstrap = this.oneOff("admin bootstrap", [
       "run", "--rm", "-T", "--no-deps", "server", "admin", "bootstrap",
       "--config", "/etc/probation-server/config.toml",
       "--email", OPERATOR_EMAIL, "--org", "Operators",
@@ -298,6 +338,53 @@ trusted_proxies = ["${gateway}/32"]
     const anonymous = JSON.parse(inspected || "[]").flatMap((c) => (c.Mounts ?? []).filter((m) => m.Type === "volume" && /^[0-9a-f]{64}$/.test(m.Name)).map((m) => m.Name));
     this.compose(["down", "-v"], { check: false, quiet: true });
     if (anonymous.length) spawnSync(this.engine, ["volume", "rm", "-f", ...anonymous], { encoding: "utf8" });
+    // `down` can leave a container (a killed one-off `run`, a slow stop) and with it a fixed address, and the next
+    // create then fails with an IPAM "already allocated" error. Remove what this project still owns, by label, and
+    // its networks by name prefix, until the engine agrees nothing is left. Only this project's, never another's.
+    for (let pass = 0; pass < 20; pass++) {
+      const left = spawnSync(this.engine, ["ps", "-aq", "--filter", `label=com.docker.compose.project=${this.project}`], { encoding: "utf8" })
+        .stdout?.trim().split("\n").filter(Boolean) ?? [];
+      const nets = (spawnSync(this.engine, ["network", "ls", "--format", "{{.Name}}"], { encoding: "utf8" }).stdout ?? "")
+        .split("\n").filter((name) => name.startsWith(`${this.project}_`));
+      if (!left.length && !nets.length) break;
+      if (left.length) spawnSync(this.engine, ["rm", "-f", "-t", "0", ...left], { encoding: "utf8" });
+      if (nets.length) spawnSync(this.engine, ["network", "rm", "-f", ...nets], { encoding: "utf8" });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    }
+    this.purgeStaleDns();
+  }
+
+  /// podman's aardvark-dns keeps one record file per network under $XDG_RUNTIME_DIR and keeps answering from it after the
+  /// network is removed when the removal raced a container teardown. Subnets are reused, so a dead network's records
+  /// are served next to a live network's: a service name then resolves to extra, dead addresses (a 5 s connect timeout
+  /// before the live address answers, a client sent to another stack's container, "wrong version number" from a plain
+  /// port). A file is removed only when ALL of these hold: its network name has the harness's own `probation-` project
+  /// prefix; the network is absent from `network ls` of this user's default storage AND of every other storage root this
+  /// user's config enumerates (`--root` of this user's default graph root and of `podman info`'s graph root, and the network config directories of
+  /// this user, of each of those roots and of /etc are also checked for a `<name>.json` definition); and the file was not modified in the last 10 minutes. A live network's file is never touched.
+  purgeStaleDns() {
+    if (this.engine !== "podman" || !process.env.XDG_RUNTIME_DIR) return;
+    const dir = join(process.env.XDG_RUNTIME_DIR, "containers/networks/aardvark-dns");
+    if (!existsSync(dir)) return;
+    const names = (args) => (spawnSync(this.engine, [...args, "network", "ls", "--format", "{{.Name}}"], { encoding: "utf8" }).stdout ?? "").split("\n").filter(Boolean);
+    const live = new Set(names([]));
+    const home = process.env.HOME ?? "";
+    const data = process.env.XDG_DATA_HOME ?? join(home, ".local/share");
+    const config = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+    const roots = new Set();
+    const graphRoot = spawnSync(this.engine, ["info", "--format", "{{.Store.GraphRoot}}"], { encoding: "utf8" }).stdout?.trim();
+    for (const root of [join(data, "containers/storage"), graphRoot]) if (root && existsSync(root)) roots.add(root);
+    for (const root of roots) for (const name of names(["--root", root])) live.add(name);
+    const defined = (network) => [join(config, "containers/networks"), ...[...roots].map((root) => join(root, "networks")), "/etc/containers/networks"].some((d) => existsSync(join(d, `${network}.json`)));
+    for (const file of readdirSync(dir)) {
+      const network = file.replace(/%int$/, "");
+      if (file === "aardvark.pid" || live.has(network) || !/^probation-[A-Za-z0-9_.-]+$/.test(network) || defined(network)) continue;
+      // The mtime is the last container add or remove on that network, so it is a guard (a network another session is creating now),
+      // never the liveness test: a record changed in the last 10 minutes stays.
+      if (Date.now() - statSync(join(dir, file)).mtimeMs < 600_000) continue;
+      rmSync(join(dir, file), { force: true });
+      (this.purgedDns ??= []).push(file);
+    }
   }
 
   /// Every service's log, the fakes' request log and the mail sink's index, into `dir`.
@@ -305,6 +392,7 @@ trusted_proxies = ["${gateway}/32"]
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "ps.txt"), this.compose(["ps", "-a"], { check: false, quiet: true }).stdout);
     for (const service of this.services) writeFileSync(join(dir, `${service}.log`), this.logs(service));
+    (this.retired ?? []).forEach(([service, text], n) => writeFileSync(join(dir, `${service}.replaced-${n}.log`), text));
     for (const [name, url] of [
       ["fakes-requests.json", "http://fakes.e2e.test:8080/log"],
       ["mail.json", "http://mail.e2e.test:8025/api/v1/messages?limit=500"],

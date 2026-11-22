@@ -8,7 +8,7 @@ import { startCommonService } from "../harness/service-setup.mjs";
 export const meta = {
   id: "E2E-service-native-smoke",
   title: "native npm and pip install through the shared service without login",
-  suites: [],
+  suites: ["release-native"],
   stack: "own",
   clientHost: "native",
   native: { npm: 2, pip: 2 },

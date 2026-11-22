@@ -46,6 +46,8 @@ fn client_available() -> bool {
 macro_rules! need_mvn {
     () => {
         if !client_available() {
+            // PROBATION_NATIVE_STRICT=1 (set by the CI jobs that own this lane) turns a skip into a failure: a lane that did not run must not report `3 passed`.
+            assert!(std::env::var_os("PROBATION_NATIVE_STRICT").is_none(), "the native Maven lane did NOT run: no podman or no {IMAGE} (PROBATION_NATIVE_STRICT is set)");
             eprintln!("SKIPPED: no podman or no {IMAGE} on this host; the native Maven lane did NOT run");
             return;
         }

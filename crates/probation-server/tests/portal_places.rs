@@ -4472,6 +4472,107 @@ async fn t_registry_osv_scope_form_sets_clears_and_is_listed() {
     assert_eq!(stored().await, None);
 }
 
+/// Row 27 (LS-F12, 03 item (p)2): the registry catalog is the portal's OSV coverage view. It lists every
+/// family of the shared mapping, shows each registry's effective scope in the words the contract fixes,
+/// preselects the stored value, and an OCI registry is "OSV not applicable" whatever its scope.
+#[tokio::test]
+async fn t_registry_catalog_shows_osv_coverage_and_scope() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    for (name, ecosystem, target) in [
+        ("Mirror npm", "npm", "https://packages.example.test/"),
+        ("Public npm", "npm", "https://registry.npmjs.org/"),
+        ("Images", "oci", "https://registry.example.test/"),
+    ] {
+        let added = admin.submit(&catalog, &catalog, &[("name", name), ("ecosystem", ecosystem), ("target_url", target)]).await;
+        assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    }
+    let id = |name: &'static str| { let pool = fx.db.app.clone(); let org = world.acme.id as i32; async move {
+        sqlx::query_scalar::<_, i64>("SELECT id FROM registries WHERE org_id = $1 AND name = $2").bind(org).bind(name).fetch_one(&pool).await.unwrap() } };
+    let (mirror, public, images) = (id("Mirror npm").await, id("Public npm").await, id("Images").await);
+    // The coverage table lists every family with the mapping's spelling, and OCI as absent.
+    let page = admin.get(&catalog).await;
+    for (tag, osv) in [("npm", "npm"), ("pypi", "PyPI"), ("rubygems", "RubyGems"), ("cargo", "crates.io"), ("go", "Go"), ("nuget", "NuGet"), ("maven", "Maven"), ("conan", "ConanCenter")] {
+        assert!(page.has(&format!("data-osv-family=\"{tag}\"")) && page.has(&format!("OSV ecosystem {osv}")), "{tag}: {}", page.body);
+    }
+    assert!(page.has("data-osv-family=\"oci\""), "OCI is listed");
+    // A custom target with the default scope is queried and says so; the fixed public source is not "internal".
+    let line = |page: &Page, registry: i64| { let marker = format!("data-osv-registry=\"{registry}\">"); let at = page.body.find(&marker).unwrap_or_else(|| panic!("no line for registry {registry}")) + marker.len(); page.body[at..].split('<').next().unwrap().to_owned() };
+    assert_eq!(line(&page, mirror), "OSV queried: names reach the shared server");
+    assert_eq!(line(&page, public), "OSV queried: public registry");
+    assert_eq!(line(&page, images), "OSV not applicable");
+    // Private opts out; the form keeps the stored value selected; OCI stays not applicable under Public.
+    let action = |registry: i64| format!("{catalog}/{registry}/osv-scope");
+    assert_eq!(admin.submit(&catalog, &action(mirror), &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(admin.submit(&catalog, &action(images), &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    let page = admin.get(&catalog).await;
+    assert_eq!(line(&page, mirror), "OSV not applicable");
+    assert_eq!(line(&page, images), "OSV not applicable", "an OCI registry is never queried, whatever its scope");
+    assert!(page.has("<option value=\"private\" selected>"), "the stored scope is preselected: {}", page.body);
+    assert_eq!(admin.submit(&catalog, &action(mirror), &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    let page = admin.get(&catalog).await;
+    assert_eq!(line(&page, mirror), "OSV queried: names reach the shared server");
+    assert!(page.has("<option value=\"public\" selected>"), "{}", page.body);
+    // Security review M1: the privacy statement is on the page BEFORE a registry exists (the Add-registry form) and beside the default
+    // option, and the Add form offers every family of `Ecosystem::ALL`.
+    assert!(page.has("data-osv-privacy=\"add\"") && page.has("reach the shared OSV server and api.osv.dev"), "the Add-registry form carries the privacy warning: {}", page.body);
+    assert!(page.has("Default (queried: package names reach the shared OSV server"), "the default option says what the default does: {}", page.body);
+    for ecosystem in probation_policy::Ecosystem::ALL {
+        assert!(page.has(&format!("<option value=\"{}\">", ecosystem.as_tag())), "the Add form lacks {ecosystem:?}");
+    }
+    // A public-source registry with a stored Private scope says why the choice has no effect.
+    assert_eq!(admin.submit(&catalog, &action(public), &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
+    let page = admin.get(&catalog).await;
+    assert!(line(&page, public).contains("the stored Private scope has no effect"), "{}", line(&page, public));
+    // Security review L1: every change of the egress property and of its sibling settings is in the audit log (actor, registry, before, after).
+    type AuditRow = (String, Option<String>, Option<String>, Option<i32>);
+    let osv_rows: Vec<AuditRow> = sqlx::query_as(
+        "SELECT subject, before->>'osv_scope', after->>'osv_scope', org_id FROM audit_log WHERE action = 'registry.osv_scope' ORDER BY id",
+    ).fetch_all(&fx.db.app).await.unwrap();
+    assert_eq!(osv_rows.len(), 4, "four osv-scope changes were made above (mirror private, images public, mirror public, the public-source registry private): {osv_rows:?}");
+    assert_eq!(osv_rows[0], (format!("registry:{mirror}"), None, Some("private".into()), Some(world.acme.id as i32)));
+    assert_eq!(osv_rows[2], (format!("registry:{mirror}"), Some("private".into()), Some("public".into()), Some(world.acme.id as i32)));
+    let added: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'registry.add' AND org_id = $1").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(added, 3, "the three registries added at the start are audited");
+    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/trust"), &[("trusted", "on")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/read-credential"), &[("read_authorization", "Bearer s3cret-value")]).await.status, StatusCode::SEE_OTHER);
+    let trusted: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'trusted', after->>'trusted' FROM audit_log WHERE action = 'registry.trust' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(trusted, (Some("false".into()), Some("true".into())));
+    let credential: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'read_credential_configured', after->>'read_credential_configured' FROM audit_log WHERE action = 'registry.read_credential' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(credential, (Some("false".into()), Some("true".into())), "the audit row says a credential was set and never contains it");
+    let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE after::text LIKE '%s3cret%' OR before::text LIKE '%s3cret%'").fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(leaked, 0);
+    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/remove"), &[]).await.status, StatusCode::SEE_OTHER);
+    let removed: (Option<String>,) = sqlx::query_as("SELECT after->>'removed' FROM audit_log WHERE action = 'registry.remove' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(removed.0.as_deref(), Some("true"));
+}
+
+/// Recheck F5: the audit row's `before` is the row the UPDATE replaced. A concurrent edit that commits while this one waits is part of the
+/// pre-image (the `before` read locks the row), so the audit trail is a chain.
+#[tokio::test]
+async fn t_registry_audit_before_is_the_row_the_update_replaced() {
+    let fx = Fixture::start().await;
+    let world = World::new(&fx).await;
+    let mut admin = admin_browser(&fx, "ana@acme.test").await;
+    let catalog = format!("/org/{}/registries", world.acme.id);
+    let added = admin.submit(&catalog, &catalog, &[("name", "Raced npm"), ("ecosystem", "npm"), ("target_url", "https://packages.example.test/")]).await;
+    assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
+    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Raced npm'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    // Another admin's edit holds the row, uncommitted, while this edit starts.
+    let mut other = fx.db.owner.begin().await.unwrap();
+    sqlx::query("UPDATE registries SET trusted = true WHERE id = $1").bind(registry).execute(&mut *other).await.unwrap();
+    let action = format!("{catalog}/{registry}/trust");
+    let (answer, ()) = tokio::join!(
+        admin.submit(&catalog, &action, &[]),
+        async { tokio::time::sleep(std::time::Duration::from_millis(500)).await; other.commit().await.unwrap(); },
+    );
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
+    let row: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'trusted', after->>'trusted' FROM audit_log WHERE action = 'registry.trust' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(row, (Some("true".into()), Some("false".into())), "before is what the UPDATE replaced (the other admin's committed edit), not a read taken before it");
+}
+
 /// Row 18 (user decision 2026-11-19): a Cargo registry's optional archive origin is set, cleared, listed
 /// and validated like a target, only a Cargo registry takes one, another organisation's administrator
 /// cannot set it, and the snapshot carries it.

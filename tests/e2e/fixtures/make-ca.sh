@@ -29,7 +29,8 @@ trap 'status=$?; echo "make-ca.sh: a command failed (exit $status); openssl said
 "$openssl" req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=probation-e2e \
   -keyout "$dir/tls/key.pem" -out "$dir/tls.csr" 2>>"$log"
 {
-  printf 'subjectAltName=IP:127.0.0.1'
+  # The native lane's registries listen on a private address assigned to the loopback interface (NATIVE_LANE_ADDR).
+  printf 'subjectAltName=IP:127.0.0.1,IP:%s' "${NATIVE_LANE_ADDR:-10.254.77.1}"
   printf ',DNS:%s' "${names[@]}"
   printf '\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n'
 } >"$dir/tls.ext"

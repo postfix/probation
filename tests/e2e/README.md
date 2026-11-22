@@ -8,7 +8,7 @@ offline and repeatable. The scenario catalogue is `docs/plans/e2e-coverage/00-in
 
 ```sh
 npm ci --prefix tests/e2e && npx --prefix tests/e2e playwright install chromium
-node tests/e2e/harness/run.mjs --suite pr          # or nightly, release, canary, pbt, pbt-weekly
+node tests/e2e/harness/run.mjs --suite pr          # or nightly, release, release-native, release-cluster, canary, pbt, pbt-weekly
 node tests/e2e/harness/run.mjs --only E2E-signup-to-install --skip-build --keep
 node tests/e2e/harness/run.mjs --suite nightly --list
 ```
@@ -288,7 +288,7 @@ exposes that tunnel to the network segment: bind a private interface only.
 
 ## One cluster endpoint (slice 26)
 
-`E2E-service-cluster` (`--only E2E-service-cluster`, own stack, in no suite: it needs the pinned `containerd`, `ctr` and `crictl` on the host, podman
+`E2E-service-cluster` (`--only E2E-service-cluster`, own stack, in the `release-cluster` suite only: it needs the pinned `containerd`, `ctr` and `crictl` on the host, podman
 and root-less network namespaces, none of which the hosted jobs of the shared suites provide; `.github/workflows/cluster.yml` runs it with
 containerd 2.2.0 installed) runs the shared service with a real policy server and TWO fake registries (the Docker Hub and `ghcr.io`, each
 with repositories of its own), and the pinned containerd 2.2.0 as the node's runtime, configured by the SHIPPED
@@ -316,6 +316,16 @@ user); `E2E_SERVICE_DIRS=system` uses the platform's own locations (a disposable
 developer host runs it with `systemd --user` under a unique unit name that is removed afterwards. The macOS and Windows runner lanes run
 `node tests/e2e/native/service-lifecycle-run.mjs` (no container stack). `.github/workflows/native-service.yml` holds the CI jobs.
 
+## The native publishing lane's registry address
+
+`E2E-publishing-native-linux` and the `native` job of `native-clients.yml` run the Node registry fakes next to the real `probation` binary. The
+service refuses a registry target in 127.0.0.0/8 whatever private CIDR the registry names (LS-F9, an absolute denylist), so the fakes listen on a
+private lane address, `10.254.77.1` (`NATIVE_LANE_ADDR`), that `native/stack.mjs` assigns to the loopback INTERFACE (`ip addr add ... dev lo` on
+Linux, needing root or `sudo -n`, in the container `CAP_NET_ADMIN`; `ifconfig lo0 alias` on macOS and `netsh` on the loopback pseudo-interface on
+Windows, both authored and not executed). Each registry is approved as one exact /32 of that address; the address is an IP SAN of the run's
+certificate (`fixtures/make-ca.sh`), `pypi.org` is mapped to it, and nothing leaves the machine. It must not lie in a subnet the compose stack uses
+(`compose.yml` has `10.77.0.0/24`).
+
 ## Suites
 
 | Suite | When | Clients | Blocks |
@@ -324,6 +334,8 @@ developer host runs it with `systemd --user` under a unique unit name that is re
 | `nightly` | nightly on main (90 min) | all | opens an issue |
 | `canary` | nightly, live registries (`canary.yml`) | PR clients | nothing; opens an issue |
 | `release` | on a tag (`release.yml`, 2 h), before anything is published | all | the release and the image push (D7) |
+| `release-native` | the native service lifecycle and the pinned native clients, with `--client-host native` (`native-service.yml` runs it on each operating system) | native | the release (through `native-service`) |
+| `release-cluster` | the shared service behind a pinned containerd node (`cluster.yml` job `e2e-service-cluster`; needs `containerd`, `ctr` and `crictl` on the host) | container runtime | nothing automatically: the release runbook (docs/operations.md section 22) names it |
 | `pbt` | nightly, a job and stacks of its own (30 min) | PR clients | opens an issue |
 | `pbt-weekly` | Sundays (150 min) | PR clients | opens an issue |
 

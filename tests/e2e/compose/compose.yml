@@ -248,8 +248,11 @@ services:
       context: ./clients
       dockerfile: native.Dockerfile
     image: localhost/probation-e2e-client:native-node24.22.1-py3.15.1
+    # The registries of the lane listen on 10.254.77.1, an address the lane assigns to this
+    # container's loopback interface (the service refuses 127.0.0.0/8 targets, LS-F9).
+    cap_add: [NET_ADMIN]
     extra_hosts:
-      - "pypi.org:127.0.0.1"
+      - "pypi.org:10.254.77.1"
     volumes:
       - ${E2E_WORK}/ca:/e2e/ca:ro
       - ..:/src/tests/e2e:ro

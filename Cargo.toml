@@ -43,6 +43,11 @@ harness = false
 name = "blocklist_swap"
 harness = false
 
+# Slice 27: the nine transports' hot paths in shared-service mode (about a minute); `-- --assert` fails on a missed bound.
+[[bench]]
+name = "transport_hot_paths"
+harness = false
+
 # Ten minutes long, so bare `cargo bench` must not run it: `bench = false` leaves it
 # to be named, `cargo bench --bench delivery_rated_load`.
 [[bench]]

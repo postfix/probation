@@ -23,7 +23,7 @@ import { changePlatform, policyPost } from "../harness/portal-steps.mjs";
 export const meta = {
   id: "E2E-service-cluster",
   title: "one cluster endpoint: approved and unapproved nodes, fresh tag and digest allow and deny, no origin fallback, cached boundary",
-  suites: [],
+  suites: ["release-cluster"],
   stack: "own",
 };
 

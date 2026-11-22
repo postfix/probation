@@ -1,18 +1,18 @@
 # Probation: overview
 
-Probation checks npm and PyPI packages before your tools download them. It sits between package clients and a registry. It can delay new releases, block packages or exact files, check known vulnerabilities through [OSV](https://osv.dev), and verify downloaded files.
+Probation checks packages from nine families (npm, PyPI, RubyGems, Cargo, Go modules, NuGet, Maven, Conan and OCI images) before your tools download them. It sits between package clients and a registry. It can delay new releases, block packages or exact files, check known vulnerabilities through [OSV](https://osv.dev), and verify downloaded files.
 
 | Part | Use it for |
 | --- | --- |
-| `probation` | The package firewall. It serves npm and PyPI requests. |
+| `probation` | The package firewall. It serves requests for the nine families above, and can run as a shared service for many clients. |
 | `probation-server` | Optional management server and web portal for accounts, rules, registries, and firewall settings. It needs PostgreSQL. |
 
 ## Choose a setup
 
 - **Standalone:** One firewall uses a local blocklist and the same rules for every client. Start with [Install](docs/install.md#standalone-firewall).
-- **Managed:** People sign in, select an account or organisation, and use its rules. Administrators can add npm and PyPI registries. Start with [Install](docs/install.md#managed-deployment).
+- **Managed:** People sign in, select an account or organisation, and use its rules. Administrators can add registries of any of the nine families and choose, for each, whether its package names may be sent to OSV. Start with [Install](docs/install.md#managed-deployment).
 
-The firewall can serve an older allowed version when a newer one is held back. In managed mode, an administrator can select an upstream registry for package reads and supported publishing actions. Selected npm and PyPI URLs have separate paths under `/registry/`. Package clients use a certificate for these paths; the portal offers a setup bundle when self-service certificates are enabled. The upstream registry still decides whether a user may publish or remove a package.
+The firewall can serve an older allowed version when a newer one is held back. In managed mode, an administrator can select an upstream registry for package reads and supported publishing actions. Each selected registry has its own path under `/registry/<family>/<id>/`. Package clients use a certificate for these paths; the portal offers a setup bundle when self-service certificates are enabled. The upstream registry still decides whether a user may publish or remove a package.
 
 “Allowed” means the request passed the configured checks. It does not promise that the package is safe. Checks apply to requests that reach Probation; they cannot inspect packages already installed, files in a client cache, or downloads from other sources.
 

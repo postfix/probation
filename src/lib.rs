@@ -15,6 +15,7 @@ pub mod http;
 pub mod key_acl;
 pub mod lifecycle;
 pub mod service_failure;
+pub(crate) mod service_share;
 pub mod service_log;
 pub mod managed;
 pub mod npm;
@@ -181,6 +182,8 @@ pub struct App {
     pub(crate) rubygems: rubygems::serve::Shared,
     /// Cargo: the registry `config.json` cache and the committed crate-name spellings.
     pub(crate) cargo: cargo_registry::serve::Shared,
+    /// npm and PyPI: the credential-free project share of shared-service mode (src/service_share.rs).
+    pub(crate) service_share: service_share::ServiceShare,
     /// Go modules: the in-memory per-module version tables (dates, existence checks), process-owned.
     pub(crate) go: go_modules::serve::Shared,
     /// NuGet: the per-registry service index and the credential-free project share, process-owned.
@@ -310,6 +313,12 @@ impl App {
     #[cfg(feature = "test-support")]
     pub fn delivery_is_empty(&self) -> bool {
         self.delivery.is_empty()
+    }
+
+    /// The npm and PyPI share's cell count and the bytes they account for. **Compiled only under `test-support`.**
+    #[cfg(feature = "test-support")]
+    pub fn service_share_stats(&self) -> (usize, u64) {
+        self.service_share.stats()
     }
 
     /// Every decision record a sink has lost since the process started. Unlike the
@@ -452,6 +461,7 @@ impl App {
             login_rates: http::registry_action::LoginRates::default(),
             rubygems: rubygems::serve::Shared::default(),
             cargo: cargo_registry::serve::Shared::default(),
+            service_share: service_share::ServiceShare::default(),
             go: go_modules::serve::Shared::default(),
             nuget: nuget::serve::Shared::default(),
             maven: maven::serve::Shared::default(),
