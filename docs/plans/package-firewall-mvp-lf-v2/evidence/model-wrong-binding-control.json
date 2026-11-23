@@ -1,0 +1,23 @@
+{
+  "verdict": "FAIL",
+  "findings": [
+    {
+      "code": "PRECONDITION",
+      "path": "flows.npm-known.nodes.response",
+      "message": "Missing requirement [\"context_bound\",[\"context\",\"other_binding\"]].",
+      "trace": [
+        "fetch",
+        "outcome:granted",
+        "activate",
+        "outcome:active",
+        "response"
+      ]
+    },
+    {
+      "code": "UNREACHABLE_OUTCOME",
+      "path": "flows.npm-known",
+      "message": "Required outcome delivered-live is unreachable."
+    }
+  ],
+  "scope": "Finite declared molecule/flow model consistency; operation contracts and assumptions are premises, not proof of source behavior."
+}

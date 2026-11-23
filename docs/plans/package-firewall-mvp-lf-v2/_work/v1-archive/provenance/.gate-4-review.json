@@ -1,0 +1,919 @@
+{
+  "version": 1,
+  "plan": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp",
+  "gate": 4,
+  "target": "design",
+  "id": "1cd372e4-436a-45e3-99b9-3e08d146999f",
+  "phase": "sealed",
+  "subject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/01-product.md",
+      "sha256": "609f0355a9ec3390e28f3c315d10e6e7980e3dfdc13f53815f382bfe368dca1f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "f9593d34dd42246112bf2adb8a48d8b8534af9a7b04c8032d9ea2dcaf6df0e31"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "6cdec52905215acf050e2f560e0b9980f50d7444b189549eba523cd81c4c2959"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/04-slices.md",
+      "sha256": "583553f0561b2f88d8031b8418f467793b0d3332c496d44a65aae630fa0e4181"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-protocol-contracts.md",
+      "sha256": "57786a291f558ecdfec6433b5e99607328b3e655d166c8df0f6dd03874b6c57f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-service-policy-api.md",
+      "sha256": "1ad895f9601ad8d5945a8ad16cb9ce6973b495aeaa2134b38a83404b51e133bc"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-contracts.json",
+      "sha256": "fd75a849b984835558514c9d83f2cf6d9b0cfaa530cae1dcc4d941df7c69bde5"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "sha256": "f5b3360a94552975a07a8fa6852d2b2f66638513af93743a56a9833bbbf9c260"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "sha256": "34477fd266179e7fa05fb4de333306a6f47a71a1daba5594475b63b661273487"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "sha256": "6d71b7544a2727bbfc91021f2117f6354c240bb5a9bf21177f3d7bf16b696221"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/managed/publication_gate.rs",
+      "sha256": "701c28c61764a3c9151d61cbe951d9a066c33297be70fe4cb500bc3b7ed7d932"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/threat-model-central-osv.md",
+      "sha256": "0c951b2e69f14747db073096513ac245d617109e2469d17457ad0febd4865b7e"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/research-osv-ecosystems.md",
+      "sha256": "597123c2fe92aeb5d0e7d7783ac845e3001e6111be468d5c263d8d362897155a"
+    }
+  ],
+  "rounds": 0,
+  "pre": {
+    "findings": [],
+    "inFlight": [
+      {
+        "sinceEvent": 14,
+        "stage": "hand"
+      },
+      {
+        "sinceEvent": 1,
+        "stage": "red-team"
+      },
+      {
+        "sinceEvent": 17,
+        "stage": "qa"
+      }
+    ],
+    "status": {
+      "checkpoint": null,
+      "gateProgress": {
+        "1": "## Gate 1 progress\n\n- [x] Create 00-status.md\n  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.\n- [x] Select the plan with router resume\n  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.\n- [x] Create the product clarification inventory\n  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.\n- [x] Resolve user decisions\n  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.\n- [x] Gather ecosystem and authentication evidence\n  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.\n- [x] Review UI mockups with the user\n  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.\n- [x] Complete 01-product.md\n  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.\n- [x] Obtain QA READY\n  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/package-firewall-mvp/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.\n- [x] Present and record user approval\n  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/package-firewall-mvp/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.",
+        "2": "## Gate 2 progress\n\n- [x] Check whether existing architecture and evidence can be reused\n  Result: 02-architecture.md contains the delivered npm/PyPI baseline. Approved C1003/C1018 require revised local-client, policy API, platform and CI contracts; evidence/local-client-policy-modes.md and evidence/research-native-ci.md supply bounded reusable facts.\n- [x] Create or update the architecture and carry deferred questions\n  Result: C1003/C1018 retained under their original IDs; C1019 records Q8: machine-wide service plus a shared service per orchestration cluster; C1020 records Q9: one policy per service, selected by an organisation service key. C1021 records Q10: host/cluster-restricted access, no extra package-request login. C1022 records Q11: trust approved cluster nodes; Kubernetes controls deployment and image credentials. C1024 preserves existing registry handling without a public/private split. C1015 explicitly keeps registry credentials in package-manager configuration, never firewall configuration. Existing architecture prose is historical baseline until revised combined design is approved.\n- [x] Gather repository evidence\n  Result: sf-repo-view PARTIAL reports saved in evidence/design-local-client-grounding.md and evidence/design-service-policy-api.md. sf-research report saved in evidence/research-cluster-image-routing.md: documented explicit-server candidate; public routing/no-fallback/node connectivity require a pinned-runtime probe. The report does not select any new credential architecture; preserve existing package-manager credentials and publishing forwarding under C1015/C1024. The separate private-auth investigation was stopped at the user correction. No runtime proof is claimed.\n- [x] Save findings and resolve architecture decisions\n  Result: FIX-16-A is row 16 alone with a synchronous publication gate, exact reference/registry/authority/config/OSV generation binding (C1029) and named matrix tests; shared-service row 28 owns the snapshot API, activation, durable refusal, peer admission and D2/D3/D5 (C1028 resolved by the user 2026-11-04); row 29 is the early native/cluster spike. Existing uncommitted prototype code is recorded as unreviewed work to verify, not delivered. The user, asked how to treat it, said they did not know the code; the main agent applied the non-destructive default (prototype to review, nothing deleted) and showed the user what it is; the user may overrule.\n- [ ] Complete 02-architecture.md\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Record architecture assumptions and review triggers\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Complete architecture section of the combined design\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Carry contracts and obligations into program design\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.",
+        "4": "## Gate 4 progress\n\n- [ ] Present and record user approval\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design."
+      },
+      "gates": [
+        {
+          "approved": "2026-11-02"
+        },
+        "in progress",
+        "pending",
+        "pending"
+      ],
+      "hasCheckpoint": false,
+      "loop": {
+        "boundary": {
+          "kind": "gate",
+          "number": 2
+        },
+        "generation": 38,
+        "history": [
+          {
+            "from": "hand",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          }
+        ],
+        "presentedSlice": 10,
+        "reopened": true
+      },
+      "notes": "Gate 2 reopened. Use router resume position for the current step. Prior approvals and notes are historical; review and approval are required again.",
+      "settings": {
+        "presentation": "auto"
+      },
+      "sha256": "15b8da33bce94842429f711eac0311816f09af5cc68e21e4a2ab2b053bc6fb28",
+      "slices": [
+        {
+          "done": true,
+          "number": 1,
+          "proof": {
+            "result": "Tracer bullet wired end to end in 16 files (15 new plus .gitignore); SPEC.md, README.md, LICENSE and docs/ untouched. serve binds 127.0.0.1:8080 from config and answers /health/live 200, /health/ready 503, /npm/left-pad 503 with the POLICY_UNAVAILABLE JSON body and Cache-Control: no-store, unknown path 404. The npm 503 is a real policy::evaluate(None, ..) returning Unavailable, verified independently by code review at src/http/npm_routes.rs:40-51 and src/policy/mod.rs:68-82; the implementer had first shipped a hidden hardcoded 503 (all non-Unavailable arms collapsed onto PolicyUnavailable), caught by its own falsification probe and fixed before handover. WITNESS CAVEAT: /health/ready 503 cannot be falsified the same way because no BlocklistSnapshot can be constructed in this slice; it and the npm refusal both derive from App::blocklist() returning None at src/lib.rs:44, so 2 of the 4 tests share one root cause and only 1 was independently falsified. Dependency conformance PASS: 28 runtime plus 2 dev crates match the Gate 3 table exactly, reqwest 0.13.5 with stream/gzip/brotli/zstd and no TLS feature, rustls 0.23.45 via aws-lc-rs, no patch or replace section. CARRIED TO SLICE 2 (code review MINOR, non-blocking): ConfigError implements only Read/Syntax/Invalid; UnknownKey(String) and MissingKey(&static str) both surface as Syntax and are NOT forced by the file boundary since both build from primitives already in src/config.rs, so slice 2 check-config needs the named-reason distinction restored. OPEN FOR USER: aws-lc-rs and aws-lc-sys are a mandatory transitive build dependency whose licences the Gate 3 table never recorded; they resolve permissive and Apache-2.0-compatible, so no approved decision is invalidated, but the table is incomplete.",
+            "reviews": {
+              "code-review": "APPROVE"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings: exit 0, no warnings. cargo test --test tracer: test result: ok. 4 passed; 0 failed; 0 ignored. Both re-run independently by the main agent after the implementer reported them."
+          },
+          "title": "tracer bullet: crate, CLI, config, router; serve answers live/ready and one npm route with a real POLICY_UNAVAILABLE refusal"
+        },
+        {
+          "done": true,
+          "number": 2,
+          "proof": {
+            "result": "SPEC 5 rule order, digest handling, blocklist validation, check-config and check-blocklist, and real readiness that flips 200/503 on a loaded snapshot. Both slice 1 carry-forwards discharged: ConfigError now names UnknownKey before MissingKey via a three-stage from_toml_str (toml::Table parse, check_keys against REQUIRED_KEYS/OPTIONAL_KEYS, then RawConfig deserialise), guarded against key-list drift by deleting_any_sample_key_is_reported_as_that_key_missing over all 16 sample keys; and the slice 1 placeholders were replaced not extended, so SLICE 1 WITNESS CAVEAT IS NOW RESOLVED: readiness is independently falsifiable (probe 6 broke the expiry check and readiness_turns_false_at_expiry_while_liveness_stays_true objected). Engineering ran 9 falsification probes, each breaking a property and naming the test that caught it; probe 9 found the base64 canonicality guard was UNCOVERED CODE (removing it left all tests green) and closed the gap with an assertion at src/policy/blocklist.rs:600 rejecting a non-canonical SRI spelling, since base64 of a 32-byte SHA-256 carries 2 padding bits that a permissive decoder would drop, giving one digest two valid spellings. Engineering also disclosed and root-caused a false failure of its own: its probe helper restored files with cp -a, preserving mtimes, so cargo reused a binary built from patched source. SCOPE EXCEPTION ACCEPTED: src/http/npm_routes.rs was outside the slice 2 file list but Rust struct literals are exhaustive, so adding the Gate 3 digest fields to Candidate forced the call site; exactly advertised_digests and pinned_digests set to empty slices plus a comment, behaviour bit-identical. Gate 4 slice 2 file list should have named it. sf-adversarial-testing: NO DEFECTS REPRODUCED on all four named angles (inclusive-allow at exactly t plus cooldown, saturation near i64::MAX and i64::MIN, zero cooldown, valid-but-empty blocklist distinct from missing) plus rule order, expiry exactness, SRI/hex equivalence, PEP 440 spellings, 100k-deep nested JSON on a 512KB stack, duplicate JSON keys rejected closed, and 200k entries in 81ms. sf-code-review: SHIP, two minor findings; the stale npm_routes.rs comment claiming slice 2 delivers the SPEC 11 403 rows was corrected to attribute them to slice 5, code untouched. FOR THE RECORD: nodejs-semver parses a trailing-space version as precedence-equal, so a block on 1.0.0 also catches the padded spelling; this only ever widens a block and fails safe. INFORMATIONAL: check_replacement and Replacement in src/policy/blocklist.rs implement SPEC 8 step 3 rollback ahead of the slice 3 poller that will call them, already unit-tested. Drift verified by SHA-256 across the slice: Cargo.toml, Cargo.lock and tests/tracer.rs are byte-identical to the hashes slice 1 code review recorded, so no dependency was added and no test was edited to pass.",
+            "reviews": {
+              "adversarial-testing": "NO_DEFECTS_REPRODUCED",
+              "code-review": "SHIP"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings: exit 0, no warnings. cargo test --lib policy: ok. 15 passed (13 Gate 3 tests plus deeply_nested_blocklist_is_rejected_not_a_crash and rejects_an_unsupported_schema_version). cargo test --test config_validation: ok. 12 passed. cargo test --test tracer: ok. 4 passed, no slice 1 regression. All re-run by the main agent on a forced rebuild (sources touched to defeat cargo fingerprint staleness) after the implementer disclosed a stale-artifact false failure."
+          },
+          "title": "pure policy engine, digests, blocklist validation, check-config and check-blocklist, readiness from a loaded blocklist"
+        },
+        {
+          "done": true,
+          "number": 3,
+          "proof": {
+            "result": "Turso persistence with WAL and synchronous=FULL verified by read-back, exclusive flock data-directory lock, commit-before-publish proven by running one blocklist file against both a healthy and an unopenable database, poller change detection on device/inode/mtime_nanos/len plus a 60s backstop re-read. NAMED TASK, SMTC Rust analyzer-spec capability: YES. Inline smtc spec run of an ordered_obligation returned 1 finding via find_call_sites_bulk then cfg_dominance, so the Gate 3 UNKNOWN was the absence of .rs files, not a missing capability. Caveat: scope files does not narrow results, so SQL containment is not yet expressible as a file-scoped spec and the grep remains its witness. GATE 3 LEAST-CONFIDENT DECISION 1 answered empirically against the pinned crate: WAL is the only supported real journal mode, synchronous=FULL reads back Integer 2, explicit transactions roll back on drop, recovery runs on open, PRAGMA wal_checkpoint returns busy/log/checkpointed, and a non-database file is refused non-destructively. FSYNC CLOSED POSITIVELY: strace shows fsync on the -wal once at log creation and once per commit, each completing before commit_blocklist returned and therefore before publication. SCOPE DEVIATION ACCEPTED: src/http/npm_routes.rs was modified although absent from the approved exact-files list, forced by two approved Gate 3 signatures, PolicyHandle over ArcSwapOption and evaluate taking a borrow. It is a pure type adaptation via as_deref with no client-visible change, and arguably stronger because load_full pins one snapshot per decision. This is the third slice to touch that file and the second consecutive forced call-site adaptation outside a file list, because Gate 4 rows do not name forced call sites. DEFECTS FOUND AND FIXED: MAJOR, a failed commit discarded an accepted blocklist for up to 60s because seen was set before committing, fixed by Watcher::retry and confirmed by mutation. MEDIUM, a zero-length or absent firewall.db beside a populated -wal was silently rebuilt, destroying a still-recoverable revision with nothing logged, fixed by an OrphanedLog guard ahead of Builder::new_local and confirmed by a salvage control showing the log byte-identical and the revision recoverable after the refused run. LIMITATIONS: kill in wal_recovery_after_kill is an in-process runtime drop, not a signal, with real SIGKILL coverage supplied separately by QA across 28 runs. The pragma fix is a property test, not branch coverage, since deleting the journal_mode check leaves it green. RETRYABLE_WINDOW_REASON classifies a retryable Window rejection by message string, drift fails closed at the cost of one 60s backstop cycle, and the durable fix, a code or a NotYetValid variant, is owed by the slice owning blocklist.rs. A far-future generated_at now re-reads and re-parses every interval indefinitely, accepted because the ERROR line is the wanted alarm. No true ENOSPC and no sub-kernel power-loss or torn-write simulation, so barrier ordering inside turso and the checkpoint path stay unwitnessed. Store health is not part of readiness, holding transitively in slice 3 with an explicit check owed in slice 7. A code-review suspicion of a first-open brick window at startup.rs:88 is countered by 70 QA SIGKILL samples finding no non-empty -wal beside an absent or empty database.",
+            "reviews": {
+              "sf-adversarial-testing": "closed and clean - one MEDIUM reproduced then fixed and confirmed by a salvage control - all four named crash points held",
+              "sf-code-review": "SHIP after rework - one MAJOR and two MINOR found and all fixed - each fix confirmed by mutation testing"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings -> exit 0, clean on a forced rebuild. cargo test --test persistence_recovery -> ok. 5 passed, including wal_recovery_after_kill, failed_recovery_keeps_readiness_false_and_never_recreates, restore_requires_a_current_blocklist_before_readiness and the new an_emptied_database_beside_a_populated_log_is_refused_not_rebuilt. cargo test --test blocklist_reload -> ok. 9 passed, including all six named cases plus blocklist_is_committed_before_it_is_published, a_failed_commit_keeps_retrying_the_same_bytes and a_window_rejection_is_retried_when_the_file_has_not_changed. grep -rn --include=*.rs for turso::, CREATE TABLE and PRAGMA over src -> 17 hits, 0 outside src/store/. cargo test -> 50 passed, 0 failed across lib 20, blocklist_reload 9, config_validation 12, persistence_recovery 5, tracer 4. Witness re-run independently by the main agent after rework."
+          },
+          "title": "Turso persistence, startup lock and recovery, blocklist commit before publish, poller change detection"
+        },
+        {
+          "done": true,
+          "number": 4,
+          "proof": {
+            "result": "The outbound boundary is closed: Transport is the only egress, admit re-runs on every redirect hop, the DNS gate refuses non-public answers, and GET /npm/{package} reports 404/502/504 apart while the no-blocklist 503 path is unchanged. NINE DEFECTS FOUND AFTER A GREEN WITNESS, none catchable by the witness as written. BLOCKER: refused_redirect ran before the status match and is_redirection() spans 300..400, so every upstream 304 was misclassified as a refused redirect and NotModified was dead code; fixed in fetch_metadata and open_artifact (that second instance was unreported, found by the implementer) and narrowed to 301|302|303|307|308. MAJOR: url_for silently DROPPED a segment equal to . or .. (url-2.5.8 path_segments.rs:246-249 is a bare continue), returning the bare origin root so a request left the process for a name the row says is refused before a byte leaves; now UrlRejection::PathEscape. MEDIUM: is_public_v4 admitted 0.0.0.0/8 because is_unspecified() matches only 0.0.0.0, and on Linux 0.x.y.z routes to the local host, so this was live SSRF to loopback. MEDIUM: is_public_v6 missed 64:ff9b::/96 and 2002::/16 (both EMBED an undecoded IPv4) and fec0::/10; re-deriving from the IANA registry found FIVE MORE (64:ff9b:1::/48, 100::/64, 5f00::/16, 3fff::/20, and ::/96 IPv4-compatible i.e. ::127.0.0.1, the same bug class in an older spelling that NEITHER review caught), so is_public_v6 was inverted from an unbounded denylist into a bounded allowlist (2000::/3 minus named blocks) with embedded_v4 decoding all four embedding prefixes. LOW: RejectedRedirect named the wrong target for relative and protocol-relative Location. MINOR: doc comments claimed push pops .., but it DROPS. TEST INTEGRITY: 20 falsification probes across three rounds, all objecting, and twice a green result was reported as NOT evidence. The first HTTP test for the .. defect PASSED against the broken code because reqwest Url decodes %2E client-side so the attack never reached the handler (fixed with a raw TcpStream helper), and the first NAT64 probe passed because the allowlist already refuses the well-known prefix, so the decode is defence in depth. CARRIED FORWARD, BINDING ON SLICES 5/6/9: a route test asserting on a hostile path must bypass reqwest or it silently tests nothing. RULING: reqwest_transport.rs:223 uses Url::join, which constraint 1 forbids; two reviewers independently traced every consumer of RejectedRedirect{to}: built only after stop(), read only by Display, mapped to a static client string, open_artifact having no non-test caller, so no request can be built from it; a wrapper helper was declined as a one-call-site abstraction. SCOPE DEVIATIONS judged forced and minimal: src/main.rs, src/http/error.rs, tests/persistence_recovery.rs:348. Third consecutive slice with forced call-site edits outside its file list, a Gate 4 authoring gap. OVER-REJECTION CLEARED: the allowlist could have caused a total outage, so all three origins were resolved live (Cloudflare and Fastly space) and confirmed admitted, and 2001::/23 holds no RIR delegation. LIMITATIONS: a NAT64 network-specific prefix (RFC 6052, any operator /32 to /96) is undetectable in a DNS-answer predicate, mitigation is egress filtering plus connect-time IP pinning, OWED BY SLICE 10 OPERATIONS NOTES. RejectedAddress is witnessed against the resolver error, not end-to-end through a real connect failure. The TEST-01 scan strips // comments only. open_artifact has no non-test caller until slice 6, and the 502/504 rows have no coverage outside origin_guard until slice 9. tests/tracer.rs byte-identity is unprovable (no baseline was recorded and the tree is untracked); its hash is now 6a8d7063f09af95d55647c67778324faa198408caa184187d26571df48a592e1. TWO GATE 3 STATEMENTS NOW KNOWN FALSE, corrected in 03-program-design.md: reqwest system-proxy is a DEFAULT feature reading HTTP_PROXY/HTTPS_PROXY/ALL_PROXY (closed here by .no_proxy() in base_builder), and the claim that push percent-encodes every segment and cannot escape the path is false for . and .. inputs.",
+            "reviews": {
+              "sf-adversarial-testing": "PASS - no boundary escape reproduced across percent and double encoding / fullwidth solidus / RTL override / NUL / empty and dot names / five redirect-chain shapes. One LOW observability defect found and fixed",
+              "sf-code-review": "SHIP after two reworks. One BLOCKER one MAJOR and one MINOR found - all fixed - each confirmed by a recheck that verified the new tests genuinely fail against pre-fix code",
+              "sf-security-review": "CLEAR after two reworks. One MEDIUM live SSRF in 0.0.0.0/8 and one MEDIUM IPv6 incompleteness found. The final audit derived the IANA registry independently - recomputed every mask by hand - and found no admitted special-purpose range"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings gave exit 0 with no warnings. cargo test --test origin_guard gave ok. 17 passed, 0 failed, comprising all 8 Gate 3 named tests plus 9 added during review. cargo test gave 8 targets ok, 0 failed. sha256sum Cargo.toml Cargo.lock unchanged from the approved slice 1 set. All re-run independently by the main agent on a forced rebuild (all .rs touched) after each of the three engineering rounds."
+          },
+          "title": "upstream transport and the origin guard: fixed origins, redirect, credential, port and private-address refusals"
+        },
+        {
+          "done": true,
+          "number": 5,
+          "proof": {
+            "result": "clippy exit 0 clean; npm_metadata ok. 20 passed including all 8 row-named tests; blocklist_snapshot ok. 5 passed including expiry_stops_delivery_including_warm_hits; persistence_projects ok. 5 passed for exactly the 5 named tests",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; cargo test --test blocklist_snapshot; cargo test --test persistence_projects (all re-run by the main agent after find src tests -name *.rs -exec touch {} + to defeat cargo fingerprint staleness)"
+          },
+          "title": "npm metadata end to end: filtering, tags, rewritten tarball URLs, warm rendered cache"
+        },
+        {
+          "done": true,
+          "number": 6,
+          "proof": {
+            "result": "clippy exit 0 clean; pypi_metadata ok. 12 passed including all 6 row-named tests. TM-2 held under both a hand proof and direct attack: no filename misattributed to a wrong project or version; uncertain identity is excluded and logged, never guessed. Escaping proven empirically by the implementer - making escape_text and escape_attribute return their input unchanged made html_escapes_filenames_and_attributes FAIL. Slice 4 carry-forward honoured: every hostile-path assertion uses the raw TcpStream helper, not reqwest. Three forced out-of-list edits, judged minimal by code review: src/lib.rs (pub mod pypi), src/http/mod.rs (pub mod pypi_routes plus three routes), src/store/cache.rs (Representation::PypiHtml and PypiJson, forced because RenderKey embeds an exhaustive Representation and PyPI would otherwise have no rendered cache). Fifth consecutive slice with forced call-site edits. NO NEW UNOWNED OBLIGATIONS: verification confirmed slice 6 widens the blast radius of the two SPEC 10 gaps already recorded after slice 5 (coalescing and upstream conditional revalidation now unmet for both ecosystems) but creates no fourth item. Unicode confusable risk CLOSED as a non-issue: ProjectName::parse_route rejects non-ASCII before normalize runs. Two extra tests added beyond the row: a_file_without_an_upload_time_waits_from_its_committed_first_seen (PEP 700 upload-time is optional so the unknown-time path is the common case at api-version 1.0) and a_warm_listing_touches_neither_the_database_nor_upstream. LIMITATIONS: the sdist ambiguity-freedom argument is a hand proof independently re-derived by two reviewers on different grounds, not a property test; verification did not re-measure the coalescing gap against the PyPI path with running code, relying on slice 5 npm measurement of 21 of 25 plus structural evidence; Gate 3 names pypi::name::ProjectName::normalize but it is implemented as a free function pypi::name::normalize, a naming-path looseness only.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test pypi_metadata (both re-run independently by the main agent on a forced rebuild after touching every .rs file)"
+          },
+          "title": "PyPI metadata end to end: normalisation, filename identity, HTML and JSON listings"
+        },
+        {
+          "done": true,
+          "number": 7,
+          "proof": {
+            "result": "clippy exit 0 clean. artifacts_verification ok. 9 passed. blocklist_revocation ok. 8 passed. persistence_content ok. 3 passed. Full suite 180 passed, 0 failed across 15 targets. All fifteen row-named tests present byte for byte. FAILED FIRST, THEN FIXED: independent verification returned FAILED and independent security review raised a BLOCKING finding on the first pass. Project-membership revalidation was absent although 03-program-design.md:722-723 names npm|pypi::ensure_fresh_project in slice 7's own call stack and SPEC 9 requires it in two ordered positions. Demonstrated consequence: a version yanked or unpublished upstream, a different signal from this firewall's blocklist, kept serving cached bytes indefinitely; and because ReferenceId is a deterministic SHA-256 over public metadata, documented as not an authorization token, anyone who knew the metadata before removal could compute the id and fetch withdrawn bytes without ever holding a legitimate URL. Separately src/npm/mod.rs:192 and src/pypi/mod.rs:220 still passed empty pinned_digests under a comment naming slice 7 as that TODO's owner. Rework closed both with no new type or signature beyond Gate 3: ensure_membership at src/artifacts/mod.rs:139, called at :89 pre-download and :104 post-download, plus list_project_pins and CachedProject.pins feeding both resolve loops. Three new tests, each shown failing first: a_reference_removed_upstream_is_unavailable_even_though_its_bytes_are_cached, membership_is_revalidated_when_metadata_expired_during_the_download, a_computed_digest_block_hides_the_version_from_the_next_metadata_listing. Falsification probes confirmed each mechanism individually load-bearing; one probe initially did not object because the patch made a match non-exhaustive so nothing compiled, disclosed and re-run correctly. STATE-01 HOLD on both passes: pin_computed_digests is the sole writer, one call site, a conflict drops the transaction without an UPDATE, and commit_project_refresh carries pins forward. Authorized ruled STRUCTURAL by two independent security reads: private field, sole fallible constructor from_decision, no Clone or Copy, consumed by value, private body, so a path skipping the final check does not compile. REL-01 PASS: durability order is flush, fsync file, rename, fsync directory, then commit; file_sync_order_holds ruled a genuine witness of call order. PERF-01 preserved after rework, re-proven with the registry offline: 403 with zero upstream calls. Fail-open enumeration found none on either ecosystem; an empty advertised set fails closed. LIMITATIONS: (1) removal is visible only after the metadata TTL, default 300s, per SPEC 9 and 10 design intent. (2) MINOR unfixed race: download::fetch commits the pin then drops the project cache entry as two steps, so a concurrent current_project can re-insert a pins snapshot predating the pin, and current_project reuses on TTL alone unlike RenderedResponse::is_reusable which compares generations; a listing can keep showing the version for at most one metadata TTL. Self-healing, no bytes consequence, degrades to pre-rework behaviour. Structural reasoning, not a live reproduction. Five comments asserting SPEC 9's next-resolution guarantee unconditionally were corrected to state the TTL bound. (3) file_sync_order_holds observes the sequence the code records, not kernel durability. (4) disk_full_is_a_503 uses chmod 0o500 giving EACCES, an unprivileged approximation of ENOSPC. (5) NEW UNOWNED OBLIGATION, the fifth in this plan: ensure_fresh_project re-parses the stored project document on every artifact request including fully warm ones. Estimated sub-millisecond to 1ms on the 100-version fixture against a 5ms warm target, but several to tens of milliseconds on real multi-MB documents with thousands of versions, which would exceed SPEC 12. No row of slices 8-10 owns it. Nine forced out-of-list edits across the two passes, all judged mechanical minimums by code review. Schema 2 to 3 refuses an existing v2 database rather than migrating, justified only because no v2 database has shipped.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "code-review-recheck": "SHIP",
+              "security-recheck": "CLOSED",
+              "security-review": "CLEAR",
+              "verification": "FAILED_THEN_VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test artifacts_verification; cargo test --test blocklist_revocation; cargo test --test persistence_content; cargo test (all re-run independently by the main agent on a forced rebuild, before and after rework)"
+          },
+          "title": "artifact verification and content cache: one-pass hashing, pins, durable publish, revocation boundary"
+        },
+        {
+          "done": true,
+          "number": 8,
+          "proof": {
+            "result": "clippy exit 0. artifacts_concurrency ok. 10 passed: all nine row-named tests plus the rework test. Full suite 196 passed, 0 failed across 16 targets (180 before). A REAL DEFECT WAS REPRODUCED AND FIXED. The witness passed and code review returned SHIP, yet the mandatory FLOW-01 adversarial review still reproduced a permanent per-reference denial of service with an executed probe: a panic inside transfer() unwound past both the outcome send and finish(), so the watch channel never closed (every Waiter keeps the shared slot's sender alive) and the slot was never removed from inflight. Every present and future request for that reference hung forever, slot stuck RUNNING with neither CAS called. Bounded correctly: permit and temp reservation ARE released as locals dropped during unwind, so it leaked a slot only, never wrong or unverified bytes. FIX: a Resolution guard built before transfer(). The normal path calls answer(), which sends and sets its flag synchronously; Drop then only removes the slot. Any other exit makes Drop send Failed(Aborted) first, then remove. Chosen over catch_unwind because it also covers the task being dropped in place. The panic is NOT swallowed: unwinding still reaches the task boundary so tokio reports it, plus an ERROR log. The implementer also closed a hazard its own fix introduced, that Drop takes the inflight lock so a panic under it would poison the mutex and break every future download for every reference, worse than the original defect; all five lock sites now use table(), recovering via into_inner(). New test a_panic_in_the_transfer_task_does_not_wedge_the_reference, shown failing first. Code review checked the poisoning soundness mutation by mutation: every use of that lock is a single HashMap primitive, waiter counters being separate atomics outside the map. The adversarial recheck CLOSED it independently, rebuilding the reproduction from scratch and adding an unrun attack, two waiters joining the same slot before the leader panicked, both answered 503 with waiting_on back to zero. ALSO FIXED, a code-review MINOR: Limits::set_response_timeouts was pub and ungated, reachable by any consumer embedding this crate, and could lengthen without clamp, while those two deadlines are the ONLY bound on how long a slow reader holds a pin and permit. cfg(test) cannot work since integration tests link the library externally, so it is behind a default-off test-support feature enabled by a dev-dependency self-entry, proven absent from a default build via a temporary main.rs call giving E0599. No dependency added: Cargo.lock still 512 stanzas. CARRY-FORWARDS: limits::active_permit() implemented at all four handlers the Gate 3 call stack names, the LAST Gate 3 element absent anywhere in the codebase; the pin is now a count evict() consults under the lock it claims a key with; slice 7's known race deliberately untouched. NOT ABSORBED: metadata coalescing, conditional revalidation and slice 7's re-parse stayed out of scope. NO NEW UNOWNED OBLIGATION: verification ruled Aborted-to-503 owned by slice 9 and the eight adversarial coverage gaps to be combinatorial depth on mechanisms this slice delivers. LIMITATIONS: (1) blocklist_commit_is_not_delayed_by_a_large_project_refresh would still pass if biased; were removed from the store's select, so it witnesses the bound, not the priority rule; disclosed by the test itself and judged acceptable. (2) publication_once_started_completes aborts only after publishing() is observable, so the simultaneous race is pinned separately by publishing_and_cancelling_cannot_both_win. (3) PRE-EXISTING MINOR accepted: answer() and table removal are two steps, so a joiner can get a cached answer rather than a fresh attempt; non-wedging, self-healing. (4) Eight coverage gaps reasoned but not forced, including no fault-injected poisoning test and no panic-during-publish test. (5) tests/persistence_content.rs, holding slice 7's witnesses, was edited at exactly two call sites with all assertions untouched, verified independently.",
+            "reviews": {
+              "adversarial-testing": "FIX_THEN_PASS_CLOSED",
+              "code-review": "SHIP",
+              "code-review-recheck": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test artifacts_concurrency; cargo test (re-run by the main agent on a forced rebuild, before and after rework)"
+          },
+          "title": "concurrency, cancellation, eviction, maintenance and overload refusal"
+        },
+        {
+          "done": true,
+          "number": 9,
+          "proof": {
+            "result": "Every SPEC 11 failure-table row is produced by reachable handler code and asserted: 403 held and blocked with eligible_at and a numeric Retry-After parsed as u64, 404 unknown, 400 invalid input, 405 and 406, 503 policy and capacity and overload and storage, 502 upstream failure and invalid metadata and integrity, 504 timeout. Cache-Control no-store on all 12 statuses including 206 and 416, guaranteed by an unconditional middleware map_response layer at src/http/mod.rs:56,83-88 rather than by constructor sharing. No downstream 304 is possible because StatusCode NOT_MODIFIED is constructed nowhere in src/ and no handler reads If-None-Match or If-Modified-Since. Upstream validators are never forwarded: ProjectRow.validators has no reader on any response path and the downstream header-write set is closed. The npm ping route is never read as a package name, proven against a fake registry answer configured under package name dash. One decision line per request including router-level 404 and 405 that reach no handler, with the request ID shared by body and log by construction. DownloadError Aborted ruled onto the existing 503 row as INTERNAL_FAILURE with no row added. Forced out-of-scope edits in src/npm/mod.rs, src/pypi/mod.rs and src/artifacts/mod.rs judged minimal with file:line evidence. Sixth consecutive slice where the approved row named files but not the call sites those files force.",
+            "reviews": {
+              "code-review": "SHIP",
+              "security": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings exit 0. cargo test --test http_contract: ok, 11 passed, 0 failed. cargo test: 211 passed, 0 failed across 17 targets. Witness independently reproduced by code review and verification. No test in http_contract.rs passes against pre-slice-9 code."
+          },
+          "title": "HTTP contract: the whole SPEC §11 failure table, no-store, request IDs, decision logs"
+        },
+        {
+          "done": true,
+          "number": 11,
+          "proof": {
+            "result": "Slice 8 latch extracted to one generic SingleFlight<K,V> in src/concurrency/single_flight.rs. Both callers use it, artifact transfers keyed by ReferenceId and metadata refreshes keyed by ProjectKey carrying the ecosystem, npm and PyPI sharing one table. Gate 3 element npm::refresh_coalesced now exists for both ecosystems. sf-verification traced the live HTTP path and confirmed refresh is reachable only through refresh_coalesced, and that src/pypi/mod.rs::refresh no longer reaches fetch_metadata uncoalesced. Extraction preserved slice 8 behaviour rather than merely its passing, since waiting_on and publishing delegate to the same table that fetch, run and transfer mutate, with no shadow copy. Panic guarantee witnessed by a genuine panic, not a controlled error return. The only forced call site outside the file list was the one permitted src/lib.rs line, and a repo-wide search for SingleFlight, single_flight and concurrency:: found no others. ACCEPTED LIMITATION, recorded not fixed. refresh_coalesced runs inline in the leading request future while fetch spawns, so a leader whose request is dropped hands every joiner a 503 InternalFailure that a solo refresh would not have produced. It is bounded and self-healing rather than a wedge, since joiners resolve with no hang, waiting_on returns to 0, and the next request succeeds with a fresh upstream call, reproduced on both ecosystems. Fixing it needs Arc<App> at the npm and PyPI entry points and forced edits in src/http/npm_routes.rs and src/http/pypi_routes.rs, outside this row file list, so it is a Gate 4 scope change deliberately not taken here. It is documented in full at the npm refresh_coalesced site with the spawn upgrade path named, cross-referenced from PyPI. Liveness depends on Resolution publishing with send_replace and never send, and the two unit tests now fail in 5s with a named cause under that mutation instead of hanging a binary. Slice 13 still owns the pre-existing Resolution-retire versus cache-insert race, unreproduced in 7,200 real-thread attempts. DownloadCoordinator now also owns the metadata table, a naming MINOR caused by the one-line src/lib.rs limit, deferred. tests/slice11_adversarial_singleflight.rs is an addition outside the approved file list, adopted from sf-adversarial-testing after Engineering mutation-checked it.",
+            "reviews": {
+              "sf-adversarial-testing": "PASS",
+              "sf-code-review": "FIX FIRST then resolved",
+              "sf-verification": "VERIFIED WITH FINDINGS then resolved"
+            },
+            "witness": "clippy --all-targets -D warnings exit 0 with the adversarial target present. artifacts_concurrency 10 passed with all ten slice 8 tests present, unrenamed and unweakened, the file itself unmodified. npm_metadata 22 passed including concurrent_cold_requests_cause_exactly_one_metadata_refresh and a_panic_in_a_metadata_refresh_does_not_wedge_the_project. pypi_metadata 14 passed including both in their PyPI form. slice11_adversarial_singleflight 7 passed. Full suite 224 passed, 0 failed, 13 ignored across 20 targets, reconciling as 211 + 6 + 7 against the prior baseline with ignored unmoved. Every new test was witnessed failing against pre-change code, 6 upstream refreshes where 1 was asserted and the panic propagating out as JoinError::Panic. Re-executed independently by sf-code-review and again by sf-verification, both reproducing the same counts."
+          },
+          "title": "one shared single-flight primitive, and metadata refresh coalescing on top of it"
+        },
+        {
+          "done": true,
+          "number": 12,
+          "proof": {
+            "result": "Both clauses of SPEC 10 line 306 implemented for npm and PyPI by one mechanism, following the one-mechanism-twice shape slice 11 established. Stored validators are now sent upstream and an upstream 304 renews freshness instead of returning 502 UPSTREAM_INVALID. Clause two holds because the 304 branch rejoins the ordinary refresh path immediately after the document is chosen, so the same parse, reference upserts and commit_project_refresh run, the generation advances unconditionally, and RenderedResponse::is_reusable requires an exact generation match, rebuilding every projection against the blocklist in force now. sf-security-review found a stronger guarantee than the slice claimed, that a blocklist revision mismatch alone invalidates the rendered cache independently of TTL, so blocklist enforcement does not depend on revalidation at all. Clause two was mutation-proven on both ecosystems, failing on the blocked-version assertion while the 304 count assertion still passed. The four Gate 3 tests at 03-program-design.md line 813, the plan unowned item 3, are written for both metadata files and were confirmed by two reviewers to decide on their own named property rather than on the 304 count. Eight further fail-closed tests were added after security review, covering a 304 answering an unconditional request, a 304 whose stored document is unparseable, a 304 with unexpected validators, and a 304 with a body and extra headers, each mutation-checked. src/upstream/mod.rs, src/upstream/reqwest_transport.rs and src/store/mod.rs needed no edit, confirmed independently by sf-code-review, and no forced call site outside the file list was found. RECORDED PRODUCT TRADEOFF, deliberately not fixed. Repeated 304s extend freshness indefinitely with no ceiling and no forced periodic full fetch, so an unchanged document is never re-fetched in full. sf-code-review confirmed SPEC 10 line 306 imposes no cap, making this spec-conformant, and sf-security-review scoped the blast radius to delayed visibility into upstream yanks and replacements with NO effect on blocklist enforcement. A bounded full fetch every N revalidations would close it and needs a SPEC change and a gate reopen. An evicted snapshot fails closed at 502 rather than serving stale or absent bytes, and ordinary memory eviction still revalidates correctly through load_project. MINOR left as is, ruled non-blocking by sf-verification, the two wiremock body-never-read tests are near-duplicates exercising an identical code path and could be merged with no coverage loss.",
+            "reviews": {
+              "sf-code-review": "SHIP",
+              "sf-security-review": "CLEAR with one MEDIUM ruled spec-conformant and one LOW resolved by eight added tests",
+              "sf-verification": "VERIFIED"
+            },
+            "witness": "clippy --all-targets -D warnings exit 0. npm_metadata 32 passed and pypi_metadata 24 passed, including an_upstream_304_renews_freshness_without_a_refetch, a_304_still_rebuilds_the_representation_when_the_blocklist_changed, and the four Gate 3 tests upstream_removal_becomes_404, revalidation_after_ttl, projection_expires_at_next_hold_release and backward_clock_jump_recomputes_projections, in both ecosystems. origin_guard 17 passed unchanged, the security regression witness for validators now riding a slice 4 guarded path. Full suite 244 passed, 0 failed, 13 ignored across 20 targets, reconciling as 224 + 12 + 8. All 12 original tests were watched failing pre-change on not_modified_answers 0 against 1. Clause two was proven separately by mutation, since pre-change no 304 path existed in which a rebuild could be skipped. Re-executed independently by sf-code-review, sf-security-review and sf-verification, all reproducing the same counts, and sf-verification recomputed the src manifest digest itself."
+          },
+          "title": "upstream conditional revalidation, both clauses of SPEC §10"
+        },
+        {
+          "done": true,
+          "number": 13,
+          "proof": {
+            "result": "clippy exit 0 no warning; npm_metadata ok 33 passed; artifacts_verification ok 10 passed; pypi_metadata ok 26 passed (+2 new PyPI tests); warm_artifact_budget ok 1 passed; full suite 248 passed / 0 failed / 14 ignored, green on 14+ consecutive DEBUG runs, re-run independently by the main agent and by code review. Warm artifact at 5,000 versions: +202.833ms before, +1.074ms after, against SPEC 12 5ms (debug build; recorded release baseline was +37.9ms at 5,000 and +6.8ms at 1,000, and only the 5,000 point was re-measured — 100 and 1,000 remain slice 10 benchmarks). SLICE 8 ANSWER-THEN-REMOVE WINDOW: ACCEPTED, not closed, on this reason, tightened by sf-verification against src/concurrency/single_flight.rs — a joiner inside the window receives the outcome of an attempt that FINISHED microseconds before its arrival while the slot was still in the table (answer() send_replace runs before Resolution::drop calls finish(), both synchronous, so no in-flight work remains to share); it can neither wedge a key nor return an answer stale in any other sense, and closing it would mean editing src/concurrency/single_flight.rs, outside this row file list and under slice 11 adversarial coverage, for no behavioural gain. CORRECTION MID-SLICE: first review round returned FIX FIRST on two grounds, both fixed — (1) the guard call-site ordering was load-bearing and witnessed by nothing, fixed STRUCTURALLY by deleting pub fn invalidations and adding get_with_seen returning count and value from one read-lock acquisition, so the wrong order is now inexpressible; (2) the PyPI half had no witness, fixed with two end-to-end tests. FALSIFICATION, single-variable breaks: Ecosystem::PyPi->Npm fails ONLY the new PyPI listing test; removing advertised.get() fails ONLY the reparse test; bare insert fails NEITHER. LIMITATIONS: the CAS guard is structurally unwitnessable end-to-end (only the cache-hit path races and it has zero awaits to park at), so its only witness is the hand-driven primitive-level npm test plus get_with_seen structural guarantee; a bare insert on projects stays type-possible and the repo has no -D warnings gate of its own; advertised is uncounted in approximate_bytes, an accepted bounded ~1.5-2x overshoot; and cargo test --release fails artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh reproducibly (commit 183ms vs drain 360ms against a required >500ms margin) — ruled PRE-EXISTING and profile-dependent, NOT caused by slice 13, independently by execution. FORCED EDITS outside the row file list: src/store/mod.rs:319-322 (comment only) and tests/pypi_metadata.rs (the two new witnesses).",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; --test artifacts_verification; --test pypi_metadata; --test warm_artifact_budget -- --ignored; cargo test"
+          },
+          "title": "metadata cache correctness and its cost"
+        },
+        {
+          "done": true,
+          "number": 14,
+          "proof": {
+            "result": "clippy exit 0 no warning; full suite 253 passed / 0 failed / 15 ignored (DEBUG, up from 248/14); http_contract ok 14 passed including an_npm_reference_id_under_the_pypi_artifact_root_is_404, a_pypi_reference_id_under_the_npm_artifact_root_is_404 and the_artifact_decision_line_logs_the_ecosystem_of_the_reference_row; npm_metadata ok 34 passed; pypi_metadata ok 27 passed; e2e_npm ok 7 passed INCLUDING npm_12_installs_without_allow_remote against the pinned npm 12.0.2 under nvm Node v24.19.0, the decisive proof, which failed before this slice with npm error code EALLOWREMOTE; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1. Witness re-executed independently by the main agent, by sf-code-review and (e2e_pip leg) by sf-verification. THE RED WITNESSES WERE PROVED NON-VACUOUS, which row 14 required because neither new route existed and both paths already 404 through the router fallback: each cross-root test fires a route-registration probe FIRST (GET /{root}/artifacts/not-hexadecimal/f.tgz must be 400 INVALID_INPUT, which only the artifact handler produces), and a staged experiment landing the routes WITHOUT the mismatch rule returned 502 — the cross-root request reached upstream — isolating the 404 to the ecosystem comparison rather than a missing route. NO MIGRATION: same reference ids before and after, only the prefix moved (npm 74be4d81…, pypi 57dfcd59…); ReferenceId::compute hashes ecosystem, name, version, filename, upstream URL and sorted digests, never the public path. SECURITY: sf-security-review enumerated every return point in serve_artifact and confirmed the ecosystem comparison precedes all method and range branching with only three ecosystem-independent early exits before it, that policy::evaluate sources ecosystem solely from the stored row (so the decision-log-integrity framing rather than authorization bypass is correct), and that the cross-root 404 is byte-identical to an unknown-id 404 modulo Date and request_id, so it is no new existence oracle. PLANNING DEFECT FOUND AND FIXED: row 14 Exact files, presented in this plan as a VERIFIED sf-impact traced union, was ONE SITE SHORT — a sixth positional split(/).nth(2) parse at tests/slice11_adversarial_singleflight.rs:385, invisible to literal search because it derives the path through common::artifact_path. Zero .nth(2) now remain; ten .nth(3) across six files. This is the second time in this plan that a literal-search-derived file list missed a helper-derived call site. LATE ADDITION after the reviews: a_package_named_artifacts_still_resolves asserted only the rendered URL prefix and never fetched it, so the collision this slice creates was proven once by adversarial testing and witnessed by nothing; it now issues the GET and asserts delivered BYTES, proved non-vacuous by a negative control in which wrong upstream bytes left the status assertion passing and failed the content assertion. The PyPI byte-level equivalent was deliberately SKIPPED and sf-verification ruled the skip justified: npm collision is static-versus-capture so router precedence must resolve it, PyPI is static-versus-static with no capture and no precedence question, the project name appears in neither artifact URL, and the byte path is ecosystem-agnostic and already exercised at /pypi/artifacts/ in the default suite and by both pip versions. FORCED EDITS outside the row file list: tests/slice11_adversarial_singleflight.rs:385 and docs/operations.md:485-528 (the section 11 client matrix, which named pip 25.1.1 as a suite client and omitted npm 12). SPEC.md amended at exactly two sites (:228-229 and :339-340) and nowhere else; docs/operations.md subsection REWRITTEN, with the allow-remote=all instruction, the npm-11 pinning recommendation and the Node v20.19.6 caveat all gone — verified full-file, not only in the rewritten section, because no automated witness checks prose. LIMITATION: all counts are DEBUG; cargo test --release still fails the pre-existing artifacts_concurrency timing test recorded as unowned item 7, unrelated to this slice.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "security-review": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test; --test http_contract; --test npm_metadata; --test pypi_metadata; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored"
+          },
+          "title": "artifacts under the ecosystem root: /npm/artifacts/ and /pypi/artifacts/ replace the top-level /artifacts/, with the URL ecosystem verified against the reference row"
+        },
+        {
+          "done": true,
+          "number": 15,
+          "proof": {
+            "result": "clippy exit 0 no warning; npm_metadata ok 43 passed; pypi_metadata ok 36 passed; config_validation ok 15 passed; persistence_projects ok 7 passed; full suite 276 passed / 0 failed / 15 ignored DEBUG, being 253 before this slice plus the 21 tests the row names plus 2 coalescing tests added after review. Witness re-executed independently by the main agent, by sf-code-review and by sf-verification. CENTRAL PROPERTY PROVED BY SABOTAGE, not by passing: with the feature landed, making the 304 branch write now turned 15 tests red across both ecosystems and persistence_projects; forcing the over-age gate false turned 6 per ecosystem red; a_304_does_not_advance_the_full_fetch_time asserts the STORED COLUMN VALUE by direct store read. THE COALESCING GAP, found after all three reviews passed and closed before recording: all eight named ceiling witnesses per ecosystem are sequential single-request tests and slice 11 predates the ceiling, so nothing exercised a request arriving while another refresh for the same project was in flight ACROSS the boundary. sf-adversarial-testing tried to force that race, could not, deadlocked against its own gate, then CORRECTED ITS OWN EARLIER FRAMING to say its probe asserted on the persisted row and would have passed whether or not the race occurred. a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it now exists in both ecosystems on a new FakeAnswer::GatedNotModified primitive, because a full-fetch gate advances the full-fetch time legitimately and leaves no boundary to observe. Proved a genuine witness three ways: it blocks on the product own counter waiting_on(key)==2 so a joiner that fails to coalesce times out rather than degrading silently; metadata_calls==2 shows the joiner made no upstream call; and BREAK 3 DE-RACES THE TEST ITSELF, releasing the leader before the joiner runs, which makes it FAIL. The adversarial probe passed de-raced; this one fails de-raced, and sf-verification reproduced that independently. Each half is pinned by a different break. USER DECISION 2026-09-20 on the one conformance gap: a joiner can be served a copy up to one upstream timeout (30s) past the CONFIGURED maximum, reachable only when the refresh outlasts that project spread offset, about 1 project in max_age/10 and always when the ceiling is set below ten times the timeout. SPEC revision 3 had promised the configured value remains a true maximum. Shown three options, the user chose to AMEND SPEC to the precise bound rather than change code, because re-evaluating freshness per waiter converts one refresh into one unconditional full fetch per waiter, the exact amplification coalescing prevents. SPEC section 10 now states the bound; section 16 records the amendment and its rationale. The overshoot never advances the stored full fetch time, is never cached in a rendered representation, and cannot compound. LIMITATIONS: counts are DEBUG; for ceilings between 10 and 19 seconds integer division makes the spread offset always zero so the spread is absent in that band while the ceiling stays correct; a_zero_ceiling_restores_unbounded_revalidation asserts a property already true pre-change and guards only the off-switch; the_effective_ceiling_never_exceeds_the_configured_maximum is the one test the 304 sabotage does not catch, by construction; cargo test --release still fails the pre-existing artifacts_concurrency timing test recorded as unowned item 7. FORCED EDIT outside the row file list: tests/artifacts_concurrency.rs:916, one line, constructing a ProjectRefresh. PROCESS: three agents left scratch artifacts in the shared tree during this slice, two adversarial probes and one verification probe left red in tests/npm_metadata.rs, each producing a false finding that cost a round trip; cause was the main agent dispatching read-only reviewers and scratch-writing agents against one tree with no mutual awareness. Tree verified clean before this record.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "security-review": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; --test pypi_metadata; --test config_validation; --test persistence_projects; cargo test"
+          },
+          "title": "a bounded maximum age for cached metadata, configurable"
+        },
+        {
+          "done": true,
+          "number": 10,
+          "proof": {
+            "result": "clippy exit 0; cargo test 276 passed / 0 failed / 15 ignored DEBUG; e2e_npm ok 7 passed including npm_12_installs_without_allow_remote under real npm 12.0.2 on Node v24.19.0; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1; cargo bench exit 0, all nine SPEC 12 verdicts MET; podman build succeeded; check-config exit 0 from inside the image; offline trust-store check exit 0; a live request from a running container to the production npm origin returned 200 ALLOWED with no TLS error. Witness re-executed independently by the main agent, sf-code-review and sf-verification. THE BENCHMARK ACCEPTANCE TOOK THREE ROUNDS TO MAKE HONEST. Round 1 reported nine METs, but sf-code-review read the INSTRUMENT not its output and found benches/artifact_throughput.rs measured the firewall warm and the baseline COLD, biasing the ratio SPEC 12 requires under identical conditions. Round 2 made warmup symmetric and did NOT settle it: main-agent runs gave 145.7/148.8/120.6, 121.5/123.1/56.3 and 232.9/242.6/252.4 percent, a 4.5x swing WITH A BREACH of the 85 percent floor. Round 3 used PAIRED INTERLEAVED SAMPLING, baseline and firewall alternating in one loop so drift lands on both sides, and raised SAMPLES 150 to 1,000 per side. That settled it: 15 implementer shape-runs across loadavg 1.67-8.38 in 108.9-112.7 percent, plus 6 main-agent shape-runs in 108.8-114.7 percent. MAIN AGENT DIAGNOSIS FALSIFIED: the main agent blamed the 56 percent breach on its own subagents loading the host. The implementer disproved it, the band held across a 5x load range, so the cause was the instrument charging load drift to the firewall. THE RESIDUAL 110 PERCENT IS A CONSTANT, NOT NOISE, disclosed rather than corrected: src/artifacts/stream.rs::file_body reads chunk n+1 through a depth-1 channel while the client consumes chunk n, while the bench baseline reads only when polled - different pipelining, favouring the firewall, visible as baseline total p95 about 47 ms against about 5.4 ms. The implementer deliberately did NOT rewrite the baseline, because changing the instrument until it yields a liked number is the failure mode, with no reviewer left in the round. Named by file in docs/operations.md. ADDITIONAL TTFB is the load-bearing evidence: positive in all 21 shape-runs, +0.020 to +0.163 ms, 2-3 percent of the 5 ms budget. FOUR PRE-CHANGE BREACHES BECAME MET, the acceptance for slice 13: additional TTFB +6.232 ms at 1,000 versions and +37.903 ms at 5,000, and throughput 44.9 and 11.1 percent, all now inside the bands above. Unchanged and MET: warm metadata 120,178-144,006/s and p95 0.085-0.119 ms; policy denial p95 1.187-1.376 ms; blocklist replacement 4.96-5.03 s. The table records RANGES over five runs. SPEC 13: sf-verification walked all 14 rows and mapped each to a named passing test it re-ran itself; all MET. TWO OBLIGATIONS REMAIN OPEN, now in docs/operations.md as known gaps: no -D warnings gate in the repository, so a warning-level regression compiles clean under plain cargo clippy; and the suite has never been green in release, where --no-fail-fast gives 275 passed / 1 failed on artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh, whose 500 ms margin optimized code drains in 160-200 ms. Pre-existing, deliberately not fixed. docs/operations.md states in one line that the blocklist is supplied by the operator, who is accountable for its contents and provenance. The earlier Accountable owners subsection was REMOVED on the user's correction that a registry firewall cannot reach an already-installed package, the boundary of the product category rather than a risk awaiting a signature, replaced by a scope statement of what a block does and does not reach. LIMITATIONS: counts are DEBUG; the host carried unrelated user applications at about 200 percent CPU with swap exhausted throughout, which paired sampling tolerated.",
+            "reviews": {
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored; cargo bench; docker build; docker run check-config; offline trust-store check; live TLS request from the running container"
+          },
+          "title": "delivery: real npm and pip installs, container image, operations README, benchmarks"
+        },
+        {
+          "done": false,
+          "number": 16,
+          "title": "FIX-16-A current managed authority before cached/downloaded artifact release on legacy and selected npm/PyPI routes; required before row 28"
+        },
+        {
+          "done": false,
+          "number": 28,
+          "title": "shared service policy API, enforcer activation, durable refusal, listener peer admission and login-free common route; required before new adapters"
+        },
+        {
+          "done": false,
+          "number": 29,
+          "title": "early native-driver and containerd routing spike"
+        },
+        {
+          "done": false,
+          "number": 30,
+          "title": "central OSV in managed and shared-service mode: server osv.dev-compatible querybatch and endpoint base-URL wiring (C1030); required before row 17"
+        }
+      ],
+      "title": "Package Firewall MVP"
+    }
+  },
+  "statusIdentity": "9859ab45d45048ff38bd028a4cdc495d2e7d37bc438168621dd784c7a8e9aaa9",
+  "modelSubject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/01-product.md",
+      "sha256": "609f0355a9ec3390e28f3c315d10e6e7980e3dfdc13f53815f382bfe368dca1f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "f9593d34dd42246112bf2adb8a48d8b8534af9a7b04c8032d9ea2dcaf6df0e31"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "6cdec52905215acf050e2f560e0b9980f50d7444b189549eba523cd81c4c2959"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/04-slices.md",
+      "sha256": "583553f0561b2f88d8031b8418f467793b0d3332c496d44a65aae630fa0e4181"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-protocol-contracts.md",
+      "sha256": "57786a291f558ecdfec6433b5e99607328b3e655d166c8df0f6dd03874b6c57f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-service-policy-api.md",
+      "sha256": "1ad895f9601ad8d5945a8ad16cb9ce6973b495aeaa2134b38a83404b51e133bc"
+    }
+  ],
+  "sourceSubject": [
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/01-product.md",
+      "sha256": "609f0355a9ec3390e28f3c315d10e6e7980e3dfdc13f53815f382bfe368dca1f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/02-architecture.md",
+      "sha256": "f9593d34dd42246112bf2adb8a48d8b8534af9a7b04c8032d9ea2dcaf6df0e31"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/03-program-design.md",
+      "sha256": "6cdec52905215acf050e2f560e0b9980f50d7444b189549eba523cd81c4c2959"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/04-slices.md",
+      "sha256": "583553f0561b2f88d8031b8418f467793b0d3332c496d44a65aae630fa0e4181"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-protocol-contracts.md",
+      "sha256": "57786a291f558ecdfec6433b5e99607328b3e655d166c8df0f6dd03874b6c57f"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/evidence/design-service-policy-api.md",
+      "sha256": "1ad895f9601ad8d5945a8ad16cb9ce6973b495aeaa2134b38a83404b51e133bc"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-contracts.json",
+      "sha256": "fd75a849b984835558514c9d83f2cf6d9b0cfaa530cae1dcc4d941df7c69bde5"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/molecule-flow.json",
+      "sha256": "db6ba7f77a54d0cb530b5cf95367a1834991b5cb3e0a8c9b9b624be3f5b5eb51"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/managed-activation-order.yaml",
+      "sha256": "f5b3360a94552975a07a8fa6852d2b2f66638513af93743a56a9833bbbf9c260"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/registry-release-order.yaml",
+      "sha256": "34477fd266179e7fa05fb4de333306a6f47a71a1daba5594475b63b661273487"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/specs/service-policy-admission/server-snapshot-order.yaml",
+      "sha256": "6d71b7544a2727bbfc91021f2117f6354c240bb5a9bf21177f3d7bf16b696221"
+    },
+    {
+      "path": "/home/john/go/src/github.com/postfix/probation/src/managed/publication_gate.rs",
+      "sha256": "701c28c61764a3c9151d61cbe951d9a066c33297be70fe4cb500bc3b7ed7d932"
+    }
+  ],
+  "missingSources": [
+    "/home/john/go/src/github.com/postfix/probation/crates/probation-server/src/order_guards.rs",
+    "/home/john/go/src/github.com/postfix/probation/src/managed/order_guards.rs"
+  ],
+  "post": {
+    "findings": [],
+    "inFlight": [
+      {
+        "sinceEvent": 14,
+        "stage": "hand"
+      },
+      {
+        "sinceEvent": 1,
+        "stage": "red-team"
+      },
+      {
+        "sinceEvent": 17,
+        "stage": "qa"
+      }
+    ],
+    "status": {
+      "checkpoint": null,
+      "gateProgress": {
+        "1": "## Gate 1 progress\n\n- [x] Create 00-status.md\n  Result: Existing status and historical delivery evidence retained; new scope is reviewed before revised design and implementation.\n- [x] Select the plan with router resume\n  Result: Six affected plans resumed without checkpoints. Package Firewall MVP is the lead release scope; dependent products retain their feature ownership and baseline requirements.\n- [x] Create the product clarification inventory\n  Result: C1006/C1008/C1009 select local enforcement/direct upstream traffic, API-key policy connection and explicit standalone TOML. C1013/C1027 select nine package/container families, omit CPAN and prioritize RubyGems; C1015 keeps registry credentials configured in package managers; C1016 selects Linux/macOS/Windows clients; C1017 selects a Linux-only policy server. Technical deferrals C1003/C1018 are imported into 02-architecture.md.\n- [x] Resolve user decisions\n  Result: Q2, Q3, Q5, Q6 and Q7 plus server/CI follow-ups are recorded. No open product inventory rows remain. Exact APIs, per-format/platform contracts, migration and CI/daemon topology remain combined-design obligations, not implementation discretion. Management C19/C20 outage/propagation and C30 device-control limits are retained explicitly in the lead scope.\n- [x] Gather ecosystem and authentication evidence\n  Result: Lead evidence includes pinned Nora/Dozor reuse, public ecosystem inventory, current auth/policy seams, platform baseline and research-native-ci.md; management-server/evidence/research-ecosystem-auth.md retains the former native-certificate survey. CI report ANSWERED for ordinary native jobs and Linux container restrictions, with non-Linux Docker execution unproved. No new-source/runtime proof is claimed. Legacy OSV/log-delivery inventory formatting is repaired with unchanged selected policies and explicit original-ID aliases.\n- [x] Review UI mockups with the user\n  Result: No new desktop GUI or account/membership interaction is introduced. Reuse existing approved API-key, policy, registry and account surfaces; selected family names/credential ownership/platforms are recorded user answers. Revised setup text, obsolete certificate-control retirement and exact changed screen content are reviewed in combined design before implementation; no historical certificate mockup is treated as a preview of new behavior.\n- [x] Complete 01-product.md\n  Result: Lead scope has the approved nine-family matrix, deployment/credential model, measurable artifact acceptance, native CI requirements, exclusions, retained policy/security limits, cross-plan ownership and domain/flow diagrams. Dependent product amendments make those choices authoritative over obsolete certificate/format proposals and retain their own prior outcomes.\n- [x] Obtain QA READY\n  Result: Fresh nine-family/RubyGems-critical Scope QA READY; verified docs/plans/package-firewall-mvp/gate-1-qa.md with no blocking findings. Shared-service journey, policy, node admission and package-manager credentials are included.\n- [x] Present and record user approval\n  Result: User approved the nine-family/RubyGems-critical scope on 2026-11-02; gate-qa approve --gate 1 returned APPROVED. Bound presentation: docs/plans/package-firewall-mvp/show-me-gate1-rubygems-nine.md. Required delivery-authority correction remains design/implementation work; no runtime proof is inferred.",
+        "2": "## Gate 2 progress\n\n- [x] Check whether existing architecture and evidence can be reused\n  Result: 02-architecture.md contains the delivered npm/PyPI baseline. Approved C1003/C1018 require revised local-client, policy API, platform and CI contracts; evidence/local-client-policy-modes.md and evidence/research-native-ci.md supply bounded reusable facts.\n- [x] Create or update the architecture and carry deferred questions\n  Result: C1003/C1018 retained under their original IDs; C1019 records Q8: machine-wide service plus a shared service per orchestration cluster; C1020 records Q9: one policy per service, selected by an organisation service key. C1021 records Q10: host/cluster-restricted access, no extra package-request login. C1022 records Q11: trust approved cluster nodes; Kubernetes controls deployment and image credentials. C1024 preserves existing registry handling without a public/private split. C1015 explicitly keeps registry credentials in package-manager configuration, never firewall configuration. Existing architecture prose is historical baseline until revised combined design is approved.\n- [x] Gather repository evidence\n  Result: sf-repo-view PARTIAL reports saved in evidence/design-local-client-grounding.md and evidence/design-service-policy-api.md. sf-research report saved in evidence/research-cluster-image-routing.md: documented explicit-server candidate; public routing/no-fallback/node connectivity require a pinned-runtime probe. The report does not select any new credential architecture; preserve existing package-manager credentials and publishing forwarding under C1015/C1024. The separate private-auth investigation was stopped at the user correction. No runtime proof is claimed.\n- [x] Save findings and resolve architecture decisions\n  Result: FIX-16-A is row 16 alone with a synchronous publication gate, exact reference/registry/authority/config/OSV generation binding (C1029) and named matrix tests; shared-service row 28 owns the snapshot API, activation, durable refusal, peer admission and D2/D3/D5 (C1028 resolved by the user 2026-11-04); row 29 is the early native/cluster spike. Existing uncommitted prototype code is recorded as unreviewed work to verify, not delivered. The user, asked how to treat it, said they did not know the code; the main agent applied the non-destructive default (prototype to review, nothing deleted) and showed the user what it is; the user may overrule.\n- [ ] Complete 02-architecture.md\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Record architecture assumptions and review triggers\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Complete architecture section of the combined design\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.\n- [ ] Carry contracts and obligations into program design\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design.",
+        "4": "## Gate 4 progress\n\n- [ ] Present and record user approval\n  Result: Reopened 2026-11-17 for C1030 (central OSV); repeat after the revised design."
+      },
+      "gates": [
+        {
+          "approved": "2026-11-02"
+        },
+        "in progress",
+        "pending",
+        "pending"
+      ],
+      "hasCheckpoint": false,
+      "loop": {
+        "boundary": {
+          "kind": "gate",
+          "number": 2
+        },
+        "generation": 38,
+        "history": [
+          {
+            "from": "hand",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "red-team"
+          },
+          {
+            "from": "red-team",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "start",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "unknown",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "rework",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          },
+          {
+            "from": "qa",
+            "reason": "complete",
+            "to": "hand"
+          },
+          {
+            "from": "hand",
+            "reason": "retry",
+            "to": "qa"
+          }
+        ],
+        "presentedSlice": 10,
+        "reopened": true
+      },
+      "notes": "Gate 2 reopened. Use router resume position for the current step. Prior approvals and notes are historical; review and approval are required again.",
+      "settings": {
+        "presentation": "auto"
+      },
+      "sha256": "15b8da33bce94842429f711eac0311816f09af5cc68e21e4a2ab2b053bc6fb28",
+      "slices": [
+        {
+          "done": true,
+          "number": 1,
+          "proof": {
+            "result": "Tracer bullet wired end to end in 16 files (15 new plus .gitignore); SPEC.md, README.md, LICENSE and docs/ untouched. serve binds 127.0.0.1:8080 from config and answers /health/live 200, /health/ready 503, /npm/left-pad 503 with the POLICY_UNAVAILABLE JSON body and Cache-Control: no-store, unknown path 404. The npm 503 is a real policy::evaluate(None, ..) returning Unavailable, verified independently by code review at src/http/npm_routes.rs:40-51 and src/policy/mod.rs:68-82; the implementer had first shipped a hidden hardcoded 503 (all non-Unavailable arms collapsed onto PolicyUnavailable), caught by its own falsification probe and fixed before handover. WITNESS CAVEAT: /health/ready 503 cannot be falsified the same way because no BlocklistSnapshot can be constructed in this slice; it and the npm refusal both derive from App::blocklist() returning None at src/lib.rs:44, so 2 of the 4 tests share one root cause and only 1 was independently falsified. Dependency conformance PASS: 28 runtime plus 2 dev crates match the Gate 3 table exactly, reqwest 0.13.5 with stream/gzip/brotli/zstd and no TLS feature, rustls 0.23.45 via aws-lc-rs, no patch or replace section. CARRIED TO SLICE 2 (code review MINOR, non-blocking): ConfigError implements only Read/Syntax/Invalid; UnknownKey(String) and MissingKey(&static str) both surface as Syntax and are NOT forced by the file boundary since both build from primitives already in src/config.rs, so slice 2 check-config needs the named-reason distinction restored. OPEN FOR USER: aws-lc-rs and aws-lc-sys are a mandatory transitive build dependency whose licences the Gate 3 table never recorded; they resolve permissive and Apache-2.0-compatible, so no approved decision is invalidated, but the table is incomplete.",
+            "reviews": {
+              "code-review": "APPROVE"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings: exit 0, no warnings. cargo test --test tracer: test result: ok. 4 passed; 0 failed; 0 ignored. Both re-run independently by the main agent after the implementer reported them."
+          },
+          "title": "tracer bullet: crate, CLI, config, router; serve answers live/ready and one npm route with a real POLICY_UNAVAILABLE refusal"
+        },
+        {
+          "done": true,
+          "number": 2,
+          "proof": {
+            "result": "SPEC 5 rule order, digest handling, blocklist validation, check-config and check-blocklist, and real readiness that flips 200/503 on a loaded snapshot. Both slice 1 carry-forwards discharged: ConfigError now names UnknownKey before MissingKey via a three-stage from_toml_str (toml::Table parse, check_keys against REQUIRED_KEYS/OPTIONAL_KEYS, then RawConfig deserialise), guarded against key-list drift by deleting_any_sample_key_is_reported_as_that_key_missing over all 16 sample keys; and the slice 1 placeholders were replaced not extended, so SLICE 1 WITNESS CAVEAT IS NOW RESOLVED: readiness is independently falsifiable (probe 6 broke the expiry check and readiness_turns_false_at_expiry_while_liveness_stays_true objected). Engineering ran 9 falsification probes, each breaking a property and naming the test that caught it; probe 9 found the base64 canonicality guard was UNCOVERED CODE (removing it left all tests green) and closed the gap with an assertion at src/policy/blocklist.rs:600 rejecting a non-canonical SRI spelling, since base64 of a 32-byte SHA-256 carries 2 padding bits that a permissive decoder would drop, giving one digest two valid spellings. Engineering also disclosed and root-caused a false failure of its own: its probe helper restored files with cp -a, preserving mtimes, so cargo reused a binary built from patched source. SCOPE EXCEPTION ACCEPTED: src/http/npm_routes.rs was outside the slice 2 file list but Rust struct literals are exhaustive, so adding the Gate 3 digest fields to Candidate forced the call site; exactly advertised_digests and pinned_digests set to empty slices plus a comment, behaviour bit-identical. Gate 4 slice 2 file list should have named it. sf-adversarial-testing: NO DEFECTS REPRODUCED on all four named angles (inclusive-allow at exactly t plus cooldown, saturation near i64::MAX and i64::MIN, zero cooldown, valid-but-empty blocklist distinct from missing) plus rule order, expiry exactness, SRI/hex equivalence, PEP 440 spellings, 100k-deep nested JSON on a 512KB stack, duplicate JSON keys rejected closed, and 200k entries in 81ms. sf-code-review: SHIP, two minor findings; the stale npm_routes.rs comment claiming slice 2 delivers the SPEC 11 403 rows was corrected to attribute them to slice 5, code untouched. FOR THE RECORD: nodejs-semver parses a trailing-space version as precedence-equal, so a block on 1.0.0 also catches the padded spelling; this only ever widens a block and fails safe. INFORMATIONAL: check_replacement and Replacement in src/policy/blocklist.rs implement SPEC 8 step 3 rollback ahead of the slice 3 poller that will call them, already unit-tested. Drift verified by SHA-256 across the slice: Cargo.toml, Cargo.lock and tests/tracer.rs are byte-identical to the hashes slice 1 code review recorded, so no dependency was added and no test was edited to pass.",
+            "reviews": {
+              "adversarial-testing": "NO_DEFECTS_REPRODUCED",
+              "code-review": "SHIP"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings: exit 0, no warnings. cargo test --lib policy: ok. 15 passed (13 Gate 3 tests plus deeply_nested_blocklist_is_rejected_not_a_crash and rejects_an_unsupported_schema_version). cargo test --test config_validation: ok. 12 passed. cargo test --test tracer: ok. 4 passed, no slice 1 regression. All re-run by the main agent on a forced rebuild (sources touched to defeat cargo fingerprint staleness) after the implementer disclosed a stale-artifact false failure."
+          },
+          "title": "pure policy engine, digests, blocklist validation, check-config and check-blocklist, readiness from a loaded blocklist"
+        },
+        {
+          "done": true,
+          "number": 3,
+          "proof": {
+            "result": "Turso persistence with WAL and synchronous=FULL verified by read-back, exclusive flock data-directory lock, commit-before-publish proven by running one blocklist file against both a healthy and an unopenable database, poller change detection on device/inode/mtime_nanos/len plus a 60s backstop re-read. NAMED TASK, SMTC Rust analyzer-spec capability: YES. Inline smtc spec run of an ordered_obligation returned 1 finding via find_call_sites_bulk then cfg_dominance, so the Gate 3 UNKNOWN was the absence of .rs files, not a missing capability. Caveat: scope files does not narrow results, so SQL containment is not yet expressible as a file-scoped spec and the grep remains its witness. GATE 3 LEAST-CONFIDENT DECISION 1 answered empirically against the pinned crate: WAL is the only supported real journal mode, synchronous=FULL reads back Integer 2, explicit transactions roll back on drop, recovery runs on open, PRAGMA wal_checkpoint returns busy/log/checkpointed, and a non-database file is refused non-destructively. FSYNC CLOSED POSITIVELY: strace shows fsync on the -wal once at log creation and once per commit, each completing before commit_blocklist returned and therefore before publication. SCOPE DEVIATION ACCEPTED: src/http/npm_routes.rs was modified although absent from the approved exact-files list, forced by two approved Gate 3 signatures, PolicyHandle over ArcSwapOption and evaluate taking a borrow. It is a pure type adaptation via as_deref with no client-visible change, and arguably stronger because load_full pins one snapshot per decision. This is the third slice to touch that file and the second consecutive forced call-site adaptation outside a file list, because Gate 4 rows do not name forced call sites. DEFECTS FOUND AND FIXED: MAJOR, a failed commit discarded an accepted blocklist for up to 60s because seen was set before committing, fixed by Watcher::retry and confirmed by mutation. MEDIUM, a zero-length or absent firewall.db beside a populated -wal was silently rebuilt, destroying a still-recoverable revision with nothing logged, fixed by an OrphanedLog guard ahead of Builder::new_local and confirmed by a salvage control showing the log byte-identical and the revision recoverable after the refused run. LIMITATIONS: kill in wal_recovery_after_kill is an in-process runtime drop, not a signal, with real SIGKILL coverage supplied separately by QA across 28 runs. The pragma fix is a property test, not branch coverage, since deleting the journal_mode check leaves it green. RETRYABLE_WINDOW_REASON classifies a retryable Window rejection by message string, drift fails closed at the cost of one 60s backstop cycle, and the durable fix, a code or a NotYetValid variant, is owed by the slice owning blocklist.rs. A far-future generated_at now re-reads and re-parses every interval indefinitely, accepted because the ERROR line is the wanted alarm. No true ENOSPC and no sub-kernel power-loss or torn-write simulation, so barrier ordering inside turso and the checkpoint path stay unwitnessed. Store health is not part of readiness, holding transitively in slice 3 with an explicit check owed in slice 7. A code-review suspicion of a first-open brick window at startup.rs:88 is countered by 70 QA SIGKILL samples finding no non-empty -wal beside an absent or empty database.",
+            "reviews": {
+              "sf-adversarial-testing": "closed and clean - one MEDIUM reproduced then fixed and confirmed by a salvage control - all four named crash points held",
+              "sf-code-review": "SHIP after rework - one MAJOR and two MINOR found and all fixed - each fix confirmed by mutation testing"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings -> exit 0, clean on a forced rebuild. cargo test --test persistence_recovery -> ok. 5 passed, including wal_recovery_after_kill, failed_recovery_keeps_readiness_false_and_never_recreates, restore_requires_a_current_blocklist_before_readiness and the new an_emptied_database_beside_a_populated_log_is_refused_not_rebuilt. cargo test --test blocklist_reload -> ok. 9 passed, including all six named cases plus blocklist_is_committed_before_it_is_published, a_failed_commit_keeps_retrying_the_same_bytes and a_window_rejection_is_retried_when_the_file_has_not_changed. grep -rn --include=*.rs for turso::, CREATE TABLE and PRAGMA over src -> 17 hits, 0 outside src/store/. cargo test -> 50 passed, 0 failed across lib 20, blocklist_reload 9, config_validation 12, persistence_recovery 5, tracer 4. Witness re-run independently by the main agent after rework."
+          },
+          "title": "Turso persistence, startup lock and recovery, blocklist commit before publish, poller change detection"
+        },
+        {
+          "done": true,
+          "number": 4,
+          "proof": {
+            "result": "The outbound boundary is closed: Transport is the only egress, admit re-runs on every redirect hop, the DNS gate refuses non-public answers, and GET /npm/{package} reports 404/502/504 apart while the no-blocklist 503 path is unchanged. NINE DEFECTS FOUND AFTER A GREEN WITNESS, none catchable by the witness as written. BLOCKER: refused_redirect ran before the status match and is_redirection() spans 300..400, so every upstream 304 was misclassified as a refused redirect and NotModified was dead code; fixed in fetch_metadata and open_artifact (that second instance was unreported, found by the implementer) and narrowed to 301|302|303|307|308. MAJOR: url_for silently DROPPED a segment equal to . or .. (url-2.5.8 path_segments.rs:246-249 is a bare continue), returning the bare origin root so a request left the process for a name the row says is refused before a byte leaves; now UrlRejection::PathEscape. MEDIUM: is_public_v4 admitted 0.0.0.0/8 because is_unspecified() matches only 0.0.0.0, and on Linux 0.x.y.z routes to the local host, so this was live SSRF to loopback. MEDIUM: is_public_v6 missed 64:ff9b::/96 and 2002::/16 (both EMBED an undecoded IPv4) and fec0::/10; re-deriving from the IANA registry found FIVE MORE (64:ff9b:1::/48, 100::/64, 5f00::/16, 3fff::/20, and ::/96 IPv4-compatible i.e. ::127.0.0.1, the same bug class in an older spelling that NEITHER review caught), so is_public_v6 was inverted from an unbounded denylist into a bounded allowlist (2000::/3 minus named blocks) with embedded_v4 decoding all four embedding prefixes. LOW: RejectedRedirect named the wrong target for relative and protocol-relative Location. MINOR: doc comments claimed push pops .., but it DROPS. TEST INTEGRITY: 20 falsification probes across three rounds, all objecting, and twice a green result was reported as NOT evidence. The first HTTP test for the .. defect PASSED against the broken code because reqwest Url decodes %2E client-side so the attack never reached the handler (fixed with a raw TcpStream helper), and the first NAT64 probe passed because the allowlist already refuses the well-known prefix, so the decode is defence in depth. CARRIED FORWARD, BINDING ON SLICES 5/6/9: a route test asserting on a hostile path must bypass reqwest or it silently tests nothing. RULING: reqwest_transport.rs:223 uses Url::join, which constraint 1 forbids; two reviewers independently traced every consumer of RejectedRedirect{to}: built only after stop(), read only by Display, mapped to a static client string, open_artifact having no non-test caller, so no request can be built from it; a wrapper helper was declined as a one-call-site abstraction. SCOPE DEVIATIONS judged forced and minimal: src/main.rs, src/http/error.rs, tests/persistence_recovery.rs:348. Third consecutive slice with forced call-site edits outside its file list, a Gate 4 authoring gap. OVER-REJECTION CLEARED: the allowlist could have caused a total outage, so all three origins were resolved live (Cloudflare and Fastly space) and confirmed admitted, and 2001::/23 holds no RIR delegation. LIMITATIONS: a NAT64 network-specific prefix (RFC 6052, any operator /32 to /96) is undetectable in a DNS-answer predicate, mitigation is egress filtering plus connect-time IP pinning, OWED BY SLICE 10 OPERATIONS NOTES. RejectedAddress is witnessed against the resolver error, not end-to-end through a real connect failure. The TEST-01 scan strips // comments only. open_artifact has no non-test caller until slice 6, and the 502/504 rows have no coverage outside origin_guard until slice 9. tests/tracer.rs byte-identity is unprovable (no baseline was recorded and the tree is untracked); its hash is now 6a8d7063f09af95d55647c67778324faa198408caa184187d26571df48a592e1. TWO GATE 3 STATEMENTS NOW KNOWN FALSE, corrected in 03-program-design.md: reqwest system-proxy is a DEFAULT feature reading HTTP_PROXY/HTTPS_PROXY/ALL_PROXY (closed here by .no_proxy() in base_builder), and the claim that push percent-encodes every segment and cannot escape the path is false for . and .. inputs.",
+            "reviews": {
+              "sf-adversarial-testing": "PASS - no boundary escape reproduced across percent and double encoding / fullwidth solidus / RTL override / NUL / empty and dot names / five redirect-chain shapes. One LOW observability defect found and fixed",
+              "sf-code-review": "SHIP after two reworks. One BLOCKER one MAJOR and one MINOR found - all fixed - each confirmed by a recheck that verified the new tests genuinely fail against pre-fix code",
+              "sf-security-review": "CLEAR after two reworks. One MEDIUM live SSRF in 0.0.0.0/8 and one MEDIUM IPv6 incompleteness found. The final audit derived the IANA registry independently - recomputed every mask by hand - and found no admitted special-purpose range"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings gave exit 0 with no warnings. cargo test --test origin_guard gave ok. 17 passed, 0 failed, comprising all 8 Gate 3 named tests plus 9 added during review. cargo test gave 8 targets ok, 0 failed. sha256sum Cargo.toml Cargo.lock unchanged from the approved slice 1 set. All re-run independently by the main agent on a forced rebuild (all .rs touched) after each of the three engineering rounds."
+          },
+          "title": "upstream transport and the origin guard: fixed origins, redirect, credential, port and private-address refusals"
+        },
+        {
+          "done": true,
+          "number": 5,
+          "proof": {
+            "result": "clippy exit 0 clean; npm_metadata ok. 20 passed including all 8 row-named tests; blocklist_snapshot ok. 5 passed including expiry_stops_delivery_including_warm_hits; persistence_projects ok. 5 passed for exactly the 5 named tests",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; cargo test --test blocklist_snapshot; cargo test --test persistence_projects (all re-run by the main agent after find src tests -name *.rs -exec touch {} + to defeat cargo fingerprint staleness)"
+          },
+          "title": "npm metadata end to end: filtering, tags, rewritten tarball URLs, warm rendered cache"
+        },
+        {
+          "done": true,
+          "number": 6,
+          "proof": {
+            "result": "clippy exit 0 clean; pypi_metadata ok. 12 passed including all 6 row-named tests. TM-2 held under both a hand proof and direct attack: no filename misattributed to a wrong project or version; uncertain identity is excluded and logged, never guessed. Escaping proven empirically by the implementer - making escape_text and escape_attribute return their input unchanged made html_escapes_filenames_and_attributes FAIL. Slice 4 carry-forward honoured: every hostile-path assertion uses the raw TcpStream helper, not reqwest. Three forced out-of-list edits, judged minimal by code review: src/lib.rs (pub mod pypi), src/http/mod.rs (pub mod pypi_routes plus three routes), src/store/cache.rs (Representation::PypiHtml and PypiJson, forced because RenderKey embeds an exhaustive Representation and PyPI would otherwise have no rendered cache). Fifth consecutive slice with forced call-site edits. NO NEW UNOWNED OBLIGATIONS: verification confirmed slice 6 widens the blast radius of the two SPEC 10 gaps already recorded after slice 5 (coalescing and upstream conditional revalidation now unmet for both ecosystems) but creates no fourth item. Unicode confusable risk CLOSED as a non-issue: ProjectName::parse_route rejects non-ASCII before normalize runs. Two extra tests added beyond the row: a_file_without_an_upload_time_waits_from_its_committed_first_seen (PEP 700 upload-time is optional so the unknown-time path is the common case at api-version 1.0) and a_warm_listing_touches_neither_the_database_nor_upstream. LIMITATIONS: the sdist ambiguity-freedom argument is a hand proof independently re-derived by two reviewers on different grounds, not a property test; verification did not re-measure the coalescing gap against the PyPI path with running code, relying on slice 5 npm measurement of 21 of 25 plus structural evidence; Gate 3 names pypi::name::ProjectName::normalize but it is implemented as a free function pypi::name::normalize, a naming-path looseness only.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test pypi_metadata (both re-run independently by the main agent on a forced rebuild after touching every .rs file)"
+          },
+          "title": "PyPI metadata end to end: normalisation, filename identity, HTML and JSON listings"
+        },
+        {
+          "done": true,
+          "number": 7,
+          "proof": {
+            "result": "clippy exit 0 clean. artifacts_verification ok. 9 passed. blocklist_revocation ok. 8 passed. persistence_content ok. 3 passed. Full suite 180 passed, 0 failed across 15 targets. All fifteen row-named tests present byte for byte. FAILED FIRST, THEN FIXED: independent verification returned FAILED and independent security review raised a BLOCKING finding on the first pass. Project-membership revalidation was absent although 03-program-design.md:722-723 names npm|pypi::ensure_fresh_project in slice 7's own call stack and SPEC 9 requires it in two ordered positions. Demonstrated consequence: a version yanked or unpublished upstream, a different signal from this firewall's blocklist, kept serving cached bytes indefinitely; and because ReferenceId is a deterministic SHA-256 over public metadata, documented as not an authorization token, anyone who knew the metadata before removal could compute the id and fetch withdrawn bytes without ever holding a legitimate URL. Separately src/npm/mod.rs:192 and src/pypi/mod.rs:220 still passed empty pinned_digests under a comment naming slice 7 as that TODO's owner. Rework closed both with no new type or signature beyond Gate 3: ensure_membership at src/artifacts/mod.rs:139, called at :89 pre-download and :104 post-download, plus list_project_pins and CachedProject.pins feeding both resolve loops. Three new tests, each shown failing first: a_reference_removed_upstream_is_unavailable_even_though_its_bytes_are_cached, membership_is_revalidated_when_metadata_expired_during_the_download, a_computed_digest_block_hides_the_version_from_the_next_metadata_listing. Falsification probes confirmed each mechanism individually load-bearing; one probe initially did not object because the patch made a match non-exhaustive so nothing compiled, disclosed and re-run correctly. STATE-01 HOLD on both passes: pin_computed_digests is the sole writer, one call site, a conflict drops the transaction without an UPDATE, and commit_project_refresh carries pins forward. Authorized ruled STRUCTURAL by two independent security reads: private field, sole fallible constructor from_decision, no Clone or Copy, consumed by value, private body, so a path skipping the final check does not compile. REL-01 PASS: durability order is flush, fsync file, rename, fsync directory, then commit; file_sync_order_holds ruled a genuine witness of call order. PERF-01 preserved after rework, re-proven with the registry offline: 403 with zero upstream calls. Fail-open enumeration found none on either ecosystem; an empty advertised set fails closed. LIMITATIONS: (1) removal is visible only after the metadata TTL, default 300s, per SPEC 9 and 10 design intent. (2) MINOR unfixed race: download::fetch commits the pin then drops the project cache entry as two steps, so a concurrent current_project can re-insert a pins snapshot predating the pin, and current_project reuses on TTL alone unlike RenderedResponse::is_reusable which compares generations; a listing can keep showing the version for at most one metadata TTL. Self-healing, no bytes consequence, degrades to pre-rework behaviour. Structural reasoning, not a live reproduction. Five comments asserting SPEC 9's next-resolution guarantee unconditionally were corrected to state the TTL bound. (3) file_sync_order_holds observes the sequence the code records, not kernel durability. (4) disk_full_is_a_503 uses chmod 0o500 giving EACCES, an unprivileged approximation of ENOSPC. (5) NEW UNOWNED OBLIGATION, the fifth in this plan: ensure_fresh_project re-parses the stored project document on every artifact request including fully warm ones. Estimated sub-millisecond to 1ms on the 100-version fixture against a 5ms warm target, but several to tens of milliseconds on real multi-MB documents with thousands of versions, which would exceed SPEC 12. No row of slices 8-10 owns it. Nine forced out-of-list edits across the two passes, all judged mechanical minimums by code review. Schema 2 to 3 refuses an existing v2 database rather than migrating, justified only because no v2 database has shipped.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "code-review-recheck": "SHIP",
+              "security-recheck": "CLOSED",
+              "security-review": "CLEAR",
+              "verification": "FAILED_THEN_VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test artifacts_verification; cargo test --test blocklist_revocation; cargo test --test persistence_content; cargo test (all re-run independently by the main agent on a forced rebuild, before and after rework)"
+          },
+          "title": "artifact verification and content cache: one-pass hashing, pins, durable publish, revocation boundary"
+        },
+        {
+          "done": true,
+          "number": 8,
+          "proof": {
+            "result": "clippy exit 0. artifacts_concurrency ok. 10 passed: all nine row-named tests plus the rework test. Full suite 196 passed, 0 failed across 16 targets (180 before). A REAL DEFECT WAS REPRODUCED AND FIXED. The witness passed and code review returned SHIP, yet the mandatory FLOW-01 adversarial review still reproduced a permanent per-reference denial of service with an executed probe: a panic inside transfer() unwound past both the outcome send and finish(), so the watch channel never closed (every Waiter keeps the shared slot's sender alive) and the slot was never removed from inflight. Every present and future request for that reference hung forever, slot stuck RUNNING with neither CAS called. Bounded correctly: permit and temp reservation ARE released as locals dropped during unwind, so it leaked a slot only, never wrong or unverified bytes. FIX: a Resolution guard built before transfer(). The normal path calls answer(), which sends and sets its flag synchronously; Drop then only removes the slot. Any other exit makes Drop send Failed(Aborted) first, then remove. Chosen over catch_unwind because it also covers the task being dropped in place. The panic is NOT swallowed: unwinding still reaches the task boundary so tokio reports it, plus an ERROR log. The implementer also closed a hazard its own fix introduced, that Drop takes the inflight lock so a panic under it would poison the mutex and break every future download for every reference, worse than the original defect; all five lock sites now use table(), recovering via into_inner(). New test a_panic_in_the_transfer_task_does_not_wedge_the_reference, shown failing first. Code review checked the poisoning soundness mutation by mutation: every use of that lock is a single HashMap primitive, waiter counters being separate atomics outside the map. The adversarial recheck CLOSED it independently, rebuilding the reproduction from scratch and adding an unrun attack, two waiters joining the same slot before the leader panicked, both answered 503 with waiting_on back to zero. ALSO FIXED, a code-review MINOR: Limits::set_response_timeouts was pub and ungated, reachable by any consumer embedding this crate, and could lengthen without clamp, while those two deadlines are the ONLY bound on how long a slow reader holds a pin and permit. cfg(test) cannot work since integration tests link the library externally, so it is behind a default-off test-support feature enabled by a dev-dependency self-entry, proven absent from a default build via a temporary main.rs call giving E0599. No dependency added: Cargo.lock still 512 stanzas. CARRY-FORWARDS: limits::active_permit() implemented at all four handlers the Gate 3 call stack names, the LAST Gate 3 element absent anywhere in the codebase; the pin is now a count evict() consults under the lock it claims a key with; slice 7's known race deliberately untouched. NOT ABSORBED: metadata coalescing, conditional revalidation and slice 7's re-parse stayed out of scope. NO NEW UNOWNED OBLIGATION: verification ruled Aborted-to-503 owned by slice 9 and the eight adversarial coverage gaps to be combinatorial depth on mechanisms this slice delivers. LIMITATIONS: (1) blocklist_commit_is_not_delayed_by_a_large_project_refresh would still pass if biased; were removed from the store's select, so it witnesses the bound, not the priority rule; disclosed by the test itself and judged acceptable. (2) publication_once_started_completes aborts only after publishing() is observable, so the simultaneous race is pinned separately by publishing_and_cancelling_cannot_both_win. (3) PRE-EXISTING MINOR accepted: answer() and table removal are two steps, so a joiner can get a cached answer rather than a fresh attempt; non-wedging, self-healing. (4) Eight coverage gaps reasoned but not forced, including no fault-injected poisoning test and no panic-during-publish test. (5) tests/persistence_content.rs, holding slice 7's witnesses, was edited at exactly two call sites with all assertions untouched, verified independently.",
+            "reviews": {
+              "adversarial-testing": "FIX_THEN_PASS_CLOSED",
+              "code-review": "SHIP",
+              "code-review-recheck": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test artifacts_concurrency; cargo test (re-run by the main agent on a forced rebuild, before and after rework)"
+          },
+          "title": "concurrency, cancellation, eviction, maintenance and overload refusal"
+        },
+        {
+          "done": true,
+          "number": 9,
+          "proof": {
+            "result": "Every SPEC 11 failure-table row is produced by reachable handler code and asserted: 403 held and blocked with eligible_at and a numeric Retry-After parsed as u64, 404 unknown, 400 invalid input, 405 and 406, 503 policy and capacity and overload and storage, 502 upstream failure and invalid metadata and integrity, 504 timeout. Cache-Control no-store on all 12 statuses including 206 and 416, guaranteed by an unconditional middleware map_response layer at src/http/mod.rs:56,83-88 rather than by constructor sharing. No downstream 304 is possible because StatusCode NOT_MODIFIED is constructed nowhere in src/ and no handler reads If-None-Match or If-Modified-Since. Upstream validators are never forwarded: ProjectRow.validators has no reader on any response path and the downstream header-write set is closed. The npm ping route is never read as a package name, proven against a fake registry answer configured under package name dash. One decision line per request including router-level 404 and 405 that reach no handler, with the request ID shared by body and log by construction. DownloadError Aborted ruled onto the existing 503 row as INTERNAL_FAILURE with no row added. Forced out-of-scope edits in src/npm/mod.rs, src/pypi/mod.rs and src/artifacts/mod.rs judged minimal with file:line evidence. Sixth consecutive slice where the approved row named files but not the call sites those files force.",
+            "reviews": {
+              "code-review": "SHIP",
+              "security": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings exit 0. cargo test --test http_contract: ok, 11 passed, 0 failed. cargo test: 211 passed, 0 failed across 17 targets. Witness independently reproduced by code review and verification. No test in http_contract.rs passes against pre-slice-9 code."
+          },
+          "title": "HTTP contract: the whole SPEC §11 failure table, no-store, request IDs, decision logs"
+        },
+        {
+          "done": true,
+          "number": 11,
+          "proof": {
+            "result": "Slice 8 latch extracted to one generic SingleFlight<K,V> in src/concurrency/single_flight.rs. Both callers use it, artifact transfers keyed by ReferenceId and metadata refreshes keyed by ProjectKey carrying the ecosystem, npm and PyPI sharing one table. Gate 3 element npm::refresh_coalesced now exists for both ecosystems. sf-verification traced the live HTTP path and confirmed refresh is reachable only through refresh_coalesced, and that src/pypi/mod.rs::refresh no longer reaches fetch_metadata uncoalesced. Extraction preserved slice 8 behaviour rather than merely its passing, since waiting_on and publishing delegate to the same table that fetch, run and transfer mutate, with no shadow copy. Panic guarantee witnessed by a genuine panic, not a controlled error return. The only forced call site outside the file list was the one permitted src/lib.rs line, and a repo-wide search for SingleFlight, single_flight and concurrency:: found no others. ACCEPTED LIMITATION, recorded not fixed. refresh_coalesced runs inline in the leading request future while fetch spawns, so a leader whose request is dropped hands every joiner a 503 InternalFailure that a solo refresh would not have produced. It is bounded and self-healing rather than a wedge, since joiners resolve with no hang, waiting_on returns to 0, and the next request succeeds with a fresh upstream call, reproduced on both ecosystems. Fixing it needs Arc<App> at the npm and PyPI entry points and forced edits in src/http/npm_routes.rs and src/http/pypi_routes.rs, outside this row file list, so it is a Gate 4 scope change deliberately not taken here. It is documented in full at the npm refresh_coalesced site with the spawn upgrade path named, cross-referenced from PyPI. Liveness depends on Resolution publishing with send_replace and never send, and the two unit tests now fail in 5s with a named cause under that mutation instead of hanging a binary. Slice 13 still owns the pre-existing Resolution-retire versus cache-insert race, unreproduced in 7,200 real-thread attempts. DownloadCoordinator now also owns the metadata table, a naming MINOR caused by the one-line src/lib.rs limit, deferred. tests/slice11_adversarial_singleflight.rs is an addition outside the approved file list, adopted from sf-adversarial-testing after Engineering mutation-checked it.",
+            "reviews": {
+              "sf-adversarial-testing": "PASS",
+              "sf-code-review": "FIX FIRST then resolved",
+              "sf-verification": "VERIFIED WITH FINDINGS then resolved"
+            },
+            "witness": "clippy --all-targets -D warnings exit 0 with the adversarial target present. artifacts_concurrency 10 passed with all ten slice 8 tests present, unrenamed and unweakened, the file itself unmodified. npm_metadata 22 passed including concurrent_cold_requests_cause_exactly_one_metadata_refresh and a_panic_in_a_metadata_refresh_does_not_wedge_the_project. pypi_metadata 14 passed including both in their PyPI form. slice11_adversarial_singleflight 7 passed. Full suite 224 passed, 0 failed, 13 ignored across 20 targets, reconciling as 211 + 6 + 7 against the prior baseline with ignored unmoved. Every new test was witnessed failing against pre-change code, 6 upstream refreshes where 1 was asserted and the panic propagating out as JoinError::Panic. Re-executed independently by sf-code-review and again by sf-verification, both reproducing the same counts."
+          },
+          "title": "one shared single-flight primitive, and metadata refresh coalescing on top of it"
+        },
+        {
+          "done": true,
+          "number": 12,
+          "proof": {
+            "result": "Both clauses of SPEC 10 line 306 implemented for npm and PyPI by one mechanism, following the one-mechanism-twice shape slice 11 established. Stored validators are now sent upstream and an upstream 304 renews freshness instead of returning 502 UPSTREAM_INVALID. Clause two holds because the 304 branch rejoins the ordinary refresh path immediately after the document is chosen, so the same parse, reference upserts and commit_project_refresh run, the generation advances unconditionally, and RenderedResponse::is_reusable requires an exact generation match, rebuilding every projection against the blocklist in force now. sf-security-review found a stronger guarantee than the slice claimed, that a blocklist revision mismatch alone invalidates the rendered cache independently of TTL, so blocklist enforcement does not depend on revalidation at all. Clause two was mutation-proven on both ecosystems, failing on the blocked-version assertion while the 304 count assertion still passed. The four Gate 3 tests at 03-program-design.md line 813, the plan unowned item 3, are written for both metadata files and were confirmed by two reviewers to decide on their own named property rather than on the 304 count. Eight further fail-closed tests were added after security review, covering a 304 answering an unconditional request, a 304 whose stored document is unparseable, a 304 with unexpected validators, and a 304 with a body and extra headers, each mutation-checked. src/upstream/mod.rs, src/upstream/reqwest_transport.rs and src/store/mod.rs needed no edit, confirmed independently by sf-code-review, and no forced call site outside the file list was found. RECORDED PRODUCT TRADEOFF, deliberately not fixed. Repeated 304s extend freshness indefinitely with no ceiling and no forced periodic full fetch, so an unchanged document is never re-fetched in full. sf-code-review confirmed SPEC 10 line 306 imposes no cap, making this spec-conformant, and sf-security-review scoped the blast radius to delayed visibility into upstream yanks and replacements with NO effect on blocklist enforcement. A bounded full fetch every N revalidations would close it and needs a SPEC change and a gate reopen. An evicted snapshot fails closed at 502 rather than serving stale or absent bytes, and ordinary memory eviction still revalidates correctly through load_project. MINOR left as is, ruled non-blocking by sf-verification, the two wiremock body-never-read tests are near-duplicates exercising an identical code path and could be merged with no coverage loss.",
+            "reviews": {
+              "sf-code-review": "SHIP",
+              "sf-security-review": "CLEAR with one MEDIUM ruled spec-conformant and one LOW resolved by eight added tests",
+              "sf-verification": "VERIFIED"
+            },
+            "witness": "clippy --all-targets -D warnings exit 0. npm_metadata 32 passed and pypi_metadata 24 passed, including an_upstream_304_renews_freshness_without_a_refetch, a_304_still_rebuilds_the_representation_when_the_blocklist_changed, and the four Gate 3 tests upstream_removal_becomes_404, revalidation_after_ttl, projection_expires_at_next_hold_release and backward_clock_jump_recomputes_projections, in both ecosystems. origin_guard 17 passed unchanged, the security regression witness for validators now riding a slice 4 guarded path. Full suite 244 passed, 0 failed, 13 ignored across 20 targets, reconciling as 224 + 12 + 8. All 12 original tests were watched failing pre-change on not_modified_answers 0 against 1. Clause two was proven separately by mutation, since pre-change no 304 path existed in which a rebuild could be skipped. Re-executed independently by sf-code-review, sf-security-review and sf-verification, all reproducing the same counts, and sf-verification recomputed the src manifest digest itself."
+          },
+          "title": "upstream conditional revalidation, both clauses of SPEC §10"
+        },
+        {
+          "done": true,
+          "number": 13,
+          "proof": {
+            "result": "clippy exit 0 no warning; npm_metadata ok 33 passed; artifacts_verification ok 10 passed; pypi_metadata ok 26 passed (+2 new PyPI tests); warm_artifact_budget ok 1 passed; full suite 248 passed / 0 failed / 14 ignored, green on 14+ consecutive DEBUG runs, re-run independently by the main agent and by code review. Warm artifact at 5,000 versions: +202.833ms before, +1.074ms after, against SPEC 12 5ms (debug build; recorded release baseline was +37.9ms at 5,000 and +6.8ms at 1,000, and only the 5,000 point was re-measured — 100 and 1,000 remain slice 10 benchmarks). SLICE 8 ANSWER-THEN-REMOVE WINDOW: ACCEPTED, not closed, on this reason, tightened by sf-verification against src/concurrency/single_flight.rs — a joiner inside the window receives the outcome of an attempt that FINISHED microseconds before its arrival while the slot was still in the table (answer() send_replace runs before Resolution::drop calls finish(), both synchronous, so no in-flight work remains to share); it can neither wedge a key nor return an answer stale in any other sense, and closing it would mean editing src/concurrency/single_flight.rs, outside this row file list and under slice 11 adversarial coverage, for no behavioural gain. CORRECTION MID-SLICE: first review round returned FIX FIRST on two grounds, both fixed — (1) the guard call-site ordering was load-bearing and witnessed by nothing, fixed STRUCTURALLY by deleting pub fn invalidations and adding get_with_seen returning count and value from one read-lock acquisition, so the wrong order is now inexpressible; (2) the PyPI half had no witness, fixed with two end-to-end tests. FALSIFICATION, single-variable breaks: Ecosystem::PyPi->Npm fails ONLY the new PyPI listing test; removing advertised.get() fails ONLY the reparse test; bare insert fails NEITHER. LIMITATIONS: the CAS guard is structurally unwitnessable end-to-end (only the cache-hit path races and it has zero awaits to park at), so its only witness is the hand-driven primitive-level npm test plus get_with_seen structural guarantee; a bare insert on projects stays type-possible and the repo has no -D warnings gate of its own; advertised is uncounted in approximate_bytes, an accepted bounded ~1.5-2x overshoot; and cargo test --release fails artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh reproducibly (commit 183ms vs drain 360ms against a required >500ms margin) — ruled PRE-EXISTING and profile-dependent, NOT caused by slice 13, independently by execution. FORCED EDITS outside the row file list: src/store/mod.rs:319-322 (comment only) and tests/pypi_metadata.rs (the two new witnesses).",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; --test artifacts_verification; --test pypi_metadata; --test warm_artifact_budget -- --ignored; cargo test"
+          },
+          "title": "metadata cache correctness and its cost"
+        },
+        {
+          "done": true,
+          "number": 14,
+          "proof": {
+            "result": "clippy exit 0 no warning; full suite 253 passed / 0 failed / 15 ignored (DEBUG, up from 248/14); http_contract ok 14 passed including an_npm_reference_id_under_the_pypi_artifact_root_is_404, a_pypi_reference_id_under_the_npm_artifact_root_is_404 and the_artifact_decision_line_logs_the_ecosystem_of_the_reference_row; npm_metadata ok 34 passed; pypi_metadata ok 27 passed; e2e_npm ok 7 passed INCLUDING npm_12_installs_without_allow_remote against the pinned npm 12.0.2 under nvm Node v24.19.0, the decisive proof, which failed before this slice with npm error code EALLOWREMOTE; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1. Witness re-executed independently by the main agent, by sf-code-review and (e2e_pip leg) by sf-verification. THE RED WITNESSES WERE PROVED NON-VACUOUS, which row 14 required because neither new route existed and both paths already 404 through the router fallback: each cross-root test fires a route-registration probe FIRST (GET /{root}/artifacts/not-hexadecimal/f.tgz must be 400 INVALID_INPUT, which only the artifact handler produces), and a staged experiment landing the routes WITHOUT the mismatch rule returned 502 — the cross-root request reached upstream — isolating the 404 to the ecosystem comparison rather than a missing route. NO MIGRATION: same reference ids before and after, only the prefix moved (npm 74be4d81…, pypi 57dfcd59…); ReferenceId::compute hashes ecosystem, name, version, filename, upstream URL and sorted digests, never the public path. SECURITY: sf-security-review enumerated every return point in serve_artifact and confirmed the ecosystem comparison precedes all method and range branching with only three ecosystem-independent early exits before it, that policy::evaluate sources ecosystem solely from the stored row (so the decision-log-integrity framing rather than authorization bypass is correct), and that the cross-root 404 is byte-identical to an unknown-id 404 modulo Date and request_id, so it is no new existence oracle. PLANNING DEFECT FOUND AND FIXED: row 14 Exact files, presented in this plan as a VERIFIED sf-impact traced union, was ONE SITE SHORT — a sixth positional split(/).nth(2) parse at tests/slice11_adversarial_singleflight.rs:385, invisible to literal search because it derives the path through common::artifact_path. Zero .nth(2) now remain; ten .nth(3) across six files. This is the second time in this plan that a literal-search-derived file list missed a helper-derived call site. LATE ADDITION after the reviews: a_package_named_artifacts_still_resolves asserted only the rendered URL prefix and never fetched it, so the collision this slice creates was proven once by adversarial testing and witnessed by nothing; it now issues the GET and asserts delivered BYTES, proved non-vacuous by a negative control in which wrong upstream bytes left the status assertion passing and failed the content assertion. The PyPI byte-level equivalent was deliberately SKIPPED and sf-verification ruled the skip justified: npm collision is static-versus-capture so router precedence must resolve it, PyPI is static-versus-static with no capture and no precedence question, the project name appears in neither artifact URL, and the byte path is ecosystem-agnostic and already exercised at /pypi/artifacts/ in the default suite and by both pip versions. FORCED EDITS outside the row file list: tests/slice11_adversarial_singleflight.rs:385 and docs/operations.md:485-528 (the section 11 client matrix, which named pip 25.1.1 as a suite client and omitted npm 12). SPEC.md amended at exactly two sites (:228-229 and :339-340) and nowhere else; docs/operations.md subsection REWRITTEN, with the allow-remote=all instruction, the npm-11 pinning recommendation and the Node v20.19.6 caveat all gone — verified full-file, not only in the rewritten section, because no automated witness checks prose. LIMITATION: all counts are DEBUG; cargo test --release still fails the pre-existing artifacts_concurrency timing test recorded as unowned item 7, unrelated to this slice.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "security-review": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test; --test http_contract; --test npm_metadata; --test pypi_metadata; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored"
+          },
+          "title": "artifacts under the ecosystem root: /npm/artifacts/ and /pypi/artifacts/ replace the top-level /artifacts/, with the URL ecosystem verified against the reference row"
+        },
+        {
+          "done": true,
+          "number": 15,
+          "proof": {
+            "result": "clippy exit 0 no warning; npm_metadata ok 43 passed; pypi_metadata ok 36 passed; config_validation ok 15 passed; persistence_projects ok 7 passed; full suite 276 passed / 0 failed / 15 ignored DEBUG, being 253 before this slice plus the 21 tests the row names plus 2 coalescing tests added after review. Witness re-executed independently by the main agent, by sf-code-review and by sf-verification. CENTRAL PROPERTY PROVED BY SABOTAGE, not by passing: with the feature landed, making the 304 branch write now turned 15 tests red across both ecosystems and persistence_projects; forcing the over-age gate false turned 6 per ecosystem red; a_304_does_not_advance_the_full_fetch_time asserts the STORED COLUMN VALUE by direct store read. THE COALESCING GAP, found after all three reviews passed and closed before recording: all eight named ceiling witnesses per ecosystem are sequential single-request tests and slice 11 predates the ceiling, so nothing exercised a request arriving while another refresh for the same project was in flight ACROSS the boundary. sf-adversarial-testing tried to force that race, could not, deadlocked against its own gate, then CORRECTED ITS OWN EARLIER FRAMING to say its probe asserted on the persisted row and would have passed whether or not the race occurred. a_joiner_across_the_ceiling_boundary_neither_launders_nor_outlives_it now exists in both ecosystems on a new FakeAnswer::GatedNotModified primitive, because a full-fetch gate advances the full-fetch time legitimately and leaves no boundary to observe. Proved a genuine witness three ways: it blocks on the product own counter waiting_on(key)==2 so a joiner that fails to coalesce times out rather than degrading silently; metadata_calls==2 shows the joiner made no upstream call; and BREAK 3 DE-RACES THE TEST ITSELF, releasing the leader before the joiner runs, which makes it FAIL. The adversarial probe passed de-raced; this one fails de-raced, and sf-verification reproduced that independently. Each half is pinned by a different break. USER DECISION 2026-09-20 on the one conformance gap: a joiner can be served a copy up to one upstream timeout (30s) past the CONFIGURED maximum, reachable only when the refresh outlasts that project spread offset, about 1 project in max_age/10 and always when the ceiling is set below ten times the timeout. SPEC revision 3 had promised the configured value remains a true maximum. Shown three options, the user chose to AMEND SPEC to the precise bound rather than change code, because re-evaluating freshness per waiter converts one refresh into one unconditional full fetch per waiter, the exact amplification coalescing prevents. SPEC section 10 now states the bound; section 16 records the amendment and its rationale. The overshoot never advances the stored full fetch time, is never cached in a rendered representation, and cannot compound. LIMITATIONS: counts are DEBUG; for ceilings between 10 and 19 seconds integer division makes the spread offset always zero so the spread is absent in that band while the ceiling stays correct; a_zero_ceiling_restores_unbounded_revalidation asserts a property already true pre-change and guards only the off-switch; the_effective_ceiling_never_exceeds_the_configured_maximum is the one test the 304 sabotage does not catch, by construction; cargo test --release still fails the pre-existing artifacts_concurrency timing test recorded as unowned item 7. FORCED EDIT outside the row file list: tests/artifacts_concurrency.rs:916, one line, constructing a ProjectRefresh. PROCESS: three agents left scratch artifacts in the shared tree during this slice, two adversarial probes and one verification probe left red in tests/npm_metadata.rs, each producing a false finding that cost a round trip; cause was the main agent dispatching read-only reviewers and scratch-writing agents against one tree with no mutual awareness. Tree verified clean before this record.",
+            "reviews": {
+              "adversarial-testing": "PASS",
+              "code-review": "SHIP",
+              "security-review": "CLEAR",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test --test npm_metadata; --test pypi_metadata; --test config_validation; --test persistence_projects; cargo test"
+          },
+          "title": "a bounded maximum age for cached metadata, configurable"
+        },
+        {
+          "done": true,
+          "number": 10,
+          "proof": {
+            "result": "clippy exit 0; cargo test 276 passed / 0 failed / 15 ignored DEBUG; e2e_npm ok 7 passed including npm_12_installs_without_allow_remote under real npm 12.0.2 on Node v24.19.0; e2e_pip ok 7 passed across pip 26.2.1 and 25.0.1; cargo bench exit 0, all nine SPEC 12 verdicts MET; podman build succeeded; check-config exit 0 from inside the image; offline trust-store check exit 0; a live request from a running container to the production npm origin returned 200 ALLOWED with no TLS error. Witness re-executed independently by the main agent, sf-code-review and sf-verification. THE BENCHMARK ACCEPTANCE TOOK THREE ROUNDS TO MAKE HONEST. Round 1 reported nine METs, but sf-code-review read the INSTRUMENT not its output and found benches/artifact_throughput.rs measured the firewall warm and the baseline COLD, biasing the ratio SPEC 12 requires under identical conditions. Round 2 made warmup symmetric and did NOT settle it: main-agent runs gave 145.7/148.8/120.6, 121.5/123.1/56.3 and 232.9/242.6/252.4 percent, a 4.5x swing WITH A BREACH of the 85 percent floor. Round 3 used PAIRED INTERLEAVED SAMPLING, baseline and firewall alternating in one loop so drift lands on both sides, and raised SAMPLES 150 to 1,000 per side. That settled it: 15 implementer shape-runs across loadavg 1.67-8.38 in 108.9-112.7 percent, plus 6 main-agent shape-runs in 108.8-114.7 percent. MAIN AGENT DIAGNOSIS FALSIFIED: the main agent blamed the 56 percent breach on its own subagents loading the host. The implementer disproved it, the band held across a 5x load range, so the cause was the instrument charging load drift to the firewall. THE RESIDUAL 110 PERCENT IS A CONSTANT, NOT NOISE, disclosed rather than corrected: src/artifacts/stream.rs::file_body reads chunk n+1 through a depth-1 channel while the client consumes chunk n, while the bench baseline reads only when polled - different pipelining, favouring the firewall, visible as baseline total p95 about 47 ms against about 5.4 ms. The implementer deliberately did NOT rewrite the baseline, because changing the instrument until it yields a liked number is the failure mode, with no reviewer left in the round. Named by file in docs/operations.md. ADDITIONAL TTFB is the load-bearing evidence: positive in all 21 shape-runs, +0.020 to +0.163 ms, 2-3 percent of the 5 ms budget. FOUR PRE-CHANGE BREACHES BECAME MET, the acceptance for slice 13: additional TTFB +6.232 ms at 1,000 versions and +37.903 ms at 5,000, and throughput 44.9 and 11.1 percent, all now inside the bands above. Unchanged and MET: warm metadata 120,178-144,006/s and p95 0.085-0.119 ms; policy denial p95 1.187-1.376 ms; blocklist replacement 4.96-5.03 s. The table records RANGES over five runs. SPEC 13: sf-verification walked all 14 rows and mapped each to a named passing test it re-ran itself; all MET. TWO OBLIGATIONS REMAIN OPEN, now in docs/operations.md as known gaps: no -D warnings gate in the repository, so a warning-level regression compiles clean under plain cargo clippy; and the suite has never been green in release, where --no-fail-fast gives 275 passed / 1 failed on artifacts_concurrency::blocklist_commit_is_not_delayed_by_a_large_project_refresh, whose 500 ms margin optimized code drains in 160-200 ms. Pre-existing, deliberately not fixed. docs/operations.md states in one line that the blocklist is supplied by the operator, who is accountable for its contents and provenance. The earlier Accountable owners subsection was REMOVED on the user's correction that a registry firewall cannot reach an already-installed package, the boundary of the product category rather than a risk awaiting a signature, replaced by a scope statement of what a block does and does not reach. LIMITATIONS: counts are DEBUG; the host carried unrelated user applications at about 200 percent CPU with swap exhausted throughout, which paired sampling tolerated.",
+            "reviews": {
+              "code-review": "SHIP",
+              "verification": "VERIFIED"
+            },
+            "witness": "cargo clippy --all-targets -- -D warnings; cargo test; --test e2e_npm -- --ignored; --test e2e_pip -- --ignored; cargo bench; docker build; docker run check-config; offline trust-store check; live TLS request from the running container"
+          },
+          "title": "delivery: real npm and pip installs, container image, operations README, benchmarks"
+        },
+        {
+          "done": false,
+          "number": 16,
+          "title": "FIX-16-A current managed authority before cached/downloaded artifact release on legacy and selected npm/PyPI routes; required before row 28"
+        },
+        {
+          "done": false,
+          "number": 28,
+          "title": "shared service policy API, enforcer activation, durable refusal, listener peer admission and login-free common route; required before new adapters"
+        },
+        {
+          "done": false,
+          "number": 29,
+          "title": "early native-driver and containerd routing spike"
+        },
+        {
+          "done": false,
+          "number": 30,
+          "title": "central OSV in managed and shared-service mode: server osv.dev-compatible querybatch and endpoint base-URL wiring (C1030); required before row 17"
+        }
+      ],
+      "title": "Package Firewall MVP"
+    }
+  },
+  "verdict": "READY",
+  "report": {
+    "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/gate-4-qa.md",
+    "sha256": "2a158e8f45bc6d28fd8115d8d490fe3a036c1c0d1b6fca1fdafbd51fd96caf73",
+    "dev": "64769",
+    "ino": "93084490",
+    "ctimeNs": "1794935112129432499"
+  },
+  "presentation": {
+    "reviewId": "1cd372e4-436a-45e3-99b9-3e08d146999f",
+    "reportSha256": "2a158e8f45bc6d28fd8115d8d490fe3a036c1c0d1b6fca1fdafbd51fd96caf73",
+    "file": {
+      "path": "/home/john/go/src/github.com/postfix/probation/docs/plans/package-firewall-mvp/show-me-design-central-osv.html",
+      "sha256": "84a6313811dbbe9b5d0b852e95504f225b44d6ebb23566adfc1b744d1a3c4913",
+      "dev": "64769",
+      "ino": "93083118",
+      "ctimeNs": "1794929850587980526"
+    }
+  }
+}
