@@ -62,7 +62,7 @@ export default async function clusterProbe(h) {
     // 2. The service decided the runtime's HEAD of the tag (200). The request's own shape comes from the runtime's debug log: original
     // repository path, original registry kept as ns=docker.io.
     const decided = decidedHeads() - headsBefore;
-    h.log(`service decided HEAD 404 during the pull: ${decided}`);
+    h.log(`service decided HEAD 200 during the pull: ${decided}`);
     h.expect(decided >= 1, `the service decided the runtime's HEAD of the tag (200): ${decided}`);
     h.expect(/\/v2\/library\/alpine\/manifests\/latest\?ns=docker\.io/.test(r.stderr), "the runtime's request is /v2/library/alpine/manifests/latest?ns=docker.io");
 

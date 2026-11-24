@@ -25,14 +25,15 @@ log="$dir/openssl.log"
 trap 'status=$?; echo "make-ca.sh: a command failed (exit $status); openssl said:" >&2; cat "$log" >&2; exit $status' ERR
 "$openssl" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 7 \
   -subj /CN=probation-e2e-ca -addext basicConstraints=critical,CA:TRUE \
-  -addext keyUsage=critical,keyCertSign -keyout "$dir/ca.key" -out "$dir/ca/ca.pem" 2>>"$log"
+  -addext keyUsage=critical,keyCertSign -addext subjectKeyIdentifier=hash -keyout "$dir/ca.key" -out "$dir/ca/ca.pem" 2>>"$log"
 "$openssl" req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=probation-e2e \
   -keyout "$dir/tls/key.pem" -out "$dir/tls.csr" 2>>"$log"
 {
   # The native lane's registries listen on a private address assigned to the loopback interface (NATIVE_LANE_ADDR).
   printf 'subjectAltName=IP:127.0.0.1,IP:%s' "${NATIVE_LANE_ADDR:-10.254.77.1}"
   printf ',DNS:%s' "${names[@]}"
-  printf '\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n'
+  # The key identifiers are written out: macOS's LibreSSL adds none, and Python 3.13+ verifies strictly ("Missing Authority Key Identifier").
+  printf '\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n'
 } >"$dir/tls.ext"
 "$openssl" x509 -req -in "$dir/tls.csr" -CA "$dir/ca/ca.pem" -CAkey "$dir/ca.key" -set_serial "0x$("$openssl" rand -hex 8)" \
   -days 7 -extfile "$dir/tls.ext" -out "$dir/tls/cert.pem" 2>>"$log"

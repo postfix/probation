@@ -198,14 +198,20 @@ async function mapPypiHost({ hostsFile, lookup, allowMap }) {
 /// S5: Probation checks the service key file's mode with POSIX permissions only (src/config.rs),
 /// so on Windows nothing verifies its ACL. Restrict it to the current user, and say plainly
 /// that the result was not verified. Returns the warnings.
-export function keyFileWarnings({ platform = process.platform, file, restrict = defaultRestrict, logDir = null }) {
+export function keyFileWarnings({ platform = process.platform, file, restrict = defaultRestrict, describeAcl = defaultDescribeAcl, logDir = null }) {
   if (platform !== "win32") return [];
   const warnings = [];
   const r = restrict(file);
   if (r.status !== 0) warnings.push(`the ACL of ${file} could not be restricted to the current user: ${r.out}`);
   warnings.push(`the ACL of ${file} is not verified: Probation checks key file permissions with POSIX modes only`);
+  // Slice 30: the product now refuses a key file whose DACL it cannot prove private (src/key_acl.rs); when it does, this line names what it saw.
+  warnings.push(`the ACL of ${file} as the runner sees it: ${describeAcl(file)}`);
   if (logDir) warnings.push(`the ACL of the delivery log directory ${logDir} is not verified on Windows`);
   return warnings;
+}
+function defaultDescribeAcl(file) {
+  const r = run("powershell", ["-NoProfile", "-Command", `"SDDL=" + (Get-Acl -LiteralPath '${file}').Sddl; "USER=" + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`]);
+  return r.status === 0 ? r.out.trim().replace(/\s+/g, " ") : `(unavailable: ${r.error ?? r.status})`;
 }
 function defaultRestrict(file) {
   return run("icacls", [file, "/inheritance:r", "/grant:r", `${process.env.USERNAME}:F`]);

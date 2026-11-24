@@ -140,7 +140,7 @@ if (process.platform !== "win32") {
 }
 
 // S5: on Windows the key file's ACL is restricted and, whatever happens, the lack of a check is said.
-assert.ok(keyFileWarnings({ platform: "win32", file: "C:/k", restrict: () => ({ status: 0, out: "" }) }).some((w) => /not verified/.test(w) && w.includes("C:/k")));
+assert.ok(keyFileWarnings({ platform: "win32", file: "C:/k", restrict: () => ({ status: 0, out: "" }), describeAcl: () => "SDDL=O:BA" }).some((w) => /not verified/.test(w) && w.includes("C:/k")));
 assert.ok(keyFileWarnings({ platform: "win32", file: "C:/k", restrict: () => ({ status: 5, out: "denied" }) }).some((w) => /could not be restricted/.test(w)));
 assert.deepEqual(keyFileWarnings({ platform: "linux", file: "/k", restrict: () => assert.fail("no ACL tool on POSIX") }), []);
 
