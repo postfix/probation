@@ -34,7 +34,7 @@ env:
   KUBECTL_VERSION: v1.36.5
   KUBECTL_SHA256: 33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
   KUBECONFORM_SHA256: c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3
-  KIND_SHA256: eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
   KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
   CONTAINERD_SHA256: b9626a94ab93b00bcbcbf13d98deef972c6fb064690e57940632df54ad39ee71
   CRICTL_SHA256: a8ff2a3edb37a98daf3aba7c3b284fe0aa5bff24166d896ab9ef64c8913c9f51
@@ -120,6 +120,8 @@ jobs:
           tags: localhost/probation-server:e2e
           cache-from: type=gha,scope=probation-server
           cache-to: type=gha,scope=probation-server,mode=max
+      - name: Give podman the firewall image (the pod smoke runs `podman kube play`; the stack itself runs on docker)
+        run: docker save localhost/probation:e2e | podman load
       - run: node tests/e2e/harness/run.mjs --only E2E-service-cluster-probe --only E2E-service-cluster
         env:
           E2E_PREBUILT: "1"
@@ -153,7 +155,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
           echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check
-          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
           echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check
           chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/kind"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -184,7 +186,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
           echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum --check
-          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
           echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check
           chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/kind"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"

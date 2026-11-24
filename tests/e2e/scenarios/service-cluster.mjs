@@ -78,7 +78,7 @@ function get(port, path, headers = {}) {
 async function podSmoke(h) {
   const { expect } = h;
   const image = process.env.E2E_FIREWALL_IMAGE ?? "localhost/probation:e2e";
-  const engine = h.stack.engine;
+  const engine = "podman"; // `kube play` is a podman feature: the stack may run on docker (hosted lane), the pod smoke always runs on podman
   const render = (out, ...extra) => spawnSync("python3", ["-I", join(REPO, "tests/e2e/fixtures/kube-play/render.py"), out, "--image", image, "--tls-cert", join(REPO, "tests/fixtures/tls/cert.pem"), "--tls-key", join(REPO, "tests/fixtures/tls/key.pem"), "--host-port", "18443", ...extra], { encoding: "utf8" });
   const dir = join(h.stack.work, "pod-smoke");
   mkdirSync(dir, { recursive: true });

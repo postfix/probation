@@ -252,6 +252,11 @@ What the installer guarantees:
   `probation-<version>-<target>.sigstore.json`: with `cosign` installed, `install-service.sh` verifies it (save it beside the binary as
   `probation.sigstore.json`, or `--cosign-bundle FILE`) against this repository's release workflow and refuses a bundle that does not
   verify; without cosign or a bundle it says so. `install-service.ps1` does not run cosign.
+  `--signer-workflow PATH` (`-SignerWorkflow PATH`) names the workflow file whose attestation `gh` accepts; the default is
+  `.github/workflows/release.yml`. It must be one file under `.github/workflows/` of the pinned repository (`.yml` or `.yaml`): another
+  directory, `..`, a URL or another repository is refused before anything runs, and the `--repo` pin stays. It is for a package that a
+  workflow other than the release attests (the hosted service lanes attest their CI package from `native-service.yml`); it switches
+  no check off, unlike `--no-verify`. The cosign check stays pinned to the release workflow.
 - **The listener stays on loopback.** Reaching it from another machine needs the deliberate TLS plus `allowed_peer_cidrs`
   setup of the shared service (section 6); the installer does not open it.
 

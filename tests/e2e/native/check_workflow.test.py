@@ -216,6 +216,9 @@ service_mutations = {
     "native-service: continue-on-error on a step": swap("      - name: Install and start the pinned Docker Engine\n", "      - name: Install and start the pinned Docker Engine\n        continue-on-error: true\n"),
     "native-service: a job-level if": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    if: false\n    runs-on: ubuntu-24.04\n"),
     "native-service: Conan installed without the hash-locked file (slice 25)": swap("python -m pip install --require-hashes -r tests/e2e/native/conan-requirements.txt", 'python -m pip install "conan==2.21.0"'),
+    "native-service: the lifecycle lane switches the installer's verification off again (D28)": swap('E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo', 'E2E_SERVICE_UNATTESTED: "1"\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo'),
+    "native-service: the attestation step is dropped from a lane that installs the package (D28)": swap("      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n        with:\n          subject-path: ${{ steps.pkg.outputs.subject }}\n", ""),
+    "native-service: id-token on a job that does not attest": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    permissions:\n      contents: read\n      id-token: write\n    runs-on: ubuntu-24.04\n"),
     "native-service: a secret": swap("env:\n  CARGO_TERM_COLOR: always\n", "env:\n  CARGO_TERM_COLOR: always\n  TOKEN: ${{ secrets.X }}\n"),
 }
 with tempfile.TemporaryDirectory(dir=scratch) as d:

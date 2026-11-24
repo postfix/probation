@@ -151,8 +151,10 @@ else
     else
       base=$(containerd --config "$basefile" config dump 2>&1) || bad "containerd cannot load $cfg without the installer's import line"
       cmp1="$tmpd/cmp1"; cmp2="$tmpd/cmp2"
-      printf '%s\n' "$base" | grep -vE "config_path|^imports|^ *imports" > "$cmp1"
-      printf '%s\n' "$dump" | grep -vE "config_path|^imports|^ *imports" > "$cmp2"
+      # containerd's own log lines (`time="..." level=warning ... t="10.9µs"`, e.g. "Configuration migrated from version 2") share the dump's stderr and
+      # differ on every call: they are not configuration.
+      printf '%s\n' "$base" | grep -vE "config_path|^imports|^ *imports|^time=\"" > "$cmp1"
+      printf '%s\n' "$dump" | grep -vE "config_path|^imports|^ *imports|^time=\"" > "$cmp2"
       changed=$(diff "$cmp1" "$cmp2" | grep -E '^[<>]' | head -n 5)
       [ -z "$changed" ] || bad "the drop-in changes more than the registry config_path of $cfg (first differences: $(printf '%s' "$changed" | tr '\n' ' ')): its schema does not match the main file"
     fi

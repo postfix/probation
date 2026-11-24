@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings } from "./stack.mjs";
+import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings, aclScript } from "./stack.mjs";
 
 // The lane address: 127.0.0.2 is bindable on Linux without privileges (the real lane assigns 10.77.0.1).
 process.env.NATIVE_LANE_ADDR ??= "127.0.0.2";
@@ -149,3 +149,11 @@ assert.equal(winCommandLine("npm", ["deprecate", "p@1.0.0", "native deprecation"
 assert.equal(winCommandLine("npm", ["a&b"]), 'npm "a&b"');
 for (const bad of ["%PATH%", 'say "hi"', "a\nb"]) assert.throws(() => winCommandLine("npm", [bad]), /unsafe/);
 console.log("stack.test: ok");
+
+// Hosted run 45455108402 (Windows): `Get-Acl` could not load its module from this shell, so no SDDL was printed. The diagnostic reads the descriptor
+// through .NET and still names the runner's SID.
+{
+  const script = aclScript("C:/k");
+  assert.ok(!script.includes("Get-Acl") && script.includes("GetAccessControl") && script.includes("GetSecurityDescriptorSddlForm") && script.includes("WindowsIdentity"), script);
+}
+

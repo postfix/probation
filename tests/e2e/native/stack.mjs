@@ -209,8 +209,10 @@ export function keyFileWarnings({ platform = process.platform, file, restrict = 
   if (logDir) warnings.push(`the ACL of the delivery log directory ${logDir} is not verified on Windows`);
   return warnings;
 }
+// Not Get-Acl: its module does not load from the hosted runner's shell (run 45455108402). The .NET call needs no module.
+export const aclScript = (file) => `"SDDL=" + (New-Object System.IO.FileInfo '${file}').GetAccessControl().GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All); "USER=" + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`;
 function defaultDescribeAcl(file) {
-  const r = run("powershell", ["-NoProfile", "-Command", `"SDDL=" + (Get-Acl -LiteralPath '${file}').Sddl; "USER=" + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`]);
+  const r = run("powershell", ["-NoProfile", "-Command", aclScript(file)]);
   return r.status === 0 ? r.out.trim().replace(/\s+/g, " ") : `(unavailable: ${r.error ?? r.status})`;
 }
 function defaultRestrict(file) {

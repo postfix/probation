@@ -579,6 +579,45 @@ fn the_pins_given_to_gh_and_cosign_are_the_repository_the_workflow_the_issuer_an
     assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("bundle is missing"), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// The workflow whose attestation the installer accepts: release.yml by default, and with --signer-workflow another workflow file of the
+/// SAME repository (the hosted lanes attest their CI package from native-service.yml). The repository pin stays; a path outside
+/// .github/workflows, a `..`, a URL or another repository is refused before gh runs and nothing is installed.
+#[test]
+fn the_signer_workflow_defaults_to_release_yml_and_accepts_only_a_workflow_file_of_this_repository() {
+    let (dir, pkg) = package_with_gh(0);
+    mark_release(&pkg);
+    // cosign is not there: a release package would need it, so this check runs on the soft path of a dev package
+    std::fs::remove_file(pkg.join("RELEASE-PACKAGE")).unwrap();
+    assert!(install_from_package(&dir, &pkg, &[]).status.success());
+    let gh = std::fs::read_to_string(dir.path().join("bin/gh.args")).unwrap();
+    assert!(gh.contains("--repo postfix/probation --signer-workflow postfix/probation/.github/workflows/release.yml"), "default: {gh}");
+
+    let (dir, pkg) = package_with_gh(0);
+    let out = install_from_package(&dir, &pkg, &["--signer-workflow", ".github/workflows/native-service.yml"]);
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let gh = std::fs::read_to_string(dir.path().join("bin/gh.args")).unwrap();
+    assert!(gh.contains("--repo postfix/probation --signer-workflow postfix/probation/.github/workflows/native-service.yml"), "{gh}");
+
+    for bad in [
+        ".github/other/x.yml",
+        "scripts/install-service.sh",
+        ".github/workflows/../../evil.yml",
+        ".github/workflows/..yml",
+        "https://github.com/evil/repo/.github/workflows/release.yml",
+        "evil/repo/.github/workflows/release.yml",
+        "/.github/workflows/release.yml",
+        ".github/workflows/release.yml extra",
+        ".github/workflows/",
+        "",
+    ] {
+        let (dir, pkg) = package_with_gh(0);
+        let out = install_from_package(&dir, &pkg, &["--signer-workflow", bad]);
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("--signer-workflow"), "{bad:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!dir.path().join("bin/gh.args").exists(), "{bad:?}: gh was not asked");
+        assert!(!dir.path().join("root/etc/probation").exists(), "{bad:?}: nothing was installed");
+    }
+}
+
 #[test]
 fn launchd_health_means_running_for_five_polls_and_a_dying_job_is_not_healthy() {
     let dir = tempfile::tempdir().unwrap();

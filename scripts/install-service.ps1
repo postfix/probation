@@ -31,6 +31,8 @@ param(
   [switch]$NoVerify,
   [switch]$DevPackage,
   [string]$CosignBundle,
+  # The workflow file whose attestation gh accepts: one file under .github/workflows of the pinned repository (no other path, `..`, URL or repository).
+  [ValidatePattern('^\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9._-]*\.ya?ml\z')][string]$SignerWorkflow = '.github/workflows/release.yml',
   [switch]$ConfigureTools,
   [string]$NpmRc,
   [string]$PipIni = (Join-Path $env:ProgramData 'pip\pip.ini')
@@ -235,7 +237,7 @@ function Assert-PackageHashes {
     if ($release) { Die 'this is a release package and gh is not installed, so its attestation cannot be verified: install gh, or pass -NoVerify to accept it unchecked' }
     Say "gh is not installed: the release attestation of $Binary was NOT verified"
   } else {
-    & gh attestation verify $Binary --repo $repo --signer-workflow "$repo/.github/workflows/release.yml" 2>$null | Out-Null
+    & gh attestation verify $Binary --repo $repo --signer-workflow "$repo/$SignerWorkflow" 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) { Die "the release attestation of probation.exe does not verify (gh attestation verify, pinned to $repo and its release workflow); use -NoVerify only for a build you made yourself" }
     Say 'Verified the release attestation of probation.exe'
   }

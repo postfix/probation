@@ -75,8 +75,12 @@ jobs:
   # pinned Docker Engine daemon pull. Nothing is released unless every one of them passes (a skipped lane fails it).
   native-service:
     needs: test
+    # The macOS and Windows lanes attest the CI package they install (the installer verifies that attestation in full), so the caller must
+    # grant what those jobs ask for: a called workflow cannot hold more than its caller gives it.
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/native-service.yml
 
   codeql:

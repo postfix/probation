@@ -213,11 +213,20 @@ async fn lane_with(blocked: &str) -> Lane {
     let clock = TestClock::at_rfc3339(NOW);
     let firewall = TestServer::start_with_upstream(config, clock.shared(), transport, origins).await;
     // The engine's storage lives on disk beside the project, never in the RAM-backed temp directory.
-    let base = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(".probation-scratch").join("native-oci");
+    let base = scratch_base(std::env::var_os("PROBATION_OCI_RUNROOT"));
     std::fs::create_dir_all(&base).unwrap();
     let scratch = tempfile::tempdir_in(base).unwrap();
     let _cleanup = Cleanup(scratch.path().to_path_buf());
     Lane { forget: DockerForget::default(), firewall, registry, clock, _cleanup, scratch, old: digests[0].clone() }
+}
+
+/// Where the engine's storage goes: `PROBATION_OCI_RUNROOT` when set and non-empty (the hosted runner sets a short path under its temp
+/// directory), else `.probation-scratch/native-oci` beside the project.
+fn scratch_base(override_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match override_dir.filter(|dir| !dir.is_empty()) {
+        Some(dir) => dir.into(),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(".probation-scratch").join("native-oci"),
+    }
 }
 
 async fn dispatch(State(r): State<Registry>, UrlPath(rest): UrlPath<String>, headers: HeaderMap) -> Response {
@@ -357,4 +366,16 @@ fn the_docker_lane_runs_against_the_pinned_engine_daemon() {
     let record = docker_server("version {{.Server.Version}}, api {{.Server.APIVersion}}, platform {{.Server.Platform.Name}}, os/arch {{.Server.Os}}/{{.Server.Arch}}").expect("the daemon answers");
     eprintln!("DOCKER ENGINE WITNESS: {record}");
     assert!(record.contains(&format!("version {DOCKER_ENGINE}")), "{record}");
+}
+
+/// podman refuses a runroot longer than 50 characters. The default scratch base (beside the project, never in the RAM-backed /tmp) is too
+/// long on a hosted runner, where the workspace sits deep under /home/runner/work, so PROBATION_OCI_RUNROOT names a short base instead.
+#[test]
+fn the_engine_storage_base_honours_a_short_override_and_keeps_the_default() {
+    let short = scratch_base(Some("/home/runner/work/_temp/oci".into()));
+    assert_eq!(short, Path::new("/home/runner/work/_temp/oci"));
+    // a base plus tempfile's `.tmpXXXXXX` directory plus `/run` is what podman gets as --runroot
+    assert!(short.join(".tmpAbCdEf/run").to_str().unwrap().len() <= 50, "{short:?}");
+    assert!(scratch_base(None).ends_with(".probation-scratch/native-oci"));
+    assert!(scratch_base(Some("".into())).ends_with(".probation-scratch/native-oci"), "an empty override is no override");
 }

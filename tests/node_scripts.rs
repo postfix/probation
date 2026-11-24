@@ -55,7 +55,7 @@ impl Node {
         // containerd prints $FAKE_DUMP (the effective configuration the test decides on), or fails.
         // `--version` prints $FAKE_CONTAINERD_VERSION; `config dump` of the verifier's copy without the import line (`*.probation-verify.*`) prints the
         // `.base` file when the test wrote one. A main file that carries `discard_unpacked_layers` (a later edit) shows it in BOTH dumps.
-        write("containerd", "#!/bin/sh\n[ \"$1\" = --version ] && { echo \"containerd github.com/containerd/containerd/v2 ${FAKE_CONTAINERD_VERSION:-v2.2.0} abc\"; exit 0; }\n[ -n \"$FAKE_DUMP_FAIL\" ] && { echo 'toml: line 3: bad' >&2; exit 1; }\ncase \"$2\" in *.probation-verify.*) b=\"${FAKE_DUMP%.toml}.base\"; if [ -r \"$b\" ]; then cat \"$b\"; else cat \"$FAKE_DUMP\"; fi ;; *) cat \"$FAKE_DUMP\" ;; esac\ngrep -q discard_unpacked_layers \"$2\" && echo 'discard_unpacked_layers = true'\nexit 0\n");
+        write("containerd", "#!/bin/sh\n[ \"$1\" = --version ] && { echo \"containerd github.com/containerd/containerd/v2 ${FAKE_CONTAINERD_VERSION:-v2.2.0} abc\"; exit 0; }\n[ -n \"$FAKE_DUMP_FAIL\" ] && { echo 'toml: line 3: bad' >&2; exit 1; }\n[ -n \"$FAKE_WARN\" ] && echo \"time=\\\"$(date +%s%N)\\\" level=warning msg=\\\"Configuration migrated from version 2\\\" t=\\\"$(date +%N)ns\\\"\" >&2\ncase \"$2\" in *.probation-verify.*) b=\"${FAKE_DUMP%.toml}.base\"; if [ -r \"$b\" ]; then cat \"$b\"; else cat \"$FAKE_DUMP\"; fi ;; *) cat \"$FAKE_DUMP\" ;; esac\ngrep -q discard_unpacked_layers \"$2\" && echo 'discard_unpacked_layers = true'\nexit 0\n");
         // systemctl: `show UNIT -p PROP --value` answers from $FAKE_SD_* (the effective environment systemd would compute).
         write("systemctl", "#!/bin/sh\necho \"systemctl $*\" >> \"$FAKE_SD_LOG\"\ncase \"$1\" in daemon-reload|enable|restart) exit 0 ;; is-active) [ -z \"$FAKE_UNIT_INACTIVE\" ]; exit $? ;; esac\n[ \"$1\" = show ] || exit 1\ncase \"$4\" in LoadState) echo \"${FAKE_SD_LOAD:-loaded}\" ;; Environment) echo \"$FAKE_SD_ENV\" ;; DropInPaths) echo \"$FAKE_SD_DROPINS\" ;; MainPID) echo \"${FAKE_SD_PID:-0}\" ;; esac\n");
         // The service answers $FAKE_CODE with the CA (--cacert); a call without it is a direct call to an origin that ends with $FAKE_ORIGIN_EXIT.
@@ -709,6 +709,19 @@ fn a_later_edit_of_the_main_config_does_not_fail_the_verifier_for_good() {
     assert!(node.install(&l).status.success());
     append(&l.config, "[plugins.'io.containerd.cri.v1.images']\n  discard_unpacked_layers = true\n");
     let out = node.verify(&l, &[], &[]);
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// containerd logs its own warnings (a timestamp and a duration that differ on every call) on stderr, which the verifier reads with the dump:
+/// the comparison of the two dumps must ignore them (the first hosted cri-node run failed on exactly this).
+#[test]
+fn log_lines_of_containerd_in_the_dump_do_not_count_as_a_changed_configuration() {
+    let node = Node::new();
+    let l = node.layout(402);
+    std::fs::create_dir_all(&l.conf).unwrap();
+    std::fs::write(&l.config, MAIN_V3).unwrap();
+    assert!(node.install(&l).status.success());
+    let out = node.verify(&l, &[], &[("FAKE_WARN", "1")]);
     assert!(out.status.success(), "{}", text(&out));
 }
 

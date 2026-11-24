@@ -295,6 +295,7 @@ need(release_wf.get("permissions") == {"contents": "read"}, f"release.yml's top-
 # Failure hidden by shell structure: a pipe without pipefail, a command in an `if`/`while` condition, or a background `&`.
 # ("shell: bash" runs with -eo pipefail.)
 PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+ATTEST_PERMS = {"contents": "read", "id-token": "write", "attestations": "write"}
 CONDITIONAL = re.compile(r"(^|[;&|({]|\bthen|\bdo|\belse)\s*(if|elif|while|until)\b", re.M)
 BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")
 for job_name, job in release.items():
@@ -306,6 +307,10 @@ for job_name, job in release.items():
     writes = isinstance(perms, str) and perms != "read-all" or isinstance(perms, dict) and any(str(v) != "read" for k, v in perms.items() if k != "security-events")
     job_text = json.dumps(job)
     sensitive = writes or "environment" in job or "secrets" in job_text or bool(PUBLISHING.search(job_text))
+    # native-service only lets its called workflow attest the throwaway CI package it installs (nothing is published or released from it):
+    # exactly those permissions, no environment, no secrets.
+    if job_name == "native-service" and perms == ATTEST_PERMS and "environment" not in job and "secrets" not in job_text and not PUBLISHING.search(job_text):
+        sensitive = False
     for step in job.get("steps", []) or []:
         need("continue-on-error" not in step, f"release.yml job {job_name} has a step with continue-on-error")
         if "if" in step:
@@ -337,12 +342,14 @@ need(set(service.get(True, {})) == {"workflow_call", "workflow_dispatch"}, f"nat
 need("pull_request_target" not in service_text, "native-service.yml must not use pull_request_target")
 need(service.get("permissions") == {"contents": "read"}, f"native-service.yml top-level permissions must be exactly contents: read, found {service.get('permissions')!r}")
 need("secrets:" not in service_text and "secrets." not in service_text, "native-service.yml must not use secrets")
+ATTESTING_JOBS = ("service-macos", "service-windows")
 service_shell = (service.get("defaults") or {}).get("run", {}).get("shell")
 SERVICE_HIDES = re.compile(r"\|\|\s*(true|:|/bin/true)\b|\bset\s+\+e|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
 for job_name, job in (service.get("jobs") or {}).items():
     need("continue-on-error" not in job, f"native-service.yml job {job_name} must not continue-on-error")
     need("if" not in job, f"native-service.yml job {job_name} must have no job-level if")
-    need("permissions" not in job or job["permissions"] == {"contents": "read"}, f"native-service.yml job {job_name} may only hold contents: read")
+    # Only the jobs that attest the CI package they install (the installer verifies it) hold id-token and attestations.
+    need("permissions" not in job or job["permissions"] == {"contents": "read"} or (job_name in ATTESTING_JOBS and job["permissions"] == ATTEST_PERMS), f"native-service.yml job {job_name} may only hold contents: read (service-macos and service-windows also {ATTEST_PERMS})")
     for step in job.get("steps", []) or []:
         need("continue-on-error" not in step, f"native-service.yml job {job_name} has a step with continue-on-error")
         if "if" in step:
@@ -376,9 +383,13 @@ need("publish-release" in release and "attest" in (release.get("publish-release"
 for job_name, job in release.items():
     perms = job.get("permissions") or {}
     if isinstance(perms, dict) and perms.get("id-token") == "write":
-        need(job_name in ("release", "attest"), f"release.yml: id-token: write is allowed only on the release and attest jobs, found on {job_name}")
+        need(job_name in ("release", "attest") or (job_name == "native-service" and perms == ATTEST_PERMS), f"release.yml: id-token: write is allowed only on the release and attest jobs (and native-service with exactly {ATTEST_PERMS}), found on {job_name}")
 for job_name, job in (service.get("jobs") or {}).items():
-    need("id-token" not in json.dumps(job.get("permissions", {})), f"native-service.yml job {job_name} must not hold id-token")
+    need(job_name in ATTESTING_JOBS or "id-token" not in json.dumps(job.get("permissions", {})), f"native-service.yml job {job_name} must not hold id-token")
+    if job_name in ATTESTING_JOBS:
+        need(job.get("permissions") == ATTEST_PERMS, f"native-service.yml job {job_name} must attest its CI package: permissions exactly {ATTEST_PERMS}")
+        need(any(str(step.get("uses", "")).startswith("actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8") for step in job.get("steps", [])), f"native-service.yml job {job_name} must attest its package with the release.yml action pin")
+need("UNATTESTED" not in service_text and "--no-verify" not in service_text and "-NoVerify" not in service_text and "allow-unverified" not in service_text, "native-service.yml must not switch the installer's verification off (D28)")
 
 # Every scenario ID the workflow names exists: in the scenario files, and (where the harness
 # dependencies are installed) as `run.mjs --list --only <id>` says.

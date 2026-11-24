@@ -11,6 +11,19 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/// The installer's verification flags the driver passes. The installer always verifies in full (attestation, and SHA256SUMS on Windows):
+/// there is no way to switch it off here. A build from the tree (no package) has no SHA256SUMS on Windows, which needs -NoVerify. A package
+/// built in CI is not a release (no RELEASE-PACKAGE marker, so --dev-package) and is attested by the workflow that built it, named with
+/// --signer-workflow (the installer pins the repository and defaults to release.yml).
+export const installVerifyFlags = ({ platform, packageDir, release, signerWorkflow }) => {
+  const win = platform === "win32";
+  if (!packageDir) return win ? ["-NoVerify"] : [];
+  return [
+    ...(release ? [] : [win ? "-DevPackage" : "--dev-package"]),
+    ...(signerWorkflow ? [win ? "-SignerWorkflow" : "--signer-workflow", signerWorkflow] : []),
+  ];
+};
+
 export const LABEL_PREFIX = "com.postfix.";
 
 /// The command lines (argv arrays) of one platform's lifecycle for the service `name` in `scope` ("system" | "user").
@@ -162,7 +175,9 @@ export async function exercise(ctx) {
   const serviceUp = async () => (await listening(port)) && mainPid() > 0;
 
   // 1. Install: files, modes, no start yet needed to judge them.
-  must(c.install(["--no-start", ...(ctx.installExtra ?? [])]), "install");
+  const installed = must(c.install(["--no-start", ...(ctx.installExtra ?? [])]), "install");
+  // A lane that names the attesting workflow must have VERIFIED: gh missing from PATH would only be said softly by a CI (dev) package.
+  if (ctx.requireAttestation) expect(/Verified the release attestation/.test(`${installed.stdout}${installed.stderr}`), `the installer verified the attestation: ${installed.stdout}${installed.stderr}`);
   expect(existsSync(configFile), "install created config.toml");
   note("install", `config ${configFile}`);
 
@@ -320,9 +335,11 @@ export async function runLifecycle({ root, binary: requestedBinary, scope, name,
   expect(existsSync(binary), `the native probation binary exists at ${binary} (cargo build --bin probation, or PROBATION_BIN)`);
   expect(!(await listening(port)), `port ${port} is free`);
   try {
-    // Without a package (a build from the tree) there is no SHA256SUMS or attestation: the Windows installer must be told so, loudly.
-    const installExtra = platform === "win32" && !packageDir ? ["-NoVerify"] : [];
-    return await exercise({ platform, scope, name, script, binary, dirs, port, expect, log, exit75: exit75Hook, installExtra });
+    // Without a package (a build from the tree) there is no SHA256SUMS: the Windows installer must be told so, loudly.
+    const release = Boolean(packageDir) && existsSync(join(packageDir, "RELEASE-PACKAGE"));
+    const installExtra = installVerifyFlags({ platform, packageDir, release, signerWorkflow: process.env.E2E_SERVICE_SIGNER_WORKFLOW });
+    const requireAttestation = Boolean(packageDir && process.env.E2E_SERVICE_SIGNER_WORKFLOW);
+    return await exercise({ platform, scope, name, script, binary, dirs, port, expect, log, exit75: exit75Hook, installExtra, requireAttestation });
   } finally {
     const argv = platform === "win32"
       ? ["powershell.exe", "-NoProfile", "-File", script, "uninstall", "-Name", name, "-ConfigDir", dirs.config, "-BinDir", dirs.bin, "-DataDir", dirs.data, "-LogDir", dirs.log]

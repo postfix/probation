@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { commands, failurePolicyProblems, parseLaunchctl, parseScQuery } from "./service-lifecycle.mjs";
+import { commands, failurePolicyProblems, installVerifyFlags, parseLaunchctl, parseScQuery } from "./service-lifecycle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dirs = { config: "/c", data: "/d", log: "/l", bin: "/b" };
@@ -19,6 +19,21 @@ assert.deepEqual(sys.mainPid, ["systemctl", "show", "-p", "MainPID", "--value", 
 assert.deepEqual(sys.install(["--no-start"]).slice(0, 5), ["bash", "/s/install-service.sh", "install", "--scope", "system"]);
 assert.ok(sys.install().join(" ").includes("--config-dir /c --data-dir /d --log-dir /l --bin-dir /b"));
 assert.deepEqual(sys.kill(42), ["kill", "-KILL", "42"]);
+// The hosted lanes install a package built (and attested by native-service.yml) in CI, with the installer's FULL verification: no
+// --no-verify. A CI package carries no RELEASE-PACKAGE marker (it is not a release), so the installer is told it is a dev package, and
+// the signer workflow of its attestation is named. A release package and a build from the tree get no extra flag, except that a build from
+// the tree on Windows (no SHA256SUMS) needs -NoVerify.
+const SIGNER = ".github/workflows/native-service.yml";
+assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["--dev-package", "--signer-workflow", SIGNER]);
+assert.deepEqual(installVerifyFlags({ platform: "darwin", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["--dev-package", "--signer-workflow", SIGNER]);
+assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["-DevPackage", "-SignerWorkflow", SIGNER]);
+assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: "/p", release: true }), []);
+assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: "/p", release: true }), []);
+assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: undefined }), ["-NoVerify"]);
+assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: undefined }), []);
+for (const platform of ["linux", "darwin", "win32"]) {
+  assert.ok(!installVerifyFlags({ platform, packageDir: "/p", release: false, signerWorkflow: SIGNER }).some((f) => /no-?verify|allow-unverified/i.test(f)), `${platform}: a package keeps the full verification`);
+}
 // Linux, user scope: the same through the user manager.
 const usr = commands({ platform: "linux", scope: "user", ...base });
 assert.deepEqual(usr.stop, ["systemctl", "--user", "stop", "pf.service"]);
