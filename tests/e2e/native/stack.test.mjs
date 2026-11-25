@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings, aclScript } from "./stack.mjs";
+import { HANDLED_SIGNALS, composeTrustBundle, describeFailure, notReadyReport, posixPath, run, startStack, winCommandLine, writeHostsAtomically, keyFileWarnings, aclScript, keyRefusalSteps, proveKeyRefusal } from "./stack.mjs";
 
 // The lane address: 127.0.0.2 is bindable on Linux without privileges (the real lane assigns 10.77.0.1).
 process.env.NATIVE_LANE_ADDR ??= "127.0.0.2";
@@ -143,6 +143,27 @@ if (process.platform !== "win32") {
 assert.ok(keyFileWarnings({ platform: "win32", file: "C:/k", restrict: () => ({ status: 0, out: "" }), describeAcl: () => "SDDL=O:BA" }).some((w) => /not verified/.test(w) && w.includes("C:/k")));
 assert.ok(keyFileWarnings({ platform: "win32", file: "C:/k", restrict: () => ({ status: 5, out: "denied" }) }).some((w) => /could not be restricted/.test(w)));
 assert.deepEqual(keyFileWarnings({ platform: "linux", file: "/k", restrict: () => assert.fail("no ACL tool on POSIX") }), []);
+
+// The key check must still REFUSE a shared key once it accepts the runner's own (hosted, Windows only): accept, grant BUILTIN\Users read,
+// refuse with the product's text, remove the grant, accept again.
+{
+  const steps = keyRefusalSteps({ binary: "C:/p/probation.exe", configFile: "C:/w/config.toml", keyFile: "C:/w/service.key" });
+  assert.deepEqual(steps.map((st) => st.name), ["accepts the runner's own key", "grant Users read", "refuses a Users-readable key", "remove the grant", "accepts again"]);
+  assert.deepEqual(steps[0].argv, ["C:/p/probation.exe", "check-config", "C:/w/config.toml"]);
+  assert.deepEqual(steps[1].argv, ["icacls", "C:/w/service.key", "/grant", "*S-1-5-32-545:(R)"]);
+  assert.deepEqual(steps[3].argv, ["icacls", "C:/w/service.key", "/remove", "*S-1-5-32-545"]);
+  assert.equal(steps[2].refuses, "requires a private regular file");
+  // The runner: a refusal that does not happen fails the lane and still removes the grant.
+  const calls = [];
+  const fake = (status, out) => (cmd, args) => { calls.push([cmd, ...args]); return { status: cmd === "icacls" ? 0 : status, out }; };
+  assert.throws(() => proveKeyRefusal(steps, fake(0, "")), /refuses a Users-readable key/);
+  assert.deepEqual(calls.at(-1), ["icacls", "C:/w/service.key", "/remove", "*S-1-5-32-545"]);
+  calls.length = 0;
+  let n = 0;
+  proveKeyRefusal(steps, (cmd, args) => { calls.push([cmd, ...args]); const refusing = cmd !== "icacls" && ++n === 2; return { status: refusing ? 1 : 0, out: refusing ? "service_key_file: requires a private regular file" : "" }; });
+  assert.equal(calls.length, 5);
+  assert.deepEqual(steps.filter((st) => st.refuses).map((st) => st.name), ["refuses a Users-readable key"]);
+}
 
 // A2: Windows command lines keep an argument with spaces whole and refuse what cmd would expand.
 assert.equal(winCommandLine("npm", ["deprecate", "p@1.0.0", "native deprecation"]), 'npm deprecate p@1.0.0 "native deprecation"');

@@ -241,6 +241,7 @@ own() { # own OWNER:GROUP MODE PATH...  (mode always; ownership only for a real 
   if [ "$STAGING" -eq 0 ] && [ "$IS_ROOT" -eq 1 ] && [ "$SCOPE" = system ]; then chown "$who" "$@"; fi
 }
 
+ACCOUNT_CREATED=0
 ensure_account() {
   [ "$SCOPE" = system ] && [ "$STAGING" -eq 0 ] || return 0
   if id -u "$SERVICE_USER" >/dev/null 2>&1; then return 0; fi
@@ -260,7 +261,7 @@ ensure_account() {
   else
     useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
   fi
-  record "account:$SERVICE_USER"
+  ACCOUNT_CREATED=1 # recorded once the config directory (home of the manifest) exists
 }
 
 # A sample is copied only where nothing exists. Returns 0 when it created the file.
@@ -493,8 +494,9 @@ do_install() {
   # Directories that already exist are the operator's: their owner and mode are not touched. New ones get the documented modes.
   # System: the config belongs to root and is only READABLE by the service (the service cannot change its own policy);
   # the data belongs to the service alone. User scope: everything is the login's own.
+  ensure_account # first: the config directory is chowned to root:<service group>, which must exist by then (macOS chown: illegal group name)
   new_dir "$CONFIG_DIR" "$([ "$SCOPE" = system ] && echo "root:$SERVICE_USER" || echo "")" "$([ "$SCOPE" = system ] && echo 750 || echo 700)"
-  ensure_account
+  [ "$ACCOUNT_CREATED" -eq 0 ] || record "account:$SERVICE_USER"
   new_dir "$DATA_DIR" "$SERVICE_USER:$SERVICE_USER" 700
   new_dir "$LOG_DIR" "$SERVICE_USER:$SERVICE_USER" 750
   write_config

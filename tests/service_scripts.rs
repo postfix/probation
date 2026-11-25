@@ -729,3 +729,48 @@ fn the_bundle_naming_is_one_scheme_everywhere() {
     let release = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/release.yml")).unwrap();
     assert!(release.contains("--bundle \"$name.sigstore.json\"") && release.contains("probation-*.sigstore.json"), "the release signs <package>.sigstore.json, the package name being probation-<version>-<target>");
 }
+
+/// The group named in a `chown` must exist when `chown` runs: the account (and its group) is created before the first
+/// ownership change. Real install path (`--root /`, `--no-staging`) with `id`, `chown`, `dscl` and `useradd` stubbed to a log;
+/// the run is expected to stop later (it cannot write the service definition), only the order of the calls is read.
+#[test]
+fn the_service_account_and_its_group_exist_before_anything_is_chowned_to_them() {
+    if unsafe { libc_geteuid() } == 0 {
+        return; // never run a no-staging install as the real root
+    }
+    // macos only: the linux path refuses data directories under /home (ProtectHome), where the scratch roots live; the ordering is shared code.
+    let platform = "macos";
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        let stub = |name: &str, body: &str| {
+            std::fs::write(bin.join(name), format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        stub("id", "case \"$1 $2\" in '-u ') echo 0 ;; '-u '*) exit 1 ;; *) exec /usr/bin/id \"$@\" ;; esac");
+        stub("chown", &format!("echo \"chown $*\" >> {}", log.display()));
+        stub("dscl", &format!("echo \"dscl $*\" >> {}", log.display()));
+        stub("useradd", &format!("echo \"useradd $*\" >> {}", log.display()));
+        let (cfg, data, logs, bindir) = (dir.path().join("etc"), dir.path().join("var"), dir.path().join("log"), dir.path().join("usrbin"));
+        Command::new("bash")
+            .arg(SCRIPT)
+            .args(["install", "--root", "/", "--no-staging", "--no-start", "--dev-package", "--platform", platform, "--binary", BINARY, "--name", "probation-t"])
+            .args(["--config-dir", cfg.to_str().unwrap(), "--data-dir", data.to_str().unwrap(), "--log-dir", logs.to_str().unwrap(), "--bin-dir", bindir.to_str().unwrap()])
+            .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+            .env("HOME", dir.path().join("home"))
+            .output()
+            .unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let lines: Vec<&str> = calls.lines().collect();
+        let first_chown = lines.iter().position(|l| l.starts_with("chown ")).unwrap_or_else(|| panic!("{platform}: no chown ran: {calls}"));
+        let account = lines.iter().position(|l| l.starts_with("useradd ") || l.contains("-create /Groups/")).unwrap_or_else(|| panic!("{platform}: no account created: {calls}"));
+        assert!(account < first_chown, "{platform}: chown ran before the group existed:\n{calls}");
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "geteuid"]
+    fn libc_geteuid() -> u32;
+}

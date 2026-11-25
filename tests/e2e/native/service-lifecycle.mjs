@@ -11,6 +11,9 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/// install-service.ps1 declares `[switch]$NoStart`; the POSIX installer takes `--no-start`.
+export const noStartFlag = (platform) => (platform === "win32" ? "-NoStart" : "--no-start");
+
 /// The installer's verification flags the driver passes. The installer always verifies in full (attestation, and SHA256SUMS on Windows):
 /// there is no way to switch it off here. A build from the tree (no package) has no SHA256SUMS on Windows, which needs -NoVerify. A package
 /// built in CI is not a release (no RELEASE-PACKAGE marker, so --dev-package) and is attested by the workflow that built it, named with
@@ -175,7 +178,7 @@ export async function exercise(ctx) {
   const serviceUp = async () => (await listening(port)) && mainPid() > 0;
 
   // 1. Install: files, modes, no start yet needed to judge them.
-  const installed = must(c.install(["--no-start", ...(ctx.installExtra ?? [])]), "install");
+  const installed = must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "install");
   // A lane that names the attesting workflow must have VERIFIED: gh missing from PATH would only be said softly by a CI (dev) package.
   if (ctx.requireAttestation) expect(/Verified the release attestation/.test(`${installed.stdout}${installed.stderr}`), `the installer verified the attestation: ${installed.stdout}${installed.stderr}`);
   expect(existsSync(configFile), "install created config.toml");
@@ -244,7 +247,7 @@ export async function exercise(ctx) {
   // 8. Upgrade with the same binary keeps config, blocklist and data; then uninstall keeps them and removes the definition.
   must(c.stop, "stop before upgrade");
   const configBefore = sha256(configFile);
-  must(c.upgrade(["--no-start", ...(ctx.installExtra ?? [])]), "upgrade");
+  must(c.upgrade([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "upgrade");
   expect(sha256(configFile) === configBefore, "upgrade left config.toml untouched");
   note("upgrade", "config.toml unchanged, binary replaced, previous kept");
   must(c.uninstall(), "uninstall");

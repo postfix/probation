@@ -148,3 +148,61 @@ tdd: log_lines_of_containerd_in_the_dump_do_not_count_as_a_changed_configuration
 tdd: service-lifecycle.test.mjs installVerifyFlags — red: `SyntaxError: The requested module './service-lifecycle.mjs' does not provide an export named 'installVerifyFlags'` — green: `node tests/e2e/native/service-lifecycle.test.mjs` passed (`service-lifecycle.test: ok`)
 tdd: stack.test.mjs aclScript — red: `SyntaxError: The requested module './stack.mjs' does not provide an export named 'aclScript'` (observed by stashing stack.mjs) — green: `NATIVE_TEST_SCRATCH=... node tests/e2e/native/stack.test.mjs` passed
 verification: `python3 tests/e2e/native/run_tests.py` => `run_tests: 31 test files hold` (final state of all edits except none after); `actionlint -ignore 'label "macos-(26|15-intel)" is unknown'` on all workflows => exit 0; `sh -n`/`bash -n` on the touched shell scripts => ok. `cargo test --test node_scripts` hangs when stdin is an open pipe (a stub `kubectl` runs `cat`); run it with `</dev/null`.
+
+## Hosted round 3 (commit 48204b8)
+
+Three dispatches of `native-service.yml`, `cluster.yml` and `native-clients.yml` on `slice5-native-ci` at `48204b840b99e08e10cc9178decc453991c223c1` (jobs started 2026-11-24 19:46-19:49 UTC). Result and logs read with `gh run view <id> --json jobs` and `gh run view <id> --log-failed`; the cause column holds only what the logs print. A debug agent is investigating the failures marked "cause not stated".
+
+| Run / job | Job id | Expected (runbook) | Actual | State |
+|---|---|---|---|---|
+| native-service https://github.com/postfix/probation/actions/runs/45473716528 `docker-engine` | 138728217397 | green | success | EXECUTED, passed |
+| same `tools-linux` | 138728217317 | green | success | EXECUTED, passed |
+| same `service-linux` | 138728217328 | green | FAIL: `E2E-service-native` install: `chown: invalid group: 'root:probation-e2e-10281'` (identical to round 2; round 2's L5 `useradd --user-group` did not change it) | EXECUTED, failed |
+| same `service-macos x86_64-apple-darwin` | 138728217172 | green | FAIL: `install-service: WARNING: ... not marked as a release (--dev-package)` then `chown: _probation-ci-30904: illegal group name`; exit 1 (the attestation refusal of round 2 is gone) | EXECUTED, failed |
+| same `service-macos aarch64-apple-darwin` | 138728217351 | green | FAIL: same line, `chown: _probation-ci-20680: illegal group name` | EXECUTED, failed |
+| same `service-windows` | 138728217487 | green | FAIL: `service-lifecycle-run: install: powershell.exe ... install-service.ps1 install -Name Probation ... --no-start -DevPack...` then `Process completed with exit code 1`; no further message in the failed-step log (the dotnet and `bcryptprimitives.dll` steps of round 2 are past) | EXECUTED, failed (cause not stated) |
+| same `tools darwin-arm64` | 138728217136 | green | FAIL: `go_native`: 6 passed, 1 failed (`native_go_cannot_pin_a_version_the_firewall_withholds`) | EXECUTED, failed (cause not stated) |
+| same `tools win32-x64` | 138728216594 | green | FAIL: `cargo_native`: 1 passed, 6 failed (the six `native_cargo_*` tests, e.g. `native_cargo_resolves_and_fetches_only_the_eligible_version`) | EXECUTED, failed (cause not stated) |
+| same `tools linux-x64` | 138728217262 | green | FAIL at step "Native Cargo, Go, NuGet and RubyGems clients against the firewall"; `gh run view --log-failed` returned no lines for this job | EXECUTED, failed (cause not stated) |
+| same `tools-host darwin-arm64` | 138728217209 | green | FAIL: `conan_native`: 2 passed, 1 failed (`native_conan_takes_the_newest_allowed_version_of_a_range_and_the_pin_of_a_held_one_fails`) | EXECUTED, failed (cause not stated) |
+| same `tools-host win32-x64` | 138728217321 | green | FAIL: `conan_native_client_sends_only_allow_listed_headers` panicked at `tests\conan_native.rs:237:5`: `conan reached the tap` | EXECUTED, failed (cause not stated) |
+| same `tools-host linux-x64` | 138728217205 | green | FAIL at step "Seed the Maven plugin repository"; `--log-failed` returned no lines for this job | EXECUTED, failed (cause not stated) |
+| cluster https://github.com/postfix/probation/actions/runs/45473723158 `static` | 138728238389 | green | success | EXECUTED, passed |
+| same `netns` | 138728238932 | green | success | EXECUTED, passed |
+| same `cri-node` | 138728239239 | green | success | EXECUTED, passed |
+| same `e2e-service-cluster` | 138728239460 | green | success | EXECUTED, passed |
+| same `kind calico` | 138728239152 | green | FAIL: `lane aborted with status 1 after 0 assertion(s)` | EXECUTED, failed (0 assertions) |
+| native-clients https://github.com/postfix/probation/actions/runs/45473729183 `native linux-x64` | 138728258589 | green | success | EXECUTED, passed |
+| same `native darwin-arm64` | 138728258321 | green | success | EXECUTED, passed |
+| same `linux-managed` | 138728257892 | green | success | EXECUTED, passed |
+| same `native win32-x64` | 138728258226 | green | FAIL: `FAIL scenario aborted: Error: probation exited 1: ... "invalid configuration"` for `stack\service.key`; `native publishing FAILED: 2 failed of 2` | EXECUTED, failed (W1 confirmed, below) |
+| same `real-server` | 138728258260 | green | FAIL: `win32-x64: the native probation never fetched the snapshot (no unlabelled request from 172.171.12.33)` | EXECUTED, failed (follows the Windows failure, as in round 2) |
+
+### W1 confirmed
+
+The harness now prints the SDDL (job 138728258226): `O:BAG:S-1-5-21-3414932011-3134797172-3625386099-513D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)` with `USER=S-1-5-21-3414932011-3134797172-3625386099-500`. The runner's account (RID 500) appears in the descriptor as the alias `LA`, which `src/key_acl.rs` does not treat as the current user, so the key is refused. W1 is CONFIRMED. The product fix is in progress in `src/key_acl.rs` (request-track fix, D29); it is not in this commit and not exercised on a hosted runner.
+
+### macOS and Linux installer failure (service-macos, service-linux)
+
+Cause, from the script (not a hosted-runner fact): `scripts/install-service.sh` `install` ran `new_dir "$CONFIG_DIR" "root:$SERVICE_USER"` (a `chown`) BEFORE `ensure_account`, so the group did not exist yet. macOS: `illegal group name`; Linux: `invalid group`. Round 2's L5 (`useradd --user-group`) could not help because the account came after the `chown`. Fix: `ensure_account` runs first, and the `account:` manifest line is written after the config directory (the manifest's home) exists. Local test `the_service_account_and_its_group_exist_before_anything_is_chowned_to_them` (tests/service_scripts.rs, macOS stubs): red before, green after. Not exercised on a hosted runner.
+
+### D1 verdict (round 3)
+
+D1 stays **OPEN**. Executed green: cluster `static`, `netns`, `cri-node`, `e2e-service-cluster`. `kind calico` aborted after 0 assertions, so its phases and negative control never ran.
+
+## Round 4 fixes (local, not yet run hosted)
+
+Authored against the round 3 diagnoses (job logs under `.probation-scratch/s30/debug/`). NOT committed, NOT pushed, NOT exercised on a hosted runner; each fix is a prediction until a hosted run confirms it. Baseline: HEAD 48204b8; the working tree already held the key-ACL fix (`src/key_acl.rs`, `tests/key_acl.rs`, under separate review) and the installer-ordering fix (`scripts/install-service.sh`, `tests/service_scripts.rs`), both untouched here.
+
+| # | Lane | Fix | Local check |
+|---|---|---|---|
+| 1 | service-windows | `native-service.yml` clean PATH gains `/c/Windows/System32/WindowsPowerShell/v1.0` (`spawnSync powershell.exe ENOENT`). `service-lifecycle.mjs` passes `-NoStart` on win32 (`install-service.ps1` declares `[switch]$NoStart`; `--no-start` is a binding error there) via the new `noStartFlag(platform)` for install and upgrade. | `node tests/e2e/native/service-lifecycle.test.mjs`: red (`does not provide an export named 'noStartFlag'`), then `service-lifecycle.test: ok`. The PATH change has only actionlint and check_workflow. |
+| 2 | tools win32-x64 | `tests/common/mod.rs` `sample_config()` replaces the sample's `data_dir` and `blocklist_file` values with absolute TOML literal strings under `tests/fixtures/` and calls `Config::from_toml_str`; it asserts the sample still has those two lines. `config.sample.toml` and `src/` unchanged. | Red not observed: the failure needs a Windows path rule. Linux regression: `cargo test --test go_modules --test delivery_rated_load` and the workspace run below pass. |
+| 3 | go_native (all OS) | `native_go_cannot_pin_a_version_the_firewall_withholds`: consumer `main.go` now imports `example.com/demo`; the build is `go build -mod=mod -buildvcs=false ./...` and its log must name 403, Forbidden or v1.1.0. | Red: the corrected assertion against the old import-less consumer failed (`a build that needs the held version must fail`, tests/go_native.rs:223, go1.26); green with the import: `cargo test --test go_native` 7 passed. |
+| 4 | tools-host win32 conan | `tests/conan_native.rs` host mode: child `bash` gets an explicit `PATH` (searched before System32, so Git's bash wins over the WSL launcher); on Windows the script defines `python3() { python "$@"; }` because setup-python installs `python` only. The "Git's bash before the WSL launcher" workflow step stays. | `cargo test --test conan_native` 3 passed on the podman path (container mode; the host-mode branch is not executable on this machine, no host conan). |
+| 5 | tools-host darwin-arm64 conan | Cause unknown, no fix guessed. The seed script now prints `lsof -nP -iTCP:<port>`, `netstat -an | grep <port>` and the recorder's stderr (`/work/recorder.err`) before `conan remote add/login`; they are in the failure output of `seed()`. The lane already runs `--test-threads=1`. | `cargo test --test conan_native` passes with the diagnostics in the script. |
+| 6 | tools / tools-host linux-x64 | Maven Central 429: `actions/cache@5a3ec84eff668545956fd18022155c47e93e2684` (v4.2.3) on `$RUNNER_TEMP/seed-m2`, key `maven-seed-dependency-plugin-3.8.1-<os>`, and a 3-attempt seed with 60 s and 120 s backoff. The step has no `if:` and no `exit 0` because `check_workflow.py` forbids both. | actionlint, `run_tests.py`. |
+| 7 | cluster kind calico | `run-kind-lane.sh` clones external-snapshotter v8.2.0, verifies commit 0f215370c7ca3eeef4ab7028824d3bc66e1f63bd, applies `client/config/crd` and waits for the three CRDs Established before the csi-driver-host-path v1.17.0 deploy. The snapshot-controller is not installed (the lane takes no snapshots). | `bash -n`, actionlint, `run_tests.py`; the CRD apply itself is untested. |
+| 8 | native-clients win32 key check (review key-acl-sddl-la-alias, finding code-review-1-1) | `stack.mjs` `keyRefusalSteps`/`proveKeyRefusal`, run by `bringUp` on win32 before the service starts: `check-config` accepts the runner's own key, `icacls <key> /grant *S-1-5-32-545:(R)`, `check-config` must exit non-zero with `requires a private regular file`, `icacls <key> /remove *S-1-5-32-545` (also run if a step fails), `check-config` accepts again. The key's owner and DACL (SDDL plus the runner's USER SID) are already logged by `keyFileWarnings` before the checks. | `node tests/e2e/native/stack.test.mjs`: red (`does not provide an export named 'keyRefusalSteps'`), then `stack.test: ok`. Not run on Windows. |
+
+Predicted still to fail or unknown: darwin conan (item 5, cause unknown); service-windows beyond the two predicted fixes (the first hosted run to get past `powershell.exe` is untested); D1 stays OPEN until `kind calico` runs its phases.

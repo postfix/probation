@@ -30,20 +30,29 @@ use url::Url;
 /// The shipped `config.sample.toml` exactly as an operator would use it, with only
 /// `listen` replaced by port 0 so tests can run in parallel.
 ///
-/// `data_dir` is left as the sample's production path on purpose: `TestServer`
-/// replaces it with a directory the test owns, so no test can accidentally take the
-/// lock on, or write to, a real deployment's state.
+/// `data_dir` is a path inside the repository that is never created, not the sample's
+/// production path: `TestServer` replaces it with a directory the test owns, so no test
+/// can accidentally take the lock on, or write to, a real deployment's state.
 ///
 /// `blocklist_file` is replaced for the same reason: the sample's
 /// `/etc/probation/blocklist.json` exists on any host `install-local.sh` ran on, and
 /// a test that expects "no blocklist loaded" would then see a real one. This path is
 /// inside the repository and never committed, so it is absent on every host.
 pub fn sample_config() -> Config {
-    let mut config = Config::load(Path::new("config.sample.toml"))
-        .expect("config.sample.toml is valid configuration");
+    // The sample's two Unix paths are not absolute on Windows, where `Config` rightly rejects them, so both are replaced (before
+    // validation) with absolute paths on the host. TOML literal strings (single quotes) keep a Windows path's backslashes verbatim.
+    let absent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut text = std::fs::read_to_string("config.sample.toml").expect("config.sample.toml is readable");
+    for (key, old, file) in [
+        ("data_dir", "\"/var/lib/probation\"", "absent-data-dir"),
+        ("blocklist_file", "\"/etc/probation/blocklist.json\"", "absent-blocklist.json"),
+    ] {
+        let line = format!("{key} = {old}");
+        assert!(text.contains(&line), "config.sample.toml no longer has `{line}`");
+        text = text.replace(&line, &format!("{key} = '{}'", absent.join(file).display()));
+    }
+    let mut config = Config::from_toml_str(&text).expect("config.sample.toml is valid configuration");
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
-    config.blocklist_file =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/absent-blocklist.json");
     config
 }
 

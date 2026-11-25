@@ -58,10 +58,14 @@ async fn conan(dir: &Path, script: &str) -> (bool, String) {
     if host_mode() {
         // The scripts name the container's /work; on the host that is the directory itself (forward slashes on Windows too).
         let here = dir.display().to_string().replace('\\', "/");
-        let script = format!("trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home CONAN_HOME={here}/home/.conan2 CONAN_LOGIN_USERNAME=user CONAN_PASSWORD=pass; mkdir -p $HOME; {}", script.replace("/work", &here));
+        // setup-python on Windows installs `python`, not `python3` (and Git bash may find the Store's stub): the scripts' `python3` is `python` there.
+        let python3 = if cfg!(windows) { "python3() { python \"$@\"; }; " } else { "" };
+        let script = format!("{python3}trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home CONAN_HOME={here}/home/.conan2 CONAN_LOGIN_USERNAME=user CONAN_PASSWORD=pass; mkdir -p $HOME; {}", script.replace("/work", &here));
         let dir = dir.to_path_buf();
         return tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("bash").current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host conan");
+            // Windows' CreateProcess resolution finds System32\bash.exe (the WSL launcher) before the parent's PATH; an explicit child PATH is
+            // searched first, so the lane's Git bash wins.
+            let output = std::process::Command::new("bash").env("PATH", std::env::var_os("PATH").unwrap_or_default()).current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host conan");
             (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
         })
         .await
@@ -100,7 +104,9 @@ async fn seed() -> tempfile::TempDir {
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fixtures/conan_recorder.py"), dir.path().join("conan_recorder.py")).unwrap();
     let port = free_port();
     let script = format!(
-        "python3 /work/conan_recorder.py {port} /work/store /work/seed.log & sleep 1; \
+        "python3 /work/conan_recorder.py {port} /work/store /work/seed.log 2>/work/recorder.err & sleep 1; \
+         echo '--- diagnostics before conan remote login (port {port}) ---'; \
+         lsof -nP -iTCP:{port} 2>&1; netstat -an 2>&1 | grep {port}; echo '--- recorder stderr ---'; cat /work/recorder.err 2>&1; echo '--- end diagnostics ---'; \
          conan remote add rec http://127.0.0.1:{port} && conan remote login rec user -p pass && cd /work/hello && \
          conan create . --version=1.0 -pr:h=/work/profile -pr:b=/work/profile >/dev/null && \
          conan create . --version=1.0 -s build_type=Debug -pr:h=/work/profile -pr:b=/work/profile >/dev/null && \

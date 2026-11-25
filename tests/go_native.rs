@@ -215,11 +215,15 @@ async fn native_go_cannot_pin_a_version_the_firewall_withholds() {
     let root = n.dir.path().to_owned();
     for (name, gomod) in [("pin-mod", "\nrequire example.com/demo v1.1.0\n")] {
         let app = consumer(&n, name, gomod);
+        // The build only asks for example.com/demo if something imports it.
+        std::fs::write(app.join("main.go"), "package main\n\nimport _ \"example.com/demo\"\n\nfunc main() {}\n").unwrap();
         let (ok, log) = go(&app, &root, n.port, &["mod", "download", "example.com/demo@v1.1.0"], &[]).await;
         assert!(!ok, "an exact pin of the young version must not download: {log}");
         assert!(log.contains("403") || log.contains("Forbidden") || log.contains("v1.1.0"), "{log}");
-        let (ok, log) = go(&app, &root, n.port, &["build", "./..."], &[]).await;
+        // `-mod=mod` lets the build fetch what main.go imports; `-buildvcs=false` keeps go from probing for a VCS in the scratch module.
+        let (ok, log) = go(&app, &root, n.port, &["build", "-mod=mod", "-buildvcs=false", "./..."], &[]).await;
         assert!(!ok, "a build that needs the held version must fail: {log}");
+        assert!(log.contains("403") || log.contains("Forbidden") || log.contains("v1.1.0"), "the build failed for the firewall's refusal, not for another reason: {log}");
     }
     assert!(!root.join("modcache/example.com/demo@v1.1.0").exists());
     assert_eq!(fetched(&n, "@v/v1.1.0.zip") + fetched(&n, "@v/v1.1.0.mod"), 0);

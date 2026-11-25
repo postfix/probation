@@ -219,6 +219,31 @@ function defaultRestrict(file) {
   return run("icacls", [file, "/inheritance:r", "/grant:r", `${process.env.USERNAME}:F`]);
 }
 
+/// Windows only (hosted): the key-file check accepts the runner's own key, and must still refuse a shared one. BUILTIN\Users (S-1-5-32-545) is
+/// granted read, `check-config` must exit non-zero with the product's text, then the grant is removed and the key is accepted again.
+export const keyRefusalSteps = ({ binary, configFile, keyFile }) => {
+  const check = [binary, "check-config", configFile];
+  return [
+    { name: "accepts the runner's own key", argv: check },
+    { name: "grant Users read", argv: ["icacls", keyFile, "/grant", "*S-1-5-32-545:(R)"] },
+    { name: "refuses a Users-readable key", argv: check, refuses: "requires a private regular file" },
+    { name: "remove the grant", argv: ["icacls", keyFile, "/remove", "*S-1-5-32-545"] },
+    { name: "accepts again", argv: check },
+  ];
+};
+export function proveKeyRefusal(steps, exec = run) {
+  let failure = null;
+  for (const st of steps) {
+    const r = exec(st.argv[0], st.argv.slice(1));
+    const ok = st.refuses ? r.status !== 0 && r.out.includes(st.refuses) : r.status === 0;
+    console.warn(`key check: ${st.name}: ${ok ? "ok" : "FAILED"} (exit ${r.status})`);
+    if (!ok) { failure = new Error(describeFailure(`key check "${st.name}"`, r)); break; }
+  }
+  // Whatever happened, the shared grant must not outlive the check.
+  if (failure) exec("icacls", [steps[1].argv[1], "/remove", "*S-1-5-32-545"]);
+  if (failure) throw failure;
+}
+
 /// What a timeout waiting for the service says: the answer of GET /health/ready, the first 60 lines of its log (the cause is
 /// usually early; the tail is only repeated refusals), the last 15 and the data directory's listing.
 export function notReadyReport({ ready, log, listing, timeoutMs }) {
@@ -408,6 +433,7 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   // The service trusts the native CA and, against a real server, that server's CA too.
   const bundle = join(work, "trust.pem");
   writeFileSync(bundle, composeTrustBundle({ nativePem: readFileSync(caFile, "utf8"), extraPem: real?.extraCa ? readFileSync(real.extraCa, "utf8") : null, publicTrust: Boolean(real?.publicTrust) }));
+  if (process.platform === "win32") proveKeyRefusal(keyRefusalSteps({ binary, configFile, keyFile }));
   const outLog = join(work, "probation.log");
   const fd = openSync(outLog, "w");
   undo.push(() => closeSync(fd));

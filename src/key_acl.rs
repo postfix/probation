@@ -6,7 +6,20 @@
 /// Trustees granted access by `sddl` that are not SYSTEM, Administrators or `service_sid`. A descriptor with no DACL
 /// (everyone has access) is reported as `(no DACL: everyone)`; a DACL with no entries grants nothing.
 pub fn trustees_outside(sddl: &str, service_sid: &str) -> Vec<String> {
-    dacl_trustees(sddl, &[service_sid])
+    dacl_trustees(sddl, &[service_sid], &spelled)
+}
+
+/// The resolver that trusts the spelling: a trustee is its own SID. Used where no OS is asked (tests, the string-only entry points).
+fn spelled(trustee: &str) -> Option<String> {
+    Some(trustee.to_owned())
+}
+
+/// True when `trustee` is SYSTEM, the Administrators or one of `allowed`, by spelling or by the SID `resolve` gives it. SDDL prints
+/// well-known and machine-relative SIDs as aliases (`LA` is RID 500, `LG` RID 501), so the spelling alone says nothing about who it
+/// is. A trustee `resolve` does not know is not allowed (fail closed).
+fn is_allowed(trustee: &str, allowed: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> bool {
+    let named = |t: &str| SYSTEM_TRUSTEES.contains(&t) || allowed.contains(&t);
+    named(trustee) || resolve(trustee).is_some_and(|sid| named(&sid))
 }
 
 const SYSTEM_TRUSTEES: [&str; 4] = ["SY", "BA", "S-1-5-18", "S-1-5-32-544"];
@@ -15,15 +28,20 @@ const SYSTEM_TRUSTEES: [&str; 4] = ["SY", "BA", "S-1-5-18", "S-1-5-32-544"];
 /// the Administrators or one of `allowed` (the account running the service, its virtual account `NT SERVICE\Probation`), and every
 /// access-allowed entry for a trustee outside those. Deny entries and inherited flags change nothing: an entry grants what it names.
 pub fn private_violations(sddl: &str, allowed: &[&str]) -> Vec<String> {
+    private_violations_resolved(sddl, allowed, &spelled)
+}
+
+/// `private_violations` with every trustee and the owner resolved to its SID by `resolve` before the comparison (on Windows, the OS).
+pub fn private_violations_resolved(sddl: &str, allowed: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let mut found = Vec::new();
     match owner(sddl) {
         None => found.push("(no owner)".to_owned()),
-        Some(owner) if !SYSTEM_TRUSTEES.contains(&owner.as_str()) && !allowed.contains(&owner.as_str()) => found.push(format!("owner {owner}")),
+        Some(owner) if !is_allowed(&owner, allowed, resolve) => found.push(format!("owner {owner}")),
         Some(_) => {}
     }
     match dacl_start(sddl) {
         Some(start) if sddl[start..].split('(').next().is_some_and(|flags| flags.contains("NO_ACCESS_CONTROL")) => found.push("(NULL DACL: everyone)".to_owned()),
-        Some(_) => found.extend(dacl_trustees(sddl, allowed)),
+        Some(_) => found.extend(dacl_trustees(sddl, allowed, resolve)),
         None => found.push("(NULL DACL: everyone)".to_owned()),
     }
     found
@@ -61,7 +79,7 @@ pub fn service_sid(name: &str) -> String {
     format!("S-1-5-80-{}", words.join("-"))
 }
 
-fn dacl_trustees(sddl: &str, allowed_sids: &[&str]) -> Vec<String> {
+fn dacl_trustees(sddl: &str, allowed_sids: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let Some(start) = dacl_start(sddl) else {
         return vec!["(no DACL: everyone)".to_owned()];
     };
@@ -73,11 +91,8 @@ fn dacl_trustees(sddl: &str, allowed_sids: &[&str]) -> Vec<String> {
             '(' if depth == 0 => depth = 1,
             ')' if depth == 1 => {
                 depth = 0;
-                if let Some(trustee) = granted_trustee(&ace) {
-                    let allowed = SYSTEM_TRUSTEES.contains(&trustee.as_str()) || allowed_sids.contains(&trustee.as_str());
-                    if !allowed && !outside.contains(&trustee) {
-                        outside.push(trustee);
-                    }
+                if let Some(trustee) = granted_trustee(&ace).filter(|t| !is_allowed(t, allowed_sids, resolve) && !outside.contains(t)) {
+                    outside.push(trustee);
                 }
                 ace.clear();
             }
@@ -119,7 +134,7 @@ pub fn is_shared(path: &std::path::Path) -> bool {
             // an administrator and finds the service's SID in the key's DACL).
             let allowed = allowed_for(&user, &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()));
             let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
-            !private_violations(&sddl, &allowed).is_empty()
+            !private_violations_resolved(&sddl, &allowed, &windows_reader::resolve_sid).is_empty()
         }
         Err(_) => true, // not readable: not provably private
     }
@@ -132,7 +147,7 @@ mod windows_reader {
 
     use windows_sys::Win32::Foundation::{LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, ConvertStringSidToSidW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -141,6 +156,26 @@ mod windows_reader {
         // SAFETY: `pointer` is a NUL-terminated wide string the system allocated for this call.
         let len = (0..).take_while(|&n| unsafe { *pointer.add(n) } != 0).count();
         String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(pointer, len) })
+    }
+
+    /// The canonical SID string of an SDDL trustee (an alias such as `LA`, or a SID string), or `None` when the OS does not know it.
+    pub fn resolve_sid(trustee: &str) -> Option<String> {
+        let wide: Vec<u16> = trustee.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: valid NUL-terminated input and out-pointers; both system allocations are freed with LocalFree.
+        unsafe {
+            let mut sid = std::ptr::null_mut();
+            if ConvertStringSidToSidW(wide.as_ptr(), &mut sid) == 0 {
+                return None;
+            }
+            let mut sid_text = std::ptr::null_mut();
+            let converted = ConvertSidToStringSidW(sid, &mut sid_text) != 0;
+            let result = converted.then(|| text(sid_text));
+            if converted {
+                LocalFree(sid_text.cast());
+            }
+            LocalFree(sid);
+            result
+        }
     }
 
     pub fn descriptor_and_user(path: &Path) -> Result<(String, String), u32> {

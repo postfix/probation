@@ -3,7 +3,7 @@
 //! security-descriptor string is platform independent so it is tested here; the Windows reader of the real DACL is compiled by
 //! `cargo check --target x86_64-pc-windows-gnu` and runs only on a Windows runner.
 
-use probation::key_acl::{allowed_for, private_violations, service_name, service_sid, trustees_outside};
+use probation::key_acl::{allowed_for, private_violations, private_violations_resolved, service_name, service_sid, trustees_outside};
 
 const SERVICE: &str = "S-1-5-80-1234-5678-9";
 
@@ -102,4 +102,50 @@ fn the_service_name_is_read_from_the_environment_the_installer_sets() {
     assert_eq!(service_name(Some("Probation-b".to_owned())), "Probation-b");
     assert_eq!(service_name(Some("bad name; rm".to_owned())), "Probation", "an odd value is not used");
     assert_eq!(service_name(Some(String::new())), "Probation");
+}
+
+// ---- W1: aliases are compared by SID identity (hosted run 45473729183: the runner is RID 500, printed as `LA`)
+/// A stand-in for the OS resolver: well-known aliases to SIDs, `LA` to the machine's RID-500 account, anything else unknown.
+fn resolve(alias: &str) -> Option<String> {
+    let sid = match alias {
+        "SY" => "S-1-5-18",
+        "BA" => "S-1-5-32-544",
+        "LA" => "S-1-5-21-1-2-3-500",
+        "LG" => "S-1-5-21-1-2-3-501",
+        "WD" => "S-1-1-0",
+        "BU" => "S-1-5-32-545",
+        "AU" => "S-1-5-11",
+        sid if sid.starts_with("S-1-") => sid,
+        _ => return None,
+    };
+    Some(sid.to_owned())
+}
+
+#[test]
+fn an_alias_of_the_process_user_is_accepted_and_of_anyone_else_is_not() {
+    let sddl = "O:BAG:S-1-5-21-1-2-3-513D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)";
+    assert!(private_violations_resolved(sddl, &["S-1-5-21-1-2-3-500", SERVICE], &resolve).is_empty());
+    // The same DACL on a machine where the process user is another account: `LA` is an outsider.
+    assert_eq!(private_violations_resolved(sddl, &["S-1-5-21-1-2-3-1001", SERVICE], &resolve), vec!["LA".to_owned()]);
+    // An owner written as an alias is resolved the same way.
+    assert!(private_violations_resolved("O:LAG:SYD:PAI(A;;FA;;;SY)", &["S-1-5-21-1-2-3-500"], &resolve).is_empty());
+    assert_eq!(private_violations_resolved("O:LGG:SYD:PAI(A;;FA;;;SY)", &["S-1-5-21-1-2-3-500"], &resolve), vec!["owner LG".to_owned()]);
+}
+
+#[test]
+fn broad_groups_and_unknown_aliases_stay_rejected_when_resolved() {
+    for alias in ["WD", "BU", "AU", "LG", "ZZ"] {
+        let sddl = format!("O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FR;;;{alias})");
+        assert_eq!(private_violations_resolved(&sddl, &["S-1-5-21-1-2-3-500"], &resolve), vec![alias.to_owned()], "{alias}");
+    }
+}
+
+#[test]
+fn the_runner_descriptor_is_private_once_la_is_resolved_and_was_not_by_spelling() {
+    let sddl = "O:BAG:S-1-5-21-3414932011-3134797172-3625386099-513D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)";
+    let user = ["S-1-5-21-3414932011-3134797172-3625386099-500"];
+    let spelled = |t: &str| Some(t.to_owned()); // the pre-fix comparison
+    assert_eq!(private_violations_resolved(sddl, &user, &spelled), vec!["LA".to_owned()], "by spelling `LA` is an outsider (the W1 defect)");
+    let os = |t: &str| Some(if t == "LA" { user[0].to_owned() } else { t.to_owned() });
+    assert!(private_violations_resolved(sddl, &user, &os).is_empty());
 }

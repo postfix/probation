@@ -117,6 +117,13 @@ kind load docker-image localhost/probation:kind --name "$CLUSTER"
 
 # A storage class that enforces ReadWriteOncePod: kind's default provisioner is not CSI. Installed from the driver's pinned release, or the lane
 # fails (it never runs the ownership and fence checks against storage that cannot enforce them).
+# The driver's snapshotter sidecar needs the VolumeSnapshot CRDs, which kind does not ship (hosted run: "no matches for kind VolumeSnapshotClass").
+# They come from external-snapshotter at its pinned release, the checked-out commit verified. The snapshot-controller is not installed: this lane takes
+# no snapshots, it only needs the API types to exist.
+git clone --depth 1 --branch v8.2.0 https://github.com/kubernetes-csi/external-snapshotter "$WORK_DIR/snapshotter"
+[ "$(git -C "$WORK_DIR/snapshotter" rev-parse HEAD)" = 0f215370c7ca3eeef4ab7028824d3bc66e1f63bd ] || fail "external-snapshotter v8.2.0 is not the pinned commit"
+kubectl apply -k "$WORK_DIR/snapshotter/client/config/crd"
+kubectl wait --for=condition=Established --timeout=60s crd/volumesnapshotclasses.snapshot.storage.k8s.io crd/volumesnapshots.snapshot.storage.k8s.io crd/volumesnapshotcontents.snapshot.storage.k8s.io
 git clone --depth 1 --branch v1.17.0 https://github.com/kubernetes-csi/csi-driver-host-path "$WORK_DIR/csi"
 ( cd "$WORK_DIR/csi" && bash deploy/kubernetes-latest/deploy.sh )
 # The driver's plugin is a single pod and its volumes are node-local to the node it runs on: it runs on the pool node that holds the service (worker 1),

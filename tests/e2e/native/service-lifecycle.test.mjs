@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { commands, failurePolicyProblems, installVerifyFlags, parseLaunchctl, parseScQuery } from "./service-lifecycle.mjs";
+import { commands, failurePolicyProblems, installVerifyFlags, noStartFlag, parseLaunchctl, parseScQuery } from "./service-lifecycle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dirs = { config: "/c", data: "/d", log: "/l", bin: "/b" };
@@ -34,6 +34,10 @@ assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: undefined }
 for (const platform of ["linux", "darwin", "win32"]) {
   assert.ok(!installVerifyFlags({ platform, packageDir: "/p", release: false, signerWorkflow: SIGNER }).some((f) => /no-?verify|allow-unverified/i.test(f)), `${platform}: a package keeps the full verification`);
 }
+// install-service.ps1 declares [switch]$NoStart; a `--no-start` there is a parameter-binding error.
+assert.equal(noStartFlag("win32"), "-NoStart");
+assert.equal(noStartFlag("linux"), "--no-start");
+assert.equal(noStartFlag("darwin"), "--no-start");
 // Linux, user scope: the same through the user manager.
 const usr = commands({ platform: "linux", scope: "user", ...base });
 assert.deepEqual(usr.stop, ["systemctl", "--user", "stop", "pf.service"]);

@@ -231,7 +231,7 @@ jobs:
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           node_dir=$(dirname "$(command -v node)")
           gh_dir=$(dirname "$(command -v gh)")
-          PATH="$node_dir:$gh_dir:/c/Windows/System32:/c/Windows" E2E_SERVICE_PACKAGE="$pkg" node tests/e2e/native/service-lifecycle-run.mjs
+          PATH="$node_dir:$gh_dir:/c/Windows/System32:/c/Windows/System32/WindowsPowerShell/v1.0:/c/Windows" E2E_SERVICE_PACKAGE="$pkg" node tests/e2e/native/service-lifecycle-run.mjs
 
   tools:
     name: tools ${{ matrix.platform }}
@@ -349,12 +349,24 @@ jobs:
       # test's mirror is named `probation`, so the seed is fetched through a mirror of that id (as tests/e2e/compose/clients/maven.Dockerfile
       # does); seeded through the default `central` id, the plugin was "unavailable in current build context" and the test failed
       # (maven_native runs only the dependency plugin, so the image's second plugin is not needed here).
+      # Maven Central answered 429 to hosted runners (hosted run, tools/tools-host linux-x64): the seed is cached by plugin version, and a hit leaves nothing to fetch (the step still runs, offline-fast), a miss is
+      # fetched with three attempts (60 s, then 120 s apart). The cache saves only when the step succeeds.
+      - name: Cache the seeded Maven plugin repository
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/seed-m2
+          key: maven-seed-dependency-plugin-3.8.1-${{ runner.os }}
       - name: Seed the Maven plugin repository
         run: |
           mkdir -p "$RUNNER_TEMP/seed-m2" "$RUNNER_TEMP/seedproj"
           printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2/</url></mirror></mirrors></settings>' > "$RUNNER_TEMP/seedproj/settings.xml"
           printf '<project><modelVersion>4.0.0</modelVersion><groupId>seed</groupId><artifactId>seed</artifactId><version>1</version><packaging>pom</packaging></project>' > "$RUNNER_TEMP/seedproj/pom.xml"
-          (cd "$RUNNER_TEMP/seedproj" && mvn -B -q -s settings.xml -Dmaven.repo.local="$RUNNER_TEMP/seed-m2" org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies)
+          seeded=no
+          for attempt in 1 2 3; do
+            if (cd "$RUNNER_TEMP/seedproj" && mvn -B -q -s settings.xml -Dmaven.repo.local="$RUNNER_TEMP/seed-m2" org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies); then seeded=yes; break; fi
+            [ "$attempt" = 3 ] || { echo "seed attempt $attempt failed; retrying in $((attempt * 60)) s"; sleep $((attempt * 60)); }
+          done
+          [ "$seeded" = yes ] || { echo "the Maven plugin seed failed after 3 attempts"; false; }
       # tests/conan_native.rs runs its host scripts with `bash`; on a Windows runner that name finds System32's WSL launcher first (hosted run
       # 45455094825: "Windows Subsystem for Linux has no installed distributions"). Git's bash goes in front (GITHUB_PATH prepends).
       - name: Git's bash before the WSL launcher
