@@ -100,6 +100,8 @@ function Assert-Trusted([string]$Path) {
   }
 }
 $Created = New-Object System.Collections.Generic.List[string]   # files and directories this run created: what a rollback removes
+# A file made by an elevated user is owned by that user, which Assert-Trusted refuses on the next run: the owner is the Administrators.
+function Set-FileOwner([string]$Path) { Invoke-Native icacls @($Path, '/setowner', '*S-1-5-32-544') }
 
 # A directory this script creates is protected BEFORE anything is put into it.
 # The SID of NT SERVICE\<name>: SHA-1 of the upper-cased name in UTF-16LE as five little-endian words under S-1-5-80.
@@ -195,6 +197,7 @@ function New-ConfigIfAbsent {
   $text += "`nlog_file_path = '$(Join-Path $LogDir 'decisions.ndjson')'`nlog_file_max_bytes = 104857600`n"
   if ($TlsCert) { $text += "tls_cert_path = '$TlsCert'`ntls_key_path = '$TlsKey'`n" }
   Write-Text $ConfigFile $text
+  Set-FileOwner $ConfigFile
   $Created.Add($ConfigFile)
   Add-Record "file:$ConfigFile"
   Say "Created $ConfigFile (listen $Listen, public_url $url)"
@@ -269,7 +272,7 @@ function Install-BinaryFiles {
     # Beside the target, then renamed over it: a crash leaves one whole file.
     Copy-Item -LiteralPath $file -Destination "$target.new" -Force
     Move-Item -LiteralPath "$target.new" -Destination $target -Force
-    if (-not $existed) { $Created.Add($target); Add-Record "file:$target" }
+    if (-not $existed) { Set-FileOwner $target; $Created.Add($target); Add-Record "file:$target" }
   }
 }
 
@@ -424,6 +427,7 @@ switch ($Action) {
       New-ConfigIfAbsent
       if (-not (Test-Path -LiteralPath $Blocklist)) {
         Copy-Item -LiteralPath (Join-Path $Res 'blocklist.sample.json') -Destination $Blocklist
+        Set-FileOwner $Blocklist
         $Created.Add($Blocklist); Add-Record "file:$Blocklist"
       } else { Assert-Trusted $Blocklist; Say "Keeping the existing $Blocklist" }
       Install-BinaryFiles

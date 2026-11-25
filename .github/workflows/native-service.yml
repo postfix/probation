@@ -350,6 +350,7 @@ jobs:
       # does); seeded through the default `central` id, the plugin was "unavailable in current build context" and the test failed
       # (maven_native runs only the dependency plugin, so the image's second plugin is not needed here).
       # Maven Central answered 429 to hosted runners (hosted run, tools/tools-host linux-x64): the seed is cached by plugin version, and a hit leaves nothing to fetch (the step still runs, offline-fast), a miss is
+      # Round 4: repo.maven.apache.org still answered 429 on all 3 attempts; the seed is fetched from Google's Maven Central mirror instead.
       # fetched with three attempts (60 s, then 120 s apart). The cache saves only when the step succeeds.
       - name: Cache the seeded Maven plugin repository
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -359,7 +360,7 @@ jobs:
       - name: Seed the Maven plugin repository
         run: |
           mkdir -p "$RUNNER_TEMP/seed-m2" "$RUNNER_TEMP/seedproj"
-          printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2/</url></mirror></mirrors></settings>' > "$RUNNER_TEMP/seedproj/settings.xml"
+          printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://maven-central.storage-download.googleapis.com/maven2/</url></mirror></mirrors></settings>' > "$RUNNER_TEMP/seedproj/settings.xml"
           printf '<project><modelVersion>4.0.0</modelVersion><groupId>seed</groupId><artifactId>seed</artifactId><version>1</version><packaging>pom</packaging></project>' > "$RUNNER_TEMP/seedproj/pom.xml"
           seeded=no
           for attempt in 1 2 3; do

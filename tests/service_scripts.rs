@@ -774,3 +774,21 @@ unsafe extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
 }
+
+/// The Windows installer runs as an elevated user whose files are owned by that user (hosted upgrade: config.toml owned by the
+/// runner's -500 account, refused by Assert-Trusted). Every file it registers in `$Created` must get the Administrators owner.
+#[test]
+fn the_windows_installer_sets_the_owner_of_every_file_it_creates() {
+    let script = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install-service.ps1")).unwrap();
+    let created: std::collections::BTreeSet<&str> = script
+        .lines()
+        .filter_map(|l| l.split("$Created.Add($").nth(1))
+        .filter_map(|r| r.split(')').next())
+        .filter(|name| *name != "Path") // New-ProtectedDirectory's directory, owned by its own icacls call
+        .collect();
+    assert!(created.len() >= 3, "expected the config, blocklist and binary files, found {created:?}");
+    for name in created {
+        assert!(script.contains(&format!("Set-FileOwner ${name}")), "the installer creates ${name} without setting its owner (Set-FileOwner ${name})");
+    }
+    assert!(script.contains("function Set-FileOwner") && script.contains("/setowner"), "Set-FileOwner must run icacls /setowner");
+}

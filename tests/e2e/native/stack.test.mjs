@@ -27,11 +27,25 @@ const refused = (port) => new Promise((resolve) => { const c = net.connect(port,
   // A "binary" that exits at once makes the readiness wait fail after trust and mapping.
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort, pypiPort,
-    hooks: { trust: () => { events.push("trust"); return () => events.push("untrust"); }, lookup: resolvesAfterTheHostsLine(), hostsFile, mapHosts: true },
+    hooks: { trust: () => { events.push("trust"); return () => events.push("untrust"); }, proveKey: () => {}, lookup: resolvesAfterTheHostsLine(), hostsFile, mapHosts: true },
   }), /probation exited/);
   assert.deepEqual(events, ["trust", "untrust"], "the CA store is restored");
   assert.equal(readFileSync(hostsFile, "utf8"), original, "the hosts mapping is removed");
   assert.ok(await refused(npmPort) && await refused(pypiPort), "every fake server is closed");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// S1b: on win32 the key-refusal proof runs through the proveKey hook (the S1 stand-in binary has no check-config), and a refusal aborts the start.
+{
+  const dir = mkdtempSync(join(scratch, "stack-"));
+  const hostsFile = join(dir, "hosts");
+  writeFileSync(hostsFile, "127.0.0.1 localhost\n");
+  const steps = [];
+  await assert.rejects(startStack({
+    binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
+    hooks: { platform: "win32", trust: () => () => {}, restrict: () => ({ status: 0, out: "" }), proveKey: (s) => { steps.push(s); throw new Error("key proof reached"); }, lookup: resolvesAfterTheHostsLine(), hostsFile, mapHosts: true },
+  }), /key proof reached/);
+  assert.equal(steps.length, 1, "proveKey got the refusal steps once");
   rmSync(dir, { recursive: true, force: true });
 }
 

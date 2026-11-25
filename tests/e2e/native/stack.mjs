@@ -433,7 +433,7 @@ async function bringUp({ binary, work, real, fixedNpmPort, pypiPort, hooks, undo
   // The service trusts the native CA and, against a real server, that server's CA too.
   const bundle = join(work, "trust.pem");
   writeFileSync(bundle, composeTrustBundle({ nativePem: readFileSync(caFile, "utf8"), extraPem: real?.extraCa ? readFileSync(real.extraCa, "utf8") : null, publicTrust: Boolean(real?.publicTrust) }));
-  if (process.platform === "win32") proveKeyRefusal(keyRefusalSteps({ binary, configFile, keyFile }));
+  if ((hooks.platform ?? process.platform) === "win32") (hooks.proveKey ?? ((steps) => proveKeyRefusal(steps)))(keyRefusalSteps({ binary, configFile, keyFile }));
   const outLog = join(work, "probation.log");
   const fd = openSync(outLog, "w");
   undo.push(() => closeSync(fd));

@@ -29,7 +29,9 @@ fn host_mode() -> bool {
 }
 
 fn host_tool_ready() -> bool {
-    let output = std::process::Command::new("mvn").arg("--version").output().unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but mvn does not run: {err}"));
+    // Through bash: Maven ships mvn.cmd on Windows, which Command::new("mvn") (mvn.exe only) cannot find. An explicit child PATH is searched first,
+    // so the lane's Git bash wins over System32's WSL launcher.
+    let output = std::process::Command::new("bash").env("PATH", std::env::var_os("PATH").unwrap_or_default()).args(["-c", "mvn --version"]).output().unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but mvn does not run: {err}"));
     let version = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(version.contains("Apache Maven 3.9.16") && version.contains("Java version: 21."), "the pinned toolchain is Maven 3.9.16 on Java 21; the host has: {version}");
     assert!(std::env::var("PROBATION_MAVEN_SEED").is_ok(), "PROBATION_MAVEN_SEED names the seeded plugin repository");
@@ -63,7 +65,7 @@ async fn mvn(dir: &Path, script: &str) -> (bool, String) {
         let script = format!("trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home; rm -rf {here}/.m2repo {here}/out; mkdir -p {here}/.m2repo {here}/home && cp -r {seed}/. {here}/.m2repo/ && {}", script.replace("/work", &here));
         let dir = dir.to_path_buf();
         return tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("bash").current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host mvn");
+            let output = std::process::Command::new("bash").env("PATH", std::env::var_os("PATH").unwrap_or_default()).current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host mvn");
             (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
         })
         .await

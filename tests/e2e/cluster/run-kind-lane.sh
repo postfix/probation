@@ -158,7 +158,7 @@ kubectl apply -f "$WORK_DIR/k/namespace.yaml"
 expect "namespace: a privileged pod is refused by Pod Security" bash -c "kubectl -n probation run bad --image=localhost/probation:kind --privileged --restart=Never --dry-run=server 2>&1 | grep -q 'violates PodSecurity'"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$WORK_DIR/tls.key" -out "$WORK_DIR/tls.crt" -subj "/CN=$ENDPOINT_NAME" -addext "subjectAltName=DNS:$ENDPOINT_NAME" -days 2
 kubectl -n probation create secret tls probation-tls --cert="$WORK_DIR/tls.crt" --key="$WORK_DIR/tls.key"
-printf 'prb_%s\n' "$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)" > "$WORK_DIR/service-key"
+printf 'prb_%s\n' "$(openssl rand -hex 16)" > "$WORK_DIR/service-key"
 kubectl -n probation create secret generic probation-service-key --from-file=service-key="$WORK_DIR/service-key"
 kubectl apply -f "$WORK_DIR/k/pvc.yaml"
 kubectl apply -k "$WORK_DIR/k"

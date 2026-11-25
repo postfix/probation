@@ -206,3 +206,28 @@ Authored against the round 3 diagnoses (job logs under `.probation-scratch/s30/d
 | 8 | native-clients win32 key check (review key-acl-sddl-la-alias, finding code-review-1-1) | `stack.mjs` `keyRefusalSteps`/`proveKeyRefusal`, run by `bringUp` on win32 before the service starts: `check-config` accepts the runner's own key, `icacls <key> /grant *S-1-5-32-545:(R)`, `check-config` must exit non-zero with `requires a private regular file`, `icacls <key> /remove *S-1-5-32-545` (also run if a step fails), `check-config` accepts again. The key's owner and DACL (SDDL plus the runner's USER SID) are already logged by `keyFileWarnings` before the checks. | `node tests/e2e/native/stack.test.mjs`: red (`does not provide an export named 'keyRefusalSteps'`), then `stack.test: ok`. Not run on Windows. |
 
 Predicted still to fail or unknown: darwin conan (item 5, cause unknown); service-windows beyond the two predicted fixes (the first hosted run to get past `powershell.exe` is untested); D1 stays OPEN until `kind calico` runs its phases.
+
+## Round 4 hosted results (runs 45609926985, 45609931606, 45609937338)
+
+- Passed now: tools win32/darwin/linux client builds and service-linux / service-macOS lanes (the round 3 installer-order fix held).
+- native win32-x64 never reached the W1 key check: `proveKeyRefusal` ran in the S1 stack test (binary = node) and failed with `Cannot find module ...check-config`. The real-server failure follows from it (same stack start).
+- service-windows upgrade: `C:\ProgramData\Probation\config\config.toml is owned by S-1-5-21-...-500, not by SYSTEM or the Administrators` (the installer set owners on directories only).
+- tools-host darwin Conan: recorder socket bound but not listening (lsof CLOSED); `HTTPServer.server_bind` calls `socket.getfqdn` between bind and listen.
+- tools-host linux Maven: 429 from repo.maven.apache.org on all 3 attempts.
+- tools-host win32 Maven: all 3 `maven_native` tests failed at `PROBATION_NATIVE_HOST=1 but mvn does not run: program not found` (Maven ships `mvn.cmd`; `Command::new("mvn")` finds only `.exe`).
+- kind calico: got 1 assertion, then the service key was rejected: `run-kind-lane.sh` built it with `base64|tr|head -c 32`, often under 32 characters; `src/config.rs` requires `prb_` + 32 alphanumerics.
+
+## Round 5 fixes (local, not yet run hosted)
+
+NOT committed, NOT pushed, NOT run on a hosted runner; each is a prediction until a hosted run confirms it.
+
+| # | Lane | Fix | Local check |
+|---|---|---|---|
+| 1 | service-windows | `install-service.ps1`: `Set-FileOwner` (`icacls /setowner *S-1-5-32-544`) on the config, blocklist and installed binary files. `install-service.sh` has no analogue (it chowns/chmods every file it creates; passed on Linux and macOS). | `tests/service_scripts.rs` `the_windows_installer_sets_the_owner_of_every_file_it_creates`: red then green |
+| 2 | native win32-x64 | `stack.mjs` runs the key proof through `hooks.proveKey` (default `proveKeyRefusal`), platform via `hooks.platform`; stack.test S1 passes `proveKey: () => {}` | `stack.test.mjs` S1b: red then green |
+| 3 | tools-host darwin Conan | `conan_recorder.py` `Server.server_bind` skips `getfqdn`; `conan_native.rs` polls the port (50 x 0.2 s) instead of `sleep 1`, diagnostics kept | recorder listens and answers ping locally; host path not run (no conan on this machine) |
+| 4 | tools-host linux Maven | seed from `https://maven-central.storage-download.googleapis.com/maven2/` (retry and cache kept) | actionlint |
+| 5 | kind calico | `run-kind-lane.sh` key = `prb_` + `openssl rand -hex 16`; no other `prb_` generator in tests/e2e, deploy, scripts (stack.mjs already uses randomBytes(16).toString("hex")) | `bash -n` |
+| 6 | tools-host win32 Maven | `maven_native.rs` probes `bash -c "mvn --version"`; both bash spawns get an explicit child `PATH` (Git bash before the WSL launcher) | `cargo test --test maven_native` (container path, Linux regression); host path not run here |
+
+Predicted still to fail or unknown: the host paths of Conan/Maven on Windows/macOS (untested locally); service-windows beyond the owner fix; D1 stays OPEN until kind calico's phases run.

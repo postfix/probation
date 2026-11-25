@@ -11,6 +11,7 @@ import http.server
 import json
 import os
 import re
+import socketserver
 import sys
 import time
 
@@ -142,4 +143,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send(201, b"", "text/plain")
 
 
-http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind calls socket.getfqdn between bind and listen, which can stall for a long time on macOS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
+Server(("127.0.0.1", PORT), Handler).serve_forever()

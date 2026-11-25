@@ -104,7 +104,9 @@ async fn seed() -> tempfile::TempDir {
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fixtures/conan_recorder.py"), dir.path().join("conan_recorder.py")).unwrap();
     let port = free_port();
     let script = format!(
-        "python3 /work/conan_recorder.py {port} /work/store /work/seed.log 2>/work/recorder.err & sleep 1; \
+        "python3 /work/conan_recorder.py {port} /work/store /work/seed.log 2>/work/recorder.err & \
+         ready=no; for i in $(seq 50); do if python3 -c \"import socket; socket.create_connection(('127.0.0.1', {port}), 0.2).close()\" 2>/dev/null; then ready=yes; break; fi; sleep 0.2; done; \
+         [ $ready = yes ] || {{ echo 'the conan recorder never listened on port {port} within 10 s'; cat /work/recorder.err; lsof -nP -iTCP:{port} 2>&1; exit 1; }}; \
          echo '--- diagnostics before conan remote login (port {port}) ---'; \
          lsof -nP -iTCP:{port} 2>&1; netstat -an 2>&1 | grep {port}; echo '--- recorder stderr ---'; cat /work/recorder.err 2>&1; echo '--- end diagnostics ---'; \
          conan remote add rec http://127.0.0.1:{port} && conan remote login rec user -p pass && cd /work/hello && \
