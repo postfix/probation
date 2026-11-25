@@ -13,6 +13,7 @@
   "encoding.test.py": 2,
   "go-fake.test.mjs": 35,
   "harness-engine.test.mjs": 3,
+  "lane_probe.test.py": 0,
   "linux-exec.test.mjs": 3,
   "lockfile.test.mjs": 11,
   "maven-fake.test.mjs": 25,

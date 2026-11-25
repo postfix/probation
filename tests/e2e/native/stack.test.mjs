@@ -98,7 +98,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   const events = [];
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
-    hooks: { trust: () => () => {}, staleTrust: () => events.push("stale trust removed"), lookup: async () => process.env.NATIVE_LANE_ADDR, hostsFile, mapHosts: true },
+    hooks: { platform: "win32", proveKey: () => {}, trust: () => () => {}, staleTrust: () => events.push("stale trust removed"), lookup: async () => process.env.NATIVE_LANE_ADDR, hostsFile, mapHosts: true },
   }), /probation exited/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n10.0.0.1 keep.example\n", "the stale marked line is gone, other lines are kept");
   assert.deepEqual(events, ["stale trust removed"]);
@@ -114,7 +114,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   writeFileSync(hostsFile, "127.0.0.1 localhost\n");
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
-    hooks: { trust: () => () => {}, staleTrust: () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: true },
+    hooks: { platform: "win32", proveKey: () => {}, trust: () => () => {}, staleTrust: () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: true },
   }), /still does not resolve to the lane address .* after the hosts file was written.*203\.0\.113\.9/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n", "the hosts file is put back");
   rmSync(dir, { recursive: true, force: true });
@@ -127,7 +127,7 @@ assert.equal(posixPath("/home/x/y"), "/home/x/y");
   writeFileSync(hostsFile, "127.0.0.1 localhost\n");
   await assert.rejects(startStack({
     binary: process.execPath, work: join(dir, "work"), npmPort: await free(), pypiPort: await free(),
-    hooks: { trust: () => () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: false },
+    hooks: { platform: "win32", proveKey: () => {}, trust: () => () => {}, lookup: async () => "203.0.113.9", hostsFile, mapHosts: false },
   }), /pypi\.org does not resolve to the lane address/);
   assert.equal(readFileSync(hostsFile, "utf8"), "127.0.0.1 localhost\n", "the hosts file was not touched");
   if (process.platform !== "win32") chmodSync(hostsFile, 0o640);

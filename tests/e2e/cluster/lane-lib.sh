@@ -27,9 +27,11 @@ finish() {
 refused_by_service() { local out; out=$(probe "$@" || true); grep -q NETWORK_NOT_ALLOWED <<<"$out"; }
 # The service answered and did not refuse the caller.
 admitted() { local out; out=$(probe "$@") && [ -n "$out" ] && ! grep -q NETWORK_NOT_ALLOWED <<<"$out"; }
-# Nothing answered at all (a layer in front dropped the packet).
-dropped() { local out; out=$(probe "$@" || true); [ -z "$out" ]; }
-dropped_or_refused() { local out; out=$(probe "$@" || true); [ -z "$out" ] || grep -q NETWORK_NOT_ALLOWED <<<"$out"; }
+# Nothing answered at all (a layer in front dropped the packet). Only curl's own "no answer" statuses (0 with an empty body, 7 refused,
+# 28 timeout, 52 empty reply, 56 reset) count: a probe that could not run (unbound variable, missing tool, usage error) is not a drop.
+no_answer_status() { case $1 in 0|7|28|52|56) return 0 ;; *) return 1 ;; esac; }
+dropped() { local out rc=0; out=$(probe "$@") || rc=$?; [ -z "$out" ] && no_answer_status "$rc"; }
+dropped_or_refused() { local out rc=0; out=$(probe "$@") || rc=$?; if grep -q NETWORK_NOT_ALLOWED <<<"$out"; then return 0; fi; [ -z "$out" ] && no_answer_status "$rc"; }
 # The address the service says it saw: the refusal names it ("this API key may not be used from ADDRESS").
 source_seen() { local out; out=$(probe "$@" || true); sed -n 's/.*may not be used from \([0-9A-Fa-f:.]*\).*/\1/p' <<<"$out" | sed -n 1p; }
 source_is() { local want=$1; shift; [ "$(source_seen "$@")" = "$want" ]; }

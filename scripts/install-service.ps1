@@ -110,22 +110,24 @@ function Get-ServiceSid([string]$ServiceName) {
   $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($ServiceName.ToUpperInvariant()))
   'S-1-5-80-' + ((0..4 | ForEach-Object { [BitConverter]::ToUInt32($hash, 4 * $_) }) -join '-')
 }
-# True when every entry that GRANTS access names SYSTEM, the Administrators, CREATOR OWNER or the service's own account.
-function Test-DaclPrivate([string]$Path) {
+# $null when every entry that GRANTS access names SYSTEM, the Administrators, CREATOR OWNER or the service's own account and every owner
+# is trusted; else the first offending item and SID, for the refusal message.
+function Get-DaclViolation([string]$Path) {
   $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', (Get-ServiceSid $Name))
   # The directory AND everything under it: a file inside that a user can read or replace makes the directory not private. A link
   # anywhere below is refused outright.
   $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue)
   foreach ($item in $items) {
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-    if ((Get-Acl -LiteralPath $item.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $TrustedOwnerSids) { return $false }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return "$($item.FullName) is a link" }
+    $owner = (Get-Acl -LiteralPath $item.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $TrustedOwnerSids) { return "$($item.FullName) is owned by $owner" }
     foreach ($rule in (Get-Acl -LiteralPath $item.FullName).Access) {
       if ($rule.AccessControlType -ne 'Allow') { continue }
       $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-      if ($sid -notin $allowed) { return $false }
+      if ($sid -notin $allowed) { return "$($item.FullName) grants access to $sid" }
     }
   }
-  return $true
+  return $null
 }
 
 function New-ProtectedDirectory([string]$Path) {
@@ -136,8 +138,8 @@ function New-ProtectedDirectory([string]$Path) {
       # An empty directory is ours to take over completely: its DACL is replaced, not trusted.
       Invoke-Native icacls @($Path, '/setowner', '*S-1-5-32-544')
       Invoke-Native icacls @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
-    } elseif (-not (Test-DaclPrivate $Path)) {
-      Die "$Path already holds files and its ACL grants access beyond SYSTEM, Administrators and the service account: it is not this installer's. Move it away or fix its ACL, then run this again"
+    } elseif ($violation = Get-DaclViolation $Path) {
+      Die "$Path already holds files and its ACL grants access beyond SYSTEM, Administrators and the service account ($violation): it is not this installer's. Move it away or fix its ACL, then run this again"
     }
     return
   }
@@ -272,7 +274,9 @@ function Install-BinaryFiles {
     # Beside the target, then renamed over it: a crash leaves one whole file.
     Copy-Item -LiteralPath $file -Destination "$target.new" -Force
     Move-Item -LiteralPath "$target.new" -Destination $target -Force
-    if (-not $existed) { Set-FileOwner $target; $Created.Add($target); Add-Record "file:$target" }
+    # The renamed copy is owned by the elevated user, replaced target or not.
+    Set-FileOwner $target
+    if (-not $existed) { $Created.Add($target); Add-Record "file:$target" }
   }
 }
 
@@ -453,7 +457,7 @@ switch ($Action) {
     Test-Config $Binary   # the new binary must accept the existing configuration before anything is replaced
     Stop-AndWait
     $files = @(Get-ChildItem -LiteralPath $BinDir -File | Where-Object { $_.Name -eq 'probation.exe' -or $_.Extension -eq '.dll' } | ForEach-Object { $_.FullName })
-    foreach ($f in $files) { Copy-Item -LiteralPath $f -Destination "$f.prev" -Force }
+    foreach ($f in $files) { Copy-Item -LiteralPath $f -Destination "$f.prev" -Force; Set-FileOwner "$f.prev" }
     try {
       Install-BinaryFiles
       Test-Config $BinPath
@@ -463,7 +467,7 @@ switch ($Action) {
     } catch {
       Say 'The upgrade failed: restoring the previous files'
       try { Stop-AndWait } catch { }
-      foreach ($f in $files) { if (Test-Path -LiteralPath "$f.prev") { Copy-Item -LiteralPath "$f.prev" -Destination $f -Force } }
+      foreach ($f in $files) { if (Test-Path -LiteralPath "$f.prev") { Copy-Item -LiteralPath "$f.prev" -Destination $f -Force; Set-FileOwner $f } }
       if (-not $NoStart) { try { Start-AndWait } catch { Write-Warning 'the previous service did not start either' } }
       throw
     }

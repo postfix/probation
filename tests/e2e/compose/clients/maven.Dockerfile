@@ -6,10 +6,13 @@
 ARG MAVEN_IMAGE=docker.io/library/maven:3.9-eclipse-temurin-21
 FROM ${MAVEN_IMAGE}
 RUN mkdir -p /opt/seed /opt/seed-m2 /opt/seed-repo \
- && printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2/</url></mirror></mirrors></settings>' > /opt/seed/settings.xml \
+ && printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://maven-central.storage-download.googleapis.com/maven2/</url></mirror></mirrors></settings>' > /opt/seed/settings.xml \
  && printf '%s\n' '<project><modelVersion>4.0.0</modelVersion><groupId>seed</groupId><artifactId>seed</artifactId><version>1</version><packaging>pom</packaging></project>' > /opt/seed/pom.xml \
  && cd /opt/seed \
- && mvn -B -q -s settings.xml -Dmaven.repo.local=/opt/seed-m2 org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies \
- && mvn -B -q -s settings.xml -Dmaven.repo.local=/opt/seed-m2 org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy-file -Dfile=pom.xml -DpomFile=pom.xml -Durl=file:///opt/seed-repo -DrepositoryId=seed \
+ && for i in 1 2 3 4 5; do \
+      { mvn -B -q -s settings.xml -Dmaven.repo.local=/opt/seed-m2 org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies \
+        && mvn -B -q -s settings.xml -Dmaven.repo.local=/opt/seed-m2 org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy-file -Dfile=pom.xml -DpomFile=pom.xml -Durl=file:///opt/seed-repo -DrepositoryId=seed; } && break; \
+      [ "$i" = 5 ] && exit 1; sleep $((i * 5)); \
+    done \
  && chmod -R a+rX /opt/seed-m2
 WORKDIR /work

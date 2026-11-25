@@ -182,7 +182,8 @@ expect "admission: a second Service is refused by the policy" bash -c "kubectl -
 #     allowed_peer_cidrs, and the service ADMITS the outsider. The SNAT address is observed, not assumed: on a CNI that masquerades with another address
 #     the first assertion fails and says so.
 probe() { # probe FROM ADDRESS
-  local from=$1 address=$2 cmd="curl -sk --max-time 10 --resolve $ENDPOINT_NAME:$NODEPORT:$address https://$ENDPOINT_NAME:$NODEPORT/v2/"
+  local from=$1 address=$2
+  local cmd="curl -sk --max-time 10 --resolve $ENDPOINT_NAME:$NODEPORT:$address https://$ENDPOINT_NAME:$NODEPORT/v2/"
   case $from in
     runner) bash -c "$cmd" ;;
     node:*) docker exec "${from#node:}" sh -c "$cmd" ;;
@@ -211,6 +212,9 @@ expect "D1: the approved worker 2 is admitted" admitted "node:$W2" "$IP1"
 expect "D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there" bash -c "out=\$(curl -sk --max-time 10 --resolve $ENDPOINT_NAME:$NODEPORT:$IP2 https://$ENDPOINT_NAME:$NODEPORT/v2/ || true); [ -z \"\$out\" ]"
 # The negative control: lift the admission policy for this one change and switch to Cluster.
 kubectl delete validatingadmissionpolicybinding probation-one-local-service
+# The API server's admission cache can still hold the binding for a moment and deny the patch: poll (bounded), then one unguarded patch so a
+# denial that persists aborts the lane.
+for _ in $(seq 1 30); do kubectl -n probation patch svc probation --type merge -p '{"spec":{"externalTrafficPolicy":"Cluster"}}' && break; sleep 2; done
 kubectl -n probation patch svc probation --type merge -p '{"spec":{"externalTrafficPolicy":"Cluster"}}'
 # First what the service SEES: an outsider through the UNAPPROVED worker 3's NodePort is masqueraded by kube-proxy; the refusal names the source.
 # The premise of the control (the source is the forwarding node's own address) is asserted from that, never assumed.

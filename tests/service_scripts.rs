@@ -792,3 +792,38 @@ fn the_windows_installer_sets_the_owner_of_every_file_it_creates() {
     }
     assert!(script.contains("function Set-FileOwner") && script.contains("/setowner"), "Set-FileOwner must run icacls /setowner");
 }
+
+/// Hosted upgrade round 5: `Copy-Item $f "$f.prev"` left a file owned by the elevated runner, which Test-DaclPrivate then refused.
+/// Every destination of a Copy-Item, Move-Item or Write-Text must get the Administrators owner, whether or not it is in `$Created`.
+/// Exempt: Save-Preserving, which rewrites the user's own package-manager settings, and `*.new` staging copies that a later
+/// Move-Item renames over their target (the target is checked).
+#[test]
+fn the_windows_installer_sets_the_owner_of_every_file_it_writes() {
+    let script = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install-service.ps1")).unwrap();
+    let mut in_user_settings = false;
+    let mut destinations = Vec::new();
+    for line in script.lines() {
+        if line.starts_with("function ") {
+            in_user_settings = line.starts_with("function Save-Preserving");
+        }
+        if in_user_settings || line.starts_with("function ") {
+            continue;
+        }
+        let dest = if let Some(rest) = line.split("-Destination ").nth(1) {
+            rest.split_whitespace().next()
+        } else if let Some(rest) = line.trim_start().strip_prefix("Write-Text ") {
+            rest.split_whitespace().next()
+        } else {
+            None
+        };
+        if let Some(dest) = dest
+            && !dest.trim_matches('"').ends_with(".new")
+        {
+            destinations.push(dest.to_string());
+        }
+    }
+    assert!(destinations.len() >= 5, "expected the config, blocklist, target, .prev and restore destinations, found {destinations:?}");
+    for dest in destinations {
+        assert!(script.contains(&format!("Set-FileOwner {dest}")), "the installer writes {dest} without Set-FileOwner {dest}");
+    }
+}
