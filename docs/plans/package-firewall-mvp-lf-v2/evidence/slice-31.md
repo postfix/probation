@@ -596,3 +596,152 @@ test credential_temp_windows_shared_parent_refused ... ok
 - tools darwin-arm64 (job 140054704148): 16 `credential_temp_*` ok lines. Lib: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 0.01s`; `tests/credential_temp.rs`: `test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s`. The 2 ignored are the two user-namespace tests, as in round 7 (`... ignored, needs unprivileged user namespaces with a subuid map (unshare --map-auto)`; both ran in round 7's netns job).
 
 **Overall.** Round 7 ran Cluster (https://github.com/postfix/probation/actions/runs/45840175551) and Native package clients (https://github.com/postfix/probation/actions/runs/45840181049), all jobs green on `0ff28f8`, and closed D1. Round 9 ran Native service (run 45861876167), all 12 jobs green on `2505bee`. Together, every hosted lane of Slice 30 has passed. Cluster and Native package clients have not been re-run on `2505bee`. Between `0ff28f8` and `2505bee` (`gh api repos/postfix/probation/compare/0ff28f8...2505bee`: 2 commits) only harness, installer and workflow files changed (`.github/workflows/native-service.yml`, `scripts/install-service.sh`, `tests/e2e/native/service-lifecycle.mjs` and `.test.mjs`, `tests/e2e/native/check_workflow.py` and `.test.py`, `tests/e2e/native/expected-asserts.json`, and this evidence file). `native-service.yml` was among them.
+
+## Round 10 hosted results (commit 8b33c38; Native service run 45869114815)
+
+Native service (https://github.com/postfix/probation/actions/runs/45869114815, `workflow_dispatch`) ran commit `8b33c38` (`8b33c3851be18fb55f380943182e0f007901f7e6`). Read with `gh run view 45869114815 --json headSha,conclusion,jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`, step results with `gh api repos/postfix/probation/actions/jobs/<id>`. Log lines are quoted without their timestamps. Conclusion success, 12 of 12 jobs success.
+
+| Job | Job id | Result | Failing step |
+|---|---|---|---|
+| docker-engine | 140079587779 | success | |
+| tools linux-x64 | 140079587739 | success | |
+| tools win32-x64 | 140079587920 | success | |
+| tools darwin-arm64 | 140079587881 | success | |
+| tools-linux | 140079587624 | success | |
+| tools-host linux-x64 | 140079587895 | success | |
+| tools-host win32-x64 | 140079587765 | success | |
+| tools-host darwin-arm64 | 140079587787 | success | |
+| service-linux | 140079587615 | success | |
+| service-macos aarch64-apple-darwin | 140079587942 | success | |
+| service-macos x86_64-apple-darwin | 140079587682 | success | |
+| service-windows | 140079587305 | success | |
+
+- service-windows (job 140079587305) printed every lifecycle note from `lifecycle install` to `lifecycle uninstall`, then the steps new in `8b33c38`:
+
+```
+lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+lifecycle uninstall: definition removed; config and data kept
+lifecycle owner: lock owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (NT SERVICE\Probation)
+lifecycle owner: state owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (NT SERVICE\Probation)
+lifecycle recovery: the documented rmdir removed a planted credential-reads junction; its target kept its file
+lifecycle owner refusal: a service-owned file in the config dir was refused; the install created nothing
+lifecycle owner refusal: a runner-owned file in the data dir was refused; the install created nothing
+lifecycle failed reinstall: check-config failure rolled back the binary and the install record
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+  What each line proves, by review round-5 finding (review `credential-temp-owner`):
+
+  | Line | Proves | Finding |
+  |---|---|---|
+  | `lifecycle owner: lock owner SID ...` and `... state owner SID ...` | the owner assertion: the lock and state files are owned by the service SID, now named `(NT SERVICE\Probation)` (round 9 printed `(service SIDs start with S-1-5-80)`) | code-review-5-2 |
+  | `lifecycle recovery: ...` | junction recovery: the documented `rmdir` removes a planted credential-reads junction without touching its target's file | security-5-1 |
+  | `lifecycle owner refusal: a service-owned file in the config dir was refused; ...` | the installer refuses a service-owned file in the config dir (per commit `8b33c38`'s message, the service SID is accepted as owner only below data and logs) | security-5-2 |
+  | `lifecycle owner refusal: a runner-owned file in the data dir was refused; ...` | the installer refuses a runner-owned (untrusted) file in the data dir | code-review-5-2 |
+  | `lifecycle failed reinstall: ...` | a failed reinstall rolls back the binary and the install record | code-review-5-3 |
+  | `lifecycle reinstall: ...` | the reinstall over kept data, as in round 9 | (round 9 evidence, repeated) |
+
+  The same seven steps from `owner` to `reinstall` are in the run's JSON summary line (`{"manager":"scm","platform":"win32","scope":"system","steps":[...]}`).
+
+- service-macos aarch64 (job 140079587942) and x86_64 (job 140079587682), each:
+
+```
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+- service-linux (job 140079587615):
+
+```
+[E2E-service-native] lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+e2e: 1 passed, 0 failed, 0 not run (suite pr)
+```
+
+Credential-reads step (`Windows and macOS credential-reads folder checks`, step 12, success in both jobs). The body the log prints under `##[group]Run` is identical, line for line (Windows after removing CR), to `CREDENTIAL_RUN` that `tests/e2e/native/check_workflow.py` pins at `8b33c38` (the step must run exactly that body: `cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1`, then the awk counts with `[ "$n" -ge 6 ]` on Windows and `[ "$n" -ge 16 ]` otherwise). So the step ran with the pinned body (security-5-3).
+
+- tools win32-x64 (job 140079587920): 6 `credential_temp_windows_*` ok lines (17 `credential_temp_*` ok lines in all). Lib: `test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.00s`; `tests\credential_temp.rs`: `test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s`. The six:
+
+```
+test credential_temp_windows_created_folders_are_private ... ok
+test credential_temp_windows_folder_owned_by_users_refused ... ok
+test credential_temp_windows_junction_parent_refused ... ok
+test credential_temp_windows_owner_must_be_a_trusted_sid ... ok
+test credential_temp_windows_parent_cannot_be_renamed_while_open ... ok
+test credential_temp_windows_shared_parent_refused ... ok
+```
+
+- tools darwin-arm64 (job 140079587881): 16 `credential_temp_*` ok lines. Lib: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 0.01s`; `tests/credential_temp.rs`: `test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s`. The 2 ignored are the two user-namespace tests, as in rounds 7 and 9 (`... ignored, needs unprivileged user namespaces with a subuid map (unshare --map-auto)`).
+
+Rust toolchain: all 12 jobs have step 3 `Install the pinned Rust toolchain` (success), and every one of the 12 job logs holds `rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt`. Spot check, tools-host darwin-arm64 (job 140079587787):
+
+```
+info: downloading 5 components
+  1.96.0-aarch64-apple-darwin installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+cargo 1.96.0 (30a34c682 2026-05-25)
+```
+
+Not in this section: Cluster run 45869155402 and Native package clients run 45869159787, both on `8b33c38`. When this was written, `gh run view` gave Cluster as completed (conclusion success) and Native package clients as in progress; neither run's job logs were read here. A later section records them.
+
+## Round 10 (continued): Cluster and Native package clients on 8b33c38
+
+Cluster (https://github.com/postfix/probation/actions/runs/45869155402) and Native package clients (https://github.com/postfix/probation/actions/runs/45869159787), both `workflow_dispatch`, ran commit `8b33c38` (`8b33c3851be18fb55f380943182e0f007901f7e6`). Read with `gh run view <id> --json headSha,conclusion,jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. Log lines are quoted without their timestamps. Both runs: conclusion success, 5 of 5 jobs success.
+
+| Run | Job | Job id | Result |
+|---|---|---|---|
+| Cluster | cri-node | 140079725333 | success |
+| Cluster | netns | 140079725783 | success |
+| Cluster | e2e-service-cluster | 140079725811 | success |
+| Cluster | static | 140079725844 | success |
+| Cluster | kind calico | 140079725952 | success |
+| Native package clients | real-server | 140079751773 | success |
+| Native package clients | native darwin-arm64 | 140079752127 | success |
+| Native package clients | native win32-x64 | 140079752156 | success |
+| Native package clients | linux-managed | 140079752167 | success |
+| Native package clients | native linux-x64 | 140079752193 | success |
+
+- `kind calico` (job 140079725952) ran every assertion, as in round 7: `assertions ran: 25, failed: 0`. The D1 lines:
+
+```
+ok   D1: an external host (the runner) is refused BY THE SERVICE with its own source address
+ok   D1: the unapproved worker 3 host is refused by the service
+ok   D1: a hostNetwork pod on the unapproved worker 3 is refused by the service
+ok   D1: a pod on the unapproved worker 3 is refused by the service
+ok   D1: the approved worker 2 is admitted
+ok   D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there
+ok   D1 negative control, premise: with Cluster the service sees the forwarding node's own address (172.18.0.3), not the outsider's
+ok   D1 negative control: with Cluster the outsider IS admitted through the approved node's NodePort (the check discriminates)
+ok   D1 restored: the ingress policy is back and the outsider gets no answer again
+ok   D1 restored: the approved node is admitted again
+assertions ran: 25, failed: 0
+```
+
+- `cri-node` (job 140079725333): `assertions ran: 6, failed: 0`. The six include `ok   verify-node.sh passes (real containerd config dump, the running daemon's environment)` and `ok   the same PullImage now fails and names the endpoint (no fallback to the registry)`.
+
+- `netns` (job 140079725783), step `cargo test --locked --test credential_temp -- --include-ignored`, `running 20 tests`: `test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s`. The two user-namespace tests ran and passed:
+
+```
+test credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir ... ok
+test credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user ... ok
+```
+
+- `static` (job 140079725844): `check_kubernetes.test: 86 checks hold (79 mutations, each producing exactly its named findings)`. `e2e-service-cluster` (job 140079725811): `e2e: 2 passed, 0 failed, 0 not run (suite pr)`.
+
+- Native package clients, each job's summary line:
+
+| Job | Job id | Summary line |
+|---|---|---|
+| native linux-x64 | 140079752193 | `native publishing passed: 75 checks on linux-x64` |
+| native darwin-arm64 | 140079752127 | `native publishing passed: 75 checks on darwin-arm64` |
+| native win32-x64 | 140079752156 | `native publishing passed: 75 checks on win32-x64` |
+| linux-managed | 140079752167 | `e2e: 6 passed, 0 failed, 0 not run (suite pr)` (and `native publishing passed: 75 checks on linux-x64` from E2E-publishing-native-linux) |
+| real-server | 140079751773 | `e2e: 1 passed, 0 failed, 0 not run (suite pr)`; `scenario result: {"ok":true,"message":"3 native jobs reached the real server; 45 snapshot requests"}` |
+
+  Rust toolchain: the native-clients jobs on `8b33c38` still used rustup's implicit auto-install. The three `native` jobs print it, e.g. darwin-arm64:
+
+```
+warn: the missing active toolchain `1.96.0-aarch64-apple-darwin` has been auto-installed
+info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+```
+
+  (win32-x64: `1.96.0-x86_64-pc-windows-msvc`; linux-x64: `1.96.0-x86_64-unknown-linux-gnu`.) `rustup toolchain install` is in none of the ten job logs (not found in log); no auto-install line is in linux-managed or real-server (not found in log). The explicit install step for `native-clients.yml` is on `a467999`, run 45872928739, which a later section records.
+
+**Overall.** Every hosted lane of Slice 30 passed on `8b33c38`: Native service (run 45869114815, 12 of 12), Cluster (run 45869155402, 5 of 5, `kind calico` 25/25 and `cri-node` 6/6) and Native package clients (run 45869159787, 5 of 5). D1 stays CLOSED on the round-5 review fixes.

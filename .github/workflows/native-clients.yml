@@ -58,6 +58,7 @@ jobs:
       # An explicit install: the first `cargo` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a hosted macOS
       # runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
       - name: Install the pinned Rust toolchain
+        shell: bash
         run: |
           rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
           cargo --version

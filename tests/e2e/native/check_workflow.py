@@ -92,7 +92,7 @@ UPLOAD_SHA = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 CHECK_ENV = {"CHECK_PYTHON": "${{ steps.checker_python.outputs.python-path }}"}
 NATIVE_STEPS = [
     CHECKOUT,
-    {"name": "Install the pinned Rust toolchain", "run": "rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\ncargo --version\n"},
+    {"name": "Install the pinned Rust toolchain", "shell": "bash", "run": "rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\ncargo --version\n"},
     SETUP_NODE, SETUP_PYTHON,
     {"name": "Python for the workflow checker", "id": "checker_python", "uses": "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
      "with": {"python-version": "3.13", "update-environment": False}},
@@ -370,8 +370,9 @@ for job_name, job in (service.get("jobs") or {}).items():
             need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
         need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
 # Every job that runs cargo installs rust-toolchain.toml's toolchain explicitly first: rustup's auto-install on the first cargo or rustup
-# call left a hosted macOS runner without cargo (run 45840170035). Held for native-service.yml, release.yml and rust.yml alike.
-channel = re.search(r'channel\s*=\s*"([^"]+)"', (root / "rust-toolchain.toml").read_text(encoding="utf-8")).group(1)
+# call left a hosted macOS runner without cargo (run 45840170035). Held for native-clients.yml, native-service.yml, release.yml and
+# rust.yml alike. The install step runs under bash (security-1-1): pwsh lets a failed install fall through to cargo's auto-install.
+channel = re.search(r'channel\s*=\s*"([^"]+)"', option("--rust-toolchain", root / "rust-toolchain.toml").read_text(encoding="utf-8")).group(1)
 rust_wf = load_strict(option("--rust", root / ".github/workflows/rust.yml").read_text(encoding="utf-8"))
 
 
@@ -383,6 +384,9 @@ def explicit_toolchain(label, workflow):
             continue
         installs = [i for i, st in enumerate(job_steps) if f"rustup toolchain install {channel} " in str(st.get("run", "")) and "cargo --version" in str(st.get("run", ""))]
         need(bool(installs) and installs[0] <= first_use, f"{label} job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo or rustup step")
+        if installs:
+            default_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell", ((workflow.get("defaults") or {}).get("run") or {}).get("shell"))
+            need(job_steps[installs[0]].get("shell", default_shell) == "bash", f"{label} job {job_name} must run its Rust toolchain install under `shell: bash`: under pwsh a failed `rustup toolchain install` passes when `cargo --version` then succeeds")
 
 
 explicit_toolchain("native-clients.yml", wf)
