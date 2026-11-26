@@ -132,7 +132,13 @@ assert.ok(assertTrusted.includes("$TrustedOwnerSids") && !assertTrusted.includes
 // The lifecycle driver reinstalls over the kept data and starts the service once more, on every OS.
 const lifecycle = readFileSync(join(here, "service-lifecycle.mjs"), "utf8");
 const reinstall = lifecycle.slice(lifecycle.indexOf("// 9."), lifecycle.indexOf("return evidence;"));
-assert.ok(reinstall.includes('"credential-reads"') && reinstall.includes('"reinstall over kept data"') && reinstall.includes("serviceUp") && reinstall.includes('"uninstall after reinstall"'), "the lifecycle reinstalls over the kept data, starts, waits until it listens and uninstalls");
+// credential-reads exists only in shared-service mode (src/lib.rs, service_policy); the lifecycle lane is standalone, so step 9 checks what a
+// standalone service always creates in the data dir (the lock file and the state directory) and, on Windows, logs their owner SID.
+assert.ok(!reinstall.includes('existsSync(join(dirs.data, "credential-reads"))'), "step 9 must not require credential-reads: the standalone service never creates it");
+assert.ok(reinstall.includes('join(dirs.data, "lock")') && reinstall.includes('join(dirs.data, "state")'), "step 9 checks the lock file and the state directory the standalone service creates");
+assert.ok(reinstall.includes("c.owner(") && reinstall.includes("S-1-5-80"), "step 9 prints the owner SID of the service's files on Windows");
+assert.ok(commands({ platform: "win32", ...base }).owner("C:\\d\\lock").join(" ").includes("GetOwner([System.Security.Principal.SecurityIdentifier])"), "the Windows owner command asks for the owner as a SID");
+assert.ok(reinstall.includes('"reinstall over kept data"') && reinstall.includes('"reinstall over kept data"') && reinstall.includes("serviceUp") && reinstall.includes('"uninstall after reinstall"'), "the lifecycle reinstalls over the kept data, starts, waits until it listens and uninstalls");
 assert.ok(reinstall.indexOf("c.install") < reinstall.indexOf("startAgain()") && reinstall.indexOf("startAgain()") < reinstall.indexOf("c.stop") && reinstall.indexOf("c.stop") < reinstall.indexOf("c.uninstall"), "reinstall, start, stop, uninstall in that order");
 // Braces and quotes balance, so a syntax slip is caught on any host.
 const code = ps1.replace(/<#[\s\S]*?#>/g, "").replace(/(^|\s)#[^\n]*/g, "$1");

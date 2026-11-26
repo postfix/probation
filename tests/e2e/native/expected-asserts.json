@@ -27,7 +27,7 @@
   "run-ids.test.mjs": 6,
   "run_tests.test.py": 11,
   "scope.test.mjs": 3,
-  "service-lifecycle.test.mjs": 86,
+  "service-lifecycle.test.mjs": 90,
   "snapshot-proxy.test.mjs": 58,
   "spawn-args.test.mjs": 38,
   "stack.test.mjs": 24

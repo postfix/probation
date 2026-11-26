@@ -367,6 +367,16 @@ for job_name, job in (service.get("jobs") or {}).items():
         if PIPE.search(run) and "pipefail" not in run and shell not in ("powershell", "pwsh"):
             need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
         need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
+# Every job that runs cargo installs rust-toolchain.toml's toolchain explicitly first: rustup's auto-install on the first cargo call left a
+# hosted macOS runner without cargo (run 45840170035).
+channel = re.search(r'channel\s*=\s*"([^"]+)"', (root / "rust-toolchain.toml").read_text(encoding="utf-8")).group(1)
+for job_name, job in (service.get("jobs") or {}).items():
+    job_steps = job.get("steps", []) or []
+    first_cargo = next((i for i, st in enumerate(job_steps) if re.search(r"\bcargo\b", str(st.get("run", "")))), None)
+    if first_cargo is None:
+        continue
+    installs = [i for i, st in enumerate(job_steps) if f"rustup toolchain install {channel} " in str(st.get("run", "")) and "cargo --version" in str(st.get("run", ""))]
+    need(bool(installs) and installs[0] <= first_cargo, f"native-service.yml job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo step")
 # The credential-reads step is the only Windows and macOS run of the credential_temp / key_acl tests: it must exist exactly once, in tools.
 tools_steps = ((service.get("jobs") or {}).get("tools") or {}).get("steps") or []
 need(sum(1 for step in tools_steps if step.get("name") == CREDENTIAL_STEP) == 1, f"native-service.yml job tools must have exactly one `{CREDENTIAL_STEP}` step (the Windows and macOS credential-reads evidence)")

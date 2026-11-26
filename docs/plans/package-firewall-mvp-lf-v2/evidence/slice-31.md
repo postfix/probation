@@ -289,3 +289,137 @@ ok   D1 restored: the approved node is admitted again
 
   The other ten that passed: Pod Security, 2 admission, 4 NetworkPolicy layer (no longer vacuous: the round 6 `probe()` fix held), `the approved node is admitted with the policy in force`, PDB 429, ReadWriteOncePod. The round 6 admission-cache retry held: the patch was first denied (`ValidatingAdmissionPolicy 'probation-one-local-service' ... denied request`), then `service/probation patched`. The failing step was the `rollout restart` after ReadWriteOncePod: `deployment.apps/probation restarted`, then `error: timed out waiting for the condition`. The new pod crash-looped (kubelet: `CrashLoopBackOff`); its container log (artifact `kind-calico`, worker `probation-6987cd9979-bhfn7`): `{"message":"cannot start","error":"the credential-reads directory is unsafe or cannot be created"}`.
 - Rows 21 to 25 (rollout Recreate, the four fence checks) did not run, so **D1 stays OPEN**. The credential-temp-owner request fixes the cause. It has not run hosted yet.
+
+## Round 7 hosted results (commit 0ff28f8; runs 45840170035, 45840175551, 45840181049)
+
+All three ran commit `0ff28f8` (`0ff28f85d46472acd2cb6a7145ade38e8f7f7d30`). Read with `gh run view <id> --json jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. Log lines are quoted without their timestamps.
+
+- Cluster (https://github.com/postfix/probation/actions/runs/45840175551): all 5 jobs success (static, netns, cri-node, e2e-service-cluster, kind calico). `kind calico` (job 139979455140) ran every assertion: `assertions ran: 25, failed: 0`. The D1 lines:
+
+```
+ok   D1: an external host (the runner) is refused BY THE SERVICE with its own source address
+ok   D1: the unapproved worker 3 host is refused by the service
+ok   D1: a hostNetwork pod on the unapproved worker 3 is refused by the service
+ok   D1: a pod on the unapproved worker 3 is refused by the service
+ok   D1: the approved worker 2 is admitted
+ok   D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there
+ok   D1 negative control, premise: with Cluster the service sees the forwarding node's own address (172.18.0.4), not the outsider's
+ok   D1 negative control: with Cluster the outsider IS admitted through the approved node's NodePort (the check discriminates)
+ok   D1 restored: the ingress policy is back and the outsider gets no answer again
+ok   D1 restored: the approved node is admitted again
+```
+
+  The admission-cache retry ran again (the patch was first denied: `The services "probation" is invalid: : ValidatingAdmissionPolicy 'probation-one-local-service' with binding 'probation-one-local-service' denied request: externalTrafficPolicy must be Local: ...`, then `service/probation patched`). The rollout that failed in round 6 passed (`deployment "probation" successfully rolled out`), and rows 21 to 25 ran:
+
+```
+ok   rollout: never two running pods at once (Recreate)
+ok   fence: a replacement pod appears once the node is lost
+ok   fence: the old pod object still exists
+ok   fence: the replacement is not Running while the old pod is not confirmed gone (RWOP)
+ok   fence: the replacement is held back by the ReadWriteOncePod claim (the scheduler's event), with a second pool node available
+assertions ran: 25, failed: 0
+```
+
+  `cri-node` (job 139979455016): `assertions ran: 6, failed: 0`.
+
+  `netns` (job 139979454635) ran the credential_temp namespace tests with the ignored ones included: step `cargo test --locked --test credential_temp -- --include-ignored`, `running 20 tests`:
+
+```
+test credential_temp_enospc_refuses_503_without_retry_after ... ok
+test credential_temp_loose_parent_is_tightened ... ok
+test credential_temp_body_file_never_has_a_name ... ok
+test credential_temp_folder_swapped_for_a_symlink_after_open_is_not_followed ... ok
+test credential_temp_optional_request_cap_refuses_413_without_retry_after ... ok
+test credential_temp_refusal_happens_before_first_body_byte ... ok
+test credential_temp_removed_on_abort_and_on_completion ... ok
+test credential_temp_parent_that_is_a_regular_file_refused ... ok
+test credential_temp_no_default_request_cap_streams_large_body ... ok
+test credential_temp_single_request_over_total_refuses_413_without_retry_after ... ok
+test credential_temp_startup_sweep_removes_orphans ... ok
+test credential_temp_startup_sweep_skips_locked_subdirectories ... ok
+test credential_temp_sweep_does_not_follow_a_symlinked_lock ... ok
+test credential_temp_sweep_removes_non_utf8_entries ... ok
+test credential_temp_symlinked_parent_refused ... ok
+test credential_temp_sweep_removes_old_lockless_directory_and_keeps_a_fresh_one ... ok
+test credential_temp_total_cap_refuses_503_with_retry_after ... ok
+test credential_temp_windows_owner_must_be_a_trusted_sid ... ok
+test credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir ... ok
+test credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user ... ok
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+```
+
+  The two user-namespace tests (`..._folder_owned_by_another_user_...`, `..._reopens_after_restart_when_data_dir_belongs_to_another_user`) ran and passed here; on macOS they are ignored (below).
+
+- **D1 CLOSED.** `kind calico` 25/25 (`assertions ran: 25, failed: 0`) and `cri-node` green (`assertions ran: 6, failed: 0`) on the same commit `0ff28f8` in the same run 45840175551: the closure condition of Slice 30 ("D1 closes only on a green `kind` and `cri-node` job"). The credential-reads ownership fix of `0ff28f8` removed the round 6 crash loop.
+
+- Native package clients (https://github.com/postfix/probation/actions/runs/45840181049): all 5 jobs success (native linux-x64, darwin-arm64, win32-x64, real-server, linux-managed). win32-x64 (job 139979474419): `native publishing passed: 75 checks on win32-x64`. The key proof, as in round 6:
+
+```
+warning: the ACL of C:\Users\RUNNER~1\AppData\Local\Temp\native-publish-izpS6F\stack\service.key as the runner sees it: SDDL=O:BAG:S-1-5-21-2315611937-1800655502-2561009274-513D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA) USER=S-1-5-21-2315611937-1800655502-2561009274-500
+key check: accepts the runner's own key: ok (exit 0)
+key check: grant Users read: ok (exit 0)
+key check: refuses a Users-readable key: ok (exit 1)
+key check: remove the grant: ok (exit 0)
+key check: accepts again: ok (exit 0)
+```
+
+- Native service (https://github.com/postfix/probation/actions/runs/45840170035): conclusion failure, 7 of 12 jobs success.
+
+| Job | Job id | Result | Failing step |
+|---|---|---|---|
+| docker-engine | 139979435343 | success | |
+| tools linux-x64 | 139979435444 | success | |
+| tools win32-x64 | 139979435425 | success | |
+| tools darwin-arm64 | 139979435359 | success | |
+| tools-linux | 139979435377 | success | |
+| tools-host linux-x64 | 139979435237 | success | |
+| tools-host win32-x64 | 139979435212 | success | |
+| tools-host darwin-arm64 | 139979435525 | failure | Native Maven and Conan clients (host tools) against the firewall |
+| service-linux | 139979435297 | failure | Native lifecycle and native package tools (system scope, systemd) |
+| service-macos aarch64-apple-darwin | 139979434827 | failure | Native lifecycle from the package (LaunchDaemon) |
+| service-macos x86_64-apple-darwin | 139979435291 | failure | Native lifecycle from the package (LaunchDaemon) |
+| service-windows | 139979435327 | failure | Native lifecycle from the package (Windows service as NT SERVICE\Probation, clean PATH) |
+
+  Credential-reads step (`Windows and macOS credential-reads folder checks`, success in both jobs; command `cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1`, the step needs >= 6 `credential_temp_windows_*` ok on Windows and >= 16 `credential_temp_*` ok):
+
+  - tools win32-x64: 6 `credential_temp_windows_*` ok lines (17 `credential_temp_*` ok lines in all). Lib: `test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.00s`; `tests\credential_temp.rs`: `test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s`. The six:
+
+```
+test credential_temp_windows_created_folders_are_private ... ok
+test credential_temp_windows_folder_owned_by_users_refused ... ok
+test credential_temp_windows_junction_parent_refused ... ok
+test credential_temp_windows_owner_must_be_a_trusted_sid ... ok
+test credential_temp_windows_parent_cannot_be_renamed_while_open ... ok
+test credential_temp_windows_shared_parent_refused ... ok
+```
+
+  - tools darwin-arm64: 16 `credential_temp_*` ok lines. Lib: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 0.02s`; `tests/credential_temp.rs`: `test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s`. The 2 ignored: `credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir ... ignored, needs unprivileged user namespaces with a subuid map (unshare --map-auto)` and `credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user ... ignored, ...` (same reason; both ran in netns above).
+
+  The four service jobs passed every lifecycle note from install to uninstall, then stopped on the same check. service-linux (job 139979435297):
+
+```
+[E2E-service-native] lifecycle install: config /etc/probation/config.toml
+[E2E-service-native] lifecycle permissions: config 640, config dir 750, data 700
+[E2E-service-native] lifecycle start: listening on 127.0.0.1:18320, pid 45110
+[E2E-service-native] lifecycle second owner: refused with status 1, data tree unchanged, first owner still listening
+[E2E-service-native] lifecycle stop: listener gone, still stopped after 8 s (longer than the restart delay)
+[E2E-service-native] lifecycle restart on same state: operator note and stored files intact
+[E2E-service-native] lifecycle crash: pid 45162 killed; restarted as 45182
+[E2E-service-native] lifecycle exit75: systemd restarted the unit after status 75 (NRestarts >= 2, Restart=on-failure, RestartSec=2), then the real binary came back on the same state
+[E2E-service-native] lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+[E2E-service-native] lifecycle uninstall: definition removed; config and data kept
+E2E FAIL E2E-service-native: Error: the service created credential-reads before the reinstall
+```
+
+  service-macos aarch64 (139979434827), service-macos x86_64 (139979435291) and service-windows (139979435327) print the same `lifecycle install` to `lifecycle uninstall` notes (each has `lifecycle upgrade: config.toml unchanged, binary replaced, previous kept` and `lifecycle uninstall: definition removed; config and data kept`; macOS exit75 is `launchd restarted the job after status 75 (runs >= 2, last exit code 75), then the real definition came back`; Windows exit75 is `same SCM failure path as the crash step (process ends without Stopped -> restart action); the real exit-75 push needs a policy server and is covered by E2E-settings-push`), then `service-lifecycle-run: the service created credential-reads before the reinstall` and `##[error]Process completed with exit code 1.` Cause (from the source, not the logs): credential-reads is created only in shared-service mode (`src/lib.rs:434`), so the check's premise is wrong, not the service; fix in progress, not in `0ff28f8`.
+
+  tools-host darwin-arm64 failed before any test, in step `PROBATION_NATIVE_STRICT=1 cargo test --locked --test maven_native --test conan_native ...`:
+
+```
+warn: the missing active toolchain `1.96.0-aarch64-apple-darwin` has been auto-installed
+error: 'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'.
+help: run `rustup component add --toolchain 1.96.0-aarch64-apple-darwin cargo` to install it
+##[error]Process completed with exit code 1.
+```
+
+  A runner toolchain flake (the log shows `info: downloading 2 components` for the auto-install, then no cargo); an explicit toolchain install step is in progress, not in `0ff28f8`. No Maven or Conan test ran in this job, so this round holds no host-tools evidence for darwin (round 5 and 6 had it green).

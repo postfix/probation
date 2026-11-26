@@ -86,6 +86,7 @@ export function commands({ platform, scope = "system", name = "probation", scrip
       query: ["sc.exe", "queryex", name],
       failureActions: ["sc.exe", "qfailure", name],
       acl: (path) => ["icacls", path],
+      owner: (path) => ps(`(Get-Acl -LiteralPath '${path}').GetOwner([System.Security.Principal.SecurityIdentifier]).Value`),
       kill: (pid) => ["taskkill", "/F", "/PID", String(pid)],
     };
   }
@@ -255,13 +256,19 @@ export async function exercise(ctx) {
   note("uninstall", "definition removed; config and data kept");
 
   // 9. Reinstall over the kept data and logs, which hold files the service itself created (on Windows owned by its virtual account).
-  expect(existsSync(join(dirs.data, "credential-reads")), "the service created credential-reads before the reinstall");
+  // credential-reads exists only in shared-service mode (src/lib.rs, service_policy); this lane is standalone, so check what a standalone
+  // service always creates under data_dir and keeps through stop and uninstall: the lock file (src/store/lock.rs) and the state directory.
+  expect(existsSync(join(dirs.data, "lock")) && existsSync(join(dirs.data, "state")), "the service created its lock file and state directory before the reinstall");
+  if (platform === "win32") {
+    // The evidence the installer's owner check needs: S-1-5-80-... is the service's virtual account, which Get-DaclViolation accepts.
+    for (const item of ["lock", "state"]) note("owner", `${item} owner SID ${run(c.owner(join(dirs.data, item))).stdout.trim()} (service SIDs start with S-1-5-80)`);
+  }
   must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "reinstall over kept data");
   startAgain();
   await waitFor("the reinstalled service listening", 30_000, serviceUp);
   must(c.stop, "stop after reinstall");
   must(c.uninstall(), "uninstall after reinstall");
-  note("reinstall", "install over kept data and logs accepted; the service started on its own credential-reads folder");
+  note("reinstall", "install over kept data and logs accepted; the service started over its own lock file and state directory");
   return evidence;
 }
 
