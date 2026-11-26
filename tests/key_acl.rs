@@ -149,3 +149,11 @@ fn the_runner_descriptor_is_private_once_la_is_resolved_and_was_not_by_spelling(
     let os = |t: &str| Some(if t == "LA" { user[0].to_owned() } else { t.to_owned() });
     assert!(private_violations_resolved(sddl, &user, &os).is_empty());
 }
+
+#[test]
+fn creator_owner_entry_grants_nobody_but_is_no_owner() {
+    const USER: &str = "S-1-5-21-1-2-3-1001";
+    let dacl = "D:P(A;OICI;FA;;;SY)(A;OICIIO;FA;;;CO)(A;OICIIO;FA;;;S-1-3-0)";
+    assert!(private_violations(&format!("O:BA{dacl}"), &[USER]).is_empty(), "an inherit-only CREATOR OWNER entry is private");
+    assert_eq!(private_violations(&format!("O:CO{dacl}"), &[USER]), ["owner CO"], "CREATOR OWNER is never a trusted owner");
+}

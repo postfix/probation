@@ -26,7 +26,7 @@ const SYSTEM_TRUSTEES: [&str; 4] = ["SY", "BA", "S-1-5-18", "S-1-5-32-544"];
 
 /// Everything that makes the key file not private: a NULL or missing DACL (everyone has access), an owner that is not SYSTEM,
 /// the Administrators or one of `allowed` (the account running the service, its virtual account `NT SERVICE\Probation`), and every
-/// access-allowed entry for a trustee outside those. Deny entries and inherited flags change nothing: an entry grants what it names.
+/// access-allowed entry for a trustee outside those. Deny entries and inherited flags change nothing: an entry grants what it names (a CREATOR OWNER entry names nobody).
 pub fn private_violations(sddl: &str, allowed: &[&str]) -> Vec<String> {
     private_violations_resolved(sddl, allowed, &spelled)
 }
@@ -45,6 +45,18 @@ pub fn private_violations_resolved(sddl: &str, allowed: &[&str], resolve: &dyn F
         None => found.push("(NULL DACL: everyone)".to_owned()),
     }
     found
+}
+
+/// True when the owner named by `sddl` is SYSTEM, the Administrators or one of `allowed` (after `resolve`). A descriptor with no owner
+/// is not trusted. Only the owner is judged.
+pub fn owner_trusted(sddl: &str, allowed: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> bool {
+    owner(sddl).is_some_and(|owner| is_allowed(&owner, allowed, resolve))
+}
+
+/// The DACL the service gives a folder it creates (the Windows counterpart of `mkdir` mode 0700): protected, so nothing is inherited from
+/// the data directory, and granting full control, to children as well, to SYSTEM, the Administrators and the account running the service.
+pub fn protected_dir_sddl(user_sid: &str) -> String {
+    format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user_sid})")
 }
 
 fn owner(sddl: &str) -> Option<String> {
@@ -119,16 +131,18 @@ fn dacl_start(sddl: &str) -> Option<usize> {
     None
 }
 
-/// The trustee of an access-allowed entry `type;flags;rights;object;inherit;sid`, or `None` for deny, audit and other entries.
+/// The trustee of an access-allowed entry `type;flags;rights;object;inherit;sid`, or `None` for deny, audit and other entries, and
+/// for CREATOR OWNER (`CO`, S-1-3-0): no token holds that SID, so the entry grants nothing here; inherited, it becomes the creator's
+/// own SID, judged as itself on the child (install-service.ps1 `Get-DaclViolation` allows it too). The owner is checked separately.
 fn granted_trustee(ace: &str) -> Option<String> {
     let fields: Vec<&str> = ace.split(';').collect();
-    (fields.len() >= 6 && matches!(fields[0], "A" | "OA" | "XA" | "ZA")).then(|| fields[5].to_owned())
+    (fields.len() >= 6 && matches!(fields[0], "A" | "OA" | "XA" | "ZA") && !matches!(fields[5], "CO" | "S-1-3-0")).then(|| fields[5].to_owned())
 }
 
-/// True when the DACL of `path` grants access beyond SYSTEM, Administrators and the current account.
+/// True when `descriptor_and_user` (path or handle) says the DACL grants access beyond SYSTEM, Administrators and the current account.
 #[cfg(windows)]
-pub fn is_shared(path: &std::path::Path) -> bool {
-    match windows_reader::descriptor_and_user(path) {
+fn shared_by(read: Result<(String, String), u32>) -> bool {
+    match read {
         Ok((sddl, user)) => {
             // The account running this process and the service's own virtual account (an elevated `check-config` at upgrade runs as
             // an administrator and finds the service's SID in the key's DACL).
@@ -140,16 +154,62 @@ pub fn is_shared(path: &std::path::Path) -> bool {
     }
 }
 
+/// True when the owner is SYSTEM, the Administrators, the running account or the service's virtual account.
+#[cfg(windows)]
+fn owner_trusted_by(read: Result<(String, String), u32>) -> bool {
+    match read {
+        Ok((sddl, user)) => {
+            let allowed = allowed_for(&user, &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()));
+            let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
+            owner_trusted(&sddl, &allowed, &windows_reader::resolve_sid)
+        }
+        Err(_) => false, // not readable: not provably the service's
+    }
+}
+
+/// True when the DACL of `path` grants access beyond SYSTEM, Administrators and the current account.
+#[cfg(windows)]
+pub fn is_shared(path: &std::path::Path) -> bool {
+    shared_by(windows_reader::descriptor_and_user(path))
+}
+
+/// [`is_shared`] for an open handle: the folder that was opened, not whatever the path names now.
+#[cfg(windows)]
+pub fn is_shared_handle(handle: std::os::windows::io::RawHandle) -> bool {
+    shared_by(windows_reader::descriptor_and_user_of(handle))
+}
+
+/// True when the owner of `path` is SYSTEM, the Administrators, the account running this process or the service's virtual account.
+#[cfg(windows)]
+pub fn owner_is_trusted(path: &std::path::Path) -> bool {
+    owner_trusted_by(windows_reader::descriptor_and_user(path))
+}
+
+/// [`owner_is_trusted`] for an open handle.
+#[cfg(windows)]
+pub fn owner_is_trusted_handle(handle: std::os::windows::io::RawHandle) -> bool {
+    owner_trusted_by(windows_reader::descriptor_and_user_of(handle))
+}
+
+/// Creates the folder `path` with the protected DACL of [`protected_dir_sddl`] from its first instant (the Windows counterpart of
+/// `mkdir` mode 0700): no moment with a DACL inherited from the data directory. `Err(183)` (ERROR_ALREADY_EXISTS) when it exists.
+#[cfg(windows)]
+pub fn create_protected_dir(path: &std::path::Path) -> Result<(), u32> {
+    windows_reader::create_protected_dir(path)
+}
+
 #[cfg(windows)]
 mod windows_reader {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    use windows_sys::Win32::Foundation::{LocalFree, HANDLE};
+    use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, ConvertStringSidToSidW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, ConvertStringSidToSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn text(pointer: *mut u16) -> String {
@@ -180,20 +240,47 @@ mod windows_reader {
 
     pub fn descriptor_and_user(path: &Path) -> Result<(String, String), u32> {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        // SAFETY: plain Win32 calls with valid out-pointers; every system allocation is freed with LocalFree.
+        // SAFETY: plain Win32 call with valid out-pointers; the descriptor is freed by `finish`.
         unsafe {
             let mut descriptor = std::ptr::null_mut();
             let status = GetNamedSecurityInfoW(wide.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut descriptor);
-            if status != 0 {
-                return Err(status);
-            }
+            finish(status, descriptor)
+        }
+    }
+
+    /// The same read for an open handle, so the answer is about the object that was opened, whatever its path names later.
+    pub fn descriptor_and_user_of(handle: std::os::windows::io::RawHandle) -> Result<(String, String), u32> {
+        // SAFETY: `handle` is open for the call (the caller holds it); out-pointers are valid; the descriptor is freed by `finish`.
+        unsafe {
+            let mut descriptor = std::ptr::null_mut();
+            let status = GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut descriptor);
+            finish(status, descriptor)
+        }
+    }
+
+    /// Turns the descriptor a read returned into its SDDL text and frees it; pairs it with the SID of the account this process runs as.
+    ///
+    /// # Safety
+    /// `descriptor` is the system allocation a successful `status` returned.
+    unsafe fn finish(status: u32, descriptor: *mut core::ffi::c_void) -> Result<(String, String), u32> {
+        if status != 0 {
+            return Err(status);
+        }
+        // SAFETY: valid descriptor and out-pointers; every system allocation is freed with LocalFree.
+        unsafe {
             let mut sddl = std::ptr::null_mut();
             let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, &mut sddl, std::ptr::null_mut());
             let sddl_text = (converted != 0).then(|| text(sddl));
             LocalFree(sddl.cast());
             LocalFree(descriptor);
-            let sddl_text = sddl_text.ok_or(1u32)?;
+            Ok((sddl_text.ok_or(1u32)?, current_user_sid()?))
+        }
+    }
 
+    /// The SID string of the account this process runs as.
+    fn current_user_sid() -> Result<String, u32> {
+        // SAFETY: plain Win32 calls with valid out-pointers; every system allocation is freed with LocalFree.
+        unsafe {
             let mut token: HANDLE = std::ptr::null_mut();
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
                 return Err(2);
@@ -213,7 +300,41 @@ mod windows_reader {
             }
             let sid = text(sid_text);
             LocalFree(sid_text.cast());
-            Ok((sddl_text, sid))
+            Ok(sid)
         }
+    }
+
+    /// Creates `path` with the protected DACL of `protected_dir_sddl`; `Err(code)` is the Win32 error (183: already exists).
+    pub fn create_protected_dir(path: &Path) -> Result<(), u32> {
+        let sddl: Vec<u16> = super::protected_dir_sddl(&current_user_sid()?).encode_utf16().chain(Some(0)).collect();
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: valid NUL-terminated inputs and out-pointer; the descriptor outlives the call and is freed with LocalFree.
+        unsafe {
+            let mut descriptor = std::ptr::null_mut();
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) == 0 {
+                return Err(5);
+            }
+            let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
+            let made = CreateDirectoryW(wide.as_ptr(), &attributes) != 0;
+            let error = if made { 0 } else { GetLastError() };
+            LocalFree(descriptor);
+            if made { Ok(()) } else { Err(error) }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protected_dir_dacl_grants_only_system_administrators_and_the_user() {
+        const USER: &str = "S-1-5-21-1-2-3-1001";
+        let dacl = protected_dir_sddl(USER);
+        assert!(dacl.starts_with("D:P("), "protected: nothing is inherited from the data directory");
+        assert_eq!(trustees_outside(&format!("O:BA{dacl}"), USER), Vec::<String>::new(), "no trustee beyond the three");
+        assert_eq!(private_violations(&format!("O:BA{dacl}"), &[USER]), Vec::<String>::new());
+        // A neighbour's DACL that also grants Users is told apart from it.
+        assert_eq!(trustees_outside(&format!("O:BA{dacl}(A;OICI;0x1301bf;;;BU)"), USER), ["BU"]);
     }
 }

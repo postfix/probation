@@ -77,7 +77,7 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
     // Row 25 fix round: not HTTP at all. `Win32::Security::Authorization` is the Windows access-control API module (it reads the DACL of the
     // service key file, src/key_acl.rs); the word is the module's name and no header or credential is involved.
     // W1 fix (D29) added `ConvertStringSidToSidW` to this import to resolve SDDL aliases such as `LA`; still the Windows ACL API, no HTTP header or credential.
-    ("src/key_acl.rs", "", "usewindows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW,ConvertSidToStringSidW,ConvertStringSidToSidW,GetNamedSecurityInfoW,SDDL_REVISION_1,SE_FILE_OBJECT,};", 1),
+    ("src/key_acl.rs", "", "usewindows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW,ConvertSidToStringSidW,ConvertStringSidToSidW,ConvertStringSecurityDescriptorToSecurityDescriptorW,GetNamedSecurityInfoW,GetSecurityInfo,SDDL_REVISION_1,SE_FILE_OBJECT,};", 1),
     ("src/config.rs", "struct Config", "siem_auth_header", 1),
     ("src/config.rs", "struct RawConfig", "siem_auth_header", 1),
     ("src/config.rs", "fn validate", "siem_auth_header", 4),

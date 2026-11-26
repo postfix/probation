@@ -80,6 +80,8 @@ jobs:
       # ubuntu-24.04 restricts unprivileged user namespaces; the real-TCP peer test (tests/cluster_peer.rs) needs them.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --locked --test cluster_peer -- --include-ignored
+      # The owner-refusal tests of the credential temp folder need a user namespace with a subuid map; they fail, never skip, without one.
+      - run: cargo test --locked --test credential_temp -- --include-ignored
       - run: cargo test --locked --test node_scripts
 
   e2e-service-cluster:

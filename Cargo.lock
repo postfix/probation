@@ -3072,6 +3072,7 @@ dependencies = [
  "probation-policy",
  "proptest",
  "reqwest",
+ "rustix 1.1.5",
  "rustls",
  "semver",
  "serde",

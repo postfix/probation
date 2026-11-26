@@ -344,6 +344,7 @@ need(service.get("permissions") == {"contents": "read"}, f"native-service.yml to
 need("secrets:" not in service_text and "secrets." not in service_text, "native-service.yml must not use secrets")
 ATTESTING_JOBS = ("service-macos", "service-windows")
 service_shell = (service.get("defaults") or {}).get("run", {}).get("shell")
+CREDENTIAL_STEP = "Windows and macOS credential-reads folder checks"
 SERVICE_HIDES = re.compile(r"\|\|\s*(true|:|/bin/true)\b|\bset\s+\+e|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
 for job_name, job in (service.get("jobs") or {}).items():
     need("continue-on-error" not in job, f"native-service.yml job {job_name} must not continue-on-error")
@@ -353,7 +354,11 @@ for job_name, job in (service.get("jobs") or {}).items():
     for step in job.get("steps", []) or []:
         need("continue-on-error" not in step, f"native-service.yml job {job_name} has a step with continue-on-error")
         if "if" in step:
-            need(str(step.get("if")) == "always()" and str(step.get("uses", "")).startswith("actions/upload-artifact@"), f"native-service.yml job {job_name} has a step `if: {step['if']}` (only upload-artifact may use always())")
+            # Two steps may run past a failed one: an upload-artifact with always(), and the credential-reads checks with !cancelled()
+            # (the step below still fails the job when its own tests fail; it only stops an earlier failure from hiding its result).
+            upload = str(step.get("if")) == "always()" and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+            credential = job_name == "tools" and step.get("name") == CREDENTIAL_STEP and str(step.get("if")) == "${{ !cancelled() }}" and "uses" not in step
+            need(upload or credential, f"native-service.yml job {job_name} has a step `if: {step['if']}` (only upload-artifact may use always(), and the tools job's `{CREDENTIAL_STEP}` step !cancelled())")
         if "uses" in step:
             need(re.search(r"@[0-9a-f]{40}$", str(step["uses"])) is not None, f"native-service.yml action not pinned to a commit SHA: {step['uses']}")
         run = str(step.get("run", ""))
@@ -362,6 +367,9 @@ for job_name, job in (service.get("jobs") or {}).items():
         if PIPE.search(run) and "pipefail" not in run and shell not in ("powershell", "pwsh"):
             need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
         need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
+# The credential-reads step is the only Windows and macOS run of the credential_temp / key_acl tests: it must exist exactly once, in tools.
+tools_steps = ((service.get("jobs") or {}).get("tools") or {}).get("steps") or []
+need(sum(1 for step in tools_steps if step.get("name") == CREDENTIAL_STEP) == 1, f"native-service.yml job tools must have exactly one `{CREDENTIAL_STEP}` step (the Windows and macOS credential-reads evidence)")
 
 # Recheck 1 (RC1-2): the static OpenSSL of the Windows release is vcpkg's x64-windows-static-md (static libraries, dynamic CRT = rustc's
 # default /MD). The plain x64-windows-static triplet links the static CRT, which the Rust binary does not use. Every Windows and macOS

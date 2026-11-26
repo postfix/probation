@@ -254,3 +254,38 @@ NOT committed, NOT pushed, NOT run on a hosted runner; each is a prediction unti
 | 5 | native win32-x64 | `stack.test.mjs` SEC1, C4 and S2 pass `platform: "win32"` and `proveKey: () => {}`. | `node tests/e2e/native/stack.test.mjs`: red `key check "accepts the runner's own key" failed (exit 1)` (SEC1 with `platform: "win32"` only), then `stack.test: ok`. |
 
 Predicted still to fail or unknown: service-windows beyond the owner fix (Test-DaclPrivate also checks DACL entries of the `.prev` copies, which inherit the directory DACL; untested on Windows); kind calico phases beyond the first NetworkPolicy assertions that ran vacuously now (D1 stays OPEN); W1 never reached on a real runner; the host paths of Conan/Maven on Windows/macOS.
+
+## Round 6 hosted results (runs 45630927523, 45630933007, 45630938476)
+
+All three ran commit `fd755e7` (`fd755e7b43d47989209add120a15850dbb5aa698`). Read with `gh run view <id> --json jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`, and the `kind-calico` artifact with `gh run download`.
+
+- Native service (https://github.com/postfix/probation/actions/runs/45630927523): all 12 jobs success (the run has 12 jobs, not 13): service-windows, service-linux, service-macos aarch64 and x86_64, docker-engine, tools linux/win32/darwin, tools-host linux/win32/darwin, tools-linux. service-windows (job 139263600951) ran the whole lifecycle, including `lifecycle upgrade: config.toml unchanged, binary replaced, previous kept` and `lifecycle uninstall: definition removed; config and data kept`: the round 6 owner fix held.
+- Native package clients (https://github.com/postfix/probation/actions/runs/45630938476): all 5 jobs success (native linux-x64, darwin-arm64, win32-x64, real-server, linux-managed). win32-x64 (job 139263641475): `native publishing passed: 75 checks on win32-x64`.
+- **W1 proved on a real Windows runner.** The key proof lines are in native-clients `native win32-x64` (job 139263641475). They are not in service-windows (`not found in log` for job 139263600951):
+
+```
+warning: the ACL of C:\Users\RUNNER~1\AppData\Local\Temp\native-publish-0JWi2n\stack\service.key as the runner sees it: SDDL=O:BAG:S-1-5-21-3414932011-3134797172-3625386099-513D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA) USER=S-1-5-21-3414932011-3134797172-3625386099-500
+key check: accepts the runner's own key: ok (exit 0)
+key check: grant Users read: ok (exit 0)
+key check: refuses a Users-readable key: ok (exit 1)
+key check: remove the grant: ok (exit 0)
+key check: accepts again: ok (exit 0)
+```
+
+- Cluster (https://github.com/postfix/probation/actions/runs/45630933007): static, netns, cri-node and e2e-service-cluster success; `kind calico` (job 139263651168) failure: `lane aborted with status 1 after 20 assertion(s)`. The planned total of 25 is not printed in the log (not found in log). The D1 lines that passed:
+
+```
+ok   D1: an external host (the runner) is refused BY THE SERVICE with its own source address
+ok   D1: the unapproved worker 3 host is refused by the service
+ok   D1: a hostNetwork pod on the unapproved worker 3 is refused by the service
+ok   D1: a pod on the unapproved worker 3 is refused by the service
+ok   D1: the approved worker 2 is admitted
+ok   D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there
+ok   D1 negative control, premise: with Cluster the service sees the forwarding node's own address (172.18.0.6), not the outsider's
+ok   D1 negative control: with Cluster the outsider IS admitted through the approved node's NodePort (the check discriminates)
+ok   D1 restored: the ingress policy is back and the outsider gets no answer again
+ok   D1 restored: the approved node is admitted again
+```
+
+  The other ten that passed: Pod Security, 2 admission, 4 NetworkPolicy layer (no longer vacuous: the round 6 `probe()` fix held), `the approved node is admitted with the policy in force`, PDB 429, ReadWriteOncePod. The round 6 admission-cache retry held: the patch was first denied (`ValidatingAdmissionPolicy 'probation-one-local-service' ... denied request`), then `service/probation patched`. The failing step was the `rollout restart` after ReadWriteOncePod: `deployment.apps/probation restarted`, then `error: timed out waiting for the condition`. The new pod crash-looped (kubelet: `CrashLoopBackOff`); its container log (artifact `kind-calico`, worker `probation-6987cd9979-bhfn7`): `{"message":"cannot start","error":"the credential-reads directory is unsafe or cannot be created"}`.
+- Rows 21 to 25 (rollout Recreate, the four fence checks) did not run, so **D1 stays OPEN**. The credential-temp-owner request fixes the cause. It has not run hosted yet.

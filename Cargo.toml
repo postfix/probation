@@ -117,12 +117,16 @@ percent-encoding = "=2.3.2"
 # The RubyGems index and quick-gemspec inflater (LS-F7); already in the lockfile through reqwest.
 flate2 = "1.1.10"
 
+# The credential temp folder is used through a directory descriptor (src/http/credential_temp.rs); already in the lockfile through tempfile.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
 # The service control manager adapter (src/main.rs `service`): the maintained binding rather than hand-written SCM FFI
 # (03-program-design.md, "Configuration, data and platform contract"). Pinned exactly, Windows builds only.
-[target.'cfg(windows)'.dependencies]
 windows-service = "=0.8.1"
 # The DACL of the service key file (src/key_acl.rs); already in the lockfile through other crates.
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # No `criterion`. The Gate 3 dependency table named it for the SPEC §12 benchmarks,

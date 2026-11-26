@@ -253,6 +253,15 @@ export async function exercise(ctx) {
   must(c.uninstall(), "uninstall");
   expect(existsSync(configFile) && existsSync(join(dirs.data, "operator-note.txt")), "uninstall kept config and data");
   note("uninstall", "definition removed; config and data kept");
+
+  // 9. Reinstall over the kept data and logs, which hold files the service itself created (on Windows owned by its virtual account).
+  expect(existsSync(join(dirs.data, "credential-reads")), "the service created credential-reads before the reinstall");
+  must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "reinstall over kept data");
+  startAgain();
+  await waitFor("the reinstalled service listening", 30_000, serviceUp);
+  must(c.stop, "stop after reinstall");
+  must(c.uninstall(), "uninstall after reinstall");
+  note("reinstall", "install over kept data and logs accepted; the service started on its own credential-reads folder");
   return evidence;
 }
 

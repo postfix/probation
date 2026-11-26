@@ -123,6 +123,17 @@ function upgradeBlock() { return ps1.slice(ps1.indexOf("'upgrade' {"), ps1.index
 // An upgrade restores the previous files on any failure after the swap and checks the new service stays up.
 const upgrade = ps1.slice(ps1.indexOf("'upgrade' {"), ps1.indexOf("'uninstall' {"));
 assert.ok(upgrade.includes("catch") && upgrade.includes(".prev") && upgrade.includes("Wait-Stays-Up") && upgrade.includes("Set-ServiceDefinition"));
+// A reinstall over kept data meets files the service created (owned by its virtual account): Get-DaclViolation accepts that owner,
+// Assert-Trusted (config, blocklist, key files, directory roots) stays strict.
+const daclViolation = ps1.slice(ps1.indexOf("function Get-DaclViolation"), ps1.indexOf("function New-ProtectedDirectory"));
+assert.ok(/\$owners = \$TrustedOwnerSids \+ \(Get-ServiceSid \$Name\)/.test(daclViolation) && daclViolation.includes("-notin $owners") && !daclViolation.includes("-notin $TrustedOwnerSids"), "Get-DaclViolation accepts the service SID as an owner");
+const assertTrusted = ps1.slice(ps1.indexOf("function Assert-Trusted"), ps1.indexOf("function Get-ServiceSid"));
+assert.ok(assertTrusted.includes("$TrustedOwnerSids") && !assertTrusted.includes("Get-ServiceSid"), "Assert-Trusted stays strict: the service never owns the config");
+// The lifecycle driver reinstalls over the kept data and starts the service once more, on every OS.
+const lifecycle = readFileSync(join(here, "service-lifecycle.mjs"), "utf8");
+const reinstall = lifecycle.slice(lifecycle.indexOf("// 9."), lifecycle.indexOf("return evidence;"));
+assert.ok(reinstall.includes('"credential-reads"') && reinstall.includes('"reinstall over kept data"') && reinstall.includes("serviceUp") && reinstall.includes('"uninstall after reinstall"'), "the lifecycle reinstalls over the kept data, starts, waits until it listens and uninstalls");
+assert.ok(reinstall.indexOf("c.install") < reinstall.indexOf("startAgain()") && reinstall.indexOf("startAgain()") < reinstall.indexOf("c.stop") && reinstall.indexOf("c.stop") < reinstall.indexOf("c.uninstall"), "reinstall, start, stop, uninstall in that order");
 // Braces and quotes balance, so a syntax slip is caught on any host.
 const code = ps1.replace(/<#[\s\S]*?#>/g, "").replace(/(^|\s)#[^\n]*/g, "$1");
 assert.equal((code.match(/\{/g) ?? []).length, (code.match(/\}/g) ?? []).length, "braces balance");

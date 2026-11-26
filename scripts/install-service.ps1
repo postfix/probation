@@ -111,16 +111,18 @@ function Get-ServiceSid([string]$ServiceName) {
   'S-1-5-80-' + ((0..4 | ForEach-Object { [BitConverter]::ToUInt32($hash, 4 * $_) }) -join '-')
 }
 # $null when every entry that GRANTS access names SYSTEM, the Administrators, CREATOR OWNER or the service's own account and every owner
-# is trusted; else the first offending item and SID, for the refusal message.
+# is SYSTEM, the Administrators, TrustedInstaller or the service's own account (what the service writes in its data and log directories
+# is owned by its virtual account); else the first offending item and SID, for the refusal message.
 function Get-DaclViolation([string]$Path) {
   $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', (Get-ServiceSid $Name))
+  $owners = $TrustedOwnerSids + (Get-ServiceSid $Name)
   # The directory AND everything under it: a file inside that a user can read or replace makes the directory not private. A link
   # anywhere below is refused outright.
   $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue)
   foreach ($item in $items) {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return "$($item.FullName) is a link" }
     $owner = (Get-Acl -LiteralPath $item.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($owner -notin $TrustedOwnerSids) { return "$($item.FullName) is owned by $owner" }
+    if ($owner -notin $owners) { return "$($item.FullName) is owned by $owner" }
     foreach ($rule in (Get-Acl -LiteralPath $item.FullName).Access) {
       if ($rule.AccessControlType -ne 'Allow') { continue }
       $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value

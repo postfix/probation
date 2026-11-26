@@ -293,6 +293,29 @@ jobs:
           cargo test --locked --test cargo_native --test go_native --test nuget_native --test rubygems_native -- --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tools.log"
           if grep -q "SKIPPED" "$RUNNER_TEMP/tools.log"; then echo "a native lane did NOT run"; grep "SKIPPED" "$RUNNER_TEMP/tools.log"; exit 1; fi
           grep -c "^test .* ok$" "$RUNNER_TEMP/tools.log"
+      # The credential-reads folder checks on the platforms rust.yml (ubuntu only) does not run: Windows (handle pinning, reparse points,
+      # owner and DACL) and macOS (the descriptor code with the named body-file fallback and the rustix `Dir` sweep). It runs even when the
+      # step above failed (`!cancelled()`), so one failed lane never hides this evidence; the job still fails with that step.
+      - name: Windows and macOS credential-reads folder checks
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "Linux runs these tests in rust.yml"
+          else
+            cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/credential-temp.log"
+            if [ "$RUNNER_OS" = Windows ]; then
+              n=$(awk '/^test credential_temp_windows_.* ok$/ {c++} END {print c+0}' "$RUNNER_TEMP/credential-temp.log")
+              [ "$n" -ge 6 ] || { echo "want 6 Windows credential-reads tests to pass, got $n"; exit 1; }
+            else
+              n=$(awk '/^test credential_temp_.* ok$/ {c++} END {print c+0}' "$RUNNER_TEMP/credential-temp.log")
+              [ "$n" -ge 16 ] || { echo "want 16 credential-reads tests to pass on $RUNNER_OS, got $n"; exit 1; }
+            fi
+          fi
 
   # Maven and Conan with the host's own pinned tools (the podman-image lane above is Linux only).
   tools-host:
