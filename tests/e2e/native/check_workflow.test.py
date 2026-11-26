@@ -42,6 +42,8 @@ def sub(old, new, count=1):
 
 mutations = {
     "matrix.exclude": sub("    runs-on: ${{ matrix.runner }}\n", "", 1).replace("            platform: win32-x64\n", "            platform: win32-x64\n        exclude:\n          - runner: windows-2025\n    runs-on: ${{ matrix.runner }}\n", 1),
+    "native-clients: the job without the explicit Rust toolchain install (run 45840170035)": sub("      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n", "", 1),
+    "native-clients: the toolchain install after the first cargo step (run 45840170035)": sub("      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n", "", 1).replace("      - name: Allow the low loopback port\n", "      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - name: Allow the low loopback port\n", 1),
     "job-level if": sub("    name: native ${{ matrix.platform }}\n", "    name: native ${{ matrix.platform }}\n    if: false\n"),
     "job-level permissions": sub("    timeout-minutes: 100\n", "    timeout-minutes: 100\n    permissions:\n      contents: write\n"),
     "|| true": sub("run: node tests/e2e/native/publishing.mjs", "run: node tests/e2e/native/publishing.mjs || true"),

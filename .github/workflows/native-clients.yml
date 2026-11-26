@@ -55,6 +55,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a hosted macOS
+      # runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.PIN_NODE }}

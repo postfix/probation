@@ -91,7 +91,9 @@ mkdir -p "$NATIVE_TEST_SCRATCH"
 UPLOAD_SHA = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 CHECK_ENV = {"CHECK_PYTHON": "${{ steps.checker_python.outputs.python-path }}"}
 NATIVE_STEPS = [
-    CHECKOUT, SETUP_NODE, SETUP_PYTHON,
+    CHECKOUT,
+    {"name": "Install the pinned Rust toolchain", "run": "rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\ncargo --version\n"},
+    SETUP_NODE, SETUP_PYTHON,
     {"name": "Python for the workflow checker", "id": "checker_python", "uses": "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
      "with": {"python-version": "3.13", "update-environment": False}},
     {"name": "Install the workflow checker's parser", "shell": "bash", "env": CHECK_ENV,
@@ -383,6 +385,7 @@ def explicit_toolchain(label, workflow):
         need(bool(installs) and installs[0] <= first_use, f"{label} job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo or rustup step")
 
 
+explicit_toolchain("native-clients.yml", wf)
 explicit_toolchain("native-service.yml", service)
 explicit_toolchain("release.yml", release_wf)
 explicit_toolchain("rust.yml", rust_wf)

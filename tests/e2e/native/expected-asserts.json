@@ -3,7 +3,7 @@
   "ca-script.test.mjs": 3,
   "cargo-fake.test.mjs": 34,
   "check_kubernetes.test.py": 85,
-  "check_workflow.test.py": 224,
+  "check_workflow.test.py": 226,
   "client-host.test.mjs": 28,
   "clients.test.mjs": 513,
   "cloudflared.test.mjs": 30,
