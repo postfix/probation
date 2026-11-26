@@ -433,13 +433,14 @@ service_start() {
     sm_linux is-active --quiet "$NAME.service" || { sm_linux --no-pager status "$NAME.service" || true; die "the service did not start"; }
   elif [ "$SCOPE" = system ]; then
     launchctl bootout "system/$LABEL" 2>/dev/null || true
-    launchctl bootstrap system "$DEF_FILE"
+    # enable first: an uninstall leaves the label disabled (service_disable), and bootstrapping a disabled label fails with error 5
     launchctl enable "system/$LABEL"
+    launchctl bootstrap system "$DEF_FILE"
     launchctl kickstart -k "system/$LABEL"
   else
     launchctl bootout "gui/$UID_NOW/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID_NOW" "$DEF_FILE"
     launchctl enable "gui/$UID_NOW/$LABEL"
+    launchctl bootstrap "gui/$UID_NOW" "$DEF_FILE"
     launchctl kickstart -k "gui/$UID_NOW/$LABEL"
   fi
 }

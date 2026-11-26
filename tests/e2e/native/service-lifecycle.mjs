@@ -217,6 +217,7 @@ export async function exercise(ctx) {
   expect(refused.status === 1 && /another instance holds the data-directory lock/.test(refused.stdout + refused.stderr), `second owner refused: ${refused.status} ${refused.stdout.slice(-300)}`);
   expect(JSON.stringify(treeHashes(dirs.data)) === JSON.stringify(before), "the refused second owner changed nothing in the data directory");
   expect(await listening(port), "the first owner keeps serving");
+  rmSync(second, { force: true }); // a runner-owned file left in config makes the Windows reinstall refuse (Get-DaclViolation)
   note("second owner", "refused with status 1, data tree unchanged, first owner still listening");
 
   // 5. Stop: no listener, no restart, state intact. Then start again on the same state.
@@ -263,8 +264,13 @@ export async function exercise(ctx) {
     // The evidence the installer's owner check needs: S-1-5-80-... is the service's virtual account, which Get-DaclViolation accepts.
     for (const item of ["lock", "state"]) note("owner", `${item} owner SID ${run(c.owner(join(dirs.data, item))).stdout.trim()} (service SIDs start with S-1-5-80)`);
   }
-  must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "reinstall over kept data");
-  startAgain();
+  // The operator's note was written by the runner (not the service); an operator's own file in the data dir is what the installer
+  // refuses on Windows, so it goes only now, after "uninstall kept config and data" needed it.
+  rmSync(join(dirs.data, "operator-note.txt"), { force: true });
+  // On darwin the reinstall runs without --no-start: the installer's own service_start (enable, then bootstrap, after the uninstall's
+  // `launchctl disable`) is the product path under test, so the harness bootstraps nothing there. Elsewhere --no-start/-NoStart holds it back.
+  must(c.install([...(platform === "darwin" ? [] : [noStartFlag(platform)]), ...(ctx.installExtra ?? [])]), "reinstall over kept data");
+  if (platform !== "darwin") startAgain();
   await waitFor("the reinstalled service listening", 30_000, serviceUp);
   must(c.stop, "stop after reinstall");
   must(c.uninstall(), "uninstall after reinstall");

@@ -423,3 +423,101 @@ help: run `rustup component add --toolchain 1.96.0-aarch64-apple-darwin cargo` t
 ```
 
   A runner toolchain flake (the log shows `info: downloading 2 components` for the auto-install, then no cargo); an explicit toolchain install step is in progress, not in `0ff28f8`. No Maven or Conan test ran in this job, so this round holds no host-tools evidence for darwin (round 5 and 6 had it green).
+
+## Round 8 hosted results (commit 653ee05; Native service run 45854045022)
+
+Native service (https://github.com/postfix/probation/actions/runs/45854045022) ran commit `653ee05` (`653ee05a8ec9ba76cee8541a28b76af9d5c9069b`). Read with `gh run view 45854045022 --json headSha,conclusion,jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. Log lines are quoted without their timestamps. Conclusion failure, 9 of 12 jobs success.
+
+| Job | Job id | Result | Failing step |
+|---|---|---|---|
+| docker-engine | 140027619031 | success | |
+| tools linux-x64 | 140027618976 | success | |
+| tools win32-x64 | 140027619207 | success | |
+| tools darwin-arm64 | 140027619053 | success | |
+| tools-linux | 140027618515 | success | |
+| tools-host linux-x64 | 140027619151 | success | |
+| tools-host win32-x64 | 140027619081 | success | |
+| tools-host darwin-arm64 | 140027619029 | success | |
+| service-linux | 140027618943 | success | |
+| service-macos aarch64-apple-darwin | 140027618915 | failure | Native lifecycle from the package (LaunchDaemon) |
+| service-macos x86_64-apple-darwin | 140027619088 | failure | Native lifecycle from the package (LaunchDaemon) |
+| service-windows | 140027619060 | failure | Native lifecycle from the package (Windows service as NT SERVICE\Probation, clean PATH) |
+
+- service-linux (job 140027618943) passed the whole lifecycle, including the reinstall over kept data that failed in round 7 (the round 7 fix, the reinstall step checks the service's own lock and state, held on Linux):
+
+```
+[E2E-service-native] lifecycle install: config /etc/probation/config.toml
+[E2E-service-native] lifecycle permissions: config 640, config dir 750, data 700
+[E2E-service-native] lifecycle start: listening on 127.0.0.1:18304, pid 45061
+[E2E-service-native] lifecycle second owner: refused with status 1, data tree unchanged, first owner still listening
+[E2E-service-native] lifecycle stop: listener gone, still stopped after 8 s (longer than the restart delay)
+[E2E-service-native] lifecycle restart on same state: operator note and stored files intact
+[E2E-service-native] lifecycle crash: pid 45114 killed; restarted as 45134
+[E2E-service-native] lifecycle exit75: systemd restarted the unit after status 75 (NRestarts >= 2, Restart=on-failure, RestartSec=2), then the real binary came back on the same state
+[E2E-service-native] lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+[E2E-service-native] lifecycle uninstall: definition removed; config and data kept
+[E2E-service-native] lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+e2e: 1 passed, 0 failed, 0 not run (suite pr)
+```
+
+- tools-host darwin-arm64 (job 140027619029) passed this time. The explicit toolchain step of `653ee05` (`rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt`, then `cargo --version`) installed cargo, so round 7's `'cargo' is not installed for the toolchain` did not recur:
+
+```
+info: downloading 5 components
+  1.96.0-aarch64-apple-darwin installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+cargo 1.96.0 (30a34c682 2026-05-25)
+```
+
+  Host-tools results (`tests/conan_native.rs`, then `tests/maven_native.rs`):
+
+```
+test conan_native_client_sends_only_allow_listed_headers ... conan sends these header names on a plain read: ["accept", "accept-encoding", "connection", "host", "user-agent", "x-client-anonymous-id"]
+test native_conan_finds_no_new_binary_of_an_old_recipe_and_takes_the_old_one ... ok
+test native_conan_takes_the_newest_allowed_version_of_a_range_and_the_pin_of_a_held_one_fails ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.20s
+test mvn_native_client_sends_only_allow_listed_headers ... mvn sends these header names on a plain read: ["accept-encoding", "cache-control", "connection", "host", "pragma", "user-agent"]
+test native_mvn_resolves_a_snapshot_to_the_newest_allowed_build ... ok
+test native_mvn_takes_the_newest_allowed_version_of_a_range_and_the_pin_of_a_held_one_fails ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.43s
+```
+
+  (The two header tests print `ok` on the following log line.) Darwin host-tools evidence is back (green in rounds 5 and 6, absent in round 7).
+
+- service-windows (job 140027619060) printed every lifecycle note from `lifecycle install` to `lifecycle uninstall` (as in round 7), then the two owner lines new in `653ee05`:
+
+```
+lifecycle owner: lock owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (service SIDs start with S-1-5-80)
+lifecycle owner: state owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (service SIDs start with S-1-5-80)
+```
+
+  This is the hosted proof that files the service creates are owned by its service SID (`S-1-5-80-...`, NT SERVICE\Probation), not by SYSTEM or the Administrators: the case the round 4 installer fix (`Get-DaclViolation` accepts the service SID) exists for. The reinstall over kept data then stopped:
+
+```
+ ==> The install failed: removing what this run created
+ install-service: C:\ProgramData\Probation\config already holds files and its ACL grants access beyond SYSTEM, 
+ Administrators and the service account (C:\ProgramData\Probation\config\second-owner.toml is owned by 
+ S-1-5-21-3414932011-3134797172-3625386099-500): it is not this installer's. Move it away or fix its ACL, then run this 
+ again
+##[error]Process completed with exit code 1.
+```
+
+  The installer refused correctly: `second-owner.toml` is a file the harness's `second owner` step left in the config folder, written by the elevated runner account (RID 500), and an untrusted owner in that folder is exactly what `Get-DaclViolation` must reject. This is a harness defect, not an installer defect; the fix is in progress, not in `653ee05`. The installer stopped at the config folder, so the data folder's service-owned files (the lock and state above) were not reached by `Get-DaclViolation` in this run: the acceptance of service-SID-owned files on reinstall is NOT yet proven hosted.
+
+- service-macos aarch64 (job 140027618915) and x86_64 (job 140027619088) printed the same notes up to `uninstall`. aarch64:
+
+```
+lifecycle install: config /etc/probation/config.toml
+lifecycle permissions: config 640, config dir 750, data 700
+lifecycle start: listening on 127.0.0.1:18080, pid 21046
+lifecycle second owner: refused with status 1, data tree unchanged, first owner still listening
+lifecycle stop: listener gone, still stopped after 8 s (longer than the restart delay)
+lifecycle restart on same state: operator note and stored files intact
+lifecycle crash: pid 21544 killed; restarted as 21833
+lifecycle exit75: launchd restarted the job after status 75 (runs >= 2, last exit code 75), then the real definition came back
+lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+lifecycle uninstall: definition removed; config and data kept
+service-lifecycle-run: start: launchctl bootstrap system /Library/LaunchDaemons/com.postfix.probation-ci-20575.plist -> 5: Bootstrap failed: 5: Input/output error
+##[error]Process completed with exit code 1.
+```
+
+  x86_64 is the same with `listening on 127.0.0.1:18080, pid 34493`, `crash: pid 34746 killed; restarted as 34827` and `service-lifecycle-run: start: launchctl bootstrap system /Library/LaunchDaemons/com.postfix.probation-ci-34267.plist -> 5: Bootstrap failed: 5: Input/output error`. No `lifecycle reinstall` or `lifecycle owner` line is in either macOS log (not found in log). Cause (a diagnosis from the source, not printed in the logs): on darwin the installer's `install` already bootstraps the LaunchDaemon, and step 9 of the harness then ran `launchctl bootstrap` again for the already-loaded job, which launchd answers with `5: Input/output error`. This is a harness defect, not a service or installer defect; the fix is in progress, not in `653ee05`.

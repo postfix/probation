@@ -144,4 +144,18 @@ assert.ok(reinstall.indexOf("c.install") < reinstall.indexOf("startAgain()") && 
 const code = ps1.replace(/<#[\s\S]*?#>/g, "").replace(/(^|\s)#[^\n]*/g, "$1");
 assert.equal((code.match(/\{/g) ?? []).length, (code.match(/\}/g) ?? []).length, "braces balance");
 assert.equal((code.match(/\(/g) ?? []).length, (code.match(/\)/g) ?? []).length, "parentheses balance");
+// Harness-owned files must not make the reinstall refuse: the installer's Get-DaclViolation rejects a runner-owned file in config or data.
+const body = lifecycle.slice(lifecycle.indexOf("// 4."), lifecycle.indexOf("// 5."));
+assert.ok(/rmSync\(second, \{ force: true \}\)/.test(body), "the second-owner step removes second-owner.toml once it is done");
+assert.ok(reinstall.indexOf('rmSync(join(dirs.data, "operator-note.txt")') < reinstall.indexOf("c.install"), "operator-note.txt is gone before the reinstall");
+assert.ok(!/^\s*startAgain\(\);/m.test(reinstall) && /platform !== "darwin"\) startAgain\(\)/.test(reinstall), "step 9 does not start again on darwin, where the install already bootstrapped the job");
+// macOS: uninstall runs `launchctl disable`, launchd keeps that override, and bootstrapping a disabled label fails with
+// `5: Input/output error`; so service_start enables the label BEFORE it bootstraps (system and gui branches).
+const sh = readFileSync(join(here, "../../../scripts/install-service.sh"), "utf8");
+const serviceStart = sh.slice(sh.indexOf("service_start() {"), sh.indexOf("service_disable() {"));
+for (const target of ['"system/$LABEL"', '"gui/$UID_NOW/$LABEL"']) {
+  assert.ok(serviceStart.indexOf(`launchctl enable ${target}`) !== -1 && serviceStart.indexOf(`launchctl enable ${target}`) < serviceStart.indexOf(target === '"system/$LABEL"' ? "launchctl bootstrap system" : 'launchctl bootstrap "gui/$UID_NOW"'), `service_start enables ${target} before bootstrapping it`);
+}
+// Step 9 on darwin reinstalls WITHOUT --no-start (the product path that must enable and bootstrap after an uninstall) and starts nothing itself.
+assert.ok(/platform === "darwin" \? \[\] : \[noStartFlag\(platform\)\]/.test(reinstall), "step 9 on darwin reinstalls without --no-start");
 console.log("service-lifecycle.test: ok");
