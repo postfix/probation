@@ -367,19 +367,44 @@ for job_name, job in (service.get("jobs") or {}).items():
         if PIPE.search(run) and "pipefail" not in run and shell not in ("powershell", "pwsh"):
             need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
         need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
-# Every job that runs cargo installs rust-toolchain.toml's toolchain explicitly first: rustup's auto-install on the first cargo call left a
-# hosted macOS runner without cargo (run 45840170035).
+# Every job that runs cargo installs rust-toolchain.toml's toolchain explicitly first: rustup's auto-install on the first cargo or rustup
+# call left a hosted macOS runner without cargo (run 45840170035). Held for native-service.yml, release.yml and rust.yml alike.
 channel = re.search(r'channel\s*=\s*"([^"]+)"', (root / "rust-toolchain.toml").read_text(encoding="utf-8")).group(1)
-for job_name, job in (service.get("jobs") or {}).items():
-    job_steps = job.get("steps", []) or []
-    first_cargo = next((i for i, st in enumerate(job_steps) if re.search(r"\bcargo\b", str(st.get("run", "")))), None)
-    if first_cargo is None:
-        continue
-    installs = [i for i, st in enumerate(job_steps) if f"rustup toolchain install {channel} " in str(st.get("run", "")) and "cargo --version" in str(st.get("run", ""))]
-    need(bool(installs) and installs[0] <= first_cargo, f"native-service.yml job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo step")
+rust_wf = load_strict(option("--rust", root / ".github/workflows/rust.yml").read_text(encoding="utf-8"))
+
+
+def explicit_toolchain(label, workflow):
+    for job_name, job in (workflow.get("jobs") or {}).items():
+        job_steps = job.get("steps", []) or []
+        first_use = next((i for i, st in enumerate(job_steps) if re.search(r"\b(cargo|rustup)\b", str(st.get("run", "")))), None)
+        if first_use is None:
+            continue
+        installs = [i for i, st in enumerate(job_steps) if f"rustup toolchain install {channel} " in str(st.get("run", "")) and "cargo --version" in str(st.get("run", ""))]
+        need(bool(installs) and installs[0] <= first_use, f"{label} job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo or rustup step")
+
+
+explicit_toolchain("native-service.yml", service)
+explicit_toolchain("release.yml", release_wf)
+explicit_toolchain("rust.yml", rust_wf)
 # The credential-reads step is the only Windows and macOS run of the credential_temp / key_acl tests: it must exist exactly once, in tools.
 tools_steps = ((service.get("jobs") or {}).get("tools") or {}).get("steps") or []
 need(sum(1 for step in tools_steps if step.get("name") == CREDENTIAL_STEP) == 1, f"native-service.yml job tools must have exactly one `{CREDENTIAL_STEP}` step (the Windows and macOS credential-reads evidence)")
+# Its body is pinned whole: a gutted body, a lowered pass count, a dropped key_acl filter or a flipped OS guard would keep the job green.
+CREDENTIAL_RUN = '''if [ "$RUNNER_OS" = Linux ]; then
+  echo "Linux runs these tests in rust.yml"
+else
+  cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/credential-temp.log"
+  if [ "$RUNNER_OS" = Windows ]; then
+    n=$(awk '/^test credential_temp_windows_.* ok$/ {c++} END {print c+0}' "$RUNNER_TEMP/credential-temp.log")
+    [ "$n" -ge 6 ] || { echo "want 6 Windows credential-reads tests to pass, got $n"; exit 1; }
+  else
+    n=$(awk '/^test credential_temp_.* ok$/ {c++} END {print c+0}' "$RUNNER_TEMP/credential-temp.log")
+    [ "$n" -ge 16 ] || { echo "want 16 credential-reads tests to pass on $RUNNER_OS, got $n"; exit 1; }
+  fi
+fi
+'''
+credential_runs = [str(step.get("run", "")) for step in tools_steps if step.get("name") == CREDENTIAL_STEP]
+need(credential_runs == [CREDENTIAL_RUN], f"native-service.yml `{CREDENTIAL_STEP}` must run exactly the credential_temp/key_acl tests with their pass counts (Windows 6, macOS 16)")
 
 # Recheck 1 (RC1-2): the static OpenSSL of the Windows release is vcpkg's x64-windows-static-md (static libraries, dynamic CRT = rustc's
 # default /MD). The plain x64-windows-static triplet links the static CRT, which the Rust binary does not use. Every Windows and macOS

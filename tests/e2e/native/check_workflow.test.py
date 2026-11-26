@@ -15,9 +15,10 @@ scratch = os.environ.get("NATIVE_TEST_SCRATCH")  # small text files only; unset 
 
 
 good_release = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+good_rust = (root / ".github/workflows/rust.yml").read_text(encoding="utf-8")
 
 
-def check(text, release=None):
+def check(text, release=None, rust=None):
     with tempfile.TemporaryDirectory(dir=scratch) as d:
         path = pathlib.Path(d) / "wf.yml"
         path.write_text(text, encoding="utf-8")
@@ -26,6 +27,10 @@ def check(text, release=None):
             rel = pathlib.Path(d) / "release.yml"
             rel.write_text(release, encoding="utf-8")
             command += ["--release", str(rel)]
+        if rust is not None:
+            rs = pathlib.Path(d) / "rust.yml"
+            rs.write_text(rust, encoding="utf-8")
+            command += ["--rust", str(rs)]
         r = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
         return r.returncode, r.stdout + r.stderr
 
@@ -186,7 +191,12 @@ release_mutations = {
     "stray job: skopeo copy (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: skopeo copy a b\n",
     "stray job: docker/login-action (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/login-action@0000000000000000000000000000000000000000\n",
     "stray job: softprops/action-gh-release (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: softprops/action-gh-release@0000000000000000000000000000000000000000\n",
+    "release.yml: the build job installs the toolchain only after `rustup target add` (code-review-5-4)": good_release.replace("      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - run: rustup target add ${{ matrix.target }}\n", "      - run: rustup target add ${{ matrix.target }}\n      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n", 1),
     "stray job: pypa/gh-action-pypi-publish (F5r2)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: pypa/gh-action-pypi-publish@0000000000000000000000000000000000000000\n",
+}
+# rust.yml mutations (code-review-5-4): the same toolchain rule, run through --rust.
+rust_mutations = {
+    "rust.yml: static-link without the explicit Rust toolchain install (code-review-5-4)": good_rust.replace("      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - uses: actions/setup-node", "      - uses: actions/setup-node", 1),
 }
 failed = []
 extra_checks = []  # the mutations of the loops below, counted into the final line (run_tests pins the total)
@@ -227,6 +237,11 @@ service_mutations = {
     "native-service: the credential-reads step dropped (renamed, no if)": swap("      - name: Windows and macOS credential-reads folder checks\n        if: ${{ !cancelled() }}\n", "      - name: Credential checks\n"),
     "native-service: a second credential-reads step in tools": swap("      - name: Verify the pinned tool versions\n", "      - name: Windows and macOS credential-reads folder checks\n        if: ${{ !cancelled() }}\n"),
     "native-service: the credential-reads allowance used outside tools": swap("      - name: Install and start the pinned Docker Engine\n", "      - name: Windows and macOS credential-reads folder checks\n        if: ${{ !cancelled() }}\n"),
+    "native-service: the credential-reads step runs nothing (echo ok) (security-5-3)": swap("cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1 2>&1 | tee \"$RUNNER_TEMP/credential-temp.log\"", "echo ok"),
+    "native-service: the Windows credential-reads pass count lowered (security-5-3)": swap('[ "$n" -ge 6 ]', '[ "$n" -ge 0 ]'),
+    "native-service: the macOS credential-reads pass count lowered (security-5-3)": swap('[ "$n" -ge 16 ]', '[ "$n" -ge 0 ]'),
+    "native-service: the key_acl tests filtered out (security-5-3)": swap("-- credential_temp key_acl --nocapture", "-- credential_temp --nocapture"),
+    "native-service: the credential-reads OS guard flipped (security-5-3)": swap('if [ "$RUNNER_OS" = Linux ]; then\n            echo "Linux runs these tests in rust.yml"', 'if [ "$RUNNER_OS" != Linux ]; then\n            echo "Linux runs these tests in rust.yml"'),
     "native-service: a secret": swap("env:\n  CARGO_TERM_COLOR: always\n", "env:\n  CARGO_TERM_COLOR: always\n  TOKEN: ${{ secrets.X }}\n"),
 }
 with tempfile.TemporaryDirectory(dir=scratch) as d:
@@ -278,6 +293,16 @@ assert code == 0, f"the known-good workflow must pass: {out}"
 for name, text in mutations.items():
     assert text != good, f"{name}: mutation changed nothing"
     code, out = check(text)
+    if code == 0:
+        failed.append(name)
+        print(f"BYPASS (checker passed): {name}")
+    elif "FAIL " not in out or "Traceback" in out:
+        failed.append(name)
+        print(f"CRASH (not a clean FAIL): {name}: {out[-300:]}")
+for name, rust_text in rust_mutations.items():
+    assert rust_text != good_rust, f"{name}: mutation changed nothing"
+    extra_checks.append(name)
+    code, out = check(good, rust=rust_text)
     if code == 0:
         failed.append(name)
         print(f"BYPASS (checker passed): {name}")

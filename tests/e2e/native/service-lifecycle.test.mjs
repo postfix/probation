@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { commands, failurePolicyProblems, installVerifyFlags, noStartFlag, parseLaunchctl, parseScQuery } from "./service-lifecycle.mjs";
+import { commands, failurePolicyProblems, installVerifyFlags, noStartFlag, parseLaunchctl, parseScQuery, serviceSid } from "./service-lifecycle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dirs = { config: "/c", data: "/d", log: "/l", bin: "/b" };
@@ -123,10 +123,10 @@ function upgradeBlock() { return ps1.slice(ps1.indexOf("'upgrade' {"), ps1.index
 // An upgrade restores the previous files on any failure after the swap and checks the new service stays up.
 const upgrade = ps1.slice(ps1.indexOf("'upgrade' {"), ps1.indexOf("'uninstall' {"));
 assert.ok(upgrade.includes("catch") && upgrade.includes(".prev") && upgrade.includes("Wait-Stays-Up") && upgrade.includes("Set-ServiceDefinition"));
-// A reinstall over kept data meets files the service created (owned by its virtual account): Get-DaclViolation accepts that owner,
+// A reinstall over kept data meets files the service created (owned by its virtual account): Get-DaclViolation accepts that owner strictly below the data and log directories only,
 // Assert-Trusted (config, blocklist, key files, directory roots) stays strict.
 const daclViolation = ps1.slice(ps1.indexOf("function Get-DaclViolation"), ps1.indexOf("function New-ProtectedDirectory"));
-assert.ok(/\$owners = \$TrustedOwnerSids \+ \(Get-ServiceSid \$Name\)/.test(daclViolation) && daclViolation.includes("-notin $owners") && !daclViolation.includes("-notin $TrustedOwnerSids"), "Get-DaclViolation accepts the service SID as an owner");
+assert.ok(daclViolation.includes("$serviceRoots = @(@($DataDir, $LogDir) | ForEach-Object") && daclViolation.includes("$serviceOwned = ($owner -eq $serviceSid) -and") && daclViolation.includes("if ($owner -notin $TrustedOwnerSids -and -not $serviceOwned)") && !daclViolation.includes("$owners"), "Get-DaclViolation accepts the service SID as an owner only below the data and log directories, and no other extra owner");
 const assertTrusted = ps1.slice(ps1.indexOf("function Assert-Trusted"), ps1.indexOf("function Get-ServiceSid"));
 assert.ok(assertTrusted.includes("$TrustedOwnerSids") && !assertTrusted.includes("Get-ServiceSid"), "Assert-Trusted stays strict: the service never owns the config");
 // The lifecycle driver reinstalls over the kept data and starts the service once more, on every OS.
@@ -136,7 +136,20 @@ const reinstall = lifecycle.slice(lifecycle.indexOf("// 9."), lifecycle.indexOf(
 // standalone service always creates in the data dir (the lock file and the state directory) and, on Windows, logs their owner SID.
 assert.ok(!reinstall.includes('existsSync(join(dirs.data, "credential-reads"))'), "step 9 must not require credential-reads: the standalone service never creates it");
 assert.ok(reinstall.includes('join(dirs.data, "lock")') && reinstall.includes('join(dirs.data, "state")'), "step 9 checks the lock file and the state directory the standalone service creates");
-assert.ok(reinstall.includes("c.owner(") && reinstall.includes("S-1-5-80"), "step 9 prints the owner SID of the service's files on Windows");
+assert.ok(reinstall.includes("c.owner(") && reinstall.includes("owner === sid"), "step 9 asserts, not just logs, that the service's files are owned by its SID");
+assert.equal(serviceSid("Probation"), "S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247", "serviceSid matches the hosted owner of the service's lock and state (round 8)");
+const refusal = reinstall.indexOf('"operator-note.txt is owned by S-1-5-21-"');
+assert.ok(refusal !== -1 && refusal < reinstall.indexOf('rmSync(join(dirs.data, "operator-note.txt")'), "step 9 runs the owner refusal on Windows before the note is removed");
+// security-5-1: the documented Windows recovery command is the one the lifecycle runs on a planted junction, and chown -R is gone.
+const ops = readFileSync(join(here, "../../../docs/operations.md"), "utf8");
+assert.ok(ops.includes('cmd /c rmdir /s /q "<data dir>\\credential-reads"') && !ops.includes("`chown -R` that folder") && reinstall.includes('"rmdir", "/s", "/q", planted'), "the documented Windows recovery command is the one the lifecycle runs, and chown -R is gone");
+// security-5-2: a service-owned file in the config dir (where the service can only read) is refused on Windows.
+assert.ok(reinstall.includes('`service-owned.txt is owned by ${sid}`') && ops.includes("a service-owned file in the config or program directory, where the service can only read, is refused"), "step 9 refuses a service-owned config file, and the docs say so");
+// code-review-5-3: a new install record is owned by the Administrators and removed by a rollback; step 9 forces a failed reinstall.
+const addRecord = ps1.slice(ps1.indexOf("function Add-Record"), ps1.indexOf("function Test-Recorded"));
+assert.ok(addRecord.includes("Set-FileOwner $Manifest") && addRecord.includes("$Created.Add($Manifest)"), "a new install record is owned by the Administrators and removed by a rollback");
+const forced = reinstall.indexOf('"a reinstall that fails check-config"');
+assert.ok(forced !== -1 && forced > reinstall.indexOf('rmSync(join(dirs.data, "operator-note.txt")') && forced < reinstall.indexOf('"reinstall over kept data"'), "step 9 forces a failed reinstall on Windows after the note is gone and before the real reinstall");
 assert.ok(commands({ platform: "win32", ...base }).owner("C:\\d\\lock").join(" ").includes("GetOwner([System.Security.Principal.SecurityIdentifier])"), "the Windows owner command asks for the owner as a SID");
 assert.ok(reinstall.includes('"reinstall over kept data"') && reinstall.includes('"reinstall over kept data"') && reinstall.includes("serviceUp") && reinstall.includes('"uninstall after reinstall"'), "the lifecycle reinstalls over the kept data, starts, waits until it listens and uninstalls");
 assert.ok(reinstall.indexOf("c.install") < reinstall.indexOf("startAgain()") && reinstall.indexOf("startAgain()") < reinstall.indexOf("c.stop") && reinstall.indexOf("c.stop") < reinstall.indexOf("c.uninstall"), "reinstall, start, stop, uninstall in that order");
@@ -147,7 +160,8 @@ assert.equal((code.match(/\(/g) ?? []).length, (code.match(/\)/g) ?? []).length,
 // Harness-owned files must not make the reinstall refuse: the installer's Get-DaclViolation rejects a runner-owned file in config or data.
 const body = lifecycle.slice(lifecycle.indexOf("// 4."), lifecycle.indexOf("// 5."));
 assert.ok(/rmSync\(second, \{ force: true \}\)/.test(body), "the second-owner step removes second-owner.toml once it is done");
-assert.ok(reinstall.indexOf('rmSync(join(dirs.data, "operator-note.txt")') < reinstall.indexOf("c.install"), "operator-note.txt is gone before the reinstall");
+const noteGone = reinstall.indexOf('rmSync(join(dirs.data, "operator-note.txt")');
+assert.ok(noteGone !== -1 && noteGone < reinstall.indexOf('"reinstall over kept data"'), "operator-note.txt is gone before the real reinstall");
 assert.ok(!/^\s*startAgain\(\);/m.test(reinstall) && /platform !== "darwin"\) startAgain\(\)/.test(reinstall), "step 9 does not start again on darwin, where the install already bootstrapped the job");
 // macOS: uninstall runs `launchctl disable`, launchd keeps that override, and bootstrapping a disabled label fails with
 // `5: Input/output error`; so service_start enables the label BEFORE it bootstraps (system and gui branches).

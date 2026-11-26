@@ -111,18 +111,21 @@ function Get-ServiceSid([string]$ServiceName) {
   'S-1-5-80-' + ((0..4 | ForEach-Object { [BitConverter]::ToUInt32($hash, 4 * $_) }) -join '-')
 }
 # $null when every entry that GRANTS access names SYSTEM, the Administrators, CREATOR OWNER or the service's own account and every owner
-# is SYSTEM, the Administrators, TrustedInstaller or the service's own account (what the service writes in its data and log directories
-# is owned by its virtual account); else the first offending item and SID, for the refusal message.
+# is SYSTEM, the Administrators or TrustedInstaller, or, strictly below the data or log directory, the service's own account (what the
+# service writes there is owned by its virtual account; it can only read the config and program directories, so a file it owns there
+# did not come from this installer); else the first offending item and SID, for the refusal message.
 function Get-DaclViolation([string]$Path) {
-  $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', (Get-ServiceSid $Name))
-  $owners = $TrustedOwnerSids + (Get-ServiceSid $Name)
+  $serviceSid = Get-ServiceSid $Name
+  $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', $serviceSid)
+  $serviceRoots = @(@($DataDir, $LogDir) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' })
   # The directory AND everything under it: a file inside that a user can read or replace makes the directory not private. A link
   # anywhere below is refused outright.
   $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue)
   foreach ($item in $items) {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return "$($item.FullName) is a link" }
     $owner = (Get-Acl -LiteralPath $item.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($owner -notin $owners) { return "$($item.FullName) is owned by $owner" }
+    $serviceOwned = ($owner -eq $serviceSid) -and @($serviceRoots | Where-Object { $item.FullName.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+    if ($owner -notin $TrustedOwnerSids -and -not $serviceOwned) { return "$($item.FullName) is owned by $owner" }
     foreach ($rule in (Get-Acl -LiteralPath $item.FullName).Access) {
       if ($rule.AccessControlType -ne 'Allow') { continue }
       $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
@@ -155,7 +158,12 @@ function New-ProtectedDirectory([string]$Path) {
   Assert-Trusted $Path
 }
 
-function Add-Record([string]$Line) { [IO.File]::AppendAllText($Manifest, "$Line`r`n", $Utf8) }
+function Add-Record([string]$Line) {
+  $new = -not (Test-Path -LiteralPath $Manifest)
+  [IO.File]::AppendAllText($Manifest, "$Line`r`n", $Utf8)
+  # A record this run starts is owned by the Administrators like every file it writes, and a failed install removes it with the rest.
+  if ($new) { Set-FileOwner $Manifest; $Created.Add($Manifest) }
+}
 function Test-Recorded([string]$Line) { (Test-Path -LiteralPath $Manifest) -and ((Read-Text $Manifest) -split "`r?`n" -contains $Line) }
 
 # The service account exists only once the service does, so its ACEs are added after the service is registered.

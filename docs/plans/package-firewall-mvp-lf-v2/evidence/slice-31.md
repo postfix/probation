@@ -521,3 +521,78 @@ service-lifecycle-run: start: launchctl bootstrap system /Library/LaunchDaemons/
 ```
 
   x86_64 is the same with `listening on 127.0.0.1:18080, pid 34493`, `crash: pid 34746 killed; restarted as 34827` and `service-lifecycle-run: start: launchctl bootstrap system /Library/LaunchDaemons/com.postfix.probation-ci-34267.plist -> 5: Bootstrap failed: 5: Input/output error`. No `lifecycle reinstall` or `lifecycle owner` line is in either macOS log (not found in log). Cause (a diagnosis from the source, not printed in the logs): on darwin the installer's `install` already bootstraps the LaunchDaemon, and step 9 of the harness then ran `launchctl bootstrap` again for the already-loaded job, which launchd answers with `5: Input/output error`. This is a harness defect, not a service or installer defect; the fix is in progress, not in `653ee05`.
+
+## Round 9 hosted results (commit 2505bee; Native service run 45861876167)
+
+Native service (https://github.com/postfix/probation/actions/runs/45861876167) ran commit `2505bee` (`2505bee609804ad644490fd84f09f6cc0d68fc80`). Read with `gh run view 45861876167 --json headSha,conclusion,jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. Log lines are quoted without their timestamps. Conclusion success, 12 of 12 jobs success.
+
+| Job | Job id | Result | Failing step |
+|---|---|---|---|
+| docker-engine | 140054703620 | success | |
+| tools linux-x64 | 140054704195 | success | |
+| tools win32-x64 | 140054704424 | success | |
+| tools darwin-arm64 | 140054704148 | success | |
+| tools-linux | 140054704072 | success | |
+| tools-host linux-x64 | 140054704227 | success | |
+| tools-host win32-x64 | 140054704261 | success | |
+| tools-host darwin-arm64 | 140054704326 | success | |
+| service-linux | 140054704231 | success | |
+| service-macos aarch64-apple-darwin | 140054704122 | success | |
+| service-macos x86_64-apple-darwin | 140054703941 | success | |
+| service-windows | 140054704284 | success | |
+
+- service-windows (job 140054704284):
+
+```
+lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+lifecycle uninstall: definition removed; config and data kept
+lifecycle owner: lock owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (service SIDs start with S-1-5-80)
+lifecycle owner: state owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (service SIDs start with S-1-5-80)
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+  This is the hosted proof of the round 4 installer fix that round 8 could not reach: the reinstall over kept data whose lock and state are owned by the service SID `S-1-5-80-3327871205-...` (NT SERVICE\Probation) was accepted. Round 8's refusal (`already holds files and its ACL grants access beyond SYSTEM, Administrators and the service account`) is not in this log (not found in log).
+
+- service-macos aarch64 (job 140054704122):
+
+```
+lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+lifecycle uninstall: definition removed; config and data kept
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+- service-macos x86_64 (job 140054703941):
+
+```
+lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+lifecycle uninstall: definition removed; config and data kept
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+  `lifecycle owner` is printed on Windows only (not found in log for either macOS job). Both macOS jobs prove the round 8 product fix: `scripts/install-service.sh` `service_start` now runs `launchctl enable` before `launchctl bootstrap` (diff of `2505bee`), so a reinstall starts after an uninstall disabled the label. Round 8's `Bootstrap failed: 5: Input/output error` is in neither log (not found in log). The `launchctl enable` call itself is not echoed (not found in log); the `lifecycle reinstall` line is the evidence.
+
+- service-linux (job 140054704231):
+
+```
+[E2E-service-native] lifecycle upgrade: config.toml unchanged, binary replaced, previous kept
+[E2E-service-native] lifecycle uninstall: definition removed; config and data kept
+[E2E-service-native] lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+e2e: 1 passed, 0 failed, 0 not run (suite pr)
+```
+
+Credential-reads step (command `cargo test --locked --lib --test credential_temp -- credential_temp key_acl --nocapture --test-threads=1`):
+
+- tools win32-x64 (job 140054704424): 6 `credential_temp_windows_*` ok lines (17 `credential_temp_*` ok lines in all). Lib: `test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.00s`; `tests\credential_temp.rs`: `test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s`. The six:
+
+```
+test credential_temp_windows_created_folders_are_private ... ok
+test credential_temp_windows_folder_owned_by_users_refused ... ok
+test credential_temp_windows_junction_parent_refused ... ok
+test credential_temp_windows_owner_must_be_a_trusted_sid ... ok
+test credential_temp_windows_parent_cannot_be_renamed_while_open ... ok
+test credential_temp_windows_shared_parent_refused ... ok
+```
+
+- tools darwin-arm64 (job 140054704148): 16 `credential_temp_*` ok lines. Lib: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 0.01s`; `tests/credential_temp.rs`: `test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s`. The 2 ignored are the two user-namespace tests, as in round 7 (`... ignored, needs unprivileged user namespaces with a subuid map (unshare --map-auto)`; both ran in round 7's netns job).
+
+**Overall.** Round 7 ran Cluster (https://github.com/postfix/probation/actions/runs/45840175551) and Native package clients (https://github.com/postfix/probation/actions/runs/45840181049), all jobs green on `0ff28f8`, and closed D1. Round 9 ran Native service (run 45861876167), all 12 jobs green on `2505bee`. Together, every hosted lane of Slice 30 has passed. Cluster and Native package clients have not been re-run on `2505bee`. Between `0ff28f8` and `2505bee` (`gh api repos/postfix/probation/compare/0ff28f8...2505bee`: 2 commits) only harness, installer and workflow files changed (`.github/workflows/native-service.yml`, `scripts/install-service.sh`, `tests/e2e/native/service-lifecycle.mjs` and `.test.mjs`, `tests/e2e/native/check_workflow.py` and `.test.py`, `tests/e2e/native/expected-asserts.json`, and this evidence file). `native-service.yml` was among them.

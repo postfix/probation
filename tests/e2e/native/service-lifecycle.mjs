@@ -123,6 +123,9 @@ export function failurePolicyProblems(text) {
 
 export const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
+/// The SID of NT SERVICE\<name>, as install-service.ps1 Get-ServiceSid computes it: SHA-1 of the upper-cased name in UTF-16LE, five little-endian words under S-1-5-80.
+export const serviceSid = (name) => { const h = createHash("sha1").update(Buffer.from(name.toUpperCase(), "utf16le")).digest(); return "S-1-5-80-" + [0, 1, 2, 3, 4].map((i) => h.readUInt32LE(4 * i)).join("-"); };
+
 /// Every regular file under `dir` (relative path -> sha256), except the lock file (rewritten by every run).
 export function treeHashes(dir) {
   const rows = {};
@@ -177,6 +180,14 @@ export async function exercise(ctx) {
   const plistFile = () => (scope === "user" ? join(process.env.HOME, "Library/LaunchAgents") : "/Library/LaunchDaemons") + `/${LABEL_PREFIX}${name}.plist`;
   const startAgain = () => must(platform === "darwin" ? c.start(plistFile()) : c.start, "start");
   const serviceUp = async () => (await listening(port)) && mainPid() > 0;
+  // An install that must be refused (Windows): non-zero, the installer's text (whitespace-normalized: Windows PowerShell wraps the thrown
+  // message at the console width), and no install record left behind.
+  const refusedWith = (what, text) => {
+    const r = run(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]));
+    const out = `${r.stdout}${r.stderr}`.replace(/\s+/g, " ");
+    expect(r.status !== 0 && out.includes(text), `${what}: want a refusal naming "${text}", got ${r.status}: ${out.slice(-600)}`);
+    expect(!existsSync(join(dirs.config, `.service-install-${name}`)), `${what}: the failed install left its install record behind`);
+  };
 
   // 1. Install: files, modes, no start yet needed to judge them.
   const installed = must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "install");
@@ -261,12 +272,47 @@ export async function exercise(ctx) {
   // service always creates under data_dir and keeps through stop and uninstall: the lock file (src/store/lock.rs) and the state directory.
   expect(existsSync(join(dirs.data, "lock")) && existsSync(join(dirs.data, "state")), "the service created its lock file and state directory before the reinstall");
   if (platform === "win32") {
-    // The evidence the installer's owner check needs: S-1-5-80-... is the service's virtual account, which Get-DaclViolation accepts.
-    for (const item of ["lock", "state"]) note("owner", `${item} owner SID ${run(c.owner(join(dirs.data, item))).stdout.trim()} (service SIDs start with S-1-5-80)`);
+    const sid = serviceSid(name);
+    for (const item of ["lock", "state"]) {
+      const owner = run(c.owner(join(dirs.data, item))).stdout.trim();
+      expect(owner === sid, `${item} is owned by the service account ${sid}, got ${owner}`);
+      note("owner", `${item} owner SID ${owner} (NT SERVICE\\${name})`);
+    }
+    // The documented recovery command removes a planted junction without deleting its target (docs/operations.md, security-5-1).
+    const canary = join(dirname(dirs.data), "junction-canary");
+    mkdirSync(canary, { recursive: true });
+    writeFileSync(join(canary, "keep.txt"), "kept\n");
+    const planted = join(dirs.data, "credential-reads");
+    must(["cmd", "/c", "mklink", "/J", planted, canary], "plant a credential-reads junction");
+    must(["cmd", "/c", "rmdir", "/s", "/q", planted], "the documented recovery command");
+    expect(!existsSync(planted) && existsSync(join(canary, "keep.txt")), "rmdir /s /q removed the junction and left its target's contents");
+    rmSync(canary, { recursive: true, force: true });
+    note("recovery", "the documented rmdir removed a planted credential-reads junction; its target kept its file");
+    // A service-owned file where the service can only read (the config dir) is refused: the service-SID owner allowance is data and logs only.
+    const serviceOwned = join(dirs.config, "service-owned.txt");
+    writeFileSync(serviceOwned, "x\n");
+    must(["icacls", serviceOwned, "/setowner", `*${sid}`], "make a config file owned by the service account");
+    refusedWith("a service-owned file in the config dir", `service-owned.txt is owned by ${sid}`);
+    rmSync(serviceOwned, { force: true });
+    note("owner refusal", "a service-owned file in the config dir was refused; the install created nothing");
+    // The owner refusal, executed (stack.mjs keyRefusalSteps' shape: refuse with the installer's text, revert, accept): the runner wrote
+    // operator-note.txt in step 5, so an install over the kept data dir is refused and creates nothing.
+    refusedWith("a runner-owned file in the data dir", "operator-note.txt is owned by S-1-5-21-");
+    note("owner refusal", "a runner-owned file in the data dir was refused; the install created nothing");
   }
-  // The operator's note was written by the runner (not the service); an operator's own file in the data dir is what the installer
-  // refuses on Windows, so it goes only now, after "uninstall kept config and data" needed it.
+  // The revert: the operator's (runner-written) note goes, after "uninstall kept config and data" needed it.
   rmSync(join(dirs.data, "operator-note.txt"), { force: true });
+  if (platform === "win32") {
+    // A failed reinstall leaves nothing that blocks the next one (code-review-5-3): check-config rejects a broken config.toml after the
+    // binary and the install record were written; the rollback removes both. Writing into the existing file keeps its owner.
+    const goodConfig = readFileSync(configFile);
+    writeFileSync(configFile, Buffer.concat([goodConfig, Buffer.from("\nthis line is not TOML\n")]));
+    expect(run(c.owner(configFile)).stdout.trim() === "S-1-5-32-544", "config.toml is still owned by the Administrators after the edit");
+    refusedWith("a reinstall that fails check-config", "rejects");
+    writeFileSync(configFile, goodConfig);
+    expect(!existsSync(join(dirs.bin, "probation.exe")), "the failed reinstall removed the binary it installed");
+    note("failed reinstall", "check-config failure rolled back the binary and the install record");
+  }
   // On darwin the reinstall runs without --no-start: the installer's own service_start (enable, then bootstrap, after the uninstall's
   // `launchctl disable`) is the product path under test, so the harness bootstraps nothing there. Elsewhere --no-start/-NoStart holds it back.
   must(c.install([...(platform === "darwin" ? [] : [noStartFlag(platform)]), ...(ctx.installExtra ?? [])]), "reinstall over kept data");

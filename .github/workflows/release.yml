@@ -20,6 +20,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # `probation-server`'s tests need Postgres; each makes its own database in it.
       - run: docker compose -f docker-compose.test.yml up -d --wait postgres
@@ -93,6 +99,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       - uses: github/codeql-action/init@b31ef66637df4fc5b5e4a89d0cc94f8eeb46a04d # v3.39.0
         with:
           languages: rust
@@ -122,6 +134,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       - run: rustup target add ${{ matrix.target }}
       # src/managed/enterprise_certificate.rs links OpenSSL's libcrypto by name: macOS needs Homebrew's openssl@3 on the linker path
       # (Linux has the system library), and aws-lc-sys must build its bundled source, as native-clients.yml does.
@@ -157,6 +175,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
@@ -267,6 +291,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       # The verification build runs every dependency's build script; it runs here,
       # before the registry token is in the environment. `probation` depends on
       # `probation-policy` at the same version (C117): `--workspace` packages both,
