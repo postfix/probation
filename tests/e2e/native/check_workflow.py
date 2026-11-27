@@ -365,13 +365,13 @@ for job_name, job in (service.get("jobs") or {}).items():
             need(re.search(r"@[0-9a-f]{40}$", str(step["uses"])) is not None, f"native-service.yml action not pinned to a commit SHA: {step['uses']}")
         run = str(step.get("run", ""))
         need(not SERVICE_HIDES.search(run), f"native-service.yml job {job_name} hides a failure (`|| true`, `set +e`, `; true`, `exit 0`)")
-        shell = step.get("shell", service_shell)
+        shell = step.get("shell", ((job.get("defaults") or {}).get("run") or {}).get("shell", service_shell))
         if PIPE.search(run) and "pipefail" not in run and shell not in ("powershell", "pwsh"):
             need(shell == "bash", f"native-service.yml job {job_name} pipes a command without pipefail (set `defaults.run.shell: bash`): {run.strip().splitlines()[0][:70]}")
         need(shell in ("powershell", "pwsh") or not BACKGROUND.search(run.replace("2>&1", "")), f"native-service.yml job {job_name} backgrounds a command with `&`")
 # Every job that runs cargo installs rust-toolchain.toml's toolchain explicitly first: rustup's auto-install on the first cargo or rustup
-# call left a hosted macOS runner without cargo (run 45840170035). Held for native-clients.yml, native-service.yml, release.yml and
-# rust.yml alike. The install step runs under bash (security-1-1): pwsh lets a failed install fall through to cargo's auto-install.
+# call left a hosted macOS runner without cargo (run 45840170035). Held for native-clients.yml, native-service.yml, release.yml,
+# rust.yml and cluster.yml (called with the cluster.yml checks below) alike. The install step runs under bash (security-1-1): pwsh lets a failed install fall through to cargo's auto-install.
 channel = re.search(r'channel\s*=\s*"([^"]+)"', option("--rust-toolchain", root / "rust-toolchain.toml").read_text(encoding="utf-8")).group(1)
 rust_wf = load_strict(option("--rust", root / ".github/workflows/rust.yml").read_text(encoding="utf-8"))
 
@@ -382,7 +382,7 @@ def explicit_toolchain(label, workflow):
         first_use = next((i for i, st in enumerate(job_steps) if re.search(r"\b(cargo|rustup)\b", str(st.get("run", "")))), None)
         if first_use is None:
             continue
-        installs = [i for i, st in enumerate(job_steps) if f"rustup toolchain install {channel} " in str(st.get("run", "")) and "cargo --version" in str(st.get("run", ""))]
+        installs = [i for i, st in enumerate(job_steps) if str(st.get("run", "")) == f"rustup toolchain install {channel} --profile minimal --component clippy,rustfmt\ncargo --version\n"]
         need(bool(installs) and installs[0] <= first_use, f"{label} job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo or rustup step")
         if installs:
             default_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell", ((workflow.get("defaults") or {}).get("run") or {}).get("shell"))
@@ -617,6 +617,7 @@ def cjob_text(name):
     return "\n".join(str(st.get("run", "")) for st in (cjobs.get(name) or {}).get("steps", []))
 need("check_kubernetes.py" in cjob_text("static") and "kubeconform -strict" in cjob_text("static") and "kubectl kustomize" in cjob_text("static"), "cluster.yml static: check_kubernetes.py, kubectl kustomize and kubeconform -strict are required")
 need("kernel.apparmor_restrict_unprivileged_userns=0" in cjob_text("netns") and "cargo test --locked --test cluster_peer -- --include-ignored" in cjob_text("netns"), "cluster.yml netns: the sysctl step and the ignored cluster_peer test are required")
+explicit_toolchain("cluster.yml", cwf)
 need("run.mjs --only E2E-service-cluster-probe --only E2E-service-cluster" in cjob_text("e2e-service-cluster"), "cluster.yml e2e-service-cluster: both scenarios are required")
 need("run-kind-lane.sh" in cjob_text("kind") and "run-kind-lane.sh" in cjob_text("cri-node"), "cluster.yml kind and cri-node: both run tests/e2e/cluster/run-kind-lane.sh")
 for line in re.findall(r"uses:\s*(\S+)", cluster_text):

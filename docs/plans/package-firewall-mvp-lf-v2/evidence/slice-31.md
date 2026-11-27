@@ -745,3 +745,41 @@ info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install d
   (win32-x64: `1.96.0-x86_64-pc-windows-msvc`; linux-x64: `1.96.0-x86_64-unknown-linux-gnu`.) `rustup toolchain install` is in none of the ten job logs (not found in log); no auto-install line is in linux-managed or real-server (not found in log). The explicit install step for `native-clients.yml` is on `a467999`, run 45872928739, which a later section records.
 
 **Overall.** Every hosted lane of Slice 30 passed on `8b33c38`: Native service (run 45869114815, 12 of 12), Cluster (run 45869155402, 5 of 5, `kind calico` 25/25 and `cri-node` 6/6) and Native package clients (run 45869159787, 5 of 5). D1 stays CLOSED on the round-5 review fixes.
+
+## Round 11 hosted results: explicit Rust toolchain in native-clients.yml (a467999, f02125b)
+
+Two `workflow_dispatch` runs of Native package clients: https://github.com/postfix/probation/actions/runs/45872928739 on `a467999` (`a4679990ae13d3a224f4e63c13b7a92eb00580d2`) and https://github.com/postfix/probation/actions/runs/45883085038 on `f02125b` (`f02125b3aa753d62e024db6bf8241e189bfabe72`). Read with `gh run view <id> --json headSha,conclusion,event,url,jobs`; the three `native` job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. The logs of `real-server` and `linux-managed` were not read here (their result is from `gh run view` only). Log lines are quoted without their timestamps. Both runs: conclusion success, 5 of 5 jobs success.
+
+| Run | Job | Job id | Result |
+|---|---|---|---|
+| 45872928739 (`a467999`) | real-server | 140092691377 | success |
+| 45872928739 (`a467999`) | native darwin-arm64 | 140092691603 | success |
+| 45872928739 (`a467999`) | linux-managed | 140092691656 | success |
+| 45872928739 (`a467999`) | native linux-x64 | 140092691816 | success |
+| 45872928739 (`a467999`) | native win32-x64 | 140092692013 | success |
+| 45883085038 (`f02125b`) | native linux-x64 | 140126986077 | success |
+| 45883085038 (`f02125b`) | real-server | 140126986324 | success |
+| 45883085038 (`f02125b`) | native win32-x64 | 140126986411 | success |
+| 45883085038 (`f02125b`) | linux-managed | 140126986449 | success |
+| 45883085038 (`f02125b`) | native darwin-arm64 | 140126986523 | success |
+
+Every one of the six `native` job logs opens the install step with the same line:
+
+```
+##[group]Run rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+```
+
+Its body is `rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt`, then `cargo --version`. Per job:
+
+| Run | Job | Job id | `shell:` line of the install step | cargo line | `has been auto-installed` lines | Summary line |
+|---|---|---|---|---|---|---|
+| `a467999` | native linux-x64 | 140092691816 | `shell: /usr/bin/bash -e {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on linux-x64` |
+| `a467999` | native darwin-arm64 | 140092691603 | `shell: /bin/bash -e {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on darwin-arm64` |
+| `a467999` | native win32-x64 | 140092692013 | `shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on win32-x64` |
+| `f02125b` | native linux-x64 | 140126986077 | `shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on linux-x64` |
+| `f02125b` | native darwin-arm64 | 140126986523 | `shell: /bin/bash --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on darwin-arm64` |
+| `f02125b` | native win32-x64 | 140126986411 | `shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | 0 | `native publishing passed: 75 checks on win32-x64` |
+
+- **security-1-1 proved on a hosted runner.** On `f02125b` the Windows install step ran under `C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail`, so a failing `rustup toolchain install` stops the step (`-e`, `pipefail`). On `a467999` the same step ran under pwsh (`shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"`), the runner's Windows default, because the step named no shell. The Linux and macOS steps on `f02125b` also show the explicit `bash` (`--noprofile --norc -e -o pipefail`) instead of the implicit default (`-e {0}`) of `a467999`.
+- **No implicit auto-install.** On `8b33c38` (Round 10 (continued), above) the three `native` jobs printed `warn: the missing active toolchain ... has been auto-installed` and no `rustup toolchain install` line. On `a467999` and `f02125b` every `native` job runs the explicit install, prints `cargo 1.96.0 (30a34c682 2026-05-25)`, and holds 0 `has been auto-installed` lines.
+- **Not run hosted: rust.yml and release.yml.** `f02125b` also gave both the explicit bash install step, but neither workflow can run on this branch: rust.yml runs only on push or pull_request to `main`, release.yml only on `v*.*.*` tag pushes (not authorized, D25). Their first hosted run comes later; their install step is AUTHORED, NOT EXECUTED.

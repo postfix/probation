@@ -199,6 +199,7 @@ release_mutations = {
 }
 # rust.yml mutations (code-review-5-4): the same toolchain rule, run through --rust.
 rust_mutations = {
+    "rust.yml: a Rust toolchain install that hides its failure (|| true) (security-2-1)": good_rust.replace("--component clippy,rustfmt\n          cargo --version\n", "--component clippy,rustfmt || true\n          cargo --version\n", 1),
     "rust.yml: static-link without the explicit Rust toolchain install (code-review-5-4)": good_rust.replace("      - name: Install the pinned Rust toolchain\n        shell: bash\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - uses: actions/setup-node", "      - uses: actions/setup-node", 1),
 }
 failed = []
@@ -220,7 +221,7 @@ def swap(old, new):
 
 
 service_mutations = {
-    "native-service: no pipefail (defaults.run.shell removed) (slice 25)": swap("defaults:\n  run:\n    shell: bash\n", ""),
+    "native-service: no pipefail (defaults.run.shell removed) (slice 25)": swap("defaults:\n  run:\n    shell: bash\n", "").replace("      - name: Install the pinned Rust toolchain\n        run: |\n", "      - name: Install the pinned Rust toolchain\n        shell: bash\n        run: |\n"),
     "native-service: pull_request_target trigger": swap("on:\n  workflow_call:\n", "on:\n  pull_request_target:\n  workflow_call:\n"),
     "native-service: a push trigger": swap("on:\n  workflow_call:\n", "on:\n  push:\n  workflow_call:\n"),
     "native-service: write permission": swap("permissions:\n  contents: read\n\n# bash", "permissions:\n  contents: write\n\n# bash"),
@@ -246,6 +247,9 @@ service_mutations = {
     "native-service: the macOS credential-reads pass count lowered (security-5-3)": swap('[ "$n" -ge 16 ]', '[ "$n" -ge 0 ]'),
     "native-service: the key_acl tests filtered out (security-5-3)": swap("-- credential_temp key_acl --nocapture", "-- credential_temp --nocapture"),
     "native-service: the credential-reads OS guard flipped (security-5-3)": swap('if [ "$RUNNER_OS" = Linux ]; then\n            echo "Linux runs these tests in rust.yml"', 'if [ "$RUNNER_OS" != Linux ]; then\n            echo "Linux runs these tests in rust.yml"'),
+    "native-service: a job-level pwsh default for the Rust toolchain install (code-review-2-1)": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    defaults:\n      run:\n        shell: pwsh\n    runs-on: ubuntu-24.04\n"),
+    "native-service: a commented-out Rust toolchain install (security-2-1)": swap("          rustup toolchain install 1.96.0 --profile minimal", "          # rustup toolchain install 1.96.0 --profile minimal"),
+    "native-service: a job-level sh default under a piped cargo test (code-review-2-4)": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    defaults:\n      run:\n        shell: sh\n    runs-on: ubuntu-24.04\n").replace("          cargo --version\n      - name: Install and start the pinned Docker Engine\n", "          cargo --version\n        shell: bash\n      - name: Install and start the pinned Docker Engine\n", 1),
     "native-service: a secret": swap("env:\n  CARGO_TERM_COLOR: always\n", "env:\n  CARGO_TERM_COLOR: always\n  TOKEN: ${{ secrets.X }}\n"),
 }
 with tempfile.TemporaryDirectory(dir=scratch) as d:
@@ -462,6 +466,7 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         "kubeconform not strict": csub("kubeconform -strict -summary", "kubeconform -summary"),
         "one scenario dropped": csub("--only E2E-service-cluster-probe --only E2E-service-cluster", "--only E2E-service-cluster"),
         "a secret": csub("      - run: sh -n deploy/kubernetes/node/install-node.sh", "      - run: echo ${{ secrets.TOKEN }}\n      - run: sh -n deploy/kubernetes/node/install-node.sh"),
+        "netns without the explicit Rust toolchain install (code-review-2-3)": csub("      - name: Install the pinned Rust toolchain\n        shell: bash\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n", ""),
         "curl -k": csub('curl -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"', 'curl -k -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"'),
     }
     for name, text in cluster_mutations.items():

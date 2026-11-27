@@ -77,6 +77,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # An explicit install: the first `cargo` or `rustup` call would otherwise auto-install rust-toolchain.toml's toolchain, which left a
+      # hosted macOS runner without cargo (run 45840170035: "'cargo' is not installed for the toolchain '1.96.0-aarch64-apple-darwin'").
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+          cargo --version
       # ubuntu-24.04 restricts unprivileged user namespaces; the real-TCP peer test (tests/cluster_peer.rs) needs them.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --locked --test cluster_peer -- --include-ignored
