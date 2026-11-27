@@ -377,6 +377,11 @@ rust_wf = load_strict(option("--rust", root / ".github/workflows/rust.yml").read
 
 
 def explicit_toolchain(label, workflow):
+    # security-3-1: rustup picks `cargo +<toolchain>`, then RUSTUP_TOOLCHAIN, then a `rustup override`, before rust-toolchain.toml, and
+    # RUSTUP_DIST_SERVER moves the install's source; any of them makes the pinned install not the toolchain cargo runs. Not covered:
+    # a $GITHUB_PATH entry that shadows cargo, CARGO_HOME, RUSTC, RUSTC_WRAPPER and a .cargo/config.toml `build.rustc`.
+    switch = re.search(r"RUSTUP_|cargo\s+\+|rustup\s+override\b", json.dumps(workflow))
+    need(switch is None, f"{label} must not move cargo off rust-toolchain.toml's toolchain or the install off its source: found {switch.group(0) if switch else ''!r} (RUSTUP_* variables, `cargo +<toolchain>`, `rustup override`)")
     for job_name, job in (workflow.get("jobs") or {}).items():
         job_steps = job.get("steps", []) or []
         first_use = next((i for i, st in enumerate(job_steps) if re.search(r"\b(cargo|rustup)\b", str(st.get("run", "")))), None)
@@ -385,6 +390,7 @@ def explicit_toolchain(label, workflow):
         installs = [i for i, st in enumerate(job_steps) if str(st.get("run", "")) == f"rustup toolchain install {channel} --profile minimal --component clippy,rustfmt\ncargo --version\n"]
         need(bool(installs) and installs[0] <= first_use, f"{label} job {job_name} must run `rustup toolchain install {channel} ...` and `cargo --version` in a step before its first cargo or rustup step")
         if installs:
+            need(set(job_steps[installs[0]]) <= {"name", "shell", "run"}, f"{label} job {job_name}: the Rust toolchain install step may hold only name, shell and run (an `if` skips it, `continue-on-error` hides its failure)")
             default_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell", ((workflow.get("defaults") or {}).get("run") or {}).get("shell"))
             need(job_steps[installs[0]].get("shell", default_shell) == "bash", f"{label} job {job_name} must run its Rust toolchain install under `shell: bash`: under pwsh a failed `rustup toolchain install` passes when `cargo --version` then succeeds")
 

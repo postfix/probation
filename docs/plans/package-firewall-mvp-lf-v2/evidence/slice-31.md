@@ -783,3 +783,11 @@ Its body is `rustup toolchain install 1.96.0 --profile minimal --component clipp
 - **security-1-1 proved on a hosted runner.** On `f02125b` the Windows install step ran under `C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail`, so a failing `rustup toolchain install` stops the step (`-e`, `pipefail`). On `a467999` the same step ran under pwsh (`shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"`), the runner's Windows default, because the step named no shell. The Linux and macOS steps on `f02125b` also show the explicit `bash` (`--noprofile --norc -e -o pipefail`) instead of the implicit default (`-e {0}`) of `a467999`.
 - **No implicit auto-install.** On `8b33c38` (Round 10 (continued), above) the three `native` jobs printed `warn: the missing active toolchain ... has been auto-installed` and no `rustup toolchain install` line. On `a467999` and `f02125b` every `native` job runs the explicit install, prints `cargo 1.96.0 (30a34c682 2026-05-25)`, and holds 0 `has been auto-installed` lines.
 - **Not run hosted: rust.yml and release.yml.** `f02125b` also gave both the explicit bash install step, but neither workflow can run on this branch: rust.yml runs only on push or pull_request to `main`, release.yml only on `v*.*.*` tag pushes (not authorized, D25). Their first hosted run comes later; their install step is AUTHORED, NOT EXECUTED.
+
+## Known limit from review `native-clients-rust-toolchain` round 3 (security-3-3, declined)
+
+The `cluster.yml` pipefail rule in `tests/e2e/native/check_workflow.py` reads only the workflow-level default shell. So a job- or step-level `shell: sh` (for example on e2e-service-cluster's `docker save ... | podman load`) would pass and report only the last command's status. No cluster.yml job overrides the shell today. It was declined in that review as outside the toolchain request. To carry to docs/backlog.md when Slice 30 closes.
+
+Fix: resolve the step shell, then the job shell, then the workflow shell, as the native-service rule does.
+
+Test: a cluster mutation with a job-level `shell: sh` on e2e-service-cluster must fail the checker.
