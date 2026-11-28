@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# The cluster lanes of .github/workflows/cluster.yml (jobs `kind` and `cri-node`). AUTHORED, NOT EXECUTED: nobody has run this script against
-# kind yet (the development host has no kind, no kubectl and no cluster); only its control flow is tested (tests/node_scripts.rs runs it with
-# stub tools). Read docs/plans/package-firewall-mvp-lf/evidence/slice-26.md, "Lanes".
+# The cluster lanes of .github/workflows/cluster.yml (jobs `kind` and `cri-node`). Executed on hosted runners by cluster.yml (evidence/slice-31.md,
+# run 45977663713 on 7e75aec: LANE=cluster 25/25 with Calico, LANE=cri 6/6); its control flow is also tested with stub tools (tests/node_scripts.rs),
+# and its helpers by tests/e2e/native/lane_probe.test.py. NOT RUN YET (hosted run pending), added after that run: the Cilium leg (CNI=cilium), and in
+# LANE=cri the kubelet's own pull with no fallback, a pod started from a preloaded image, the kubelet's pull-secret matching against a private
+# registry, the same pull THROUGH the Probation endpoint (LANE=cluster, registry-lib.sh: the harness's policy server next to kind, policy-server.mjs), and the
+# systemd propagation of nftables.service to the firewall unit. Read docs/plans/package-firewall-mvp-lf/evidence/slice-26.md, "Lanes".
 #
 #   LANE=cluster (default)  kind with a control plane and four workers (workers 1 and 4 = the service pool, worker 2 = the approved node,
-#                           worker 3 = an unapproved node) and Calico without encapsulation (the nodes share one subnet): admission, D1
-#                           (with its negative control, which asserts the source address the service sees), NetworkPolicy, the PDB, the
-#                           rollout and the fence.
-#   LANE=cri                one kind node: a control `crictl pull` of a public registry, then the SHIPPED install-node.sh / verify-node.sh /
-#                           install-firewall.sh on the node's own containerd, a restart, and the same `crictl pull` (the kubelet's PullImage)
-#                           which must now go to the endpoint, fail there, and never reach the registry. It does NOT run a pod.
+#                           worker 3 = an unapproved node) and Calico (CNI=calico, default) or Cilium (CNI=cilium) without encapsulation (the
+#                           nodes share one subnet): admission, D1 (with its negative control, which asserts the source address the service
+#                           sees), NetworkPolicy, the PDB, the rollout and the fence. With Cilium also the label-based policy of
+#                           optional/cilium-networkpolicy.yaml (fromNodes). Then the pull secret through the service: the service is pointed at
+#                           the policy server, worker 2's runtime at the endpoint, and a pod on worker 2 pulls the private registry's image with a
+#                           pull secret (runs), with none or another server's (refused); the registry never sees worker 2 or the service key.
+#   LANE=cri                one kind node. Before the installer: a control `crictl pull` of a public registry, and the kubelet's pull-secret matching
+#                           against a private registry (a pod with a matching secret runs; with none, or with a secret of another server, it
+#                           does not). Then the SHIPPED install-node.sh (with the service image preloaded by digest) / verify-node.sh /
+#                           install-firewall.sh on the node's own containerd, a restart, and the same `crictl pull` (the CRI PullImage) AND a pod
+#                           whose pull is the kubelet's own, which must go to the endpoint, fail there, and never reach the registry; a pod of the
+#                           preloaded image that runs although nothing can be pulled. Last: the firewall loaded for real and a restart, a reload
+#                           and a stop of nftables.service, which the firewall unit must follow.
 #
 # Every assertion is `expect NAME COMMAND...` (lane-lib.sh, whose helpers have a stub-driven self-test in tests/node_scripts.rs). The script ends non-zero when a step aborts (its own status is kept), when an assertion
 # failed, or when no assertion ran at all: a lane that did nothing must not be green.
@@ -26,6 +36,8 @@ NODEPORT=30443
 mkdir -p "$WORK_DIR/logs"
 # shellcheck source=lane-lib.sh
 . "$(dirname "$0")/lane-lib.sh"
+# shellcheck source=registry-lib.sh
+. "$(dirname "$0")/registry-lib.sh"
 trap finish EXIT
 
 # ---- the cluster ----
@@ -59,7 +71,6 @@ else
   printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n' > "$WORK_DIR/kind.yaml"
 fi
 kind create cluster --name "$CLUSTER" --image "$NODE_IMAGE" --config "$WORK_DIR/kind.yaml" --wait 0s
-node_ip() { docker inspect -f '{{ .NetworkSettings.Networks.kind.IPAddress }}' "$1"; }
 
 if [ "$LANE" = cri ]; then
   # ---- LANE=cri ----
@@ -67,14 +78,57 @@ if [ "$LANE" = cri ]; then
   # (not pause:3.10, the node's own sandbox image: a kind node ships it, so the control must pull an image the node does not hold)
   REF=registry.k8s.io/pause:3.9
   wait_cri "$NODE" || fail "the node's CRI did not answer"
+  kubectl wait --for=condition=Ready node --all --timeout=300s
   expect "control: before the installer the node's CRI pulls $REF from its registry" docker exec "$NODE" crictl pull "$REF"
   docker exec "$NODE" crictl rmi "$REF" >/dev/null 2>&1 || true
+
+  # ---- the kubelet's pull-secret matching, against a private registry (BEFORE the installer: afterwards every registry goes to the endpoint, and
+  # verify-node.sh refuses a per-registry directory of its own). The registry is on the kind network behind TLS and basic auth; the node's
+  # containerd reaches it through a plain hosts.toml. The pods' pulls are the KUBELET's: it picks the secret whose server matches the image's host.
+  private_registry_up
+  docker exec "$NODE" sh -c "echo '$REGIP private.kind.test' >> /etc/hosts"
+  docker exec "$NODE" mkdir -p "/etc/containerd/certs.d/$PRIVATE"
+  docker exec -i "$NODE" sh -c "cat > '/etc/containerd/certs.d/$PRIVATE/ca.crt'" < "$WORK_DIR/registry/reg.crt"
+  printf 'server = "https://%s"\n\n[host."https://%s"]\n  capabilities = ["pull", "resolve"]\n  ca = "ca.crt"\n' "$PRIVATE" "$PRIVATE" | docker exec -i "$NODE" sh -c "cat > '/etc/containerd/certs.d/$PRIVATE/hosts.toml'"
+  expect "the kind node's containerd reads registry hosts from /etc/containerd/certs.d" docker exec "$NODE" sh -c "crictl info | grep -q /etc/containerd/certs.d"
+  kubectl create secret docker-registry private-pull --docker-server="$PRIVATE" --docker-username=puller --docker-password="$PULL_PW"
+  kubectl create secret docker-registry other-server-pull --docker-server=other.kind.test:5000 --docker-username=puller --docker-password="$PULL_PW"
+  lane_pod secret-ok "$PRIV_IMAGE" Always private-pull
+  lane_pod secret-none "$PRIV_IMAGE" Always
+  lane_pod secret-other "$PRIV_IMAGE" Always other-server-pull
+  AUTH_FAILED='Failed to pull image.*(401|unauthorized|authoriz|authenticat|credential)'
+  expect "pull secret: a pod whose imagePullSecrets name the registry's own server ($PRIVATE) runs" wait_until 150 pod_phase_is default secret-ok Running
+  expect "pull secret: the registry saw the pull with the secret's user (puller), not an anonymous one" bash -c "docker logs $REG 2>&1 | grep -Eq 'auth.user.name=\"?puller'"
+  expect "pull secret: the same image with NO pull secret is refused for authorization (the kubelet sends no credential)" wait_until 150 pod_event_matches default secret-none "$AUTH_FAILED"
+  expect "pull secret: a pod with a secret of ANOTHER server (other.kind.test:5000) is refused the same way (matching is by the image's host)" wait_until 150 pod_event_matches default secret-other "$AUTH_FAILED"
+  expect "pull secret: the pod with no secret does not run" not pod_phase_is default secret-none Running
+  expect "pull secret: the pod with the other server's secret does not run" not pod_phase_is default secret-other Running
+  kubectl delete pod secret-ok secret-none secret-other --ignore-not-found --wait=false
+  docker exec "$NODE" rm -rf "/etc/containerd/certs.d/$PRIVATE"
+  docker rm -f "$REG" >/dev/null
+
+  # ---- the node: the installer, with the service's own image preloaded BY DIGEST (the kubelet's use of a preloaded image is checked below) ----
+  # An OCI archive of ONE platform's manifest (skopeo picks it from the index), named repository@<that manifest's digest> by install-node.sh. The
+  # repository is one that does not exist on registry.k8s.io: a pod of it can only run if the preload is what the kubelet uses.
+  skopeo copy --override-os linux --override-arch amd64 "docker://$BUSYBOX" "oci-archive:$WORK_DIR/preload.tar:1"
+  PRELOAD_DIGEST=$(python3 - "$WORK_DIR/preload.tar" <<'PY'
+import json, sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    member = next(m for m in t.getmembers() if m.name.lstrip("./") == "index.json")
+    print(json.load(t.extractfile(member))["manifests"][0]["digest"])
+PY
+)
+  case $PRELOAD_DIGEST in sha256:????????????????????????????????????????????????????????????????) ;; *) fail "the preload archive names no manifest digest: $PRELOAD_DIGEST" ;; esac
+  PRELOAD_REF=registry.k8s.io/probation-lane/preloaded@$PRELOAD_DIGEST
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$WORK_DIR/ca.key" -out "$WORK_DIR/ca.pem" -subj "/CN=probation-kind-ca" -days 2
   docker cp "$ROOT/deploy/kubernetes/node" "$NODE:/opt/probation-node"
   docker cp "$WORK_DIR/ca.pem" "$NODE:/opt/probation-ca.pem"
+  docker cp "$WORK_DIR/preload.tar" "$NODE:/opt/probation-preload.tar"
   NODEIP=$(node_ip "$NODE")
-  expect "install-node.sh runs on the node's real containerd config" docker exec "$NODE" sh /opt/probation-node/install-node.sh --endpoint "https://$ENDPOINT_NAME:$NODEPORT" --ca /opt/probation-ca.pem --registry registry.k8s.io=1
-  expect "install-firewall.sh renders and passes nft -c" docker exec "$NODE" sh /opt/probation-node/install-firewall.sh --root /tmp/fw --service4 "$NODEIP" --service-port "$NODEPORT" --cluster4 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 --dns4 "$NODEIP" --approved4 "$NODEIP"
+  FIREWALL_ARGS="--service4 $NODEIP --service-port $NODEPORT --cluster4 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 --dns4 $NODEIP --approved4 $NODEIP"
+  expect "install-node.sh runs on the node's real containerd config and preloads the image by digest" docker exec "$NODE" sh /opt/probation-node/install-node.sh --endpoint "https://$ENDPOINT_NAME:$NODEPORT" --ca /opt/probation-ca.pem --registry registry.k8s.io=1 --preload-image /opt/probation-preload.tar --image-ref "${PRELOAD_REF}"
+  # shellcheck disable=SC2086 # FIREWALL_ARGS is a word list of the installer's own flags
+  expect "install-firewall.sh renders and passes nft -c" docker exec "$NODE" sh /opt/probation-node/install-firewall.sh --root /tmp/fw $FIREWALL_ARGS
   docker exec "$NODE" systemctl daemon-reload
   docker exec "$NODE" systemctl restart containerd
   wait_cri "$NODE" || fail "the node's CRI did not come back after the restart"
@@ -83,16 +137,57 @@ if [ "$LANE" = cri ]; then
   # The endpoint name does not resolve here: the pull must FAIL AT THE ENDPOINT. If the runtime fell back to registry.k8s.io it would succeed.
   expect "the same PullImage now fails and names the endpoint (no fallback to the registry)" bash -c "out=\$(docker exec $NODE crictl pull $REF 2>&1) && exit 1; printf '%s' \"\$out\" | grep -q '$ENDPOINT_NAME'"
   expect "the registry's image $REF is not on the node (a kind node holds its own control-plane images, so only this one is checked)" bash -c "! docker exec $NODE crictl inspecti $REF"
+
+  # ---- the kubelet's own pull, and its use of a preloaded image ----
+  # The kubelet calls PullImage itself (imagePullPolicy Always): it must go through config_path to the endpoint, fail there, and leave no image behind.
+  lane_pod nofallback "$REF" Always
+  expect "kubelet pull: the pod's own pull of $REF fails at the endpoint (the event names $ENDPOINT_NAME): no fallback to the registry" wait_until 150 pod_event_matches default nofallback "Failed to pull image.*$ENDPOINT_NAME"
+  expect "kubelet pull: the pod is not running" not pod_phase_is default nofallback Running
+  expect "kubelet pull: $REF is still not on the node (the pull left nothing behind)" bash -c "! docker exec $NODE crictl inspecti $REF"
+  # IfNotPresent and a digest the node holds (the preload): no pull is needed. The repository does not exist on registry.k8s.io and the endpoint does
+  # not resolve, so a pull could not have succeeded: Running with the event "already present on machine" shows the kubelet used the preload.
+  lane_pod preloaded "$PRELOAD_REF" IfNotPresent
+  expect "kubelet preload: a pod of $PRELOAD_REF (IfNotPresent) reaches Running although nothing can be pulled" wait_until 150 pod_phase_is default preloaded Running
+  expect "kubelet preload: the kubelet found the image already present on the node (no pull)" pod_event_matches default preloaded 'already present on machine'
+
+  # ---- systemd propagation of nftables.service to the firewall unit ----
+  # LAST: nftables.service's `flush ruleset` also clears the node's kube-proxy rules. The firewall is loaded for real here (no --root), the unit must be
+  # active (PartOf= and ReloadPropagatedFrom= only reach an active unit), and a marker table that is NOT ours proves that each action really flushed
+  # the rule set: ours must be back (restart, reload) or gone (stop) while the marker is gone.
+  docker exec "$NODE" systemctl cat nftables.service >/dev/null 2>&1 || fail "the kind node has no nftables.service: the propagation to the firewall unit cannot be exercised"
+  # shellcheck disable=SC2086
+  expect "install-firewall.sh loads both tables for real and starts probation-node-firewall.service" docker exec "$NODE" sh /opt/probation-node/install-firewall.sh $FIREWALL_ARGS
+  expect "verify-node.sh --firewall: both tables are loaded and the unit is active" docker exec "$NODE" sh /opt/probation-node/verify-node.sh --endpoint "https://$ENDPOINT_NAME:$NODEPORT" --firewall
+  docker exec "$NODE" nft add table inet probation_lane_marker
+  docker exec "$NODE" systemctl restart nftables.service
+  expect "nftables.service restart: the rule set was flushed (the marker table is gone)" wait_until 30 nft_table_absent "$NODE" probation_lane_marker
+  expect "nftables.service restart: probation-node-firewall.service followed it and both tables are loaded again" wait_until 30 fw_loaded "$NODE"
+  expect "nftables.service restart: the firewall unit is active again" wait_until 30 docker exec "$NODE" systemctl is-active --quiet probation-node-firewall.service
+  docker exec "$NODE" nft add table inet probation_lane_marker
+  docker exec "$NODE" systemctl reload nftables.service
+  expect "nftables.service reload: the rule set was flushed (the marker table is gone)" wait_until 30 nft_table_absent "$NODE" probation_lane_marker
+  expect "nftables.service reload: both tables are loaded again (ReloadPropagatedFrom and ExecReload)" wait_until 30 fw_loaded "$NODE"
+  docker exec "$NODE" systemctl stop nftables.service
+  expect "nftables.service stop: both tables are gone (docs/operations.md: a stop of nftables.service removes the node firewall)" wait_until 30 fw_gone "$NODE"
+  expect "nftables.service stop: the firewall unit stopped with it" wait_until 30 not docker exec "$NODE" systemctl is-active --quiet probation-node-firewall.service
   exit 0
 fi
 
 # ---- LANE=cluster ----
-curl -fsSL -o "$WORK_DIR/calico.yaml" "https://raw.githubusercontent.com/projectcalico/calico/v3.31.0/manifests/calico.yaml"
-echo "$CALICO_SHA256  $WORK_DIR/calico.yaml" | sha256sum --check
-# The checked manifest, then two changes: the pool CIDR is the cluster's pod subnet (Calico's default 192.168.0.0/16 is not, which changes kube-proxy's
-# masquerade decisions for pod traffic), and no IP-in-IP encapsulation between nodes of one subnet (`CrossSubnet`: kind's nodes share a subnet), so kube-proxy's
-# Cluster-mode masquerade uses the node's own address and the negative control below can ASSERT the source address it sees (it does not assume it).
-python3 - "$WORK_DIR/calico.yaml" <<'PY'
+if [ "$CNI" = cilium ]; then
+  # Cilium (the cilium CLI is pinned and checked by the workflow). kube-proxy stays: it applies externalTrafficPolicy, which is what D1 rests on, so
+  # kubeProxyReplacement is off. Native routing over the nodes' shared subnet (the equivalent of Calico's CrossSubnet) keeps the source address kube-proxy
+  # leaves, so the negative control can OBSERVE it. policyCIDRMatchMode=nodes lets networkpolicy.yaml's ipBlock of a node address match that node
+  # (docs/operations.md, "NetworkPolicy is not host control"); nodeSelectorLabels lets optional/cilium-networkpolicy.yaml select nodes by label.
+  cilium install --version "${CILIUM_VERSION:?CILIUM_VERSION is required}" --set kubeProxyReplacement=false --set routingMode=native --set ipv4NativeRoutingCIDR=10.244.0.0/16 --set autoDirectNodeRoutes=true --set ipam.mode=kubernetes --set policyCIDRMatchMode=nodes --set nodeSelectorLabels=true
+  cilium status --wait --wait-duration 10m
+elif [ "$CNI" = calico ]; then
+  curl -fsSL -o "$WORK_DIR/calico.yaml" "https://raw.githubusercontent.com/projectcalico/calico/v3.31.0/manifests/calico.yaml"
+  echo "$CALICO_SHA256  $WORK_DIR/calico.yaml" | sha256sum --check
+  # The checked manifest, then two changes: the pool CIDR is the cluster's pod subnet (Calico's default 192.168.0.0/16 is not, which changes kube-proxy's
+  # masquerade decisions for pod traffic), and no IP-in-IP encapsulation between nodes of one subnet (`CrossSubnet`: kind's nodes share a subnet), so kube-proxy's
+  # Cluster-mode masquerade uses the node's own address and the negative control below can ASSERT the source address it sees (it does not assume it).
+  python3 - "$WORK_DIR/calico.yaml" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 new, n = re.subn(r'(- name: CALICO_IPV4POOL_IPIP\n\s+value: )"Always"', r'\1"CrossSubnet"', text)
@@ -104,8 +199,15 @@ if n != 1:
     sys.exit("the Calico manifest has no commented CALICO_IPV4POOL_CIDR to set to the pod subnet")
 open(sys.argv[1], "w").write(new)
 PY
-kubectl apply -f "$WORK_DIR/calico.yaml"
+  kubectl apply -f "$WORK_DIR/calico.yaml"
+else
+  fail "unknown CNI $CNI (calico or cilium)"
+fi
 kubectl wait --for=condition=Ready nodes --all --timeout=300s
+if [ "$CNI" = cilium ]; then
+  expect "Cilium: policy-cidr-match-mode is nodes (an ipBlock of a node address matches that node)" bash -c "[ \"\$(kubectl -n kube-system get configmap cilium-config -o jsonpath='{.data.policy-cidr-match-mode}')\" = nodes ]"
+  expect "Cilium: node selector labels are enabled (fromNodes can select nodes)" bash -c "[ \"\$(kubectl -n kube-system get configmap cilium-config -o jsonpath='{.data.enable-node-selector-labels}')\" = true ]"
+fi
 kubectl taint nodes -l probation.example/service-node=true probation.example/service=true:NoSchedule
 W1=$CLUSTER-worker; W2=$CLUSTER-worker2; W3=$CLUSTER-worker3; W4=$CLUSTER-worker4
 IP1=$(node_ip "$W1"); IP2=$(node_ip "$W2"); IP3=$(node_ip "$W3")
@@ -125,6 +227,7 @@ git clone --depth 1 --branch v8.2.0 https://github.com/kubernetes-csi/external-s
 kubectl apply -k "$WORK_DIR/snapshotter/client/config/crd"
 kubectl wait --for=condition=Established --timeout=60s crd/volumesnapshotclasses.snapshot.storage.k8s.io crd/volumesnapshots.snapshot.storage.k8s.io crd/volumesnapshotcontents.snapshot.storage.k8s.io
 git clone --depth 1 --branch v1.17.0 https://github.com/kubernetes-csi/csi-driver-host-path "$WORK_DIR/csi"
+[ "$(git -C "$WORK_DIR/csi" rev-parse HEAD)" = 8b88d04ec388312df1b910bf1cb48926c63c2660 ] || fail "csi-driver-host-path v1.17.0 is not the pinned commit"
 ( cd "$WORK_DIR/csi" && bash deploy/kubernetes-latest/deploy.sh )
 # The driver's plugin is a single pod and its volumes are node-local to the node it runs on: it runs on the pool node that holds the service (worker 1),
 # which carries the pool taint, so the pod, its claim and the volume are on one node. (Worker 4 is the second pool node of the fence check.)
@@ -209,7 +312,7 @@ expect "D1: the unapproved worker 3 host is refused by the service" refused_by_s
 expect "D1: a hostNetwork pod on the unapproved worker 3 is refused by the service" refused_by_service hostpod3 "$IP1"
 expect "D1: a pod on the unapproved worker 3 is refused by the service" refused_by_service pod3 "$IP1"
 expect "D1: the approved worker 2 is admitted" admitted "node:$W2" "$IP1"
-expect "D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there" bash -c "out=\$(curl -sk --max-time 10 --resolve $ENDPOINT_NAME:$NODEPORT:$IP2 https://$ENDPOINT_NAME:$NODEPORT/v2/ || true); [ -z \"\$out\" ]"
+expect "D1 (Local): the approved node's own NodePort has no endpoint, so the outsider gets no answer there" dropped runner "$IP2"
 # The negative control: lift the admission policy for this one change and switch to Cluster.
 kubectl delete validatingadmissionpolicybinding probation-one-local-service
 # The API server's admission cache can still hold the binding for a moment and deny the patch: poll (bounded), then one unguarded patch so a
@@ -230,6 +333,28 @@ for _ in $(seq 1 30); do denied && break; sleep 2; done
 for _ in $(seq 1 45); do dropped runner "$IP1" && break; sleep 2; done
 expect "D1 restored: the ingress policy is back and the outsider gets no answer again" dropped runner "$IP1"
 expect "D1 restored: the approved node is admitted again" admitted "node:$W2" "$IP1"
+
+# ---- Cilium: the label-based policy (optional/cilium-networkpolicy.yaml, `fromNodes`) ----
+# Everything above ran with networkpolicy.yaml's ipBlock, matched against nodes by policyCIDRMatchMode=nodes. Here the ipBlock rule is taken away so that
+# the namespace's default-deny is all that remains (the control: not even the approved node is answered), then the shipped CiliumNetworkPolicy is applied:
+# the node LABELLED approved (worker 2) is admitted, the unlabelled worker 3 and the runner get no answer. Then the policies of the kustomization are restored.
+if [ "$CNI" = cilium ]; then
+  remove_ipblock_policy
+  wait_until 90 dropped "node:$W2" "$IP1" || true
+  expect "Cilium control: with the ipBlock policy deleted (default-deny only) the approved node gets no answer" dropped "node:$W2" "$IP1"
+  kubectl apply -f "$ROOT/deploy/kubernetes/optional/cilium-networkpolicy.yaml"
+  wait_until 90 admitted "node:$W2" "$IP1" || true
+  expect "Cilium fromNodes: the node labelled approved-node=true (worker 2) is admitted" admitted "node:$W2" "$IP1"
+  expect "Cilium fromNodes: the unlabelled worker 3 host gets no answer" dropped "node:$W3" "$IP1"
+  expect "Cilium fromNodes: the runner (outside the cluster) gets no answer" dropped runner "$IP1"
+  kubectl delete -f "$ROOT/deploy/kubernetes/optional/cilium-networkpolicy.yaml"
+  kubectl apply -k "$WORK_DIR/k"
+  wait_until 90 admitted "node:$W2" "$IP1" || true
+  expect "Cilium: with the CiliumNetworkPolicy removed and probation-ingress restored the approved node is admitted again" admitted "node:$W2" "$IP1"
+fi
+
+# ---- the kubelet's pull secret THROUGH the Probation endpoint (registry-lib.sh) ----
+pull_through_service
 
 # ---- the rest ----
 POD=$(kubectl -n probation get pod -l app.kubernetes.io/name=probation -o jsonpath='{.items[0].metadata.name}')

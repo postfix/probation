@@ -33,6 +33,9 @@ param(
   [string]$CosignBundle,
   # The workflow file whose attestation gh accepts: one file under .github/workflows of the pinned repository (no other path, `..`, URL or repository).
   [ValidatePattern('^\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9._-]*\.ya?ml\z')][string]$SignerWorkflow = '.github/workflows/release.yml',
+  # The commit the attestation was built from (gh attestation verify --source-digest): required with a -SignerWorkflow other than release.yml,
+  # because any writer can run such a workflow on any branch. 40 lower-case hex characters (ValidatePattern ignores case unless told not to).
+  [ValidatePattern('^(?-i:[0-9a-f]{40})\z')][string]$SourceDigest,
   [switch]$ConfigureTools,
   [string]$NpmRc,
   [string]$PipIni = (Join-Path $env:ProgramData 'pip\pip.ini')
@@ -52,6 +55,7 @@ $Utf8 = New-Object System.Text.UTF8Encoding($false)   # no byte-order mark, and 
 
 function Say([string]$Text) { Write-Host "==> $Text" }
 function Die([string]$Text) { throw "install-service: $Text" }
+if ($SignerWorkflow -ne '.github/workflows/release.yml' -and -not $SourceDigest) { Die "-SignerWorkflow $SignerWorkflow (other than the release workflow) needs -SourceDigest SHA (the commit the attestation was built from)" }
 
 # ---- arguments: refusing is the escaping (paths end up in TOML, in a service command line and in icacls)
 function Test-SafePath([string]$Label, [string]$Value, [bool]$Absolute = $true) {
@@ -252,9 +256,12 @@ function Assert-PackageHashes {
     if ($release) { Die 'this is a release package and gh is not installed, so its attestation cannot be verified: install gh, or pass -NoVerify to accept it unchecked' }
     Say "gh is not installed: the release attestation of $Binary was NOT verified"
   } else {
-    & gh attestation verify $Binary --repo $repo --signer-workflow "$repo/$SignerWorkflow" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { Die "the release attestation of probation.exe does not verify (gh attestation verify, pinned to $repo and its release workflow); use -NoVerify only for a build you made yourself" }
-    Say 'Verified the release attestation of probation.exe'
+    $pinned = "workflow $SignerWorkflow"
+    $digestArgs = @()
+    if ($SourceDigest) { $digestArgs = @('--source-digest', $SourceDigest); $pinned += ", source $SourceDigest" }
+    & gh attestation verify $Binary --repo $repo --signer-workflow "$repo/$SignerWorkflow" @digestArgs 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die "the attestation of probation.exe does not verify (gh attestation verify, pinned to $repo, $pinned); use -NoVerify only for a build you made yourself" }
+    Say "Verified the attestation of probation.exe ($pinned)"
   }
   $bundle = if ($CosignBundle) { $CosignBundle } elseif (Test-Path -LiteralPath "$Binary.sigstore.json") { "$Binary.sigstore.json" } else { Join-Path $Here 'probation.sigstore.json' }
   if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {

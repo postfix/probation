@@ -12,7 +12,7 @@ Known limit (not a bug): "Re-run failed jobs" on a run where only the native job
 those jobs. The real-server job is not re-run, so no new handshake appears and the re-run native jobs
 wait for it until their timeout. Re-run ALL jobs of the run instead. The workflow is not changed for this.
 """
-import ast, json, pathlib, re, sys
+import ast, json, os, pathlib, re, sys
 for _stream in (sys.stdout, sys.stderr):
     _stream.reconfigure(errors="backslashreplace")  # a console that cannot show a character (cp1252) must not crash the script
 import yaml
@@ -284,12 +284,34 @@ def needed(job_name, seen=None):
     return seen
 
 
-# Slice 25: the native service lifecycle lanes gate everything that publishes. `build` waits for them, and release, publish and
-# images wait for build, so they are in each publishing job's transitive needs.
+# Slice 25: the native service lifecycle lanes gate everything that publishes: `release` needs the call, and publish-release, publish and
+# images wait for release, so it is in each publishing job's transitive needs.
 need(release.get("native-service", {}).get("uses") == "./.github/workflows/native-service.yml", "release.yml's native-service job must call native-service.yml")
 for gated in ("release", "publish", "images"):
     need("native-service" in needed(gated), f"release.yml's {gated} job must transitively need native-service (needs: {sorted(needed(gated))})")
 
+# D30: release.yml and rust.yml can be dispatched by hand, and a dispatch publishes and attests nothing. `tag-guard` fails on any ref that is not a
+# v*.*.* tag (its script is run below with a branch and a tag), and every job that writes outside the run, holds id-token or attestations, uses an
+# environment or a secret, or calls the attesting native-service workflow needs it directly. The jobs that publish nothing must not need it.
+need(set(release_wf.get(True) or {}) == {"push", "workflow_dispatch"} and (release_wf.get(True) or {}).get("push") == {"tags": ["v*.*.*"]}, f"release.yml triggers must be exactly a v*.*.* tag push and workflow_dispatch (D30), found {release_wf.get(True)!r}")
+TAG_GUARD_FREE = ("test", "e2e", "native", "codeql", "build", "build-windows")
+guard = release.get("tag-guard") or {}
+guard_steps = guard.get("steps") or []
+need(bool(guard) and set(guard) == {"runs-on", "steps"} and len(guard_steps) == 1 and "run" in guard_steps[0] and guard_steps[0].get("shell") == "bash", "release.yml must have a job tag-guard of one bash run step (no needs, if or permissions) (D30)")
+if guard_steps and "run" in guard_steps[0]:
+    import shutil, subprocess
+    bash = shutil.which("bash")
+    need(bash is not None, "bash is required to run release.yml's tag-guard script")
+    for ref_type, ref, passes in (("branch", "refs/heads/main", False), ("branch", "refs/heads/v1.2.3", False), ("tag", "refs/heads/main", False),
+                                  ("tag", "refs/tags/nightly", False), ("tag", "refs/tags/v1.2", False), ("tag", "refs/tags/v1.2.3", True), ("tag", "refs/tags/v0.2.3-ci.1", True)):
+        if bash:
+            ran = subprocess.run([bash, "-eo", "pipefail", "-c", str(guard_steps[0]["run"])], env={"PATH": os.environ.get("PATH", ""), "GITHUB_REF_TYPE": ref_type, "GITHUB_REF": ref}, capture_output=True)
+            need((ran.returncode == 0) == passes, f"release.yml tag-guard must {'pass' if passes else 'fail'} for {ref_type} {ref} (exit {ran.returncode})")
+for job_name, job in release.items():
+    needs_ = job.get("needs") or []
+    needs_ = [needs_] if isinstance(needs_, str) else needs_
+    if job_name in TAG_GUARD_FREE:
+        need("tag-guard" not in needed(job_name) | set(needs_), f"release.yml job {job_name} publishes nothing and must run on a dispatch: it must not need tag-guard")
 PUBLISHING = re.compile(r"cargo\s+(publish|release)|gh\s+(release|api|workflow)|docker\s+(push|login)|npm\s+(run\s+)?publish|uv\s+publish|twine\s+upload|ghcr\.io|git\s+push"
                         r"|crane\s+(push|copy)|skopeo\s+(copy|sync)|build-push-action|docker/login-action|action-gh-release|gh-action-pypi-publish|--push\b")
 HIDES_FAILURE = re.compile(r"\|\||\bset\s+\+e|\bset\s+\+o\s+errexit|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
@@ -298,6 +320,33 @@ need(release_wf.get("permissions") == {"contents": "read"}, f"release.yml's top-
 # ("shell: bash" runs with -eo pipefail.)
 PIPE = re.compile(r"(?<!\|)\|(?!\|)")
 ATTEST_PERMS = {"contents": "read", "id-token": "write", "attestations": "write"}
+ATTESTING_JOBS = ("attest-macos", "attest-windows")  # the only native-service.yml jobs that hold id-token and attestations (security-1-1)
+service_path = option("--native-service", root / ".github/workflows/native-service.yml")
+service_text = service_path.read_text(encoding="utf-8")
+try:
+    service = load_strict(service_text)
+except yaml.YAMLError as error:
+    need(False, f"native-service.yml is not plain YAML: {error}")
+    service = {}
+
+
+def token_holder(job):
+    """A job that can hold id-token or attestations: they let any of its steps mint an OIDC identity (the request variables reach every step)."""
+    perms = job.get("permissions")
+    if isinstance(perms, str):
+        return perms not in ("read-all", "none")
+    return isinstance(perms, dict) and any(str(perms.get(k)) == "write" for k in ("id-token", "attestations"))
+
+
+def steps_only(job):
+    """Compiles nothing: a job of `uses` steps with no `run`, and not a call of another workflow."""
+    return "uses" not in job and bool(job.get("steps")) and all("run" not in step and "uses" in step for step in job["steps"])
+
+
+# security-1-1: every holder of id-token or attestations in native-service.yml compiles nothing. release.yml's native-service call may
+# grant those permissions (a called workflow cannot hold more than its caller grants) only while that holds.
+token_holders = {name: job for name, job in (service.get("jobs") or {}).items() if token_holder(job)}
+attesters_compile_nothing = bool(token_holders) and all(steps_only(job) for job in token_holders.values())
 CONDITIONAL = re.compile(r"(^|[;&|({]|\bthen|\bdo|\belse)\s*(if|elif|while|until)\b", re.M)
 BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")
 for job_name, job in release.items():
@@ -309,9 +358,9 @@ for job_name, job in release.items():
     writes = isinstance(perms, str) and perms != "read-all" or isinstance(perms, dict) and any(str(v) != "read" for k, v in perms.items() if k != "security-events")
     job_text = json.dumps(job)
     sensitive = writes or "environment" in job or "secrets" in job_text or bool(PUBLISHING.search(job_text))
-    # native-service only lets its called workflow attest the throwaway CI package it installs (nothing is published or released from it):
-    # exactly those permissions, no environment, no secrets.
-    if job_name == "native-service" and perms == ATTEST_PERMS and "environment" not in job and "secrets" not in job_text and not PUBLISHING.search(job_text):
+    # native-service only lets its called workflow's attest jobs (which compile nothing, see above) attest the throwaway CI package its
+    # lifecycle jobs install (nothing is published or released from it): exactly those permissions, no environment, no secrets.
+    if job_name == "native-service" and perms == ATTEST_PERMS and attesters_compile_nothing and "environment" not in job and "secrets" not in job_text and not PUBLISHING.search(job_text):
         sensitive = False
     for step in job.get("steps", []) or []:
         need("continue-on-error" not in step, f"release.yml job {job_name} has a step with continue-on-error")
@@ -326,6 +375,8 @@ for job_name, job in release.items():
         need(not BACKGROUND.search(run), f"release.yml job {job_name} backgrounds a command with `&`")
         # Attacker-chosen text (a tag or branch name, an event payload) must reach a shell through `env:`, never interpolated into the script.
         need(not re.search(r"\$\{\{[^}]*\bgithub\.(event|ref_name|ref|head_ref|base_ref)\b", run), f"release.yml job {job_name} interpolates github.event or a ref name into a run script: pass it through env:")
+    if sensitive or token_holder(job) or job_name == "native-service":
+        need("tag-guard" in ([job.get("needs")] if isinstance(job.get("needs"), str) else (job.get("needs") or [])), f"release.yml job {job_name} publishes, attests, writes or uses an environment or a secret, so it must need tag-guard directly (D30)")
     if sensitive:
         chain = needed(job_name)
         need({"native", "e2e"} <= chain, f"release.yml job {job_name} writes, publishes or uses secrets or an environment, so it must transitively need native and e2e (it needs {sorted(chain)})")
@@ -333,26 +384,18 @@ for job_name, job in release.items():
 # Slice 25: native-service.yml gates the release (release.yml's native-service job calls it), so it is held to the same rules as the
 # workflows above: SHA-pinned actions, read-only token, callable only by release.yml or by hand, and no step whose failure can be
 # hidden. A `cargo test | tee` without pipefail reports tee's status, so a failing Docker Engine or tool lane would pass.
-service_path = option("--native-service", root / ".github/workflows/native-service.yml")
-service_text = service_path.read_text(encoding="utf-8")
-try:
-    service = load_strict(service_text)
-except yaml.YAMLError as error:
-    need(False, f"native-service.yml is not plain YAML: {error}")
-    service = {}
 need(set(service.get(True, {})) == {"workflow_call", "workflow_dispatch"}, f"native-service.yml triggers must be exactly workflow_call and workflow_dispatch, found {sorted(map(str, service.get(True, {})))}")
 need("pull_request_target" not in service_text, "native-service.yml must not use pull_request_target")
 need(service.get("permissions") == {"contents": "read"}, f"native-service.yml top-level permissions must be exactly contents: read, found {service.get('permissions')!r}")
 need("secrets:" not in service_text and "secrets." not in service_text, "native-service.yml must not use secrets")
-ATTESTING_JOBS = ("service-macos", "service-windows")
 service_shell = (service.get("defaults") or {}).get("run", {}).get("shell")
 CREDENTIAL_STEP = "Windows and macOS credential-reads folder checks"
 SERVICE_HIDES = re.compile(r"\|\|\s*(true|:|/bin/true)\b|\bset\s+\+e|;\s*(true|:)(\s|;|$)|;\s*exit\s+0|\bexit\s+0\b", re.M)
 for job_name, job in (service.get("jobs") or {}).items():
     need("continue-on-error" not in job, f"native-service.yml job {job_name} must not continue-on-error")
     need("if" not in job, f"native-service.yml job {job_name} must have no job-level if")
-    # Only the jobs that attest the CI package they install (the installer verifies it) hold id-token and attestations.
-    need("permissions" not in job or job["permissions"] == {"contents": "read"} or (job_name in ATTESTING_JOBS and job["permissions"] == ATTEST_PERMS), f"native-service.yml job {job_name} may only hold contents: read (service-macos and service-windows also {ATTEST_PERMS})")
+    # Only the attest jobs (which compile nothing) hold id-token and attestations; every other job holds contents: read or nothing.
+    need("permissions" not in job or job["permissions"] == {"contents": "read"} or (job_name in ATTESTING_JOBS and job["permissions"] == ATTEST_PERMS), f"native-service.yml job {job_name} may only hold contents: read (only {' and '.join(ATTESTING_JOBS)} hold {ATTEST_PERMS})")
     for step in job.get("steps", []) or []:
         need("continue-on-error" not in step, f"native-service.yml job {job_name} has a step with continue-on-error")
         if "if" in step:
@@ -399,6 +442,7 @@ explicit_toolchain("native-clients.yml", wf)
 explicit_toolchain("native-service.yml", service)
 explicit_toolchain("release.yml", release_wf)
 explicit_toolchain("rust.yml", rust_wf)
+need("workflow_dispatch" in (rust_wf.get(True) or {}), "rust.yml must have a workflow_dispatch trigger (D30)")
 # The credential-reads step is the only Windows and macOS run of the credential_temp / key_acl tests: it must exist exactly once, in tools.
 tools_steps = ((service.get("jobs") or {}).get("tools") or {}).get("steps") or []
 need(sum(1 for step in tools_steps if step.get("name") == CREDENTIAL_STEP) == 1, f"native-service.yml job tools must have exactly one `{CREDENTIAL_STEP}` step (the Windows and macOS credential-reads evidence)")
@@ -419,6 +463,18 @@ fi
 credential_runs = [str(step.get("run", "")) for step in tools_steps if step.get("name") == CREDENTIAL_STEP]
 need(credential_runs == [CREDENTIAL_RUN], f"native-service.yml `{CREDENTIAL_STEP}` must run exactly the credential_temp/key_acl tests with their pass counts (Windows 6, macOS 16)")
 
+# Slice 30 review: the seeded Maven plugin repository is compared with the committed manifest right after the seed step, on a cache hit and a
+# miss alike (no `if`), so a poisoned cache or a changed mirror fails the job instead of feeding the Maven lane.
+host_steps = ((service.get("jobs") or {}).get("tools-host") or {}).get("steps") or []
+SEED_STEP, VERIFY_STEP = "Seed the Maven plugin repository", "Verify the Maven plugin seed against its committed manifest"
+seed_at = [i for i, st in enumerate(host_steps) if st.get("name") == SEED_STEP]
+verify_at = [i for i, st in enumerate(host_steps) if st.get("name") == VERIFY_STEP]
+need(len(seed_at) == 1 and len(verify_at) == 1 and verify_at[0] == seed_at[0] + 1, f"native-service.yml job tools-host must have exactly one `{VERIFY_STEP}` step directly after the `{SEED_STEP}` step")
+if len(verify_at) == 1:
+    verify_step = host_steps[verify_at[0]]
+    need("if" not in verify_step, f"native-service.yml `{VERIFY_STEP}` must run on a cache hit too: no `if`")
+    verify_run = str(verify_step.get("run", ""))
+    need(re.search(r"seed-m2", verify_run) is not None and re.search(r"\|\s*diff - tests/e2e/compose/clients/maven-seed\.sha256\s*$", verify_run.strip()) is not None, f"native-service.yml `{VERIFY_STEP}` must diff the seed's checksums against tests/e2e/compose/clients/maven-seed.sha256")
 # Recheck 1 (RC1-2): the static OpenSSL of the Windows release is vcpkg's x64-windows-static-md (static libraries, dynamic CRT = rustc's
 # default /MD). The plain x64-windows-static triplet links the static CRT, which the Rust binary does not use. Every Windows and macOS
 # release or gate build turns the feature on, so the default dev build is the only one without it.
@@ -439,12 +495,30 @@ need("publish-release" in release and "attest" in (release.get("publish-release"
 for job_name, job in release.items():
     perms = job.get("permissions") or {}
     if isinstance(perms, dict) and perms.get("id-token") == "write":
-        need(job_name in ("release", "attest") or (job_name == "native-service" and perms == ATTEST_PERMS), f"release.yml: id-token: write is allowed only on the release and attest jobs (and native-service with exactly {ATTEST_PERMS}), found on {job_name}")
-for job_name, job in (service.get("jobs") or {}).items():
-    need(job_name in ATTESTING_JOBS or "id-token" not in json.dumps(job.get("permissions", {})), f"native-service.yml job {job_name} must not hold id-token")
-    if job_name in ATTESTING_JOBS:
-        need(job.get("permissions") == ATTEST_PERMS, f"native-service.yml job {job_name} must attest its CI package: permissions exactly {ATTEST_PERMS}")
-        need(any(str(step.get("uses", "")).startswith("actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8") for step in job.get("steps", [])), f"native-service.yml job {job_name} must attest its package with the release.yml action pin")
+        need(job_name in ("release", "attest") or (job_name == "native-service" and perms == ATTEST_PERMS and attesters_compile_nothing), f"release.yml: id-token: write is allowed only on the release and attest jobs (and on native-service with exactly {ATTEST_PERMS} while every holder in native-service.yml compiles nothing), found on {job_name}")
+service_jobs = service.get("jobs") or {}
+# security-1-1: a holder of id-token or attestations compiles nothing: it is one of the attest jobs, and those are exactly a download of the
+# built binary and its attestation, with no `run` (so no build input, tool install or script runs where the OIDC variables are set).
+for job_name, job in service_jobs.items():
+    if token_holder(job):
+        need(job_name in ATTESTING_JOBS, f"native-service.yml job {job_name} must not hold id-token or attestations (only {' and '.join(ATTESTING_JOBS)})")
+        need(steps_only(job), f"native-service.yml job {job_name} holds id-token or attestations, so it must compile nothing: `uses` steps only, no `run`")
+# The attest jobs only get their token if the caller grants it (a called workflow cannot hold more than its caller gives it).
+need((release.get("native-service") or {}).get("permissions") == ATTEST_PERMS, f"release.yml's native-service call must grant exactly {ATTEST_PERMS}: native-service.yml's attest jobs hold id-token and attestations and a called workflow cannot hold more than its caller grants")
+for attest, build, lifecycle in (("attest-macos", "service-macos-build", "service-macos"), ("attest-windows", "service-windows-build", "service-windows")):
+    job = service_jobs.get(attest) or {}
+    need(bool(job), f"native-service.yml must have the job {attest} (it attests the binary {build} built, D28)")
+    need(job.get("permissions") == ATTEST_PERMS, f"native-service.yml job {attest} must attest its CI package: permissions exactly {ATTEST_PERMS}")
+    need(job.get("needs") == build, f"native-service.yml job {attest} must need exactly {build}")
+    steps = job.get("steps") or []
+    need(len(steps) == 2 and all(set(step) == {"uses", "with"} for step in steps), f"native-service.yml job {attest} must have exactly two steps (download-artifact, attest-build-provenance), each only `uses` and `with`")
+    if len(steps) == 2:
+        need(str(steps[0].get("uses", "")).startswith("actions/download-artifact@") and str((steps[0].get("with") or {}).get("pattern", "")).startswith("ci-binary-"), f"native-service.yml job {attest}: step 1 must download the ci-binary-* artifact of the build job")
+        need(str(steps[1].get("uses", "")).startswith("actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8") and str((steps[1].get("with") or {}).get("subject-path", "")).startswith("ci-binary-"), f"native-service.yml job {attest}: step 2 must attest the downloaded ci-binary-* file with the release.yml action pin")
+    need((service_jobs.get(lifecycle) or {}).get("needs") == attest, f"native-service.yml job {lifecycle} must need exactly {attest}: the lifecycle installs only what was attested")
+    # security-1-2: the lane pins the commit it was built from, so an attestation of another branch's run is refused by the installer.
+    signing = [step for step in (service_jobs.get(lifecycle) or {}).get("steps", []) if "E2E_SERVICE_SIGNER_WORKFLOW" in (step.get("env") or {})]
+    need(len(signing) == 1 and signing[0]["env"].get("E2E_SERVICE_SOURCE_DIGEST") == "${{ github.sha }}", f"native-service.yml job {lifecycle} must run the lifecycle once with E2E_SERVICE_SIGNER_WORKFLOW and E2E_SERVICE_SOURCE_DIGEST: ${{{{ github.sha }}}}")
 need("UNATTESTED" not in service_text and "--no-verify" not in service_text and "-NoVerify" not in service_text and "allow-unverified" not in service_text, "native-service.yml must not switch the installer's verification off (D28)")
 
 # Every scenario ID the workflow names exists: in the scenario files, and (where the harness
@@ -626,6 +700,14 @@ need("kernel.apparmor_restrict_unprivileged_userns=0" in cjob_text("netns") and 
 explicit_toolchain("cluster.yml", cwf)
 need("run.mjs --only E2E-service-cluster-probe --only E2E-service-cluster" in cjob_text("e2e-service-cluster"), "cluster.yml e2e-service-cluster: both scenarios are required")
 need("run-kind-lane.sh" in cjob_text("kind") and "run-kind-lane.sh" in cjob_text("cri-node"), "cluster.yml kind and cri-node: both run tests/e2e/cluster/run-kind-lane.sh")
+# Slice 30 review: the kind job runs both CNIs, and the Cilium CLI it installs is checked against a pinned sha256 before it is extracted.
+need(((cjobs.get("kind") or {}).get("strategy") or {}).get("matrix") == {"cni": ["calico", "cilium"]}, "cluster.yml kind: the matrix must be exactly cni: [calico, cilium]")
+cilium_steps = [str(st.get("run", "")) for st in (cjobs.get("kind") or {}).get("steps", []) if "cilium-cli" in str(st.get("run", ""))]
+need(len(cilium_steps) == 1, "cluster.yml kind: exactly one step downloads the Cilium CLI")
+for cilium_run in cilium_steps:
+    verify_at = cilium_run.find('echo "$CILIUM_CLI_SHA256  $RUNNER_TEMP/cilium.tgz" | sha256sum --check')
+    need(0 <= cilium_run.find("curl ") < verify_at < cilium_run.find("tar "), "cluster.yml kind: the Cilium CLI download must be checked with `sha256sum --check` against $CILIUM_CLI_SHA256 before tar extracts it")
+need(re.fullmatch(r"[0-9a-f]{64}", str((cwf.get("env") or {}).get("CILIUM_CLI_SHA256", ""))) is not None, "cluster.yml: env CILIUM_CLI_SHA256 must be a pinned 64-hex sha256")
 for line in re.findall(r"uses:\s*(\S+)", cluster_text):
     need(re.search(r"@[0-9a-f]{40}$", line) is not None, f"cluster.yml: action not pinned to a commit SHA: {line}")
 for forbidden in ("pull_request_target", "workflow_run", "secrets.", "vars.", "continue-on-error", "NODE_TLS_REJECT_UNAUTHORIZED", "releases/latest", "wget ", "curl -k", "--insecure"):

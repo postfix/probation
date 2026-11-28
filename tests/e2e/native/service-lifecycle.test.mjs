@@ -23,16 +23,20 @@ assert.deepEqual(sys.kill(42), ["kill", "-KILL", "42"]);
 // --no-verify. A CI package carries no RELEASE-PACKAGE marker (it is not a release), so the installer is told it is a dev package, and
 // the signer workflow of its attestation is named. A release package and a build from the tree get no extra flag, except that a build from
 // the tree on Windows (no SHA256SUMS) needs -NoVerify.
+// The installer refuses any signer workflow other than release.yml without the commit the attestation was built from (security-1-2).
 const SIGNER = ".github/workflows/native-service.yml";
-assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["--dev-package", "--signer-workflow", SIGNER]);
-assert.deepEqual(installVerifyFlags({ platform: "darwin", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["--dev-package", "--signer-workflow", SIGNER]);
-assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: "/p", release: false, signerWorkflow: SIGNER }), ["-DevPackage", "-SignerWorkflow", SIGNER]);
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: "/p", release: false, signerWorkflow: SIGNER, sourceDigest: SHA }), ["--dev-package", "--signer-workflow", SIGNER, "--source-digest", SHA]);
+assert.deepEqual(installVerifyFlags({ platform: "darwin", packageDir: "/p", release: false, signerWorkflow: SIGNER, sourceDigest: SHA }), ["--dev-package", "--signer-workflow", SIGNER, "--source-digest", SHA]);
+assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: "/p", release: false, signerWorkflow: SIGNER, sourceDigest: SHA }), ["-DevPackage", "-SignerWorkflow", SIGNER, "-SourceDigest", SHA]);
+assert.throws(() => installVerifyFlags({ platform: "linux", packageDir: "/p", release: false, signerWorkflow: SIGNER }), /source digest/, "a signer workflow without the commit it was built from is refused before the installer runs");
+assert.throws(() => installVerifyFlags({ platform: "win32", packageDir: "/p", release: false, signerWorkflow: SIGNER, sourceDigest: "abc" }), /source digest/);
 assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: "/p", release: true }), []);
 assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: "/p", release: true }), []);
 assert.deepEqual(installVerifyFlags({ platform: "win32", packageDir: undefined }), ["-NoVerify"]);
 assert.deepEqual(installVerifyFlags({ platform: "linux", packageDir: undefined }), []);
 for (const platform of ["linux", "darwin", "win32"]) {
-  assert.ok(!installVerifyFlags({ platform, packageDir: "/p", release: false, signerWorkflow: SIGNER }).some((f) => /no-?verify|allow-unverified/i.test(f)), `${platform}: a package keeps the full verification`);
+  assert.ok(!installVerifyFlags({ platform, packageDir: "/p", release: false, signerWorkflow: SIGNER, sourceDigest: SHA }).some((f) => /no-?verify|allow-unverified/i.test(f)), `${platform}: a package keeps the full verification`);
 }
 // install-service.ps1 declares [switch]$NoStart; a `--no-start` there is a parameter-binding error.
 assert.equal(noStartFlag("win32"), "-NoStart");
@@ -96,6 +100,7 @@ assert.ok(ps1.includes("Get-DaclViolation") && ps1.includes("An empty directory 
 const verify = ps1.slice(ps1.indexOf("function Assert-PackageHashes"), ps1.indexOf("function Install-BinaryFiles"));
 assert.ok(verify.includes("has no SHA256SUMS, so the files cannot be verified") && verify.includes("-NoVerify") && verify.includes("DISABLED"), "no SHA256SUMS refuses unless -NoVerify, which warns");
 assert.ok(verify.includes("--signer-workflow") && verify.includes("--repo $repo") && verify.includes("--certificate-oidc-issuer https://token.actions.githubusercontent.com") && verify.includes("--certificate-identity-regexp") && verify.includes("--bundle $bundle"), "gh and cosign are pinned to the repository, the workflow, the issuer and the bundle");
+assert.ok(verify.includes("$SourceDigest") && verify.includes("--source-digest") && verify.includes("Verified the attestation of") && !verify.includes("Verified the release attestation") && ps1.includes("needs -SourceDigest SHA"), "the Windows installer pins the source commit of another workflow's attestation and names the workflow it verified");
 assert.ok(verify.includes("this is a release package and gh is not installed") && verify.includes("this is a release package and cosign is not installed") && verify.includes("its cosign bundle is missing"), "a release package refuses without gh, cosign or a bundle");
 assert.ok(upgradeBlock().includes("Assert-PackageHashes"), "an upgrade verifies before touching anything");
 assert.ok(install.indexOf("Assert-PackageHashes") < install.indexOf("New-ProtectedDirectory $dir"), "the package is verified before any directory or file is created");

@@ -1,5 +1,5 @@
 # Sourced by run-kind-lane.sh (and by tests/node_scripts.rs, which drives these functions with a stub `probe`): the assertion bookkeeping
-# and the assertions over what a probe prints. AUTHORED, NOT EXECUTED against a cluster; the functions' own decisions are tested with stubs.
+# and the assertions over what a probe prints. Executed against kind by cluster.yml (run 45977663713); the functions' own decisions are tested with stubs.
 #
 # `probe FROM ADDRESS` (defined by the lane) prints the body the service answered, and fails (curl's status) when nothing answered.
 # Each helper captures the output first: `probe | grep -q` under `pipefail` would turn grep's early exit (SIGPIPE) into a failure.
@@ -17,6 +17,10 @@ finish() {
   # cluster of their own with a keep-flag, or a `kind` that fails to delete, must not be left with an open ingress).
   [ -z "${POLICIES_LIFTED:-}" ] || restore_policies >/dev/null 2>&1 || true
   kind export logs "$WORK_DIR/logs/kind" --name "$CLUSTER" >/dev/null 2>&1 || true
+  # the policy server's compose stack (LANE=cluster, pull_through_service), if it got that far
+  [ -z "${POLICY_STACK:-}" ] || node "$ROOT/tests/e2e/cluster/policy-server.mjs" down --work "$POLICY_STACK" >/dev/null 2>&1 || true
+  # the lane's private registry container, if it got that far
+  docker rm -f "$CLUSTER-private-registry" >/dev/null 2>&1 || true
   kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
   if [ "$rc" -ne 0 ]; then echo "lane aborted with status $rc after $ran assertion(s)"; exit "$rc"; fi
   echo "assertions ran: $ran, failed: $failed"
@@ -27,14 +31,16 @@ finish() {
 refused_by_service() { local out; out=$(probe "$@" || true); grep -q NETWORK_NOT_ALLOWED <<<"$out"; }
 # The service answered and did not refuse the caller.
 admitted() { local out; out=$(probe "$@") && [ -n "$out" ] && ! grep -q NETWORK_NOT_ALLOWED <<<"$out"; }
-# Nothing answered at all (a layer in front dropped the packet). Only curl's own "no answer" statuses (0 with an empty body, 7 refused,
-# 28 timeout, 52 empty reply, 56 reset) count: a probe that could not run (unbound variable, missing tool, usage error) is not a drop.
-no_answer_status() { case $1 in 0|7|28|52|56) return 0 ;; *) return 1 ;; esac; }
+# Nothing answered at all (a layer in front dropped the packet). Only curl's own "no answer" statuses (7 refused, 28 timeout, 52 empty reply,
+# 56 reset) count: an HTTP answer (status 0), even with an empty body, is an answer, and a probe that could not run (unbound variable, missing
+# tool, usage error) is not a drop.
+no_answer_status() { case $1 in 7|28|52|56) return 0 ;; *) return 1 ;; esac; }
 dropped() { local out rc=0; out=$(probe "$@") || rc=$?; [ -z "$out" ] && no_answer_status "$rc"; }
 dropped_or_refused() { local out rc=0; out=$(probe "$@") || rc=$?; if grep -q NETWORK_NOT_ALLOWED <<<"$out"; then return 0; fi; [ -z "$out" ] && no_answer_status "$rc"; }
 # The address the service says it saw: the refusal names it ("this API key may not be used from ADDRESS").
 source_seen() { local out; out=$(probe "$@" || true); sed -n 's/.*may not be used from \([0-9A-Fa-f:.]*\).*/\1/p' <<<"$out" | sed -n 1p; }
 source_is() { local want=$1; shift; [ "$(source_seen "$@")" = "$want" ]; }
+node_ip() { docker inspect -f '{{ .NetworkSettings.Networks.kind.IPAddress }}' "$1"; } # a container's address on the kind network
 # Bounded wait for a node's CRI (a kind node's containerd) to answer.
 wait_cri() { local i; for i in $(seq 1 60); do docker exec "$1" crictl info >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
 
@@ -66,3 +72,23 @@ restore_policies() {
   kubectl apply -k "$WORK_DIR/k"
   POLICIES_LIFTED=
 }
+
+# ---- the cri lane: what the KUBELET did (events and phase of a pod) and what systemd did to the node firewall ----
+# wait_until SECONDS COMMAND...: run COMMAND every POLL_SECONDS (2) until it succeeds; fails when the budget is spent.
+wait_until() { local budget=$1 waited=0; shift; while ! "$@"; do [ "$waited" -lt "$budget" ] || return 1; sleep "${POLL_SECONDS:-2}"; waited=$((waited + 2)); done; }
+# Some event of the pod matches REGEX (an extended regular expression over "Reason: message"). A kubectl that fails matches nothing: its error text is not an event.
+pod_event_matches() { # pod_event_matches NAMESPACE POD REGEX
+  local out
+  out=$(kubectl -n "$1" get events --field-selector "involvedObject.name=$2" -o jsonpath='{range .items[*]}{.reason}: {.message}{"\n"}{end}' 2>/dev/null) || return 1
+  grep -Eqi "$3" <<<"$out"
+}
+pod_phase_is() { [ "$(kubectl -n "$1" get pod "$2" -o jsonpath='{.status.phase}' 2>/dev/null)" = "$3" ]; } # pod_phase_is NAMESPACE POD PHASE
+not() { ! "$@"; } # for `expect NAME not COMMAND...`
+# nft tables of a kind node (docker exec): present or absent as `nft list table` says.
+nft_table_present() { docker exec "$1" nft list table inet "$2" >/dev/null 2>&1; } # nft_table_present NODE TABLE
+nft_table_absent() { ! nft_table_present "$@"; }
+fw_loaded() { nft_table_present "$1" probation_node_egress && nft_table_present "$1" probation_node_ingress; }
+fw_gone() { nft_table_absent "$1" probation_node_egress && nft_table_absent "$1" probation_node_ingress; }
+# Cilium leg only (NOT D1 phase A, which lifts the ingress layer with an allow-all policy instead): take networkpolicy.yaml's ipBlock rule away so that
+# the namespace's default-deny alone is in force, to show that optional/cilium-networkpolicy.yaml is what admits the labelled node.
+remove_ipblock_policy() { kubectl -n probation delete networkpolicy probation-ingress; }

@@ -38,7 +38,9 @@ Usage: install-service.sh {install|upgrade|uninstall} [options]
                         one shipped beside this script; a failed verification refuses the install)
   --signer-workflow PATH  the workflow file whose attestation `gh attestation verify` accepts, inside this repository's .github/workflows
                         (default .github/workflows/release.yml). Anything else (another path, `..`, a URL, another repository) is refused.
-                        For CI-built packages that a workflow other than the release attests.
+                        For CI-built packages that a workflow other than the release attests; any other workflow also needs --source-digest.
+  --source-digest SHA   the 40-character commit the attestation was built from (`gh attestation verify --source-digest`). Required with a
+                        --signer-workflow other than release.yml: any writer can run such a workflow on any branch, and this pins the commit
   --cosign-bundle FILE  the Sigstore bundle of the binary (default: probation.sigstore.json beside it); verified with `cosign` when
                         cosign is installed, keyless, against this project's release workflow identity
   --dev-package         install the binary shipped beside this script although the directory carries no RELEASE-PACKAGE marker
@@ -56,7 +58,7 @@ ACTION="${1:-}"
 case "$ACTION" in install|upgrade|uninstall) ;; *) usage ;; esac
 
 SCOPE=system BINARY="" CONFIG_DIR="" DATA_DIR="" LOG_DIR="" BIN_DIR="" LISTEN="127.0.0.1:8080" NAME=probation
-COSIGN_BUNDLE="" SERVICE_USER="" LOG_NS="" PLATFORM="" START=1 ROOT="" ROOT_GIVEN=0 NO_STAGING=0 VERIFY=1 DEV_PACKAGE=0 SIGNER_WORKFLOW=".github/workflows/release.yml" PUBLIC_URL="" TLS_CERT="" TLS_KEY=""
+COSIGN_BUNDLE="" SERVICE_USER="" LOG_NS="" PLATFORM="" START=1 ROOT="" ROOT_GIVEN=0 NO_STAGING=0 VERIFY=1 DEV_PACKAGE=0 SIGNER_WORKFLOW=".github/workflows/release.yml" SOURCE_DIGEST="" PUBLIC_URL="" TLS_CERT="" TLS_KEY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --scope) SCOPE="$2"; shift 2 ;;
@@ -82,11 +84,18 @@ while [ $# -gt 0 ]; do
       # One workflow FILE of the pinned repository: no other directory, no `..`, no URL or repository prefix, no leading dot in the name.
       [[ "${2-}" =~ ^\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9._-]*\.ya?ml$ ]] || { echo "--signer-workflow must be a workflow file under .github/workflows of this repository (e.g. .github/workflows/release.yml), got '${2-}'" >&2; exit 1; }
       SIGNER_WORKFLOW="$2"; shift 2 ;;
+    --source-digest)
+      [[ "${2-}" =~ ^[0-9a-f]{40}$ ]] || { echo "--source-digest must be a 40-character lower-case hex commit id, got '${2-}'" >&2; exit 1; }
+      SOURCE_DIGEST="$2"; shift 2 ;;
     --cosign-bundle) COSIGN_BUNDLE="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
+# A workflow other than the release one can be run by any writer on any branch: only the commit it was built from tells them apart.
+if [ "$SIGNER_WORKFLOW" != ".github/workflows/release.yml" ] && [ -z "$SOURCE_DIGEST" ]; then
+  echo "--signer-workflow $SIGNER_WORKFLOW (other than the release workflow) needs --source-digest SHA (the commit the attestation was built from)" >&2; exit 1
+fi
 case "$SCOPE" in system|user) ;; *) echo "--scope must be system or user" >&2; exit 1 ;; esac
 case "$NAME" in *[!a-zA-Z0-9._-]*|"") echo "--name: letters, digits, . _ - only" >&2; exit 1 ;; esac
 if [ -z "$PLATFORM" ]; then
@@ -373,9 +382,9 @@ verify_binary() {
     [ "$release" -eq 0 ] || die "this is a release package and gh is not installed, so its attestation cannot be verified: install gh, or pass --allow-unverified to accept it unchecked"
     say "gh is not installed: the release attestation of $BINARY was NOT verified"
   else
-    gh attestation verify "$BINARY" --repo "$repo" --signer-workflow "$repo/$SIGNER_WORKFLOW" >/dev/null 2>&1 \
-      || die "the release attestation of $BINARY does not verify (gh attestation verify, pinned to $repo and its release workflow); refusing. Use --no-verify only for a build you made yourself"
-    say "Verified the release attestation of $BINARY"
+    gh attestation verify "$BINARY" --repo "$repo" --signer-workflow "$repo/$SIGNER_WORKFLOW" ${SOURCE_DIGEST:+--source-digest "$SOURCE_DIGEST"} >/dev/null 2>&1 \
+      || die "the attestation of $BINARY does not verify (gh attestation verify, pinned to $repo, workflow $SIGNER_WORKFLOW${SOURCE_DIGEST:+, source $SOURCE_DIGEST}); refusing. Use --no-verify only for a build you made yourself"
+    say "Verified the attestation of $BINARY (workflow $SIGNER_WORKFLOW${SOURCE_DIGEST:+, source $SOURCE_DIGEST})"
   fi
   RELEASE_PACKAGE="$release" verify_cosign
 }

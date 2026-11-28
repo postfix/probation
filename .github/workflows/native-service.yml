@@ -6,8 +6,9 @@ name: Native service
 # the job, and a test that reports SKIPPED fails it too (the lane did not run). Called from release.yml; also runnable by hand.
 #   service-linux    systemd, system scope, default locations: install, start, stop, restart, crash, exit 75, second owner,
 #                    permissions, upgrade, uninstall, with the pinned native npm and pip through the shared service
-#   service-macos    launchd LaunchDaemon, the same lifecycle (macOS 26 records its launchd manual and sw_vers)
-#   service-windows  the Windows SCM service as NT SERVICE\Probation, the same lifecycle
+#   service-macos    launchd LaunchDaemon, the same lifecycle (macOS 26 records its launchd manual and sw_vers); built by service-macos-build,
+#                    attested by attest-macos (which compiles nothing), installed from that package
+#   service-windows  the Windows SCM service as NT SERVICE\Probation, the same lifecycle; service-windows-build and attest-windows likewise
 #   tools            native Cargo, Go, NuGet and RubyGems clients against the firewall on each OS
 #   tools-linux      the Maven and Conan pinned client images and the podman OCI engine (Linux only: those clients run in images)
 #   docker-engine    Docker Engine 29.9.2 pinned, daemon pull through tests/oci_native.rs
@@ -87,8 +88,12 @@ jobs:
           path: target/e2e/out
           if-no-files-found: ignore
 
-  service-macos:
-    name: service-macos ${{ matrix.target }}
+  # Each OS lane is three jobs, so that no job which compiles holds a token that can mint an OIDC identity (the OIDC request variables
+  # reach every step of a job that holds id-token, and a build script or proc-macro runs in it): the `-build` job compiles and packages
+  # with contents: read, the attest job holds id-token and attestations and runs no command of its own (two `uses` steps, no `run`), and
+  # the lifecycle job installs the package and runs with contents: read. The installer verifies the attestation of the binary by its digest.
+  service-macos-build:
+    name: service-macos-build ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -99,10 +104,6 @@ jobs:
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
     env:
       AWS_LC_SYS_USE_SYSTEM: "0"
     steps:
@@ -125,20 +126,16 @@ jobs:
         run: cargo build --release --locked --bin probation --features static-openssl
       - name: Package it as the release does
         run: scripts/package-release.sh ${{ matrix.target }} target/release/probation "$RUNNER_TEMP/pkg"
-      # A CI package is not a release: no RELEASE-PACKAGE marker (the installer takes it as a dev package, the lifecycle driver passes --dev-package),
-      # and its binary is attested here, by this workflow, with the action release.yml uses. The installer then verifies that attestation with
-      # `--signer-workflow .github/workflows/native-service.yml` (the repository pin stays), with every check of the installer left on.
-      - name: Mark the package as a CI build and name the file to attest
-        id: pkg
+      # A CI package is not a release: no RELEASE-PACKAGE marker (the installer takes it as a dev package, the lifecycle driver passes --dev-package).
+      # Its binary is attested by attest-macos below, by this workflow, with the action release.yml uses; the installer then verifies that
+      # attestation with `--signer-workflow .github/workflows/native-service.yml --source-digest <this commit>` (the repository pin stays),
+      # with every check of the installer left on.
+      - name: Mark the package as a CI build
         run: |
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           rm "$pkg/RELEASE-PACKAGE"
           grep -v ' RELEASE-PACKAGE$' "$pkg/SHA256SUMS" > "$pkg/SHA256SUMS.new"
           mv "$pkg/SHA256SUMS.new" "$pkg/SHA256SUMS"
-          echo "subject=${pkg//\\//}/probation" >> "$GITHUB_OUTPUT"
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: ${{ steps.pkg.outputs.subject }}
       # The package must not depend on Homebrew's OpenSSL: no dylib path of it in the binary, and the formula hidden while it runs.
       - name: The packaged binary needs no OpenSSL dylib
         run: |
@@ -149,6 +146,68 @@ jobs:
           sudo mv "$prefix" "$prefix.hidden"
           "$pkg/probation" --version
           sudo mv "$prefix.hidden" "$prefix"
+      # upload-artifact drops the executable bit: the package travels as a tarball, and the bare binary is a second artifact for the attest job.
+      - name: Pack the package
+        run: tar czf "$RUNNER_TEMP/ci-package-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP/pkg" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-package-${{ matrix.target }}
+          path: ${{ runner.temp }}/ci-package-${{ matrix.target }}.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-binary-${{ matrix.target }}
+          path: ${{ runner.temp }}/pkg/probation-*/probation
+          retention-days: 1
+          if-no-files-found: error
+
+  # Compiles nothing and runs no command: it holds the OIDC and attestation permissions, so it has two `uses` steps and no `run`.
+  attest-macos:
+    needs: service-macos-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ci-binary-*-apple-darwin
+          merge-multiple: false
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ci-binary-*-apple-darwin/probation
+
+  service-macos:
+    name: service-macos ${{ matrix.target }}
+    needs: attest-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ci-package-${{ matrix.target }}
+          path: ${{ runner.temp }}
+      - name: Unpack the package
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg"
+          tar xzf "$RUNNER_TEMP/ci-package-${{ matrix.target }}.tar.gz" -C "$RUNNER_TEMP/pkg"
       # The launchd keys this lane relies on are those of the installed manual: record them with the OS version.
       - name: Record the OS and the installed launchd manual
         run: |
@@ -164,6 +223,7 @@ jobs:
           NATIVE_TEST_SCRATCH: ${{ runner.temp }}
           GH_TOKEN: ${{ github.token }}
           E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml
+          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}
         run: |
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           sudo -E env "PATH=$PATH" "E2E_SERVICE_PACKAGE=$pkg" node tests/e2e/native/service-lifecycle-run.mjs
@@ -174,13 +234,9 @@ jobs:
           path: ${{ runner.temp }}/record
           if-no-files-found: ignore
 
-  service-windows:
+  service-windows-build:
     runs-on: windows-2025
     timeout-minutes: 60
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
     env:
       AWS_LC_SYS_USE_SYSTEM: "0"
     steps:
@@ -204,20 +260,19 @@ jobs:
         run: cargo build --release --locked --bin probation --features static-openssl
       - name: Package it as the release does (the exe with OpenSSL linked in, SHA256SUMS, the installer)
         run: scripts/package-release.sh x86_64-pc-windows-msvc target/release/probation.exe "$RUNNER_TEMP/pkg"
-      # A CI package is not a release: no RELEASE-PACKAGE marker (the installer takes it as a dev package, the lifecycle driver passes --dev-package),
-      # and its binary is attested here, by this workflow, with the action release.yml uses. The installer then verifies that attestation with
-      # `--signer-workflow .github/workflows/native-service.yml` (the repository pin stays), with every check of the installer left on.
-      - name: Mark the package as a CI build and name the file to attest
+      # A CI package is not a release: no RELEASE-PACKAGE marker (the installer takes it as a dev package, the lifecycle driver passes --dev-package).
+      # Its binary is attested by attest-windows below, by this workflow, with the action release.yml uses; the installer then verifies that
+      # attestation with `--signer-workflow .github/workflows/native-service.yml --source-digest <this commit>` (the repository pin stays),
+      # with every check of the installer left on. The step outputs name the package directory and the exe with forward slashes, for the uploads.
+      - name: Mark the package as a CI build and name what to upload
         id: pkg
         run: |
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           rm "$pkg/RELEASE-PACKAGE"
           grep -v ' RELEASE-PACKAGE$' "$pkg/SHA256SUMS" > "$pkg/SHA256SUMS.new"
           mv "$pkg/SHA256SUMS.new" "$pkg/SHA256SUMS"
-          echo "subject=${pkg//\\//}/probation.exe" >> "$GITHUB_OUTPUT"
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: ${{ steps.pkg.outputs.subject }}
+          echo "root=${RUNNER_TEMP//\\//}/pkg" >> "$GITHUB_OUTPUT"
+          echo "binary=${pkg//\\//}/probation.exe" >> "$GITHUB_OUTPUT"
       # No OpenSSL, and no DLL of any kind that is not part of Windows or the C runtime, in what the binary imports.
       - name: The packaged exe imports only system libraries
         shell: powershell
@@ -230,6 +285,52 @@ jobs:
           $system = '^(kernel32|ntdll|advapi32|ws2_32|crypt32|user32|gdi32|bcrypt|ncrypt|secur32|userenv|ole32|oleaut32|shell32|shlwapi|setupapi|iphlpapi|mswsock|dbghelp|psapi|winmm|rpcrt4|sechost|combase|cfgmgr32|win32u|cryptbase|bcryptprimitives|ucrtbase|vcruntime140(_1)?|msvcp140|api-ms-win-[a-z0-9-]+)\.dll$'
           $bad = @($deps | Where-Object { $_ -notmatch $system -or $_ -match 'libcrypto|libssl' })
           if ($bad.Count -gt 0) { throw "the binary imports non-system libraries: $($bad -join ', ')" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-package-windows
+          path: ${{ steps.pkg.outputs.root }}
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-binary-windows
+          path: ${{ steps.pkg.outputs.binary }}
+          retention-days: 1
+          if-no-files-found: error
+
+  # Compiles nothing and runs no command: it holds the OIDC and attestation permissions, so it has two `uses` steps and no `run`.
+  attest-windows:
+    needs: service-windows-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ci-binary-windows
+          merge-multiple: false
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ci-binary-windows/probation.exe
+
+  service-windows:
+    needs: attest-windows
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.PIN_NODE }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ci-package-windows
+          path: ${{ runner.temp }}/pkg
       - name: Record the OS
         shell: powershell
         run: |
@@ -245,6 +346,7 @@ jobs:
           NATIVE_TEST_SCRATCH: ${{ runner.temp }}
           GH_TOKEN: ${{ github.token }}
           E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml
+          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}
         run: |
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           node_dir=$(dirname "$(command -v node)")
@@ -421,6 +523,12 @@ jobs:
             [ "$attempt" = 3 ] || { echo "seed attempt $attempt failed; retrying in $((attempt * 60)) s"; sleep $((attempt * 60)); }
           done
           [ "$seeded" = yes ] || { echo "the Maven plugin seed failed after 3 attempts"; false; }
+      # The seed is compared with the committed manifest on a cache hit and on a miss alike (no `if`): a poisoned cache or a changed mirror fails here.
+      - name: Verify the Maven plugin seed against its committed manifest
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          (cd "$RUNNER_TEMP/seed-m2" && find . \( -name '*.jar' -o -name '*.pom' \) | LC_ALL=C sort | xargs $sum) | diff - tests/e2e/compose/clients/maven-seed.sha256
       # tests/conan_native.rs runs its host scripts with `bash`; on a Windows runner that name finds System32's WSL launcher first (hosted run
       # 45455094825: "Windows Subsystem for Linux has no installed distributions"). Git's bash goes in front (GITHUB_PATH prepends).
       - name: Git's bash before the WSL launcher

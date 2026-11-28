@@ -418,7 +418,7 @@ fn the_release_attestation_of_the_shipped_binary_is_verified_when_gh_is_there() 
     assert!(install_from_package(&bad, &pkg, &["--no-verify"]).status.success(), "--no-verify is the explicit way past it");
     let (good, pkg) = package_with_gh(0);
     let out = install_from_package(&good, &pkg, &[]);
-    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Verified the release attestation"), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Verified the attestation of") && String::from_utf8_lossy(&out.stdout).contains("workflow .github/workflows/release.yml"), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }
 
 /// REAL systemd --user: an upgrade whose new binary passes `check-config` and then dies at start is rolled back to the previous
@@ -591,12 +591,41 @@ fn the_signer_workflow_defaults_to_release_yml_and_accepts_only_a_workflow_file_
     assert!(install_from_package(&dir, &pkg, &[]).status.success());
     let gh = std::fs::read_to_string(dir.path().join("bin/gh.args")).unwrap();
     assert!(gh.contains("--repo postfix/probation --signer-workflow postfix/probation/.github/workflows/release.yml"), "default: {gh}");
+    assert!(!gh.contains("--source-digest"), "default: {gh}");
 
+    // security-1-2: a workflow other than release.yml is not accepted on its own: any writer can run such a workflow on any branch, so the
+    // install needs the commit the attestation was built from, and refuses without it before gh is asked.
     let (dir, pkg) = package_with_gh(0);
     let out = install_from_package(&dir, &pkg, &["--signer-workflow", ".github/workflows/native-service.yml"]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("--source-digest"), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!dir.path().join("bin/gh.args").exists(), "gh was not asked");
+    assert!(!dir.path().join("root/etc/probation").exists(), "nothing was installed");
+
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let (dir, pkg) = package_with_gh(0);
+    let out = install_from_package(&dir, &pkg, &["--signer-workflow", ".github/workflows/native-service.yml", "--source-digest", sha]);
     assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let gh = std::fs::read_to_string(dir.path().join("bin/gh.args")).unwrap();
     assert!(gh.contains("--repo postfix/probation --signer-workflow postfix/probation/.github/workflows/native-service.yml"), "{gh}");
+    assert!(gh.contains(&format!("--source-digest {sha}")), "{gh}");
+    // The success line names the workflow actually verified, not "the release attestation".
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(said.contains("Verified the attestation of") && said.contains("workflow .github/workflows/native-service.yml") && said.contains(&format!("source {sha}")), "{said}");
+    assert!(!said.contains("release attestation"), "{said}");
+
+    // A refused verification names the workflow and the commit too.
+    let (dir, pkg) = package_with_gh(1);
+    let out = install_from_package(&dir, &pkg, &["--signer-workflow", ".github/workflows/native-service.yml", "--source-digest", sha]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("workflow .github/workflows/native-service.yml") && said.contains(&format!("source {sha}")) && !said.contains("its release workflow"), "{said}");
+
+    // A bad digest (not 40 lower-case hex characters) is refused before gh runs, whatever the workflow.
+    for bad in ["abc", "0123456789abcdef0123456789abcdef0123456", "0123456789ABCDEF0123456789ABCDEF01234567", "0123456789abcdef0123456789abcdef012345678", "", "--no-start"] {
+        let (dir, pkg) = package_with_gh(0);
+        let out = install_from_package(&dir, &pkg, &["--signer-workflow", ".github/workflows/native-service.yml", "--source-digest", bad]);
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("--source-digest"), "{bad:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!dir.path().join("bin/gh.args").exists(), "{bad:?}: gh was not asked");
+    }
 
     for bad in [
         ".github/other/x.yml",

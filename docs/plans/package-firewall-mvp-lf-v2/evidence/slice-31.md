@@ -65,7 +65,7 @@ GitHub lists only workflows it has registered: `gh workflow list --all` shows E2
 | Finding 2: the two SPEC section 12 benches | RESOLVED on this host: `warm_metadata`, `artifact_throughput`, `blocklist_swap` `-- --assert` exit 0 with no NOT MET (table above). Slice 27 round 3 and 4 had the same result; the slice 27 round 0 failure was the host. |
 | Finding 3: shared-service npm metadata revalidation cost | DECIDED and built in slice 27 round 4 (owner decision): the 5 s share serves credential-free metadata reads only; artifact requests always revalidate. The `transport_hot_paths` bench asserts the bounds (36 PASS). The wording for C1028 is still a spec change (item 0 below). |
 | Finding 4a: the six release scenarios that failed on podman-compose | NOT SETTLED. Locally E2E-012 passed this time; E2E-009 and E2E-014 failed again, certificate-scale and full-matrix did not reproduce the 401 (certificate-scale passed), and a new set (python, uv, issuer, sso, E2E-005, E2E-007, matrix runner 15) fails with the gateway `Host is unreachable` signature. The hosted docker compose run (e2e.yml `nightly`, run 45436770587) did not discriminate: it stopped after 25 scenarios when a fresh stack's `fw2` did not become ready in 60 s, so the hosted lane shows a firewall-readiness failure on docker too (cause not isolated), and none of the slice 27 six (009, 014, full-matrix, certificate-scale, native-linux) ran there. A separate hosted-only finding: E2E-A11Y-axe fails on the current hosted Chromium (portal `pre` blocks need keyboard access, first Tab stop not the skip link; product templates, not fixed here), while it passed locally with the older cached Chromium. |
-| Finding 1 / the success criterion (all nine transports on all 3 client OSes) | NOT MET: macOS and Windows native publishing failed on hosted runners (above); the `tools` lanes did not run. |
+| Finding 1 / the success criterion (all nine transports on all 3 client OSes) | SUPERSEDED (triage-1 card [3]): see "Success criterion at 7e75aec: transport × OS" in "Final hosted results on 7e75aec". Round-1 state, kept as history: NOT MET: macOS and Windows native publishing failed on hosted runners (above); the `tools` lanes did not run. |
 | Spec changes 0 to 6 | UNCHANGED, still the plan owner's; the spec is not edited. Item 1 (three E2E runs, `--client-host native` split) and 2 (hosted criterion wording): confirmed by this run: native-clients ran `native` on three OSes as a separate workflow. Item 6 (00-status NEXT ACTION): the hosted runs above are the first executions; D1 stays open. |
 
 ## D1 verdict
@@ -148,6 +148,14 @@ tdd: log_lines_of_containerd_in_the_dump_do_not_count_as_a_changed_configuration
 tdd: service-lifecycle.test.mjs installVerifyFlags — red: `SyntaxError: The requested module './service-lifecycle.mjs' does not provide an export named 'installVerifyFlags'` — green: `node tests/e2e/native/service-lifecycle.test.mjs` passed (`service-lifecycle.test: ok`)
 tdd: stack.test.mjs aclScript — red: `SyntaxError: The requested module './stack.mjs' does not provide an export named 'aclScript'` (observed by stashing stack.mjs) — green: `NATIVE_TEST_SCRATCH=... node tests/e2e/native/stack.test.mjs` passed
 verification: `python3 tests/e2e/native/run_tests.py` => `run_tests: 31 test files hold` (final state of all edits except none after); `actionlint -ignore 'label "macos-(26|15-intel)" is unknown'` on all workflows => exit 0; `sh -n`/`bash -n` on the touched shell scripts => ok. `cargo test --test node_scripts` hangs when stdin is an open pipe (a stub `kubectl` runs `cat`); run it with `</dev/null`.
+
+### Recorded red/green (Slice 30 review round 1, triage-1 card [4])
+
+Recorded by the round-1 triage, against a scratch copy of `7e75aec`; they cover changes made after round 2. The lines are quoted from the triage card; its references `:519` and `:556-572` are line numbers before this subsection was inserted, now `:527` and `:564-580`.
+
+tdd: the_signer_workflow_defaults_to_release_yml_and_accepts_only_a_workflow_file_of_this_repository (--signer-workflow, scripts/install-service.sh) — red: with the ec49bac install-service.sh, "Unknown argument: --signer-workflow", panicked at tests/service_scripts.rs:597:5, test result: FAILED. 0 passed; 1 failed (scratch copy of 7e75aec) — green: cargo test --locked --test service_scripts -- the_signer_workflow_defaults_to_release_yml: 1 passed
+tdd: install-service.ps1 -SignerWorkflow — red not observed (no PowerShell on the development host, no local test drives the ps1) — green: hosted service-windows job 140433378285 on 7e75aec, the lifecycle's "installer verified the attestation" expectation passed
+tdd: service-lifecycle.test.mjs "service_start enables … before bootstrapping it" (launchctl enable, 2505bee) — red: with bootstrap before enable in service_start, AssertionError: service_start enables "system/$LABEL" before bootstrapping it (scratch copy of 7e75aec); hosted red before the fix: round 8 "Bootstrap failed: 5: Input/output error" (evidence :519) — green: node tests/e2e/native/service-lifecycle.test.mjs: service-lifecycle.test: ok; hosted round 9 "lifecycle reinstall" on both macOS jobs (:556-572)
 
 ## Hosted round 3 (commit 48204b8)
 
@@ -350,7 +358,7 @@ test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
   The two user-namespace tests (`..._folder_owned_by_another_user_...`, `..._reopens_after_restart_when_data_dir_belongs_to_another_user`) ran and passed here; on macOS they are ignored (below).
 
-- **D1 CLOSED.** `kind calico` 25/25 (`assertions ran: 25, failed: 0`) and `cri-node` green (`assertions ran: 6, failed: 0`) on the same commit `0ff28f8` in the same run 45840175551: the closure condition of Slice 30 ("D1 closes only on a green `kind` and `cri-node` job"). The credential-reads ownership fix of `0ff28f8` removed the round 6 crash loop.
+- **D1 peer mechanism passed; D1 stays OPEN.** `kind calico` 25/25 (`assertions ran: 25, failed: 0`) and `cri-node` green (`assertions ran: 6, failed: 0`) on the same commit `0ff28f8` in the same run 45840175551. This met the condition the round 2 verdict set ("D1 closes only on a green `kind` and `cri-node` job"), but D1 as spec line 1422 defines it includes "no upstream fallback including the kubelet path", which has not run (correction, triage-1 card [2]; this line said "D1 CLOSED"). The credential-reads ownership fix of `0ff28f8` removed the round 6 crash loop.
 
 - Native package clients (https://github.com/postfix/probation/actions/runs/45840181049): all 5 jobs success (native linux-x64, darwin-arm64, win32-x64, real-server, linux-managed). win32-x64 (job 139979474419): `native publishing passed: 75 checks on win32-x64`. The key proof, as in round 6:
 
@@ -595,7 +603,7 @@ test credential_temp_windows_shared_parent_refused ... ok
 
 - tools darwin-arm64 (job 140054704148): 16 `credential_temp_*` ok lines. Lib: `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 0.01s`; `tests/credential_temp.rs`: `test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s`. The 2 ignored are the two user-namespace tests, as in round 7 (`... ignored, needs unprivileged user namespaces with a subuid map (unshare --map-auto)`; both ran in round 7's netns job).
 
-**Overall.** Round 7 ran Cluster (https://github.com/postfix/probation/actions/runs/45840175551) and Native package clients (https://github.com/postfix/probation/actions/runs/45840181049), all jobs green on `0ff28f8`, and closed D1. Round 9 ran Native service (run 45861876167), all 12 jobs green on `2505bee`. Together, every hosted lane of Slice 30 has passed. Cluster and Native package clients have not been re-run on `2505bee`. Between `0ff28f8` and `2505bee` (`gh api repos/postfix/probation/compare/0ff28f8...2505bee`: 2 commits) only harness, installer and workflow files changed (`.github/workflows/native-service.yml`, `scripts/install-service.sh`, `tests/e2e/native/service-lifecycle.mjs` and `.test.mjs`, `tests/e2e/native/check_workflow.py` and `.test.py`, `tests/e2e/native/expected-asserts.json`, and this evidence file). `native-service.yml` was among them.
+**Overall.** Round 7 ran Cluster (https://github.com/postfix/probation/actions/runs/45840175551) and Native package clients (https://github.com/postfix/probation/actions/runs/45840181049), all jobs green on `0ff28f8`, and passed D1's peer-mechanism checks (D1 stays OPEN: the kubelet path has not run). Round 9 ran Native service (run 45861876167), all 12 jobs green on `2505bee`. Together, every dispatched hosted run of Slice 30 has passed; the lanes that have not run are in the table of the closing section (corrected by triage-1 card [2]). Cluster and Native package clients have not been re-run on `2505bee`. Between `0ff28f8` and `2505bee` (`gh api repos/postfix/probation/compare/0ff28f8...2505bee`: 2 commits) only harness, installer and workflow files changed (`.github/workflows/native-service.yml`, `scripts/install-service.sh`, `tests/e2e/native/service-lifecycle.mjs` and `.test.mjs`, `tests/e2e/native/check_workflow.py` and `.test.py`, `tests/e2e/native/expected-asserts.json`, and this evidence file). `native-service.yml` was among them.
 
 ## Round 10 hosted results (commit 8b33c38; Native service run 45869114815)
 
@@ -744,7 +752,7 @@ info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install d
 
   (win32-x64: `1.96.0-x86_64-pc-windows-msvc`; linux-x64: `1.96.0-x86_64-unknown-linux-gnu`.) `rustup toolchain install` is in none of the ten job logs (not found in log); no auto-install line is in linux-managed or real-server (not found in log). The explicit install step for `native-clients.yml` is on `a467999`, run 45872928739, which a later section records.
 
-**Overall.** Every hosted lane of Slice 30 passed on `8b33c38`: Native service (run 45869114815, 12 of 12), Cluster (run 45869155402, 5 of 5, `kind calico` 25/25 and `cri-node` 6/6) and Native package clients (run 45869159787, 5 of 5). D1 stays CLOSED on the round-5 review fixes.
+**Overall.** Every dispatched hosted run of Slice 30 passed on `8b33c38`: Native service (run 45869114815, 12 of 12), Cluster (run 45869155402, 5 of 5, `kind calico` 25/25 and `cri-node` 6/6) and Native package clients (run 45869159787, 5 of 5). D1's peer-mechanism checks passed; D1 stays OPEN (kubelet path not run). (Corrected by triage-1 card [2]; the lanes that have not run are in the table of the closing section.)
 
 ## Round 11 hosted results: explicit Rust toolchain in native-clients.yml (a467999, f02125b)
 
@@ -791,3 +799,117 @@ The `cluster.yml` pipefail rule in `tests/e2e/native/check_workflow.py` reads on
 Fix: resolve the step shell, then the job shell, then the workflow shell, as the native-service rule does.
 
 Test: a cluster mutation with a job-level `shell: sh` on e2e-service-cluster must fail the checker.
+
+## Final hosted results on 7e75aec (slice built)
+
+Three `workflow_dispatch` runs on `7e75aec` (`7e75aeca841544d79e9ed2da0af3e52c78fd8b02`): Cluster https://github.com/postfix/probation/actions/runs/45977663713, Native service https://github.com/postfix/probation/actions/runs/45977667144, Native package clients https://github.com/postfix/probation/actions/runs/45977670716. Read with `gh run view <id> --json headSha,conclusion,jobs`, job logs with `gh api repos/postfix/probation/actions/jobs/<id>/logs`. Log lines are quoted without their timestamps. All three runs: conclusion success, head SHA `7e75aeca841544d79e9ed2da0af3e52c78fd8b02`; 22 of 22 jobs success.
+
+| Run | Job | Job id | Result |
+|---|---|---|---|
+| Cluster | netns | 140433367419 | success |
+| Cluster | static | 140433367796 | success |
+| Cluster | kind calico | 140433367907 | success |
+| Cluster | cri-node | 140433367923 | success |
+| Cluster | e2e-service-cluster | 140433368184 | success |
+| Native service | service-windows | 140433378285 | success |
+| Native service | tools-host win32-x64 | 140433378601 | success |
+| Native service | tools-host linux-x64 | 140433378622 | success |
+| Native service | tools linux-x64 | 140433378625 | success |
+| Native service | tools-host darwin-arm64 | 140433378635 | success |
+| Native service | service-linux | 140433378660 | success |
+| Native service | tools win32-x64 | 140433378664 | success |
+| Native service | tools darwin-arm64 | 140433378704 | success |
+| Native service | docker-engine | 140433378804 | success |
+| Native service | tools-linux | 140433378828 | success |
+| Native service | service-macos x86_64-apple-darwin | 140433378935 | success |
+| Native service | service-macos aarch64-apple-darwin | 140433378965 | success |
+| Native package clients | real-server | 140433390213 | success |
+| Native package clients | native win32-x64 | 140433390495 | success |
+| Native package clients | linux-managed | 140433390592 | success |
+| Native package clients | native darwin-arm64 | 140433390613 | success |
+| Native package clients | native linux-x64 | 140433390796 | success |
+
+### Success criterion at 7e75aec: transport × OS
+
+Counts from the `7e75aec` job logs (`gh api repos/postfix/probation/actions/jobs/<id>/logs`): the `test result:` line of each test binary (attributed by its preceding `Running tests/<binary>.rs` line), and the native-clients `ok   ` lines, split at the first `ok   wheel 1.0.0 built natively` line.
+
+| Transport | linux-x64 | darwin-arm64 | win32-x64 |
+|---|---|---|---|
+| npm | native-clients `native linux-x64` (job 140433390796): 33 checks + 3 shared preflight | `native darwin-arm64` (140433390613): 33 + 3 | `native win32-x64` (140433390495): 33 + 3 |
+| PyPI (twine, pip, uv) | same job: 39 | same job: 39 | same job: 39 |
+| Cargo | `tools linux-x64` (140433378625): `cargo_native` 7 passed | `tools darwin-arm64` (140433378704): 7 | `tools win32-x64` (140433378664): 7 |
+| Go | same job: `go_native` 7 passed, 1 ignored | same: 7 passed, 1 ignored | same: 7 passed, 1 ignored |
+| NuGet | same job: `nuget_native` 5 | 5 | 5 |
+| RubyGems | same job: `rubygems_native` 5 | 5 | 5 |
+| Maven | `tools-host linux-x64` (140433378622): `maven_native` 3; `tools-linux` (140433378828, image): 3 | `tools-host darwin-arm64` (140433378635): 3 | `tools-host win32-x64` (140433378601): 3 |
+| Conan | `tools-host linux-x64`: `conan_native` 3; `tools-linux`: 3 | `tools-host darwin-arm64`: 3 | `tools-host win32-x64`: 3 |
+| OCI | `tools-linux` (140433378828, podman): `oci_native` 5; `docker-engine` (140433378804): 5, `DOCKER ENGINE WITNESS: version 29.9.2` | NOT REQUIRED: no native path (Docker Desktop lane NOT BUILT, Slice 30 Remaining limits; (s)12) | NOT REQUIRED: same |
+
+- npm + PyPI = the 75 checks of `native publishing passed: 75 checks on <os>`. The 3 preflight lines are the pinned clients, their environment and their PATH (`ok   the pinned clients are installed at exactly the pins`, `ok   the clients' environment holds no certificate, key, proxy or TLS-verification setting`, `ok   PATH in the clients' environment resolves every tool to the path the preflight recorded`). In each of the three logs, 36 `ok   ` lines run from the first preflight line to the line before the wheel line, and 39 from the wheel line to the summary line; none follows the summary line.
+- Go's 1 ignored test is `live_go_verifies_the_real_checksum_database_through_the_firewall` (`#[ignore = "live network"]`, tests/go_native.rs:363). Each `tools` log prints `test live_go_verifies_the_real_checksum_database_through_the_firewall ... ignored, live network: real proxy.golang.org and sum.golang.org`. It is ignored by design, not a SKIPPED lane.
+- Every job above concluded success. 0 failed in every binary. The OCI witness line in job 140433378804 reads `DOCKER ENGINE WITNESS: version 29.9.2, api 1.56, platform Docker Engine - Community, os/arch linux/amd64`.
+
+**Verdict.** The native-check part of the criterion is MET at `7e75aec` for every required cell. The clause "no skipped required lane" is NOT MET while the lanes in the not-executed table of the closing section (triage-1 cards [1] and [2]) have not run: the release lanes and the new cluster lanes.
+
+- D1: `kind calico` (job 140433367907): `assertions ran: 25, failed: 0`. `cri-node` (job 140433367923): `assertions ran: 6, failed: 0`.
+
+- `netns` (job 140433367419), the explicit toolchain install of `cluster.yml` (code-review-2-3). Its first hosted run was the Cluster run on `290ad91` (run 45969066844, netns job 140404743054, which opens the same `##[group]Run rustup toolchain install ...` line); this run confirms it:
+
+```
+##[group]Run rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+cargo 1.96.0 (30a34c682 2026-05-25)
+```
+
+  Step `cargo test --locked --test credential_temp -- --include-ignored`: `test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s`.
+
+- `static` (job 140433367796) does not run `check_workflow` (no `check_workflow` line in the log: not found in log). Its checker lines are `check_kubernetes: ok` and `check_kubernetes.test: 86 checks hold (79 mutations, each producing exactly its named findings)`.
+
+- service-windows (job 140433378285), the round-5 review lines as in Round 10:
+
+```
+lifecycle owner: lock owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (NT SERVICE\Probation)
+lifecycle owner: state owner SID S-1-5-80-3327871205-9861390-3913828713-2233100391-2365768247 (NT SERVICE\Probation)
+lifecycle recovery: the documented rmdir removed a planted credential-reads junction; its target kept its file
+lifecycle owner refusal: a service-owned file in the config dir was refused; the install created nothing
+lifecycle owner refusal: a runner-owned file in the data dir was refused; the install created nothing
+lifecycle failed reinstall: check-config failure rolled back the binary and the install record
+lifecycle reinstall: install over kept data and logs accepted; the service started over its own lock file and state directory
+```
+
+- Native package clients, the three `native` jobs. Each opens the install step with `##[group]Run rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt` and holds 0 `has been auto-installed` lines:
+
+| Job | Job id | `shell:` line of the install step | cargo line | Summary line |
+|---|---|---|---|---|
+| native linux-x64 | 140433390796 | `shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | `native publishing passed: 75 checks on linux-x64` |
+| native darwin-arm64 | 140433390613 | `shell: /bin/bash --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | `native publishing passed: 75 checks on darwin-arm64` |
+| native win32-x64 | 140433390495 | `shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}` | `cargo 1.96.0 (30a34c682 2026-05-25)` | `native publishing passed: 75 checks on win32-x64` |
+
+**Slice 30 state at `7e75aec`.** Every DISPATCHED hosted run is green on `7e75aec` (Cluster 5 of 5, Native service 12 of 12, Native package clients 5 of 5). D1's peer mechanism passed on a real cluster: `kind calico` 25/25 (phase A, phase B, negative control) and `cri-node` 6/6 (the CRI PullImage fails at the endpoint with no fallback). D1 is NOT closed: spec line 1422 includes "no upstream fallback including the kubelet path", which has not run. Slice 30 is NOT complete: the lanes below have not run. Two review loops converged: `credential-temp-owner` in 5 rounds and `native-clients-rust-toolchain` in 3 rounds. Known limit: security-3-3, recorded above.
+
+(Correction, Slice 30 review round 1, triage-1 card [2]: this paragraph replaces one that said "Every hosted lane is green" and "D1 is closed". The hosted results above are unchanged.)
+
+| Lane | Spec | State | Reason | Decision / next step |
+|---|---|---|---|---|
+| rust.yml `static-link` (3 targets) | 1422 | AUTHORED, NOT EXECUTED | push/PR to main only | D30 (pending, triage-1 [1]) |
+| release.yml `test` (clippy, `cargo test --workspace`, bench `--assert`) | 1422, 1425 | AUTHORED, NOT EXECUTED | `v*.*.*` tag only | D25; D30 |
+| release.yml `e2e` (`--suite release`, JUnit no skipped); item 4a | 1425 | AUTHORED, NOT EXECUTED; 4a NOT SETTLED | tag only; hosted A11Y-axe failure (:42) | D25; D30; A11Y code-tdd slice |
+| release.yml `build`, `build-windows`, cosign, draft release, `attest` (`probation-*.sigstore.json`), `publish-release` | 1422, 1425 | AUTHORED, NOT EXECUTED | tag only | D25; D30 |
+| kind with Cilium | 1422 | NOT BUILT | matrix is calico only | triage-1 [2] item 1 |
+| kubelet-path no fallback; kubelet use of a preloaded image | 1422, (r)4, (r)10 | NOT BUILT | lane uses `crictl pull` and `imagePullPolicy: Never` | triage-1 [2] items 2-3 |
+| kubelet pull-secret matching, credentialed CRI pull | 1422, (r)5 | NOT BUILT | no assertion | triage-1 [2] item 4 |
+| systemd propagation of nftables.service restart/reload | 1422, (r)10 | NOT BUILT | cri lane renders with `--root /tmp/fw` only | triage-1 [2] item 5 |
+
+These rows are open lane obligations of Slice 30, not accepted reductions and not backlog (product goal ruling 2026-11-09). Slice 30 cannot be recorded as complete while any row stands.
+
+### Release and static-link lanes: interim, user decision pending (triage-1 card [1])
+
+The user's decision on how these lanes run is PENDING (proposed decision D30: option 1 throwaway tag, option 2 `workflow_dispatch` with a `tag-guard` dry-run job, option 3 PR `slice5-native-ci` to `main`, or option 2 now and option 1 at the next real release tag; see `_work/reviews/slice-30/triage-1.md` card [1]). Until it is decided and the lanes run, each lane below is AUTHORED, NOT EXECUTED.
+
+| Lane | State | Why it has not run | Deferring decision | What already ran instead |
+|---|---|---|---|---|
+| rust.yml `static-link` (3 targets) | AUTHORED, NOT EXECUTED | rust.yml runs only on a push or pull request to `main`; D27 granted one main push, for registering two workflow files | D27; D30 pending | the static OpenSSL link itself, release profile, in `service-macos` ×2 (`otool -L` step green) and `service-windows` (`dumpbin /dependents` step green) at `7e75aec`; the `static-link` JOB has not run |
+| release.yml `test` (clippy, `cargo test --workspace`, bench `--assert` on the runner) | AUTHORED, NOT EXECUTED | release.yml runs only on a `v*.*.*` tag push; D25: a tag push "is NOT covered and still needs explicit approval" | D25; D30 pending | the local Linux lanes at the top of this file (clippy, `cargo test --workspace`, `transport_hot_paths -- --assert`), not on a hosted runner |
+| release.yml `e2e` (`--suite release`, JUnit, no skipped test) | AUTHORED, NOT EXECUTED; item 4a NOT SETTLED | tag push only; hosted E2E-A11Y-axe fails (product templates) and the docker `fw2 ready` failure has no isolated cause | D25; D30 pending; A11Y `code-tdd` slice | e2e.yml `nightly` run 45436770587 (failed, row :42) |
+| release.yml `build` (4 targets), `build-windows` | AUTHORED, NOT EXECUTED | tag push only | D25; D30 pending | none |
+| release.yml cosign, `attest` (`probation-*.sigstore.json`), draft release, `publish-release`, bench step | AUTHORED, NOT EXECUTED | tag push only; under option 2 these stay AUTHORED, NOT EXECUTED until a real tag | D25; D30 pending | none |

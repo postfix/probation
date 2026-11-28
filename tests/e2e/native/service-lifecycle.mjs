@@ -17,13 +17,15 @@ export const noStartFlag = (platform) => (platform === "win32" ? "-NoStart" : "-
 /// The installer's verification flags the driver passes. The installer always verifies in full (attestation, and SHA256SUMS on Windows):
 /// there is no way to switch it off here. A build from the tree (no package) has no SHA256SUMS on Windows, which needs -NoVerify. A package
 /// built in CI is not a release (no RELEASE-PACKAGE marker, so --dev-package) and is attested by the workflow that built it, named with
-/// --signer-workflow (the installer pins the repository and defaults to release.yml).
-export const installVerifyFlags = ({ platform, packageDir, release, signerWorkflow }) => {
+/// --signer-workflow (the installer pins the repository and defaults to release.yml), together with --source-digest, the commit it was built
+/// from: the installer refuses another workflow without it, so a missing or malformed digest fails here, before the installer runs.
+export const installVerifyFlags = ({ platform, packageDir, release, signerWorkflow, sourceDigest }) => {
   const win = platform === "win32";
   if (!packageDir) return win ? ["-NoVerify"] : [];
+  if (signerWorkflow && !/^[0-9a-f]{40}$/.test(sourceDigest ?? "")) throw new Error(`a signer workflow needs its source digest (40 lower-case hex characters, E2E_SERVICE_SOURCE_DIGEST), got ${JSON.stringify(sourceDigest)}`);
   return [
     ...(release ? [] : [win ? "-DevPackage" : "--dev-package"]),
-    ...(signerWorkflow ? [win ? "-SignerWorkflow" : "--signer-workflow", signerWorkflow] : []),
+    ...(signerWorkflow ? [win ? "-SignerWorkflow" : "--signer-workflow", signerWorkflow, win ? "-SourceDigest" : "--source-digest", sourceDigest] : []),
   ];
 };
 
@@ -192,7 +194,7 @@ export async function exercise(ctx) {
   // 1. Install: files, modes, no start yet needed to judge them.
   const installed = must(c.install([noStartFlag(platform), ...(ctx.installExtra ?? [])]), "install");
   // A lane that names the attesting workflow must have VERIFIED: gh missing from PATH would only be said softly by a CI (dev) package.
-  if (ctx.requireAttestation) expect(/Verified the release attestation/.test(`${installed.stdout}${installed.stderr}`), `the installer verified the attestation: ${installed.stdout}${installed.stderr}`);
+  if (ctx.requireAttestation) expect(/Verified the attestation of .* \(workflow \.github\/workflows\/native-service\.yml, source [0-9a-f]{40}\)/.test(`${installed.stdout}${installed.stderr}`), `the installer verified the attestation: ${installed.stdout}${installed.stderr}`);
   expect(existsSync(configFile), "install created config.toml");
   note("install", `config ${configFile}`);
 
@@ -408,7 +410,7 @@ export async function runLifecycle({ root, binary: requestedBinary, scope, name,
   try {
     // Without a package (a build from the tree) there is no SHA256SUMS: the Windows installer must be told so, loudly.
     const release = Boolean(packageDir) && existsSync(join(packageDir, "RELEASE-PACKAGE"));
-    const installExtra = installVerifyFlags({ platform, packageDir, release, signerWorkflow: process.env.E2E_SERVICE_SIGNER_WORKFLOW });
+    const installExtra = installVerifyFlags({ platform, packageDir, release, signerWorkflow: process.env.E2E_SERVICE_SIGNER_WORKFLOW, sourceDigest: process.env.E2E_SERVICE_SOURCE_DIGEST });
     const requireAttestation = Boolean(packageDir && process.env.E2E_SERVICE_SIGNER_WORKFLOW);
     return await exercise({ platform, scope, name, script, binary, dirs, port, expect, log, exit75: exit75Hook, installExtra, requireAttestation });
   } finally {

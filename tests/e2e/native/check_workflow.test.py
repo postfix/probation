@@ -138,14 +138,14 @@ mutations = {
 release_mutations = {
     "native job without the actions: read grant": good_release.replace("    permissions:\n      contents: read\n      actions: read\n    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n", 1),
     "native job with actions: write": good_release.replace("      actions: read\n    uses: ./.github/workflows/native-clients.yml", "      actions: write\n    uses: ./.github/workflows/native-clients.yml", 1),
-    "if always() on release (D1)": good_release.replace("  release:\n    needs: [build, e2e, native]\n", "  release:\n    needs: [build, e2e, native]\n    if: always()\n", 1),
-    "if !cancelled() on publish (D1)": good_release.replace("  publish:\n    needs: [release, e2e, native]\n", "  publish:\n    needs: [release, e2e, native]\n    if: ${{ !cancelled() }}\n", 1),
+    "if always() on release (D1)": good_release.replace("  release:\n    needs: [build, e2e, native, native-service, tag-guard]\n", "  release:\n    needs: [build, e2e, native, native-service, tag-guard]\n    if: always()\n", 1),
+    "if !cancelled() on publish (D1)": good_release.replace("  publish:\n    needs: [release, e2e, native, tag-guard]\n", "  publish:\n    needs: [release, e2e, native, tag-guard]\n    if: ${{ !cancelled() }}\n", 1),
     "empty needs on the native job (D1)": good_release.replace("  native:\n    needs: test\n", "  native:\n    needs: []\n", 1),
     "if always() on the test job (D1)": good_release.replace("  test:\n    runs-on: ubuntu-latest\n", "  test:\n    if: always()\n    runs-on: ubuntu-latest\n", 1),
-    "if always() under images (H1)": good_release.replace("  images:\n    needs: [release, e2e]\n", "  images:\n    needs: [release, e2e]\n    if: always()\n", 1),
-    "images needs only e2e (H1)": good_release.replace("  images:\n    needs: [release, e2e]\n", "  images:\n    needs: [e2e]\n", 1),
+    "if always() under images (H1)": good_release.replace("  images:\n    needs: [release, e2e, tag-guard]\n", "  images:\n    needs: [release, e2e, tag-guard]\n    if: always()\n", 1),
+    "images needs only e2e (H1)": good_release.replace("  images:\n    needs: [release, e2e, tag-guard]\n", "  images:\n    needs: [e2e, tag-guard]\n", 1),
     "continue-on-error on the e2e run.mjs step (H1)": good_release.replace("      - run: node tests/e2e/harness/run.mjs --suite release\n", "      - run: node tests/e2e/harness/run.mjs --suite release\n        continue-on-error: true\n", 1),
-    "release needs build and native only (H1)": good_release.replace("  release:\n    needs: [build, e2e, native]\n", "  release:\n    needs: [build, native]\n", 1),
+    "release needs build and native only (H1)": good_release.replace("  release:\n    needs: [build, e2e, native, native-service, tag-guard]\n", "  release:\n    needs: [build, native, native-service, tag-guard]\n", 1),
     "an extra job running cargo publish with no needs (H1)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo publish --workspace\n        env:\n          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n",
     "an extra job pushing images with no needs (H1)": good_release + "\n  stray:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker push ghcr.io/x/y:z\n",
     '|| echo in a release step (F5)': good_release.replace('      - run: cargo package --workspace --exclude probation-server --locked\n', '      - run: cargo package --workspace --exclude probation-server --locked || echo ignored\n', 1),
@@ -160,8 +160,8 @@ release_mutations = {
     "step if outside the upload-artifact exception (H1)": good_release.replace("      - run: cargo publish --workspace --locked --no-verify\n", "      - if: always()\n        run: cargo publish --workspace --locked --no-verify\n", 1),
     "continue-on-error on a job (H1)": good_release.replace("  codeql:\n    needs: test\n", "  codeql:\n    needs: test\n    continue-on-error: true\n", 1),
     "if always() on the e2e job (D1)": good_release.replace("  e2e:\n    needs: test\n", "  e2e:\n    needs: test\n    if: always()\n", 1),
-    "release job no longer needs native (C6)": good_release.replace("needs: [build, e2e, native]", "needs: [build, e2e]", 1),
-    "publish job no longer needs native (C6)": good_release.replace("needs: [release, e2e, native]", "needs: [release, e2e]", 1),
+    "release job no longer needs native (C6)": good_release.replace("needs: [build, e2e, native, native-service, tag-guard]", "needs: [build, e2e, native-service, tag-guard]", 1),
+    "publish job no longer needs native (C6)": good_release.replace("needs: [release, e2e, native, tag-guard]", "needs: [release, e2e, tag-guard]", 1),
     "job-level if on the native job (C6)": good_release.replace("  native:\n    needs: test\n", "  native:\n    needs: test\n    if: false\n", 1),
     "native job passes secrets (C6)": good_release.replace("    uses: ./.github/workflows/native-clients.yml\n", "    uses: ./.github/workflows/native-clients.yml\n    secrets: inherit\n", 1),
     "native job removed (C6)": good_release.replace(good_release[good_release.index("  native:\n"):good_release.index("  codeql:")], "", 1),
@@ -178,8 +178,24 @@ release_mutations = {
     "a Windows release build without the static feature (RC1-2)": good_release.replace(" --target x86_64-pc-windows-msvc --features static-openssl", " --target x86_64-pc-windows-msvc", 1),
     "top-level permissions contents: write (F5r2)": good_release.replace("permissions:\n  contents: read\n\nenv:", "permissions:\n  contents: write\n\nenv:", 1),
     "test job with a write grant and no native/e2e chain (F5r2)": good_release.replace("  test:\n    runs-on: ubuntu-latest\n", "  test:\n    runs-on: ubuntu-latest\n    permissions:\n      packages: write\n", 1),
-    "build job with id-token: write (F5r2)": good_release.replace("  build:\n    needs: [codeql, native-service, build-windows]\n", "  build:\n    needs: [codeql, native-service, build-windows]\n    permissions:\n      id-token: write\n", 1),
-    "release no longer gated by the native service lanes (slice 25)": good_release.replace("    needs: [codeql, native-service, build-windows]\n", "    needs: [codeql, build-windows]\n").replace("    needs: [codeql, native-service]\n", "    needs: codeql\n"),
+    "build job with id-token: write (F5r2)": good_release.replace("  build:\n    needs: [codeql, build-windows]\n", "  build:\n    needs: [codeql, build-windows]\n    permissions:\n      id-token: write\n", 1),
+    "release no longer gated by the native service lanes (slice 25)": good_release.replace("    needs: [build, e2e, native, native-service, tag-guard]\n", "    needs: [build, e2e, native, tag-guard]\n"),
+    "D30: workflow_dispatch removed from release.yml": good_release.replace("  workflow_dispatch:\n", "", 1),
+    "D30: a branch push trigger added to release.yml": good_release.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n", 1),
+    "D30: tag-guard job removed": good_release.replace(good_release[good_release.index("  # Fails unless this run is a release tag."):good_release.index("  test:\n")], "", 1),
+    "D30: tag-guard passes on a branch (type check dropped)": good_release.replace('          test "$GITHUB_REF_TYPE" = tag\n', "", 1).replace("refs/tags/v*.*.*) ;;", "*) ;;", 1),
+    "D30: tag-guard accepts any tag name": good_release.replace("refs/tags/v*.*.*) ;;", "refs/tags/*) ;;", 1),
+    "D30: tag-guard never fails (exit 1 removed)": good_release.replace('echo "not a release tag: $GITHUB_REF"; exit 1 ;;', 'echo "not a release tag: $GITHUB_REF" ;;', 1),
+    "D30: tag-guard has a job-level if": good_release.replace("  tag-guard:\n    runs-on: ubuntu-latest\n", "  tag-guard:\n    if: always()\n    runs-on: ubuntu-latest\n", 1),
+    "D30: release no longer needs tag-guard": good_release.replace("needs: [build, e2e, native, native-service, tag-guard]", "needs: [build, e2e, native, native-service]", 1),
+    "D30: attest no longer needs tag-guard": good_release.replace("needs: [e2e, native, release, tag-guard]", "needs: [e2e, native, release]", 1),
+    "D30: publish-release no longer needs tag-guard": good_release.replace("needs: [attest, e2e, native, tag-guard]", "needs: [attest, e2e, native]", 1),
+    "D30: publish no longer needs tag-guard": good_release.replace("needs: [release, e2e, native, tag-guard]", "needs: [release, e2e, native]", 1),
+    "D30: images no longer needs tag-guard": good_release.replace("needs: [release, e2e, tag-guard]", "needs: [release, e2e]", 1),
+    "D30: the native-service call (its attest jobs) no longer needs tag-guard": good_release.replace("    needs: [test, tag-guard]\n    # native-service.yml's attest-macos", "    needs: test\n    # native-service.yml's attest-macos", 1),
+    "D30: a new publishing job without tag-guard": good_release + "\n  extra-push:\n    needs: [release, e2e, native]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: gh release delete-asset x\n",
+    "D30: the build job needs tag-guard (it would not run on a dispatch)": good_release.replace("  build:\n    needs: [codeql, build-windows]\n", "  build:\n    needs: [codeql, build-windows, tag-guard]\n", 1),
+    "D30: the e2e job needs tag-guard (it would not run on a dispatch)": good_release.replace("  e2e:\n    needs: test\n", "  e2e:\n    needs: [test, tag-guard]\n", 1),
     "native-service job removed (slice 25)": good_release.replace(good_release[good_release.index("  native-service:\n"):good_release.index("  codeql:")], "", 1),
     "cargo test piped without pipefail (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: cargo test --workspace --locked | cat\n", 1),
     "cargo test inside an if (F5r2)": good_release.replace("      - run: cargo test --workspace --locked\n", "      - run: if cargo test --workspace --locked; then echo ok; fi\n", 1),
@@ -203,6 +219,7 @@ release_mutations = {
 rust_mutations = {
     "rust.yml: a Rust toolchain install that hides its failure (|| true) (security-2-1)": good_rust.replace("--component clippy,rustfmt\n          cargo --version\n", "--component clippy,rustfmt || true\n          cargo --version\n", 1),
     "rust.yml: static-link without the explicit Rust toolchain install (code-review-5-4)": good_rust.replace("      - name: Install the pinned Rust toolchain\n        shell: bash\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - uses: actions/setup-node", "      - uses: actions/setup-node", 1),
+    "D30: workflow_dispatch removed from rust.yml": good_rust.replace("  workflow_dispatch:\n", "", 1),
     "rust.yml: a `rustup override set` after the install (security-3-1)": good_rust.replace("      - run: cargo fmt --all --check\n", "      - run: rustup override set stable\n      - run: cargo fmt --all --check\n", 1),
     "rust.yml: a Rust toolchain install skipped by `if: false` (code-review-3-1)": good_rust.replace("      - name: Install the pinned Rust toolchain\n        shell: bash\n", "      - name: Install the pinned Rust toolchain\n        if: false\n        shell: bash\n", 1),
     "rust.yml: a Rust toolchain install with continue-on-error (code-review-3-1)": good_rust.replace("      - name: Install the pinned Rust toolchain\n        shell: bash\n", "      - name: Install the pinned Rust toolchain\n        continue-on-error: true\n        shell: bash\n", 1),
@@ -235,8 +252,27 @@ service_mutations = {
     "native-service: continue-on-error on a step": swap("      - name: Install and start the pinned Docker Engine\n", "      - name: Install and start the pinned Docker Engine\n        continue-on-error: true\n"),
     "native-service: a job-level if": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    if: false\n    runs-on: ubuntu-24.04\n"),
     "native-service: Conan installed without the hash-locked file (slice 25)": swap("python -m pip install --require-hashes -r tests/e2e/native/conan-requirements.txt", 'python -m pip install "conan==2.21.0"'),
-    "native-service: the lifecycle lane switches the installer's verification off again (D28)": swap('E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo', 'E2E_SERVICE_UNATTESTED: "1"\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo'),
-    "native-service: the attestation step is dropped from a lane that installs the package (D28)": swap("      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n        with:\n          subject-path: ${{ steps.pkg.outputs.subject }}\n", ""),
+    "native-service: the lifecycle lane switches the installer's verification off again (D28)": swap('E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml\n          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo', 'E2E_SERVICE_UNATTESTED: "1"\n          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}\n        run: |\n          pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)\n          sudo'),
+    "native-service: the attestation step is dropped from the job that attests the package (D28)": swap("      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n        with:\n          subject-path: ci-binary-*-apple-darwin/probation\n", ""),
+    # security-1-1: every holder of id-token or attestations compiles nothing (two `uses` steps, no `run`).
+    "native-service: id-token: write on the macOS build job (security-1-1)": swap("    name: service-macos-build ${{ matrix.target }}\n", "    name: service-macos-build ${{ matrix.target }}\n    permissions:\n      contents: read\n      id-token: write\n"),
+    "native-service: id-token: write on the Windows lifecycle job (security-1-1)": swap("  service-windows:\n    needs: attest-windows\n", "  service-windows:\n    needs: attest-windows\n    permissions:\n      contents: read\n      id-token: write\n"),
+    "native-service: attestations: write alone on the Windows build job (security-1-1)": swap("  service-windows-build:\n    runs-on: windows-2025\n", "  service-windows-build:\n    runs-on: windows-2025\n    permissions:\n      contents: read\n      attestations: write\n"),
+    "native-service: permissions: write-all on the macOS build job (security-1-1)": swap("    name: service-macos-build ${{ matrix.target }}\n", "    name: service-macos-build ${{ matrix.target }}\n    permissions: write-all\n"),
+    "native-service: a cargo build step in attest-macos (security-1-1)": swap("      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n", "      - run: cargo build\n      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n"),
+    "native-service: a brew install step in attest-macos (security-1-1)": swap("      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n", "      - run: brew install openssl@3\n      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n"),
+    "native-service: attest-windows downloads the package, not the built binary (D28)": swap("          pattern: ci-binary-windows\n", "          pattern: ci-package-windows\n"),
+    "native-service: a third step in attest-windows (security-1-1)": swap("          subject-path: ci-binary-windows/probation.exe\n", "          subject-path: ci-binary-windows/probation.exe\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0\n"),
+    "native-service: a new job holds id-token and compiles (security-1-1)": swap("  tools:\n", "  attest-extra:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n    steps:\n      - run: cargo build\n  tools:\n"),
+    "native-service: attest-macos attests something other than the built binary (D28)": swap("          subject-path: ci-binary-*-apple-darwin/probation\n", "          subject-path: README.md\n"),
+    "native-service: attest-windows loses its write permissions (D28)": swap("  attest-windows:\n    needs: service-windows-build\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n", "  attest-windows:\n    needs: service-windows-build\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n"),
+    "native-service: the macOS lifecycle job no longer needs attest-macos (security-1-1)": swap("    name: service-macos ${{ matrix.target }}\n    needs: attest-macos\n", "    name: service-macos ${{ matrix.target }}\n"),
+    "native-service: the Windows lifecycle job no longer needs attest-windows (security-1-1)": swap("  service-windows:\n    needs: attest-windows\n", "  service-windows:\n"),
+    "native-service: attest-windows no longer needs the Windows build (security-1-1)": swap("  attest-windows:\n    needs: service-windows-build\n", "  attest-windows:\n    needs: service-macos-build\n"),
+    # security-1-2: the lifecycle lanes pin the commit the attestation was built from.
+    "native-service: the Windows lifecycle lane without the source digest (security-1-2)": swap("          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}\n        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          node_dir", "        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          node_dir"),
+    "native-service: the lifecycle lane pins another commit than github.sha (security-1-2)": swap("          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}\n        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          sudo", "          E2E_SERVICE_SOURCE_DIGEST: 0123456789012345678901234567890123456789\n        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          sudo"),
+    "native-service: the macOS lifecycle lane without the source digest (security-1-2)": swap("          E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml\n          E2E_SERVICE_SOURCE_DIGEST: ${{ github.sha }}\n        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          sudo", "          E2E_SERVICE_SIGNER_WORKFLOW: .github/workflows/native-service.yml\n        run: |\n          pkg=$(echo \"$RUNNER_TEMP\"/pkg/probation-*)\n          sudo"),
     "native-service: id-token on a job that does not attest": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    permissions:\n      contents: read\n      id-token: write\n    runs-on: ubuntu-24.04\n"),
     "native-service: tools-host without the explicit Rust toolchain install (run 45840170035)": swap("      - name: Install the pinned Rust toolchain\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0\n        with:\n          node-version: ${{ env.PIN_NODE }}\n      - uses: actions/setup-java", "      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0\n        with:\n          node-version: ${{ env.PIN_NODE }}\n      - uses: actions/setup-java"),
     "native-service: a Rust toolchain install step overrides the bash default with pwsh (security-1-1)": swap("      - name: Install the pinned Rust toolchain\n        run: |\n", "      - name: Install the pinned Rust toolchain\n        shell: pwsh\n        run: |\n"),
@@ -255,6 +291,10 @@ service_mutations = {
     "native-service: a job-level pwsh default for the Rust toolchain install (code-review-2-1)": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    defaults:\n      run:\n        shell: pwsh\n    runs-on: ubuntu-24.04\n"),
     "native-service: a commented-out Rust toolchain install (security-2-1)": swap("          rustup toolchain install 1.96.0 --profile minimal", "          # rustup toolchain install 1.96.0 --profile minimal"),
     "native-service: a job-level sh default under a piped cargo test (code-review-2-4)": swap("  docker-engine:\n    runs-on: ubuntu-24.04\n", "  docker-engine:\n    defaults:\n      run:\n        shell: sh\n    runs-on: ubuntu-24.04\n").replace("          cargo --version\n      - name: Install and start the pinned Docker Engine\n", "          cargo --version\n        shell: bash\n      - name: Install and start the pinned Docker Engine\n", 1),
+    "native-service: the Maven seed manifest step removed (slice 30 review)": swap('      - name: Verify the Maven plugin seed against its committed manifest\n        shell: bash\n', "      - name: Something else\n        shell: bash\n").replace("| diff - tests/e2e/compose/clients/maven-seed.sha256", "| wc -l"),
+    "native-service: the Maven seed manifest step skipped on a cache hit (slice 30 review)": swap('      - name: Verify the Maven plugin seed against its committed manifest\n        shell: bash\n', '      - name: Verify the Maven plugin seed against its committed manifest\n        shell: bash\n'.replace("        shell: bash\n", "        if: steps.cache.outputs.cache-hit != 'true'\n        shell: bash\n")),
+    "native-service: the Maven seed manifest step diffs another file (slice 30 review)": swap("| diff - tests/e2e/compose/clients/maven-seed.sha256", "| diff - tests/e2e/compose/clients/other.sha256"),
+    "native-service: the Maven seed manifest step moved before the seed step (slice 30 review)": swap("      - name: Seed the Maven plugin repository\n", '      - name: Verify the Maven plugin seed against its committed manifest\n        shell: bash\n' + "        run: true\n      - name: Seed the Maven plugin repository\n"),
     "native-service: a secret": swap("env:\n  CARGO_TERM_COLOR: always\n", "env:\n  CARGO_TERM_COLOR: always\n  TOKEN: ${{ secrets.X }}\n"),
 }
 with tempfile.TemporaryDirectory(dir=scratch) as d:
@@ -271,6 +311,38 @@ for name, text in service_mutations.items():
     assert text != good_service, f"{name}: mutation changed nothing"
     extra_checks.append(name)
     code, out = check_service(text)
+    if code == 0:
+        failed.append(name)
+        print(f"BYPASS (checker passed): {name}")
+
+# security-1-1: release.yml's native-service call may grant id-token and attestations only while every holder in native-service.yml compiles
+# nothing. The pair is checked together: the called workflow (--native-service) and the caller (--release).
+def check_pair(service_text, release_text):
+    with tempfile.TemporaryDirectory(dir=scratch) as d:
+        s = pathlib.Path(d) / "native-service.yml"
+        s.write_text(service_text, encoding="utf-8")
+        r_ = pathlib.Path(d) / "release.yml"
+        r_.write_text(release_text, encoding="utf-8")
+        r = subprocess.run([sys.executable, str(checker), "--native-service", str(s), "--release", str(r_)], capture_output=True, encoding="utf-8", errors="replace")
+        return r.returncode, r.stdout + r.stderr
+
+
+code, out = check_pair(good_service, good_release)
+assert code == 0, f"the known-good native-service.yml and release.yml must pass together: {out}"
+GRANT = "    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n    uses: ./.github/workflows/native-service.yml"
+assert GRANT in good_release
+pair_mutations = {
+    "release.yml keeps the native-service grant while attest-macos gains a run step (security-1-1)": (swap("      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n", "      - run: brew install openssl@3\n      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n        with:\n          pattern: ci-binary-*-apple-darwin\n"), good_release),
+    "release.yml keeps the native-service grant while a build job gets id-token (security-1-1)": (swap("    name: service-macos-build ${{ matrix.target }}\n", "    name: service-macos-build ${{ matrix.target }}\n    permissions:\n      contents: read\n      id-token: write\n"), good_release),
+    "release.yml no longer grants the native-service call id-token and attestations, so the attest jobs get no token (D28)": (good_service, good_release.replace(GRANT, "    permissions:\n      contents: read\n    uses: ./.github/workflows/native-service.yml", 1)),
+    "release.yml grants attestations: write alone to the native-service call (security-1-1)": (good_service, good_release.replace(GRANT, "    permissions:\n      contents: read\n      attestations: write\n    uses: ./.github/workflows/native-service.yml", 1)),
+    "release.yml grants the native-service call contents: write (security-1-1)": (good_service, good_release.replace(GRANT, GRANT.replace("contents: read", "contents: write"), 1)),
+    "release.yml gives id-token to another called job (security-1-1)": (good_service, good_release.replace("      actions: read\n    uses: ./.github/workflows/native-clients.yml", "      actions: read\n      id-token: write\n    uses: ./.github/workflows/native-clients.yml", 1)),
+}
+for name, (service_text, release_text) in pair_mutations.items():
+    assert (service_text, release_text) != (good_service, good_release), f"{name}: mutation changed nothing"
+    extra_checks.append(name)
+    code, out = check_pair(service_text, release_text)
     if code == 0:
         failed.append(name)
         print(f"BYPASS (checker passed): {name}")
@@ -464,7 +536,7 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         "a step that may be skipped": csub("      - run: python tests/e2e/native/check_kubernetes.py\n", "      - if: github.event_name == 'schedule'\n        run: python tests/e2e/native/check_kubernetes.py\n"),
         "continue-on-error": csub("    timeout-minutes: 40\n", "    timeout-minutes: 40\n    continue-on-error: true\n"),
         "no timeout": csub("    timeout-minutes: 40\n", ""),
-        "the kind job removed": good_cluster[:good_cluster.index("  # NOT RUN BY ANYBODY YET. kind with")] + good_cluster[good_cluster.index("  # NOT RUN BY ANYBODY YET. One kind node"):],
+        "the kind job removed": good_cluster[:good_cluster.index("\n  kind:\n") + 1] + good_cluster[good_cluster.index("\n  cri-node:\n") + 1:],
         "an extra job": good_cluster + "\n  extra:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n        with:\n          persist-credentials: false\n      - run: echo hi\n",
         "the sysctl step removed": csub("      # ubuntu-24.04 restricts unprivileged user namespaces; the real-TCP peer test (tests/cluster_peer.rs) needs them.\n      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n      - run: cargo test --locked --test cluster_peer", "      - run: cargo test --locked --test cluster_peer"),
         "the ignored test not included": csub("cluster_peer -- --include-ignored", "cluster_peer"),
@@ -472,6 +544,11 @@ with tempfile.TemporaryDirectory(dir=scratch) as d:
         "one scenario dropped": csub("--only E2E-service-cluster-probe --only E2E-service-cluster", "--only E2E-service-cluster"),
         "a secret": csub("      - run: sh -n deploy/kubernetes/node/install-node.sh", "      - run: echo ${{ secrets.TOKEN }}\n      - run: sh -n deploy/kubernetes/node/install-node.sh"),
         "netns without the explicit Rust toolchain install (code-review-2-3)": csub("      - name: Install the pinned Rust toolchain\n        shell: bash\n        run: |\n          rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt\n          cargo --version\n", ""),
+        "kind matrix without the Cilium leg (slice 30 review)": csub("cni: [calico, cilium]", "cni: [calico]"),
+        "kind matrix with a third CNI (slice 30 review)": csub("cni: [calico, cilium]", "cni: [calico, cilium, flannel]"),
+        "Cilium CLI download not checked (slice 30 review)": csub('          echo "$CILIUM_CLI_SHA256  $RUNNER_TEMP/cilium.tgz" | sha256sum --check\n', ""),
+        "Cilium CLI checked after it is extracted (slice 30 review)": csub('          echo "$CILIUM_CLI_SHA256  $RUNNER_TEMP/cilium.tgz" | sha256sum --check\n          tar -xzf "$RUNNER_TEMP/cilium.tgz" -C "$RUNNER_TEMP/bin" cilium\n', '          tar -xzf "$RUNNER_TEMP/cilium.tgz" -C "$RUNNER_TEMP/bin" cilium\n          echo "$CILIUM_CLI_SHA256  $RUNNER_TEMP/cilium.tgz" | sha256sum --check\n'),
+        "Cilium CLI sha256 left unpinned (slice 30 review)": csub("  CILIUM_CLI_SHA256: b987ad0d195310d3fc96553aa7bcd41d1e97b64713ecdfee3eb48dd27e1ec7d7\n", "  CILIUM_CLI_SHA256: latest\n"),
         "curl -k": csub('curl -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"', 'curl -k -fsSL -o "$RUNNER_TEMP/kubeconform.tgz"'),
     }
     for name, text in cluster_mutations.items():

@@ -1,12 +1,16 @@
 name: Release
 
+# workflow_dispatch (D30) runs the lanes that publish nothing on any ref: tag-guard fails there, and every job that writes outside the
+# run (the draft release, the attestations, crates.io, ghcr.io) needs it, so a dispatch publishes and attests nothing.
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 # Every job that compiles runs dependency build scripts and proc-macros, so none of
-# them gets a write token. Only `release`, which compiles nothing, may write.
+# them gets a write token. Only jobs that compile nothing may write: `release`, `attest`, and
+# native-service.yml's attest-macos and attest-windows (the native-service call below grants their ceiling).
 permissions:
   contents: read
 
@@ -14,6 +18,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fails unless this run is a release tag. Jobs that publish or attest need it (no job-level `if`: a failed need skips them).
+  tag-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a v*.*.* tag
+        shell: bash
+        run: |
+          test "$GITHUB_REF_TYPE" = tag
+          case "$GITHUB_REF" in
+            refs/tags/v*.*.*) ;;
+            *) echo "not a release tag: $GITHUB_REF"; exit 1 ;;
+          esac
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -80,10 +97,13 @@ jobs:
 
   # Row 25: the machine-wide native service lifecycle on Linux, macOS and Windows, the native package tools on all three, and the
   # pinned Docker Engine daemon pull. Nothing is released unless every one of them passes (a skipped lane fails it).
+  # Needs tag-guard because its attest-macos and attest-windows jobs attest (the signer check of the installers has no ref pin) and its
+  # lifecycle lanes install only what was attested, so on a dispatch the whole call is skipped; the lanes still run on native-service.yml's
+  # own dispatch (D25).
   native-service:
-    needs: test
-    # The macOS and Windows lanes attest the CI package they install (the installer verifies that attestation in full), so the caller must
-    # grant what those jobs ask for: a called workflow cannot hold more than its caller gives it.
+    needs: [test, tag-guard]
+    # native-service.yml's attest-macos and attest-windows jobs (they compile nothing) attest the CI package its lifecycle jobs install; a
+    # called workflow cannot hold more than its caller grants, so this call grants their ceiling. Its compiling jobs hold contents: read.
     permissions:
       contents: read
       id-token: write
@@ -113,10 +133,10 @@ jobs:
       - run: cargo build --locked
       - uses: github/codeql-action/analyze@b31ef66637df4fc5b5e4a89d0cc94f8eeb46a04d # v3.39.0
 
-  # `build` waits for native-service (and for build-windows, so the release job sees every artifact): release, publish and images
-  # need build, so none of them runs unless the native service lifecycle lane passed.
+  # `build` waits for build-windows, so the release job sees every artifact. It does not wait for native-service (skipped on a dispatch):
+  # `release` needs native-service itself, and publish-release, publish and images need `release`.
   build:
-    needs: [codeql, native-service, build-windows]
+    needs: [codeql, build-windows]
     strategy:
       matrix:
         include:
@@ -172,7 +192,7 @@ jobs:
   # Windows: a zip with probation.exe, the OpenSSL DLL it loads, the service installer (install-service.ps1) and the files it
   # installs from. Built after the same gate as the other targets.
   build-windows:
-    needs: [codeql, native-service]
+    needs: codeql
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -214,7 +234,7 @@ jobs:
             probation-*.zip.sha256
 
   release:
-    needs: [build, e2e, native]
+    needs: [build, e2e, native, native-service, tag-guard]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -249,7 +269,7 @@ jobs:
   # repository next to the same-origin .sha256 files. install-service.sh and .ps1 check it with `gh attestation verify` when gh is
   # installed (docs/operations.md).
   attest:
-    needs: [e2e, native, release]
+    needs: [e2e, native, release, tag-guard]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -276,7 +296,7 @@ jobs:
   # The release is created as a DRAFT and published only after its attestations exist: there is no window in which an unattested
   # asset is downloadable as a release.
   publish-release:
-    needs: [attest, e2e, native]
+    needs: [attest, e2e, native, tag-guard]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -286,7 +306,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   publish:
-    needs: [release, e2e, native]
+    needs: [release, e2e, native, tag-guard]
     runs-on: ubuntu-latest
     # Give this environment required reviewers in the repository settings, so a
     # pushed tag alone cannot publish to crates.io.
@@ -319,7 +339,7 @@ jobs:
   # D7: both images, exactly as the e2e gate tested them, to the GitHub Container
   # Registry, tagged with the version and the commit. Compiles nothing, so it may write.
   images:
-    needs: [release, e2e]
+    needs: [release, e2e, tag-guard]
     runs-on: ubuntu-latest
     permissions:
       contents: read

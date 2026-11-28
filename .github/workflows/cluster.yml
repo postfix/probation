@@ -5,8 +5,10 @@ name: Cluster
 # pipefail, hashed downloads, the job set). Every tool is a pinned release whose sha256 is checked before it runs.
 #
 # Honest status of the jobs (docs/plans/package-firewall-mvp-lf/evidence/slice-26.md, "Lanes"): `static`, `netns` and
-# `e2e-service-cluster` run the same commands that were run on the development host. `kind` and `cri-node` have NOT been run by
-# anybody yet: they are authored against kind and Calico/Cilium and prove nothing until a hosted run passes.
+# `e2e-service-cluster` run the same commands that were run on the development host. `kind` (Calico) and `cri-node` ran on hosted runners
+# (evidence/slice-31.md: run 45977663713 on 7e75aec, kind calico 25/25, cri-node 6/6). NOT RUN YET (hosted run pending), added after that run:
+# the `kind cilium` leg, in `kind` the kubelet's pull secret THROUGH the service (a policy server of the e2e harness, a private registry), and in `cri-node` the kubelet's own pull with no fallback, a pod of a preloaded image, the kubelet's pull-secret matching
+# against a private registry, and nftables.service propagation (restart, reload, stop) to the firewall unit loaded for real.
 
 on:
   pull_request:
@@ -39,6 +41,8 @@ env:
   CONTAINERD_SHA256: b9626a94ab93b00bcbcbf13d98deef972c6fb064690e57940632df54ad39ee71
   CRICTL_SHA256: a8ff2a3edb37a98daf3aba7c3b284fe0aa5bff24166d896ab9ef64c8913c9f51
   CALICO_SHA256: 1990b1cec14002790718bb960b1b8445eb7b896cd16c32e952309f35a9026981
+  CILIUM_VERSION: 1.20.5
+  CILIUM_CLI_SHA256: b987ad0d195310d3fc96553aa7bcd41d1e97b64713ecdfee3eb48dd27e1ec7d7
 
 jobs:
   static:
@@ -141,8 +145,8 @@ jobs:
           path: target/e2e/out
           if-no-files-found: ignore
 
-  # NOT RUN BY ANYBODY YET. kind with three workers and Calico (a policy-enforcing CNI); the script is tests/e2e/cluster/run-kind-lane.sh.
-  # Cilium is a CNI the guide names (optional/cilium-networkpolicy.yaml) and no job runs it.
+  # Hosted: run 45977663713 (7e75aec), 25/25 with Calico. kind with four workers and a policy-enforcing CNI, Calico and Cilium (the CNI the guide
+  # names for optional/cilium-networkpolicy.yaml); the script is tests/e2e/cluster/run-kind-lane.sh. The Cilium leg is NOT RUN YET (hosted run pending).
   kind:
     name: kind ${{ matrix.cni }}
     runs-on: ubuntu-24.04
@@ -150,7 +154,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cni: [calico]
+        cni: [calico, cilium]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -168,6 +172,24 @@ jobs:
           echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check
           chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/kind"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install the Cilium CLI (pinned, sha256 checked; the Cilium leg installs the CNI with it)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cilium.tgz" "https://github.com/cilium/cilium-cli/releases/download/v0.20.3/cilium-linux-amd64.tar.gz"
+          echo "$CILIUM_CLI_SHA256  $RUNNER_TEMP/cilium.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cilium.tgz" -C "$RUNNER_TEMP/bin" cilium
+      # The kubelet pull-secret check through the service runs the e2e harness's policy server (tests/e2e/cluster/policy-server.mjs: the compose stack
+      # of tests/e2e/compose with its server image, as the e2e-service-cluster job builds it, from the same layer cache).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/probation-server/Dockerfile
+          load: true
+          tags: localhost/probation-server:e2e
+          cache-from: type=gha,scope=probation-server
       - run: bash tests/e2e/cluster/run-kind-lane.sh
         env:
           CNI: ${{ matrix.cni }}
@@ -179,10 +201,13 @@ jobs:
           path: ${{ runner.temp }}/kind-lane/logs
           if-no-files-found: ignore
 
-  # NOT RUN BY ANYBODY YET. One kind node: a control `crictl pull` of a public registry image, then the SHIPPED install-node.sh, verify-node.sh and
-  # install-firewall.sh on the node's own containerd, a restart, and the same `crictl pull` (the kubelet's PullImage call), which must now go to the
-  # endpoint, fail there and never reach the registry. NO pod is run and no registry fixture is served: the pull of a mapped registry through a
-  # service is in the e2e-service-cluster job (the CRI plugin's image service of containerd 2.2.0 on the runner).
+  # Hosted: run 45977663713 (7e75aec), 6/6 (the CRI PullImage after the installer). One kind node: a control `crictl pull` of a public registry
+  # image, the kubelet's pull-secret matching against a private registry (a pod with a matching secret runs, one with none or with another server's
+  # secret does not), then the SHIPPED install-node.sh (the service image preloaded by digest), verify-node.sh and install-firewall.sh on the node's own
+  # containerd, a restart, and the same `crictl pull` and a pod's own pull, which must now go to the endpoint, fail there and never reach the registry;
+  # a pod of the preloaded image that runs; last, the firewall loaded and nftables.service restarted, reloaded and stopped. The kubelet pull, the
+  # preloaded pod, the private registry and the nftables propagation are NOT RUN YET (hosted run pending). The pull of a mapped registry THROUGH the
+  # service (the policy server's registries) is in the e2e-service-cluster job (the CRI plugin's image service of containerd 2.2.0 on the runner).
   cri-node:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

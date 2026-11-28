@@ -647,28 +647,132 @@ fn the_kind_lane_script_fails_when_a_step_aborts_or_nothing_was_asserted() {
     };
     let run = |env: &[(&str, &str)]| {
         let path = format!("{}:{}", node.bin.display(), std::env::var("PATH").unwrap_or_default());
-        Command::new("bash").arg(&script).env("PATH", path).env("LANE", "cri").env("WORK_DIR", node.root.path().join("lane")).env("KIND_NODE_IMAGE", "x").envs(env.iter().copied()).output().unwrap()
+        Command::new("bash").arg(&script).env("PATH", path).env("LANE", "cri").env("WORK_DIR", node.root.path().join("lane")).env("KIND_NODE_IMAGE", "x").env("POLL_SECONDS", "0.02").envs(env.iter().copied()).output().unwrap()
     };
-    let state = node.root.path().join("restarted");
-    let docker = |fallback: bool| format!(
-        "case \"$*\" in\n *\"systemctl restart\"*) touch '{}'; exit 0 ;;\n *\"crictl pull\"*) if [ -e '{}' ] && [ {} = 0 ]; then echo 'dial tcp: lookup probation.kind.test' >&2; exit 1; fi; exit 0 ;;\n *\"crictl inspecti\"*) exit {} ;;\nesac\nexit 0",
-        state.display(), state.display(), if fallback { 1 } else { 0 }, if fallback { 0 } else { 1 }
-    );
-    stub("docker", &docker(false));
-    for name in ["kubectl", "crictl", "ctr"] { stub(name, "exit 0"); }
-    stub("kind", "exit 0");
+    let root = node.root.path().to_path_buf();
+    // The docker stub models just what the cri lane asks of the node: containerd restarted (the endpoint is then the only place a pull goes), the
+    // private registry's log, and an nftables.service whose restart, reload and stop flush the rule set (the marker table goes) while the firewall
+    // unit brings its tables back (restart, reload) or removes them (stop). `fallback` makes the runtime pull from the registry after the restart;
+    // `no_propagation` makes a restart of nftables.service drop the firewall tables for good.
+    let docker = |fallback: bool, no_propagation: bool| {
+        let d = root.display();
+        format!(
+            "case \"$*\" in\n *\"inspect -f\"*) echo 172.18.0.5; exit 0 ;;\n *\"nft add table\"*) touch '{d}/marker'; exit 0 ;;\n *\"nft list table inet probation_lane_marker\"*) [ -e '{d}/marker' ]; exit $? ;;\n *\"nft list table inet probation_node_\"*) [ -e '{d}/fw' ]; exit $? ;;\n *install-firewall.sh*--root*) exit 0 ;;\n *install-firewall.sh*) touch '{d}/fw'; exit 0 ;;\n *\"systemctl restart nftables\"*) rm -f '{d}/marker'; {drop}exit 0 ;;\n *\"systemctl reload nftables\"*) rm -f '{d}/marker'; exit 0 ;;\n *\"systemctl stop nftables\"*) rm -f '{d}/marker' '{d}/fw'; touch '{d}/stopped'; exit 0 ;;\n *is-active*) [ ! -e '{d}/stopped' ]; exit $? ;;\n *\"systemctl restart containerd\"*) touch '{d}/restarted'; exit 0 ;;\n *\"crictl pull\"*) if [ -e '{d}/restarted' ] && [ {pull} = 0 ]; then echo 'dial tcp: lookup probation.kind.test' >&2; exit 1; fi; exit 0 ;;\n *\"crictl inspecti\"*) exit {inspect} ;;\n *logs*) echo 'level=info auth.user.name=puller'; exit 0 ;;\n *htpasswd*) echo 'puller:hash'; exit 0 ;;\nesac\nexit 0",
+            drop = if no_propagation { format!("rm -f '{d}/fw'; ") } else { String::new() },
+            pull = if fallback { 1 } else { 0 },
+            inspect = if fallback { 0 } else { 1 },
+        )
+    };
+    // kubectl: what the kubelet did to the lane's pods. `refused_pull_event` is the event of a pod that may not pull (no secret, another server's secret).
+    let kubectl = |refused_pull_event: bool| {
+        let refused = if refused_pull_event { "echo 'Failed: Failed to pull image \"x\": 401 Unauthorized'" } else { "echo 'Pulled: pulled it'" };
+        format!(
+            "case \"$*\" in\n *\"apply -f -\"*) cat >/dev/null ;;\n *\"get pod secret-ok\"*|*\"get pod preloaded\"*) printf Running ;;\n *\"get pod\"*jsonpath*) printf Pending ;;\n *involvedObject.name=secret-none*|*involvedObject.name=secret-other*) {refused} ;;\n *involvedObject.name=nofallback*) echo 'Failed: Failed to pull image \"x\": lookup probation.kind.test' ;;\n *involvedObject.name=preloaded*) echo 'Pulled: Container image already present on machine' ;;\nesac\nexit 0"
+        )
+    };
+    // skopeo: `copy ... oci-archive:PATH:TAG` writes a tar whose index.json names a manifest, as the real one does.
+    let skopeo = "for a in \"$@\"; do case $a in oci-archive:*) f=${a#oci-archive:}; f=${f%:*}; d=$(mktemp -d); printf '{\"manifests\":[{\"digest\":\"sha256:%s\"}]}' \"$(printf 'ab%.0s' $(seq 1 32))\" > \"$d/index.json\"; tar -cf \"$f\" -C \"$d\" . ;; esac; done; exit 0";
+    let stub_all = |fallback: bool, no_propagation: bool, refused_pull_event: bool| {
+        stub("docker", &docker(fallback, no_propagation));
+        stub("kubectl", &kubectl(refused_pull_event));
+        stub("skopeo", skopeo);
+        stub("curl", "printf 401"); // the registry's readiness probe asks for the status code
+        for name in ["crictl", "ctr"] { stub(name, "exit 0"); }
+        stub("kind", "exit 0");
+        for f in ["restarted", "marker", "fw", "stopped"] { std::fs::remove_file(root.join(f)).ok(); }
+    };
+    stub_all(false, false, true);
     let ok = run(&[]);
     assert!(ok.status.success(), "every step succeeds and assertions ran: {}", text(&ok));
     assert!(String::from_utf8_lossy(&ok.stdout).contains("assertions ran:"), "{}", text(&ok));
     stub("kind", "[ \"$1\" = create ] && exit 7\nexit 0");
     let aborted = run(&[]);
     assert_eq!(aborted.status.code(), Some(7), "an aborted step keeps its own status, not 0: {}", text(&aborted));
-    stub("kind", "exit 0");
-    std::fs::remove_file(&state).ok();
     // The runtime still pulls after the installer (a fallback to the registry): the assertion that it must fail fails the lane.
-    stub("docker", &docker(true));
+    stub_all(true, false, true);
     let failing = run(&[]);
     assert!(!failing.status.success(), "a failed assertion fails the lane: {}", text(&failing));
+    // Mutations: each broken behaviour of the node or the kubelet makes its own assertion, and so the lane, fail.
+    let broken = |what: &str, fallback: bool, no_propagation: bool, refused_pull_event: bool, assertion: &str| {
+        stub_all(fallback, no_propagation, refused_pull_event);
+        let out = run(&[]);
+        assert!(!out.status.success(), "{what}: the lane must fail: {}", text(&out));
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("FAIL {assertion}")), "{what}: the failing assertion is `{assertion}`: {}", text(&out));
+    };
+    broken("a pod without a secret is not refused", false, false, false, "pull secret: the same image with NO pull secret is refused");
+    broken("nftables.service restart takes the firewall tables for good", false, true, true, "nftables.service restart: probation-node-firewall.service followed it");
+}
+
+/// The cluster lane's pull-secret check THROUGH the service (tests/e2e/cluster/registry-lib.sh, `pull_through_service`) is driven with stub tools: the
+/// lane's own manifest edits are real (they are read back from the copy), the cluster, the registry, the policy server and the kubelet are stubs. A
+/// registry that saw the service key's user or worker 2, or a pod that is not refused, makes its assertion fail.
+#[test]
+fn the_kind_lane_pull_secret_through_the_service_checks_the_registry_the_policy_and_the_refusals() {
+    let node = Node::new();
+    let root = node.root.path().to_path_buf();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let stub = |name: &str, body: &str| {
+        let path = node.bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let work = root.join("lane");
+    std::fs::create_dir_all(work.join("logs")).unwrap();
+    std::fs::write(work.join("tls.crt"), "cert").unwrap();
+    let registry_log = |extra: &str| {
+        format!("echo 'msg=\"authorized request\" http.request.remoteaddr=\"172.18.0.3:40001\" auth.user.name=puller'\n{extra}")
+    };
+    // docker: addresses, the registry's log, the node-side curl (the registry route answers 401), htpasswd.
+    let docker = |log_extra: &str| {
+        format!(
+            "case \"$*\" in\n *\"inspect -f\"*) echo 172.18.0.9; exit 0 ;;\n *logs*) {} exit 0 ;;\n *htpasswd*) echo 'puller:hash'; exit 0 ;;\n *curl*) printf 401; exit 0 ;;\nesac\nexit 0",
+            registry_log(log_extra).replace('\n', "; ")
+        )
+    };
+    let kubectl = |refused: bool| {
+        let event = if refused { "echo 'Failed: Failed to pull image \"x\": 401 Unauthorized'" } else { "echo 'Pulled: pulled it'" };
+        format!("case \"$*\" in\n *\"apply -f -\"*) cat >/dev/null ;;\n *\"get pod svc-secret-ok\"*) printf Running ;;\n *\"get pod\"*jsonpath*) printf Pending ;;\n *involvedObject.name=svc-secret-none*|*involvedObject.name=svc-secret-other*) {event} ;;\nesac\nexit 0")
+    };
+    // `node policy-server.mjs up ... --out FILE` writes what the real one writes.
+    let node_stub = "out=; while [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done; printf '{\"registryId\":\"7\",\"serviceKey\":\"prb_THEKEY\",\"ca\":\"%s\",\"gateway\":\"gw\"}' \"$CA\" > \"$out\"";
+    let ca = root.join("ca.pem");
+    std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").unwrap();
+    stub("skopeo", "exit 0");
+    stub("curl", "printf 401");
+    stub("node", node_stub);
+    stub("kind", "exit 0");
+    let run = |docker_body: &str, kubectl_body: &str| {
+        stub("docker", docker_body);
+        stub("kubectl", kubectl_body);
+        // the lane edits its copy of the manifests once: every run starts from a fresh one
+        std::fs::remove_dir_all(work.join("k")).ok();
+        assert!(Command::new("cp").arg("-r").arg(repo.join("deploy/kubernetes")).arg(work.join("k")).status().unwrap().success());
+        let script = format!(
+            "set -euo pipefail\nCLUSTER=c ROOT='{r}' WORK_DIR='{w}' W1=w1 W2=w2 IP1=172.18.0.3 IP2=172.18.0.4 ENDPOINT_NAME=probation.kind.test NODEPORT=30443\n. '{r}/tests/e2e/cluster/lane-lib.sh'\n. '{r}/tests/e2e/cluster/registry-lib.sh'\npull_through_service\necho \"ran=$ran failed=$failed\"",
+            r = repo.display(), w = work.display()
+        );
+        let path = format!("{}:{}", node.bin.display(), std::env::var("PATH").unwrap_or_default());
+        Command::new("bash").arg("-c").arg(script).env("PATH", path).env("CA", &ca).env("POLL_SECONDS", "0.02").output().unwrap()
+    };
+    let ok = run(&docker(""), &kubectl(true));
+    let out = String::from_utf8_lossy(&ok.stdout).to_string();
+    assert!(ok.status.success() && out.contains("failed=0") && !out.contains("FAIL"), "every assertion holds: {}", text(&ok));
+    assert!(out.contains("ran=11"), "the eleven assertions of the check ran: {out}");
+    // The manifest copy now points the service at the policy server, trusts its CA and may reach it and the registry.
+    let read = |name: &str| std::fs::read_to_string(work.join("k").join(name)).unwrap();
+    assert!(read("config.toml").contains("server_url = \"https://sync.e2e.test\""));
+    let deployment = read("deployment.yaml");
+    assert!(deployment.contains("hostnames: [sync.e2e.test]") && deployment.contains("hostnames: [private.kind.test]") && deployment.contains("SSL_CERT_FILE"), "{deployment}");
+    assert!(read("networkpolicy.yaml").contains("cidr: 172.18.0.9/32"));
+    assert_eq!(std::fs::read_to_string(work.join("service-key.policy")).unwrap(), "prb_THEKEY\n", "the policy server's service key goes into the Secret");
+    // Mutations.
+    let broken = |what: &str, docker_body: &str, kubectl_body: &str, assertion: &str| {
+        let out = run(docker_body, kubectl_body);
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("FAIL {assertion}")), "{what}: the failing assertion is `{assertion}`: {}", text(&out));
+    };
+    broken("the registry sees the service key's user", &docker("echo 'auth.user.name=key remoteaddr=\"172.18.0.3:1\"'"), &kubectl(true), "through the service: the registry saw only the user puller");
+    broken("the registry sees worker 2 itself", &docker("echo 'remoteaddr=\"172.18.0.4:5\"'"), &kubectl(true), "through the service: the registry never saw worker 2");
+    broken("a pod without a secret is not refused", &docker(""), &kubectl(false), "through the service: the same image with NO pull secret is refused");
 }
 
 /// M2: the verifier reads the environment containerd really has (systemd's effective one and the running daemon's), not only its own file.

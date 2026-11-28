@@ -1,9 +1,9 @@
-# A Maven client container: the pinned Maven image (3.9.16, Java 21.0.12.1). The stack itself is offline, so the two plugins
+# A Maven client container: the Maven image pinned by digest (3.9.16, Java 21.0.12.1). The stack itself is offline, so the two plugins
 # the scenarios run (dependency 3.8.1, deploy 3.1.4) and everything they need are fetched HERE, at image build time, into
 # /opt/seed-m2 through a mirror named `probation` (Maven records the id of the repository an artifact came from, and the
 # scenarios' mirror has the same id, so the seeded files are accepted as already downloaded from it). At run time the
 # package source is the firewall, reached over TLS (the scenarios import the CA into a Java trust store).
-ARG MAVEN_IMAGE=docker.io/library/maven:3.9-eclipse-temurin-21
+ARG MAVEN_IMAGE=docker.io/library/maven:3.9.16-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320
 FROM ${MAVEN_IMAGE}
 RUN mkdir -p /opt/seed /opt/seed-m2 /opt/seed-repo \
  && printf '%s\n' '<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>https://maven-central.storage-download.googleapis.com/maven2/</url></mirror></mirrors></settings>' > /opt/seed/settings.xml \
