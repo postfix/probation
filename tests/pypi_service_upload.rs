@@ -105,7 +105,10 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
+            osv_scope: None,
+            archive_origin: None,
+            resource_path_prefix: None,
+            token_origin: None,
         }],
     }
 }
@@ -187,9 +190,24 @@ async fn local_service_forwards_selected_pypi_upload_and_upstream_denial() {
         assert_eq!(response.status().as_u16(), expected, "{method} {route}");
     }
     for (label, authorization, content_type, expected) in [
-        ("no credential", None, Some("multipart/form-data; boundary=probe"), 401),
-        ("unsupported scheme", Some("Token owner"), Some("multipart/form-data; boundary=probe"), 401),
-        ("empty bearer", Some("Bearer "), Some("multipart/form-data; boundary=probe"), 401),
+        (
+            "no credential",
+            None,
+            Some("multipart/form-data; boundary=probe"),
+            401,
+        ),
+        (
+            "unsupported scheme",
+            Some("Token owner"),
+            Some("multipart/form-data; boundary=probe"),
+            401,
+        ),
+        (
+            "empty bearer",
+            Some("Bearer "),
+            Some("multipart/form-data; boundary=probe"),
+            401,
+        ),
         ("non-multipart body", Some(basic), Some("text/plain"), 400),
         ("no content type", Some(basic), None, 400),
     ] {
@@ -200,7 +218,11 @@ async fn local_service_forwards_selected_pypi_upload_and_upstream_denial() {
         if let Some(value) = content_type {
             request = request.header("content-type", value);
         }
-        assert_eq!(request.send().await.unwrap().status().as_u16(), expected, "{label}");
+        assert_eq!(
+            request.send().await.unwrap().status().as_u16(),
+            expected,
+            "{label}"
+        );
     }
     assert_eq!(
         send("/registry/pypi/4/", "Basic dXNlcjpvd25lcg==")

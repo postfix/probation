@@ -55,10 +55,10 @@ pub async fn readmit(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::any;
     use axum::Router;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use axum::routing::any;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
 
     /// A router whose one handler refuses the release `refusals` times, then answers 200; returns it with its call count.
@@ -75,12 +75,21 @@ mod tests {
                 }
             }
         };
-        (Router::new().route("/x", any(handler)).layer(axum::middleware::from_fn(readmit)), calls)
+        (
+            Router::new()
+                .route("/x", any(handler))
+                .layer(axum::middleware::from_fn(readmit)),
+            calls,
+        )
     }
 
     async fn send(method: Method, refusals: usize) -> (u16, usize) {
         let (app, calls) = router(refusals);
-        let request = Request::builder().method(method).uri("/x").body(Body::empty()).unwrap();
+        let request = Request::builder()
+            .method(method)
+            .uri("/x")
+            .body(Body::empty())
+            .unwrap();
         let status = app.oneshot(request).await.unwrap().status().as_u16();
         (status, calls.load(Ordering::SeqCst))
     }
@@ -90,11 +99,23 @@ mod tests {
     #[tokio::test]
     async fn only_reads_are_admitted_again_and_at_most_three_times() {
         for method in [Method::PUT, Method::POST, Method::DELETE, Method::PATCH] {
-            assert_eq!(send(method.clone(), 1).await, (503, 1), "{method} is never replayed");
+            assert_eq!(
+                send(method.clone(), 1).await,
+                (503, 1),
+                "{method} is never replayed"
+            );
         }
         assert_eq!(send(Method::GET, 0).await, (200, 1));
-        assert_eq!(send(Method::GET, 2).await, (200, 3), "refused twice, served on the third admission");
-        assert_eq!(send(Method::GET, 3).await, (503, 3), "refused three times: reported, not tried a fourth time");
+        assert_eq!(
+            send(Method::GET, 2).await,
+            (200, 3),
+            "refused twice, served on the third admission"
+        );
+        assert_eq!(
+            send(Method::GET, 3).await,
+            (503, 3),
+            "refused three times: reported, not tried a fourth time"
+        );
         assert_eq!(send(Method::GET, 99).await, (503, 3));
         assert_eq!(send(Method::HEAD, 2).await, (200, 3));
     }

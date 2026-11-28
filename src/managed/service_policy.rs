@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -22,8 +20,10 @@ const PREVIOUS: &str = "service-policy.prev.json";
 const REFUSED: &str = "service-policy.refused";
 const CHECKING: &str = "service-policy.checking";
 
-pub use super::publication_gate::{AuthorizedResponse, PolicyPublicationGate, PreparedResponse, release_verified_response};
 pub(crate) use super::publication_gate::AuthorityReceipt;
+pub use super::publication_gate::{
+    AuthorizedResponse, PolicyPublicationGate, PreparedResponse, release_verified_response,
+};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Binding {
@@ -60,7 +60,10 @@ pub(super) struct ActiveRevision {
 
 impl ActiveRevision {
     pub(super) fn of(reply: &ServicePolicySnapshot) -> Self {
-        Self { revision: reply.revision, digest: reply.policy_digest() }
+        Self {
+            revision: reply.revision,
+            digest: reply.policy_digest(),
+        }
     }
 
     /// Activated only when strictly newer, or equal with an identical digest.
@@ -135,7 +138,6 @@ pub struct ServicePolicy {
 #[derive(Debug)]
 pub struct ServicePolicyError;
 
-
 impl ServicePolicy {
     pub fn load(config: &ServicePolicyConfig, data_dir: &Path) -> Self {
         Self::load_with_clock(config, data_dir, Arc::new(crate::clock::SystemClock))
@@ -180,7 +182,11 @@ impl ServicePolicy {
             read(SNAPSHOT).or_else(|| read(PREVIOUS))
         };
         let floor = saved_floor(data_dir, &binding);
-        let (unavailable, skipped) = if current.is_some() { saved_degraded(data_dir, &binding) } else { (Vec::new(), 0) };
+        let (unavailable, skipped) = if current.is_some() {
+            saved_degraded(data_dir, &binding)
+        } else {
+            (Vec::new(), 0)
+        };
         Self {
             config: config.clone(),
             floor: Mutex::new(floor),
@@ -207,7 +213,10 @@ impl ServicePolicy {
     /// the envelope bound to this configuration, never a refusal, and leaves a marker a
     /// running enforcer consumes at the start of its next poll. Works when the enforcer is
     /// not running; there is no network trigger.
-    pub fn reset_revision_floor(config: &ServicePolicyConfig, data_dir: &Path) -> Result<(), ServicePolicyError> {
+    pub fn reset_revision_floor(
+        config: &ServicePolicyConfig,
+        data_dir: &Path,
+    ) -> Result<(), ServicePolicyError> {
         let binding = Binding {
             server: config.server_url.to_string(),
             key: KeyHash::of(config.service_key.expose()),
@@ -216,8 +225,12 @@ impl ServicePolicy {
         let previous = saved_floor(data_dir, &binding);
         for name in [SNAPSHOT, PREVIOUS] {
             let path = data_dir.join(name);
-            let Ok(bytes) = std::fs::read(&path) else { continue };
-            let Ok(mut saved) = serde_json::from_slice::<SavedPolicy>(&bytes) else { continue };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(mut saved) = serde_json::from_slice::<SavedPolicy>(&bytes) else {
+                continue;
+            };
             if saved.binding != binding {
                 continue;
             }
@@ -228,7 +241,8 @@ impl ServicePolicy {
         // Always written: it tells a running enforcer to drop its in-memory floor at its next
         // poll. Harmless when no enforcer runs (the first poll consumes it, clearing a floor
         // that is already clear) and when the floor was already absent.
-        crate::config::write_atomically(&data_dir.join(FLOOR_RESET), b"reset\n", None).map_err(|_| ServicePolicyError)?;
+        crate::config::write_atomically(&data_dir.join(FLOOR_RESET), b"reset\n", None)
+            .map_err(|_| ServicePolicyError)?;
         tracing::warn!(
             previous_floor = previous.map(|floor| floor.revision),
             account = operator_identity(),
@@ -240,7 +254,10 @@ impl ServicePolicy {
     /// LS-F3: registries the last activated snapshot named with an ecosystem tag this
     /// enforcer cannot serve. Requests to them refuse; readiness lists them degraded.
     pub fn unavailable_registries(&self) -> Vec<RegistryId> {
-        self.unavailable.lock().map(|ids| ids.clone()).unwrap_or_default()
+        self.unavailable
+            .lock()
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
     }
 
     /// LS-F3: layer rules of the last activated snapshot skipped for an unknown ecosystem
@@ -251,7 +268,10 @@ impl ServicePolicy {
 
     /// Names this enforcer's own listener so a descriptor cannot point back at it (LS-F9).
     pub fn with_listener(mut self, listen: std::net::SocketAddr) -> Self {
-        self.deny = Arc::new(Denylist::new(Some(listen), self.deny.control_plane_cidrs.clone()));
+        self.deny = Arc::new(Denylist::new(
+            Some(listen),
+            self.deny.control_plane_cidrs.clone(),
+        ));
         self
     }
 
@@ -271,7 +291,12 @@ impl ServicePolicy {
 
     pub async fn sync_once(&self) -> Result<(), ServicePolicyError> {
         let _poll = self.poll.lock().await;
-        if self.data_dir.join(FLOOR_RESET).try_exists().unwrap_or(false) {
+        if self
+            .data_dir
+            .join(FLOOR_RESET)
+            .try_exists()
+            .unwrap_or(false)
+        {
             *self.floor.lock().map_err(|_| ServicePolicyError)? = None;
             self.clear_marker(FLOOR_RESET)?;
         }
@@ -337,10 +362,15 @@ impl ServicePolicy {
             Ok((reply, unavailable, skipped)) => {
                 self.activate(reply, &unavailable, skipped).await?;
                 if skipped > 0 || !unavailable.is_empty() {
-                    tracing::warn!(skipped, unavailable = unavailable.len(), "snapshot names an ecosystem this enforcer cannot serve");
+                    tracing::warn!(
+                        skipped,
+                        unavailable = unavailable.len(),
+                        "snapshot names an ecosystem this enforcer cannot serve"
+                    );
                 }
                 *self.unavailable.lock().map_err(|_| ServicePolicyError)? = unavailable;
-                self.skipped.store(skipped, std::sync::atomic::Ordering::Relaxed);
+                self.skipped
+                    .store(skipped, std::sync::atomic::Ordering::Relaxed);
                 if let Ok(slot) = self.health.lock()
                     && let Some(health) = slot.as_ref()
                 {
@@ -359,7 +389,12 @@ impl ServicePolicy {
         }
     }
 
-    async fn activate(&self, reply: ServicePolicySnapshot, unavailable: &[RegistryId], skipped: u64) -> Result<(), ServicePolicyError> {
+    async fn activate(
+        &self,
+        reply: ServicePolicySnapshot,
+        unavailable: &[RegistryId],
+        skipped: u64,
+    ) -> Result<(), ServicePolicyError> {
         let binding = self.binding.clone();
         validate_policy_snapshot(&reply, &binding, &self.deny).await?;
         self.persist_policy_snapshot(&reply, binding, unavailable, skipped)?;
@@ -504,7 +539,12 @@ impl ServicePolicy {
                 .transpose()
                 .ok()?,
             registry_resource_prefix: descriptor.resource_path_prefix.clone(),
-            registry_token_origin: descriptor.token_origin.as_ref().map(|url| url.parse()).transpose().ok()?,
+            registry_token_origin: descriptor
+                .token_origin
+                .as_ref()
+                .map(|url| url.parse())
+                .transpose()
+                .ok()?,
             registry_read_authorization: None,
             registry_trusted: descriptor.trusted,
             registry_private_cidrs: descriptor
@@ -514,7 +554,10 @@ impl ServicePolicy {
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?,
             deletion_scopes: descriptor.deletion_scopes.clone(),
-            authority: Some(AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation)),
+            authority: Some(AuthorityReceipt::new(
+                Arc::clone(&self.publication_gate),
+                generation,
+            )),
         })
     }
 
@@ -545,9 +588,13 @@ impl ServicePolicy {
 /// LS-F3: parse a snapshot body. A registry descriptor with an unknown `ecosystem` tag is
 /// removed and reported unavailable; a layer rule (block or exception) with an unknown tag
 /// is skipped and counted. Everything else, including malformed JSON, stays structural.
-fn classify_snapshot(bytes: &[u8]) -> Result<(ServicePolicySnapshot, Vec<RegistryId>, u64), ServicePolicyError> {
+fn classify_snapshot(
+    bytes: &[u8],
+) -> Result<(ServicePolicySnapshot, Vec<RegistryId>, u64), ServicePolicyError> {
     use serde_json::Value;
-    let known = |tag: Option<&Value>| tag.is_some_and(|tag| serde_json::from_value::<Ecosystem>(tag.clone()).is_ok());
+    let known = |tag: Option<&Value>| {
+        tag.is_some_and(|tag| serde_json::from_value::<Ecosystem>(tag.clone()).is_ok())
+    };
     let mut raw: Value = serde_json::from_slice(bytes).map_err(|_| ServicePolicyError)?;
     let (mut unavailable, mut skipped) = (Vec::new(), 0u64);
     if let Some(registries) = raw.get_mut("registries").and_then(Value::as_array_mut) {
@@ -559,12 +606,27 @@ fn classify_snapshot(bytes: &[u8]) -> Result<(ServicePolicySnapshot, Vec<Registr
             keep
         });
     }
-    for layer in raw.get_mut("layers").and_then(Value::as_array_mut).into_iter().flatten() {
+    for layer in raw
+        .get_mut("layers")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
         for field in ["blocks", "exceptions"] {
-            let Some(rules) = layer.get_mut("layer").and_then(|l| l.get_mut(field)).and_then(Value::as_array_mut) else { continue };
+            let Some(rules) = layer
+                .get_mut("layer")
+                .and_then(|l| l.get_mut(field))
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
             rules.retain(|rule| {
                 // A block is `{"Package": {"ecosystem": ..}}`; an exception is flat.
-                let tag = rule.get("ecosystem").or_else(|| rule.as_object().and_then(|o| o.values().next()).and_then(|v| v.get("ecosystem")));
+                let tag = rule.get("ecosystem").or_else(|| {
+                    rule.as_object()
+                        .and_then(|o| o.values().next())
+                        .and_then(|v| v.get("ecosystem"))
+                });
                 let keep = tag.is_none() || known(tag);
                 skipped += u64::from(!keep);
                 keep
@@ -579,14 +641,36 @@ fn classify_snapshot(bytes: &[u8]) -> Result<(ServicePolicySnapshot, Vec<Registr
 /// the target port (loopback, link-local, metadata, own listener). The connect-time resolver
 /// repeats the check, so a DNS answer that changes later is still refused. A name that does
 /// not resolve now is not an activation failure: it fails at connect.
-async fn check_hostnames(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result<(), ServicePolicyError> {
+async fn check_hostnames(
+    reply: &ServicePolicySnapshot,
+    deny: &Denylist,
+) -> Result<(), ServicePolicyError> {
     for registry in &reply.registries {
-        for text in [registry.target_url.as_deref(), registry.archive_origin.as_deref()] {
-            let Some(url) = text.and_then(|text| url::Url::parse(text).ok()) else { continue };
-            let (Some(url::Host::Domain(host)), Some(port)) = (url.host(), url.port_or_known_default()) else { continue };
+        for text in [
+            registry.target_url.as_deref(),
+            registry.archive_origin.as_deref(),
+        ] {
+            let Some(url) = text.and_then(|text| url::Url::parse(text).ok()) else {
+                continue;
+            };
+            let (Some(url::Host::Domain(host)), Some(port)) =
+                (url.host(), url.port_or_known_default())
+            else {
+                continue;
+            };
             // Bounded: an unreachable resolver must not stall activation (connect time still checks).
-            let Ok(Ok(answers)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host((host, port))).await else { continue };
-            if answers.into_iter().any(|addr| deny.denies_endpoint(addr.ip(), port)) {
+            let Ok(Ok(answers)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio::net::lookup_host((host, port)),
+            )
+            .await
+            else {
+                continue;
+            };
+            if answers
+                .into_iter()
+                .any(|addr| deny.denies_endpoint(addr.ip(), port))
+            {
                 return Err(ServicePolicyError);
             }
         }
@@ -610,13 +694,23 @@ fn within_wire_bounds(value: &serde_json::Value, depth: usize) -> bool {
     use serde_json::Value;
     match value {
         Value::String(text) => text.len() <= 2048,
-        Value::Array(items) => depth < 16 && items.iter().all(|item| within_wire_bounds(item, depth + 1)),
-        Value::Object(map) => depth < 16 && map.iter().all(|(key, item)| key.len() <= 2048 && within_wire_bounds(item, depth + 1)),
+        Value::Array(items) => {
+            depth < 16 && items.iter().all(|item| within_wire_bounds(item, depth + 1))
+        }
+        Value::Object(map) => {
+            depth < 16
+                && map
+                    .iter()
+                    .all(|(key, item)| key.len() <= 2048 && within_wire_bounds(item, depth + 1))
+        }
         _ => true,
     }
 }
 
-pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result<(), ServicePolicyError> {
+pub(super) fn validate(
+    reply: &ServicePolicySnapshot,
+    deny: &Denylist,
+) -> Result<(), ServicePolicyError> {
     let org = PlaceRef {
         kind: LayerKind::Org,
         id: reply.org.0,
@@ -654,9 +748,20 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
             })
         || reply.registries.len() > 256
         || reply.place_chain.len() > 16
-        || reply.layers.iter().any(|layer| layer.layer.blocks.len() + layer.layer.exceptions.len() > 10_000)
-        || reply.layers.iter().map(|layer| layer.layer.blocks.len() + layer.layer.exceptions.len()).sum::<usize>() > 100_000
-        || !within_wire_bounds(&serde_json::to_value(reply).map_err(|_| ServicePolicyError)?, 1)
+        || reply
+            .layers
+            .iter()
+            .any(|layer| layer.layer.blocks.len() + layer.layer.exceptions.len() > 10_000)
+        || reply
+            .layers
+            .iter()
+            .map(|layer| layer.layer.blocks.len() + layer.layer.exceptions.len())
+            .sum::<usize>()
+            > 100_000
+        || !within_wire_bounds(
+            &serde_json::to_value(reply).map_err(|_| ServicePolicyError)?,
+            1,
+        )
     {
         return Err(ServicePolicyError);
     }
@@ -678,31 +783,56 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
         if let Some(archive) = &registry.archive_origin {
             // Only a Cargo registry (archives apart from its index) or a Go registry (zip redirects to its
             // storage) has an archive origin, and one needs a target of its own.
-            if archive.len() > 2048 || !matches!(registry.ecosystem, probation_policy::Ecosystem::Cargo | probation_policy::Ecosystem::Go | probation_policy::Ecosystem::NuGet | probation_policy::Ecosystem::Maven | probation_policy::Ecosystem::Conan | probation_policy::Ecosystem::Oci) || registry.target_url.is_none() {
+            if archive.len() > 2048
+                || !matches!(
+                    registry.ecosystem,
+                    probation_policy::Ecosystem::Cargo
+                        | probation_policy::Ecosystem::Go
+                        | probation_policy::Ecosystem::NuGet
+                        | probation_policy::Ecosystem::Maven
+                        | probation_policy::Ecosystem::Conan
+                        | probation_policy::Ecosystem::Oci
+                )
+                || registry.target_url.is_none()
+            {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = archive.parse().map_err(|_| ServicePolicyError)?;
             // The same absolute denylist as the target (LS-F9 / D5), and the same shape rules: https, no
             // userinfo, query or fragment.
             check_target(&url, deny).map_err(|_| ServicePolicyError)?;
-            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
+            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone())
+                .map_err(|_| ServicePolicyError)?;
         }
         if let Some(origin) = &registry.token_origin {
             // Only an OCI registry with a target has one: an https origin with no path, query, fragment or userinfo, checked against the
             // same absolute denylist as the target.
-            if origin.len() > 2048 || registry.ecosystem != probation_policy::Ecosystem::Oci || registry.target_url.is_none() {
+            if origin.len() > 2048
+                || registry.ecosystem != probation_policy::Ecosystem::Oci
+                || registry.target_url.is_none()
+            {
                 return Err(ServicePolicyError);
             }
             let url: url::Url = origin.parse().map_err(|_| ServicePolicyError)?;
-            if url.scheme() != "https" || (url.path() != "/" && !url.path().is_empty()) || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+            if url.scheme() != "https"
+                || (url.path() != "/" && !url.path().is_empty())
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
                 return Err(ServicePolicyError);
             }
             check_target(&url, deny).map_err(|_| ServicePolicyError)?;
-            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone()).map_err(|_| ServicePolicyError)?;
+            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs.clone())
+                .map_err(|_| ServicePolicyError)?;
         }
         if let Some(prefix) = &registry.resource_path_prefix {
             // Only a NuGet registry with a target has one, and it is whole path segments.
-            if registry.ecosystem != probation_policy::Ecosystem::NuGet || registry.target_url.is_none() || !valid_resource_prefix(prefix) {
+            if registry.ecosystem != probation_policy::Ecosystem::NuGet
+                || registry.target_url.is_none()
+                || !valid_resource_prefix(prefix)
+            {
                 return Err(ServicePolicyError);
             }
         }
@@ -713,11 +843,8 @@ pub(super) fn validate(reply: &ServicePolicySnapshot, deny: &Denylist) -> Result
             let url: url::Url = target.parse().map_err(|_| ServicePolicyError)?;
             // LS-F9 / D5: an absolute denylist the registry's own private CIDRs cannot unlock.
             check_target(&url, deny).map_err(|_| ServicePolicyError)?;
-            crate::upstream::OriginSet::selected_npm_with_private(
-                url,
-                cidrs,
-            )
-            .map_err(|_| ServicePolicyError)?;
+            crate::upstream::OriginSet::selected_npm_with_private(url, cidrs)
+                .map_err(|_| ServicePolicyError)?;
         }
     }
     Ok(())
@@ -730,5 +857,12 @@ pub fn valid_resource_prefix(prefix: &str) -> bool {
         && prefix.starts_with('/')
         && prefix.len() > 1
         && !prefix.ends_with('/')
-        && prefix[1..].split('/').all(|segment| !segment.is_empty() && segment != "." && segment != ".." && segment.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-')))
+        && prefix[1..].split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-'))
+        })
 }

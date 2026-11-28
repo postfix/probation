@@ -254,10 +254,23 @@ impl<K: Hash + Eq + Clone, V> GatedCache<K, V> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn insert(&self, _token: &crate::http::credential_read::CacheToken, key: K, value: Arc<V>, bytes: u64) {
+    pub fn insert(
+        &self,
+        _token: &crate::http::credential_read::CacheToken,
+        key: K,
+        value: Arc<V>,
+        bytes: u64,
+    ) {
         self.0.insert(key, value, bytes)
     }
-    pub fn insert_if_current(&self, _token: &crate::http::credential_read::CacheToken, key: K, value: Arc<V>, bytes: u64, seen: u64) {
+    pub fn insert_if_current(
+        &self,
+        _token: &crate::http::credential_read::CacheToken,
+        key: K,
+        value: Arc<V>,
+        bytes: u64,
+        seen: u64,
+    ) {
         self.0.insert_if_current(key, value, bytes, seen)
     }
 }

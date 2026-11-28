@@ -22,16 +22,27 @@ const TABLE: &[(Ecosystem, Option<&str>)] = &[
 #[test]
 fn osv_ecosystem_mapping_matches_the_table_for_every_delivered_family() {
     for eco in Ecosystem::ALL {
-        let row = TABLE.iter().find(|(e, _)| *e == eco).expect("every member of ALL has a table row");
+        let row = TABLE
+            .iter()
+            .find(|(e, _)| *e == eco)
+            .expect("every member of ALL has a table row");
         assert_eq!(osv_ecosystem(eco), row.1, "{eco:?}");
     }
-    assert_eq!(TABLE.len(), Ecosystem::ALL.len(), "no table row for a family absent from ALL");
+    assert_eq!(
+        TABLE.len(),
+        Ecosystem::ALL.len(),
+        "no table row for a family absent from ALL"
+    );
 }
 
 #[test]
 fn osv_ecosystem_mapping_per_family_npm_and_pypi() {
     assert_eq!(osv_ecosystem(Ecosystem::Npm), Some("npm"));
-    assert_eq!(osv_ecosystem(Ecosystem::PyPi), Some("PyPI"), "OSV spells it PyPI, the blocklist tag is pypi");
+    assert_eq!(
+        osv_ecosystem(Ecosystem::PyPi),
+        Some("PyPI"),
+        "OSV spells it PyPI, the blocklist tag is pypi"
+    );
 }
 
 /// Row 17: names `Ecosystem::RubyGems`, so it does not compile before this row adds the variant.

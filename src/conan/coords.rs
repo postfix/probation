@@ -27,12 +27,24 @@ pub struct Rref {
 impl Rref {
     /// `name/version@user/channel`, the spelling a client types (`_/_` is left out).
     pub fn display(&self) -> String {
-        if self.user == "_" { format!("{}/{}", self.name, self.version) } else { format!("{}/{}@{}/{}", self.name, self.version, self.user, self.channel) }
+        if self.user == "_" {
+            format!("{}/{}", self.name, self.version)
+        } else {
+            format!(
+                "{}/{}@{}/{}",
+                self.name, self.version, self.user, self.channel
+            )
+        }
     }
 
     /// The four path segments below `v2/conans`.
     pub fn segments(&self) -> Vec<String> {
-        vec![self.name.clone(), self.version.clone(), self.user.clone(), self.channel.clone()]
+        vec![
+            self.name.clone(),
+            self.version.clone(),
+            self.user.clone(),
+            self.channel.clone(),
+        ]
     }
 }
 
@@ -64,7 +76,10 @@ pub enum Parsed {
     Authenticate,
     CheckCredentials,
     /// `v2/conans/search?q=...` (the validated pattern, and whether the client asked for case-insensitive matching).
-    Search { pattern: String, ignorecase: Option<bool> },
+    Search {
+        pattern: String,
+        ignorecase: Option<bool>,
+    },
     Latest(Rref),
     Revisions(Rref),
     RecipeFiles(Recipe),
@@ -81,7 +96,11 @@ pub enum Parsed {
 
 /// A revision or a package id.
 pub fn id_ok(id: &str) -> bool {
-    !id.is_empty() && id.len() <= MAX_ID && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    !id.is_empty()
+        && id.len() <= MAX_ID
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
 /// A file of a revision (`conanfile.py`, `conan_export.tgz`, `metadata/logs/linux x86/build log.txt`): any canonical relative path of at most
@@ -90,15 +109,31 @@ pub fn id_ok(id: &str) -> bool {
 pub fn file_ok(file: &str) -> bool {
     file.len() <= MAX_FILE
         && file.split('/').count() <= MAX_FILE_SEGMENTS
-        && file.split('/').all(|part| !part.is_empty() && part.len() <= MAX_FILE_SEGMENT && part != "." && part != ".." && !part.chars().any(|c| c.is_control() || matches!(c, '\\' | '?' | '#')))
+        && file.split('/').all(|part| {
+            !part.is_empty()
+                && part.len() <= MAX_FILE_SEGMENT
+                && part != "."
+                && part != ".."
+                && !part
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '\\' | '?' | '#'))
+        })
 }
 
 fn rref_of(parts: &[&str]) -> Option<Rref> {
-    let [name, version, user, channel] = parts else { return None };
+    let [name, version, user, channel] = parts else {
+        return None;
+    };
     let named = |value: &str| valid_conan_part(value);
     // A recipe with neither user nor channel is `_/_`; one of the two alone is no reference.
-    let user_channel = (*user == "_" && *channel == "_") || (*user != "_" && *channel != "_" && named(user) && named(channel));
-    (named(name) && named(version) && user_channel).then(|| Rref { name: (*name).to_owned(), version: (*version).to_owned(), user: (*user).to_owned(), channel: (*channel).to_owned() })
+    let user_channel = (*user == "_" && *channel == "_")
+        || (*user != "_" && *channel != "_" && named(user) && named(channel));
+    (named(name) && named(version) && user_channel).then(|| Rref {
+        name: (*name).to_owned(),
+        version: (*version).to_owned(),
+        user: (*user).to_owned(),
+        channel: (*channel).to_owned(),
+    })
 }
 
 /// Parses the path after the family root (`v2/...`) and the raw query. `None` is a 404.
@@ -111,21 +146,34 @@ pub fn parse(path: &str, query: Option<&str>) -> Option<Parsed> {
         // The Conan 2 client probes `v1/ping` for capabilities (ConanCenter answers both); nothing else of the v1 tree is routed.
         ["v1" | "v2", "ping"] if query.is_none() => return Some(Parsed::Ping),
         ["v2", "users", "authenticate"] if query.is_none() => return Some(Parsed::Authenticate),
-        ["v2", "users", "check_credentials"] if query.is_none() => return Some(Parsed::CheckCredentials),
+        ["v2", "users", "check_credentials"] if query.is_none() => {
+            return Some(Parsed::CheckCredentials);
+        }
         ["v2", "conans", "search"] => return parse_search(query?),
         _ => {}
     }
     if query.is_some() {
         return None;
     }
-    let ["v2", "conans", rest @ ..] = parts.as_slice() else { return None };
+    let ["v2", "conans", rest @ ..] = parts.as_slice() else {
+        return None;
+    };
     if rest.len() < 4 {
         return None;
     }
     let rref = rref_of(&rest[..4])?;
     let tail = &rest[4..];
-    let directory = || Some(Parsed::Directory(rest.iter().map(|part| (*part).to_owned()).collect()));
-    let recipe = |rrev: &str| id_ok(rrev).then(|| Recipe { rref: rref.clone(), rrev: rrev.to_owned() });
+    let directory = || {
+        Some(Parsed::Directory(
+            rest.iter().map(|part| (*part).to_owned()).collect(),
+        ))
+    };
+    let recipe = |rrev: &str| {
+        id_ok(rrev).then(|| Recipe {
+            rref: rref.clone(),
+            rrev: rrev.to_owned(),
+        })
+    };
     match tail {
         [] => directory(),
         ["latest"] => Some(Parsed::Latest(rref)),
@@ -134,12 +182,18 @@ pub fn parse(path: &str, query: Option<&str>) -> Option<Parsed> {
         ["revisions", rrev, "files"] => recipe(rrev).map(Parsed::RecipeFiles),
         ["revisions", rrev, "files", file @ ..] if !file.is_empty() => {
             let file = file.join("/");
-            (file_ok(&file)).then(|| recipe(rrev)).flatten().map(|recipe| Parsed::RecipeFile(recipe, file))
+            (file_ok(&file))
+                .then(|| recipe(rrev))
+                .flatten()
+                .map(|recipe| Parsed::RecipeFile(recipe, file))
         }
         ["revisions", rrev, "search"] => recipe(rrev).map(Parsed::PackageSearch),
         ["revisions", rrev, "packages"] => recipe(rrev).and_then(|_| directory()),
         ["revisions", rrev, "packages", pkgid, more @ ..] => {
-            let package = Package { recipe: recipe(rrev)?, pkgid: (*pkgid).to_owned() };
+            let package = Package {
+                recipe: recipe(rrev)?,
+                pkgid: (*pkgid).to_owned(),
+            };
             if !id_ok(pkgid) {
                 return None;
             }
@@ -148,10 +202,23 @@ pub fn parse(path: &str, query: Option<&str>) -> Option<Parsed> {
                 ["latest"] => Some(Parsed::PackageLatest(package)),
                 ["revisions"] => Some(Parsed::PackageRevisions(package)),
                 ["revisions", prev] => id_ok(prev).then(directory).flatten(),
-                ["revisions", prev, "files"] => id_ok(prev).then(|| Parsed::PackageFiles(PackageRev { package, prev: (*prev).to_owned() })),
+                ["revisions", prev, "files"] => id_ok(prev).then(|| {
+                    Parsed::PackageFiles(PackageRev {
+                        package,
+                        prev: (*prev).to_owned(),
+                    })
+                }),
                 ["revisions", prev, "files", file @ ..] if !file.is_empty() => {
                     let file = file.join("/");
-                    (id_ok(prev) && file_ok(&file)).then(|| Parsed::PackageFile(PackageRev { package, prev: (*prev).to_owned() }, file))
+                    (id_ok(prev) && file_ok(&file)).then(|| {
+                        Parsed::PackageFile(
+                            PackageRev {
+                                package,
+                                prev: (*prev).to_owned(),
+                            },
+                            file,
+                        )
+                    })
                 }
                 _ => None,
             }
@@ -164,7 +231,9 @@ fn parse_search(query: &str) -> Option<Parsed> {
     let (mut pattern, mut ignorecase) = (None, None);
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=')?;
-        let value = percent_encoding::percent_decode_str(value).decode_utf8().ok()?;
+        let value = percent_encoding::percent_decode_str(value)
+            .decode_utf8()
+            .ok()?;
         match key {
             "q" if pattern.is_none() => pattern = Some(value.into_owned()),
             "ignorecase" if ignorecase.is_none() => {
@@ -178,8 +247,35 @@ fn parse_search(query: &str) -> Option<Parsed> {
         }
     }
     let pattern = pattern?;
-    let ok = !pattern.is_empty() && pattern.len() <= MAX_QUERY && pattern.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'.' | b'-' | b'*' | b'@' | b'/' | b'#' | b'[' | b']' | b'<' | b'>' | b'=' | b'~' | b'^' | b',' | b'?' | b'!'));
-    ok.then_some(Parsed::Search { pattern, ignorecase })
+    let ok = !pattern.is_empty()
+        && pattern.len() <= MAX_QUERY
+        && pattern.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'+'
+                        | b'.'
+                        | b'-'
+                        | b'*'
+                        | b'@'
+                        | b'/'
+                        | b'#'
+                        | b'['
+                        | b']'
+                        | b'<'
+                        | b'>'
+                        | b'='
+                        | b'~'
+                        | b'^'
+                        | b','
+                        | b'?'
+                        | b'!'
+                )
+        });
+    ok.then_some(Parsed::Search {
+        pattern,
+        ignorecase,
+    })
 }
 
 /// The segments below `v2/conans` of a parsed revision-level path (so a URL is built from the parsed identity, never from the
@@ -192,7 +288,12 @@ pub fn recipe_segments(recipe: &Recipe) -> Vec<String> {
 
 pub fn package_rev_segments(package: &PackageRev) -> Vec<String> {
     let mut segments = recipe_segments(&package.package.recipe);
-    segments.extend(["packages".to_owned(), package.package.pkgid.clone(), "revisions".to_owned(), package.prev.clone()]);
+    segments.extend([
+        "packages".to_owned(),
+        package.package.pkgid.clone(),
+        "revisions".to_owned(),
+        package.prev.clone(),
+    ]);
     segments
 }
 
@@ -206,7 +307,12 @@ pub fn upstream_segments(below_conans: &[String]) -> Vec<String> {
 /// The name a reference row carries for a file: the path below `v2/conans`, starting with the remote's own spelling of the name and the version
 /// (which is everything that tells two files of two revisions apart, and what membership rebuilds the unit from).
 pub fn row_file_name(rref: &Rref, rest: &[String], file: &str) -> String {
-    let mut parts = vec![rref.name.clone(), rref.version.clone(), rref.user.clone(), rref.channel.clone()];
+    let mut parts = vec![
+        rref.name.clone(),
+        rref.version.clone(),
+        rref.user.clone(),
+        rref.channel.clone(),
+    ];
     parts.extend(rest.iter().skip(4).cloned());
     parts.push("files".to_owned());
     parts.push(file.to_owned());
@@ -221,7 +327,12 @@ mod tests {
     use super::*;
 
     fn rref() -> Rref {
-        Rref { name: "zlib".into(), version: "1.3.1".into(), user: "_".into(), channel: "_".into() }
+        Rref {
+            name: "zlib".into(),
+            version: "1.3.1".into(),
+            user: "_".into(),
+            channel: "_".into(),
+        }
     }
 
     #[test]
@@ -229,25 +340,101 @@ mod tests {
         let base = "v2/conans/zlib/1.3.1/_/_";
         assert_eq!(parse("v2/ping", None), Some(Parsed::Ping));
         assert_eq!(parse("v1/ping", None), Some(Parsed::Ping));
-        assert_eq!(parse("v2/users/authenticate", None), Some(Parsed::Authenticate));
-        assert_eq!(parse("v2/users/check_credentials", None), Some(Parsed::CheckCredentials));
-        assert_eq!(parse("v2/conans/search", Some("q=zlib/*&ignorecase=False")), Some(Parsed::Search { pattern: "zlib/*".into(), ignorecase: Some(false) }));
+        assert_eq!(
+            parse("v2/users/authenticate", None),
+            Some(Parsed::Authenticate)
+        );
+        assert_eq!(
+            parse("v2/users/check_credentials", None),
+            Some(Parsed::CheckCredentials)
+        );
+        assert_eq!(
+            parse("v2/conans/search", Some("q=zlib/*&ignorecase=False")),
+            Some(Parsed::Search {
+                pattern: "zlib/*".into(),
+                ignorecase: Some(false)
+            })
+        );
         // fnmatch's own characters are part of a pattern (`?`, `[!seq]`), so a valid search is never refused.
-        assert_eq!(parse("v2/conans/search", Some("q=zli%3F/%5B!a%5D*")), Some(Parsed::Search { pattern: "zli?/[!a]*".into(), ignorecase: None }));
-        assert_eq!(parse(&format!("{base}/latest"), None), Some(Parsed::Latest(rref())));
-        assert_eq!(parse(&format!("{base}/revisions"), None), Some(Parsed::Revisions(rref())));
-        let recipe = Recipe { rref: rref(), rrev: "abc123".into() };
-        assert_eq!(parse(&format!("{base}/revisions/abc123/files"), None), Some(Parsed::RecipeFiles(recipe.clone())));
-        assert_eq!(parse(&format!("{base}/revisions/abc123/files/conanfile.py"), None), Some(Parsed::RecipeFile(recipe.clone(), "conanfile.py".into())));
-        assert_eq!(parse(&format!("{base}/revisions/abc123/search"), None), Some(Parsed::PackageSearch(recipe.clone())));
-        let package = Package { recipe, pkgid: "b647c4".into() };
-        assert_eq!(parse(&format!("{base}/revisions/abc123/packages/b647c4/latest"), None), Some(Parsed::PackageLatest(package.clone())));
-        assert_eq!(parse(&format!("{base}/revisions/abc123/packages/b647c4/revisions"), None), Some(Parsed::PackageRevisions(package.clone())));
-        let rev = PackageRev { package, prev: "fee20b".into() };
-        assert_eq!(parse(&format!("{base}/revisions/abc123/packages/b647c4/revisions/fee20b/files"), None), Some(Parsed::PackageFiles(rev.clone())));
-        assert_eq!(parse(&format!("{base}/revisions/abc123/packages/b647c4/revisions/fee20b/files/conan_package.tgz"), None), Some(Parsed::PackageFile(rev, "conan_package.tgz".into())));
+        assert_eq!(
+            parse("v2/conans/search", Some("q=zli%3F/%5B!a%5D*")),
+            Some(Parsed::Search {
+                pattern: "zli?/[!a]*".into(),
+                ignorecase: None
+            })
+        );
+        assert_eq!(
+            parse(&format!("{base}/latest"), None),
+            Some(Parsed::Latest(rref()))
+        );
+        assert_eq!(
+            parse(&format!("{base}/revisions"), None),
+            Some(Parsed::Revisions(rref()))
+        );
+        let recipe = Recipe {
+            rref: rref(),
+            rrev: "abc123".into(),
+        };
+        assert_eq!(
+            parse(&format!("{base}/revisions/abc123/files"), None),
+            Some(Parsed::RecipeFiles(recipe.clone()))
+        );
+        assert_eq!(
+            parse(&format!("{base}/revisions/abc123/files/conanfile.py"), None),
+            Some(Parsed::RecipeFile(recipe.clone(), "conanfile.py".into()))
+        );
+        assert_eq!(
+            parse(&format!("{base}/revisions/abc123/search"), None),
+            Some(Parsed::PackageSearch(recipe.clone()))
+        );
+        let package = Package {
+            recipe,
+            pkgid: "b647c4".into(),
+        };
+        assert_eq!(
+            parse(
+                &format!("{base}/revisions/abc123/packages/b647c4/latest"),
+                None
+            ),
+            Some(Parsed::PackageLatest(package.clone()))
+        );
+        assert_eq!(
+            parse(
+                &format!("{base}/revisions/abc123/packages/b647c4/revisions"),
+                None
+            ),
+            Some(Parsed::PackageRevisions(package.clone()))
+        );
+        let rev = PackageRev {
+            package,
+            prev: "fee20b".into(),
+        };
+        assert_eq!(
+            parse(
+                &format!("{base}/revisions/abc123/packages/b647c4/revisions/fee20b/files"),
+                None
+            ),
+            Some(Parsed::PackageFiles(rev.clone()))
+        );
+        assert_eq!(
+            parse(
+                &format!(
+                    "{base}/revisions/abc123/packages/b647c4/revisions/fee20b/files/conan_package.tgz"
+                ),
+                None
+            ),
+            Some(Parsed::PackageFile(rev, "conan_package.tgz".into()))
+        );
         let user = parse("v2/conans/mylib/2.0-rc1/acme/stable/latest", None);
-        assert_eq!(user, Some(Parsed::Latest(Rref { name: "mylib".into(), version: "2.0-rc1".into(), user: "acme".into(), channel: "stable".into() })));
+        assert_eq!(
+            user,
+            Some(Parsed::Latest(Rref {
+                name: "mylib".into(),
+                version: "2.0-rc1".into(),
+                user: "acme".into(),
+                channel: "stable".into()
+            }))
+        );
     }
 
     #[test]
@@ -274,7 +461,11 @@ mod tests {
         ] {
             assert_eq!(parse(bad, None), None, "{bad}");
         }
-        assert_eq!(parse("v2/conans/zlib/1.3.1/_/_/latest", Some("x=1")), None, "no query on a layout route");
+        assert_eq!(
+            parse("v2/conans/zlib/1.3.1/_/_/latest", Some("x=1")),
+            None,
+            "no query on a layout route"
+        );
         assert_eq!(parse("v2/conans/search", Some("q=a&evil=1")), None);
         assert_eq!(parse("v2/conans/search", Some("q=a&q=b")), None);
         assert_eq!(parse("v2/conans/search", Some("ignorecase=True")), None);
@@ -284,20 +475,55 @@ mod tests {
 
     #[test]
     fn a_directory_is_only_a_delete_target() {
-        assert!(matches!(parse("v2/conans/zlib/1.3.1/_/_", None), Some(Parsed::Directory(_))));
-        assert!(matches!(parse("v2/conans/zlib/1.3.1/_/_/revisions/abc", None), Some(Parsed::Directory(_))));
-        assert!(matches!(parse("v2/conans/zlib/1.3.1/_/_/revisions/abc/packages", None), Some(Parsed::Directory(_))));
-        assert!(matches!(parse("v2/conans/zlib/1.3.1/_/_/revisions/abc/packages/p", None), Some(Parsed::Directory(_))));
-        assert!(matches!(parse("v2/conans/zlib/1.3.1/_/_/revisions/abc/packages/p/revisions/r", None), Some(Parsed::Directory(_))));
+        assert!(matches!(
+            parse("v2/conans/zlib/1.3.1/_/_", None),
+            Some(Parsed::Directory(_))
+        ));
+        assert!(matches!(
+            parse("v2/conans/zlib/1.3.1/_/_/revisions/abc", None),
+            Some(Parsed::Directory(_))
+        ));
+        assert!(matches!(
+            parse("v2/conans/zlib/1.3.1/_/_/revisions/abc/packages", None),
+            Some(Parsed::Directory(_))
+        ));
+        assert!(matches!(
+            parse("v2/conans/zlib/1.3.1/_/_/revisions/abc/packages/p", None),
+            Some(Parsed::Directory(_))
+        ));
+        assert!(matches!(
+            parse(
+                "v2/conans/zlib/1.3.1/_/_/revisions/abc/packages/p/revisions/r",
+                None
+            ),
+            Some(Parsed::Directory(_))
+        ));
     }
 
     #[test]
     fn a_row_file_name_tells_every_revision_and_file_apart() {
-        let r = Rref { name: "zlib".into(), version: "1".into(), user: "_".into(), channel: "_".into() };
-        let recipe = Recipe { rref: r.clone(), rrev: "R".into() };
+        let r = Rref {
+            name: "zlib".into(),
+            version: "1".into(),
+            user: "_".into(),
+            channel: "_".into(),
+        };
+        let recipe = Recipe {
+            rref: r.clone(),
+            rrev: "R".into(),
+        };
         let name = row_file_name(&r, &recipe_segments(&recipe), "conanfile.py");
         assert_eq!(name, "zlib/1/_/_/revisions/R/files/conanfile.py");
-        let package = PackageRev { package: Package { recipe, pkgid: "P".into() }, prev: "V".into() };
-        assert_eq!(row_file_name(&r, &package_rev_segments(&package), "conan_package.tgz"), "zlib/1/_/_/revisions/R/packages/P/revisions/V/files/conan_package.tgz");
+        let package = PackageRev {
+            package: Package {
+                recipe,
+                pkgid: "P".into(),
+            },
+            prev: "V".into(),
+        };
+        assert_eq!(
+            row_file_name(&r, &package_rev_segments(&package), "conan_package.tgz"),
+            "zlib/1/_/_/revisions/R/packages/P/revisions/V/files/conan_package.tgz"
+        );
     }
 }

@@ -45,9 +45,15 @@ async fn a_data_directory_on_nfs4_refuses_to_start_and_names_the_type() {
     probe_says("nfs4");
     let err = start(false).await.err().expect("start refuses");
     set_filesystem_probe(None);
-    assert!(matches!(&err, StartupError::DataDir(StoreStartup::Lock(LockError::NetworkFilesystem { fstype, .. })) if fstype == "nfs4"), "{err:?}");
+    assert!(
+        matches!(&err, StartupError::DataDir(StoreStartup::Lock(LockError::NetworkFilesystem { fstype, .. })) if fstype == "nfs4"),
+        "{err:?}"
+    );
     let text = err.to_string();
-    assert!(text.contains("nfs4") && text.contains("allow_network_data_dir"), "the error names the type and the switch: {text}");
+    assert!(
+        text.contains("nfs4") && text.contains("allow_network_data_dir"),
+        "the error names the type and the switch: {text}"
+    );
 }
 
 #[tokio::test]
@@ -56,7 +62,11 @@ async fn allow_network_data_dir_starts_on_the_same_file_system() {
     probe_says("nfs4");
     let started = start(true).await;
     set_filesystem_probe(None);
-    assert!(started.is_ok(), "the switch accepts the risk: {:?}", started.err());
+    assert!(
+        started.is_ok(),
+        "the switch accepts the risk: {:?}",
+        started.err()
+    );
 }
 
 #[tokio::test]
@@ -71,11 +81,25 @@ async fn a_local_file_system_starts_without_the_switch() {
 #[tokio::test]
 async fn a_file_system_that_cannot_be_classified_refuses_to_start() {
     let _one = ONE_AT_A_TIME.lock().await;
-    set_filesystem_probe(Some(Arc::new(|_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "no mount table")))));
-    let err = start(false).await.err().expect("start refuses when it cannot tell");
+    set_filesystem_probe(Some(Arc::new(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "no mount table",
+        ))
+    })));
+    let err = start(false)
+        .await
+        .err()
+        .expect("start refuses when it cannot tell");
     let allowed = start(true).await;
     set_filesystem_probe(None);
-    assert!(matches!(&err, StartupError::DataDir(StoreStartup::Lock(LockError::Unclassifiable { .. }))), "{err:?}");
+    assert!(
+        matches!(
+            &err,
+            StartupError::DataDir(StoreStartup::Lock(LockError::Unclassifiable { .. }))
+        ),
+        "{err:?}"
+    );
     assert!(err.to_string().contains("cannot tell"), "{err}");
     assert!(allowed.is_ok(), "the switch still accepts it");
 }

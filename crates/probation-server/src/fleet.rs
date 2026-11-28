@@ -564,13 +564,18 @@ fn health(retired: bool, since: Option<i64>, report: Option<&FirewallReport>) ->
 /// "Healthy", plus any OSV warning the firewall reports (row 30, LS-F7, C1031): readiness and
 /// the healthy flag are unchanged, the warning is shown beside them.
 fn healthy_text(osv: Option<probation_policy::api::OsvReport>) -> String {
-    let Some(osv) = osv else { return "Healthy".to_owned() };
+    let Some(osv) = osv else {
+        return "Healthy".to_owned();
+    };
     let mut warnings = Vec::new();
     if osv.degraded_warning {
         warnings.push("more than 5% of OSV lookups degraded".to_owned());
     }
     if osv.keys_refused > 0 {
-        warnings.push(format!("{} keys refused (too long to ask OSV about)", osv.keys_refused));
+        warnings.push(format!(
+            "{} keys refused (too long to ask OSV about)",
+            osv.keys_refused
+        ));
     }
     if osv.matches_file_degraded > 0 || osv.stale_matches_expired > 0 {
         warnings.push("matches file or stale window degraded".to_owned());

@@ -6,13 +6,13 @@ pub mod accounts;
 pub mod audit;
 pub mod fleet;
 pub mod keys;
+pub(crate) mod order_guards;
 pub mod osv;
 pub mod osv_view;
-pub(crate) mod order_guards;
 pub mod policy;
 pub mod portal;
-pub mod sync;
 pub mod service_policy;
+pub mod sync;
 pub mod tenancy;
 
 use std::net::SocketAddr;
@@ -149,9 +149,18 @@ pub async fn serve(
         }
     })];
     let listener = tokio::net::TcpListener::bind(config.server.listen).await?;
-    let sync_secrets = portal.as_ref().map(|deps| accounts::SecretBox::new(deps.secret_key));
-    let state = Arc::new(sync::SyncState::new(pool, config.server.trusted_proxies, sync_secrets));
-    let osv = Arc::new(osv::OsvState::production(Arc::clone(&state), config.server.osv_key_rate_per_minute));
+    let sync_secrets = portal
+        .as_ref()
+        .map(|deps| accounts::SecretBox::new(deps.secret_key));
+    let state = Arc::new(sync::SyncState::new(
+        pool,
+        config.server.trusted_proxies,
+        sync_secrets,
+    ));
+    let osv = Arc::new(osv::OsvState::production(
+        Arc::clone(&state),
+        config.server.osv_key_rate_per_minute,
+    ));
     let mut router = build_router_with_osv(state, osv);
     if let Some(deps) = portal {
         let secrets = accounts::SecretBox::new(deps.secret_key);
@@ -229,7 +238,10 @@ where
 /// (C86) and the health probes. Serve it with connect info: the sync API checks the
 /// firewall's address (T31).
 pub fn build_router(state: Arc<sync::SyncState>) -> axum::Router {
-    let osv = Arc::new(osv::OsvState::production(Arc::clone(&state), default_osv_key_rate_per_minute()));
+    let osv = Arc::new(osv::OsvState::production(
+        Arc::clone(&state),
+        default_osv_key_rate_per_minute(),
+    ));
     build_router_with_osv(state, osv)
 }
 
@@ -239,7 +251,11 @@ pub fn build_router_with_osv(state: Arc<sync::SyncState>, osv: Arc<osv::OsvState
     let automation = policy::router(state.pool().clone());
     let health = health(state.pool().clone());
     let service_policy = service_policy::router(state.pool().clone());
-    sync::router(state).merge(automation).merge(health).merge(service_policy).merge(osv::router(osv))
+    sync::router(state)
+        .merge(automation)
+        .merge(health)
+        .merge(service_policy)
+        .merge(osv::router(osv))
 }
 
 /// `GET /health/live`: 200 while the process answers. `GET /health/ready`: 200 while the

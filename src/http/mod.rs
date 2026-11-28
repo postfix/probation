@@ -2,30 +2,30 @@
 
 pub mod artifact_routes;
 pub mod audit_filter;
+pub mod cargo_routes;
+pub mod conan_routes;
 pub mod credential_read;
 pub mod credential_temp;
 pub mod error;
-pub mod health;
-pub mod listener_admission;
-pub mod limits;
-pub mod logging;
-pub mod npm_routes;
-pub mod pypi_routes;
-pub mod rubygems_routes;
-pub mod cargo_routes;
 pub mod go_routes;
-pub mod nuget_routes;
+pub mod health;
+pub mod limits;
+pub mod listener_admission;
+pub mod logging;
 pub mod maven_routes;
-pub mod conan_routes;
+pub mod npm_routes;
+pub mod nuget_routes;
 pub mod oci_routes;
+pub mod pypi_routes;
 pub mod readmit;
-pub mod registry_read;
 pub mod registry_action;
+pub mod registry_read;
 pub mod registry_routes;
+pub mod rubygems_routes;
 pub mod service_connector;
 pub mod service_registry;
-pub mod spool;
 pub(crate) mod service_unpublish;
+pub mod spool;
 pub mod token_packument;
 pub mod unpublish_reference;
 
@@ -64,11 +64,17 @@ use crate::managed::{Principal, Refusal};
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .fallback_service(package_router(Arc::clone(&app)))
-        .layer(middleware::from_fn_with_state(Arc::clone(&app), service_registry::respond))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&app),
+            service_registry::respond,
+        ))
         // Outside the shared-service gate and every route: a read whose release the gate refused is admitted again.
         .layer(middleware::from_fn(readmit::readmit))
         .layer(middleware::map_response(no_store))
-        .layer(middleware::from_fn_with_state(Arc::clone(&app), logging::decide))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&app),
+            logging::decide,
+        ))
         .layer(middleware::from_fn(bound_headers))
 }
 
@@ -81,9 +87,18 @@ fn package_router(app: Arc<App>) -> Router {
         .route("/npm/-", get(unknown_route))
         .route("/npm/-/{*rest}", get(artifact_routes::serve_npm_namespace))
         .route("/npm/{package}", get(npm_routes::package))
-        .route("/registry/npm/{registry}/-/ping", get(registry_routes::ping))
-        .route("/registry/npm/{registry}/-/whoami", get(registry_routes::whoami))
-        .route("/registry/npm/{registry}/-/v1/search", get(registry_routes::search))
+        .route(
+            "/registry/npm/{registry}/-/ping",
+            get(registry_routes::ping),
+        )
+        .route(
+            "/registry/npm/{registry}/-/whoami",
+            get(registry_routes::whoami),
+        )
+        .route(
+            "/registry/npm/{registry}/-/v1/search",
+            get(registry_routes::search),
+        )
         .route(
             "/npm/{package}/{version_or_tag}",
             get(npm_routes::package_version),
@@ -92,35 +107,96 @@ fn package_router(app: Arc<App>) -> Router {
             "/registry/npm/{registry}/{package}/{version}",
             get(registry_routes::version),
         )
-        .route("/registry/npm/{registry}/{package}", get(registry_routes::package).put(registry_routes::package_action))
-        .route("/registry/npm/{registry}/{package}/-rev/{revision}", axum::routing::put(registry_routes::revision_action).delete(registry_routes::revision_action))
-        .route("/registry/pypi/{registry}/simple/", get(pypi_routes::selected_index))
-        .route("/registry/pypi/{registry}/simple/{project}/", get(pypi_routes::selected_project))
-        .route("/registry/pypi/{registry}/simple/{project}", get(pypi_routes::selected_project_without_slash))
+        .route(
+            "/registry/npm/{registry}/{package}",
+            get(registry_routes::package).put(registry_routes::package_action),
+        )
+        .route(
+            "/registry/npm/{registry}/{package}/-rev/{revision}",
+            axum::routing::put(registry_routes::revision_action)
+                .delete(registry_routes::revision_action),
+        )
+        .route(
+            "/registry/pypi/{registry}/simple/",
+            get(pypi_routes::selected_index),
+        )
+        .route(
+            "/registry/pypi/{registry}/simple/{project}/",
+            get(pypi_routes::selected_project),
+        )
+        .route(
+            "/registry/pypi/{registry}/simple/{project}",
+            get(pypi_routes::selected_project_without_slash),
+        )
         .route("/rubygems/info/{gem}", get(rubygems_routes::info))
         .route("/rubygems/versions", get(rubygems_routes::versions))
         .route("/rubygems/names", get(rubygems_routes::names))
         .route("/rubygems/specs.4.8.gz", get(rubygems_routes::specs))
-        .route("/rubygems/latest_specs.4.8.gz", get(rubygems_routes::latest_specs))
-        .route("/rubygems/prerelease_specs.4.8.gz", get(rubygems_routes::prerelease_specs))
-        .route("/registry/rubygems/{registry}/specs.4.8.gz", get(rubygems_routes::selected_specs))
-        .route("/registry/rubygems/{registry}/latest_specs.4.8.gz", get(rubygems_routes::selected_latest_specs))
-        .route("/registry/rubygems/{registry}/prerelease_specs.4.8.gz", get(rubygems_routes::selected_prerelease_specs))
-        .route("/rubygems/quick/Marshal.4.8/{file}", get(rubygems_routes::quick))
-        .route("/registry/rubygems/{registry}/info/{gem}", get(rubygems_routes::selected_info))
-        .route("/registry/rubygems/{registry}/versions", get(rubygems_routes::selected_versions))
-        .route("/registry/rubygems/{registry}/names", get(rubygems_routes::selected_names))
-        .route("/registry/rubygems/{registry}/quick/Marshal.4.8/{file}", get(rubygems_routes::selected_quick))
+        .route(
+            "/rubygems/latest_specs.4.8.gz",
+            get(rubygems_routes::latest_specs),
+        )
+        .route(
+            "/rubygems/prerelease_specs.4.8.gz",
+            get(rubygems_routes::prerelease_specs),
+        )
+        .route(
+            "/registry/rubygems/{registry}/specs.4.8.gz",
+            get(rubygems_routes::selected_specs),
+        )
+        .route(
+            "/registry/rubygems/{registry}/latest_specs.4.8.gz",
+            get(rubygems_routes::selected_latest_specs),
+        )
+        .route(
+            "/registry/rubygems/{registry}/prerelease_specs.4.8.gz",
+            get(rubygems_routes::selected_prerelease_specs),
+        )
+        .route(
+            "/rubygems/quick/Marshal.4.8/{file}",
+            get(rubygems_routes::quick),
+        )
+        .route(
+            "/registry/rubygems/{registry}/info/{gem}",
+            get(rubygems_routes::selected_info),
+        )
+        .route(
+            "/registry/rubygems/{registry}/versions",
+            get(rubygems_routes::selected_versions),
+        )
+        .route(
+            "/registry/rubygems/{registry}/names",
+            get(rubygems_routes::selected_names),
+        )
+        .route(
+            "/registry/rubygems/{registry}/quick/Marshal.4.8/{file}",
+            get(rubygems_routes::selected_quick),
+        )
         .route("/cargo/config.json", get(cargo_routes::config))
         .route("/cargo/1/{name}", get(cargo_routes::index_1))
         .route("/cargo/2/{name}", get(cargo_routes::index_2))
         .route("/cargo/3/{a}/{name}", get(cargo_routes::index_3))
         .route("/cargo/{ab}/{cd}/{name}", get(cargo_routes::index_4))
-        .route("/registry/cargo/{registry}/config.json", get(cargo_routes::selected_config))
-        .route("/registry/cargo/{registry}/1/{name}", get(cargo_routes::selected_index_1))
-        .route("/registry/cargo/{registry}/2/{name}", get(cargo_routes::selected_index_2))
-        .route("/registry/cargo/{registry}/3/{a}/{name}", get(cargo_routes::selected_index_3))
-        .route("/registry/cargo/{registry}/{ab}/{cd}/{name}", get(cargo_routes::selected_index_4))
+        .route(
+            "/registry/cargo/{registry}/config.json",
+            get(cargo_routes::selected_config),
+        )
+        .route(
+            "/registry/cargo/{registry}/1/{name}",
+            get(cargo_routes::selected_index_1),
+        )
+        .route(
+            "/registry/cargo/{registry}/2/{name}",
+            get(cargo_routes::selected_index_2),
+        )
+        .route(
+            "/registry/cargo/{registry}/3/{a}/{name}",
+            get(cargo_routes::selected_index_3),
+        )
+        .route(
+            "/registry/cargo/{registry}/{ab}/{cd}/{name}",
+            get(cargo_routes::selected_index_4),
+        )
         .route("/pypi/simple/", get(pypi_routes::index))
         .route("/pypi/simple/{project}/", get(pypi_routes::project))
         .route(
@@ -130,25 +206,85 @@ fn package_router(app: Arc<App>) -> Router {
         // Only the routes above: the artifact routes below serve `HEAD` as SPEC §11
         // lists it.
         .route_layer(middleware::from_fn(get_only))
-        .route("/registry/pypi/{registry}/", axum::routing::post(pypi_routes::selected_upload))
-        .route("/registry/cargo/{registry}/api/v1/crates/new", axum::routing::put(cargo_routes::selected_publish))
-        .route("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/yank", axum::routing::delete(cargo_routes::selected_yank))
-        .route("/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank", axum::routing::put(cargo_routes::selected_unyank))
-        .route("/registry/cargo/{registry}/api/v1/crates/{name}/owners", axum::routing::get(cargo_routes::selected_owners).put(cargo_routes::selected_owners).delete(cargo_routes::selected_owners))
-        .route("/registry/cargo/{registry}/api/v1/crates", axum::routing::get(cargo_routes::selected_search))
-        .route("/registry/nuget/{registry}/api/v2/package", axum::routing::put(nuget_routes::selected_push))
-        .route("/registry/nuget/{registry}/api/v2/package/", axum::routing::put(nuget_routes::selected_push))
-        .route("/registry/nuget/{registry}/api/v2/symbolpackage", axum::routing::put(nuget_routes::selected_symbol_push))
-        .route("/registry/nuget/{registry}/api/v2/symbolpackage/", axum::routing::put(nuget_routes::selected_symbol_push))
-        .route("/registry/nuget/{registry}/api/v2/package/{id}/{version}", axum::routing::delete(nuget_routes::selected_package_action).post(nuget_routes::selected_package_action))
-        .route("/registry/rubygems/{registry}/api/v1/gems", axum::routing::post(rubygems_routes::selected_push))
-        .route("/registry/rubygems/{registry}/api/v1/gems/yank", axum::routing::delete(rubygems_routes::selected_yank))
-        .route("/registry/npm/{registry}/-/npm/v1/security/advisories/bulk", axum::routing::post(registry_routes::audit_bulk))
-        .route("/registry/npm/{registry}/-/npm/v1/security/audits/quick", axum::routing::post(registry_routes::audit_quick))
-        .route("/registry/npm/{registry}/-/{*rest}", axum::routing::any(registry_routes::action))
-        .route("/registry/npm/{registry}/{package}/-/{filename}", get(registry_routes::package_tarball).head(registry_routes::package_tarball))
-        .route("/registry/npm/{registry}/{package}/-/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::package_tarball_delete))
-        .route("/registry/npm/{registry}/artifacts/{reference_id}/{filename}/-rev/{revision}", axum::routing::delete(registry_routes::unsupported_artifact_delete))
+        .route(
+            "/registry/pypi/{registry}/",
+            axum::routing::post(pypi_routes::selected_upload),
+        )
+        .route(
+            "/registry/cargo/{registry}/api/v1/crates/new",
+            axum::routing::put(cargo_routes::selected_publish),
+        )
+        .route(
+            "/registry/cargo/{registry}/api/v1/crates/{name}/{version}/yank",
+            axum::routing::delete(cargo_routes::selected_yank),
+        )
+        .route(
+            "/registry/cargo/{registry}/api/v1/crates/{name}/{version}/unyank",
+            axum::routing::put(cargo_routes::selected_unyank),
+        )
+        .route(
+            "/registry/cargo/{registry}/api/v1/crates/{name}/owners",
+            axum::routing::get(cargo_routes::selected_owners)
+                .put(cargo_routes::selected_owners)
+                .delete(cargo_routes::selected_owners),
+        )
+        .route(
+            "/registry/cargo/{registry}/api/v1/crates",
+            axum::routing::get(cargo_routes::selected_search),
+        )
+        .route(
+            "/registry/nuget/{registry}/api/v2/package",
+            axum::routing::put(nuget_routes::selected_push),
+        )
+        .route(
+            "/registry/nuget/{registry}/api/v2/package/",
+            axum::routing::put(nuget_routes::selected_push),
+        )
+        .route(
+            "/registry/nuget/{registry}/api/v2/symbolpackage",
+            axum::routing::put(nuget_routes::selected_symbol_push),
+        )
+        .route(
+            "/registry/nuget/{registry}/api/v2/symbolpackage/",
+            axum::routing::put(nuget_routes::selected_symbol_push),
+        )
+        .route(
+            "/registry/nuget/{registry}/api/v2/package/{id}/{version}",
+            axum::routing::delete(nuget_routes::selected_package_action)
+                .post(nuget_routes::selected_package_action),
+        )
+        .route(
+            "/registry/rubygems/{registry}/api/v1/gems",
+            axum::routing::post(rubygems_routes::selected_push),
+        )
+        .route(
+            "/registry/rubygems/{registry}/api/v1/gems/yank",
+            axum::routing::delete(rubygems_routes::selected_yank),
+        )
+        .route(
+            "/registry/npm/{registry}/-/npm/v1/security/advisories/bulk",
+            axum::routing::post(registry_routes::audit_bulk),
+        )
+        .route(
+            "/registry/npm/{registry}/-/npm/v1/security/audits/quick",
+            axum::routing::post(registry_routes::audit_quick),
+        )
+        .route(
+            "/registry/npm/{registry}/-/{*rest}",
+            axum::routing::any(registry_routes::action),
+        )
+        .route(
+            "/registry/npm/{registry}/{package}/-/{filename}",
+            get(registry_routes::package_tarball).head(registry_routes::package_tarball),
+        )
+        .route(
+            "/registry/npm/{registry}/{package}/-/{filename}/-rev/{revision}",
+            axum::routing::delete(registry_routes::package_tarball_delete),
+        )
+        .route(
+            "/registry/npm/{registry}/artifacts/{reference_id}/{filename}/-rev/{revision}",
+            axum::routing::delete(registry_routes::unsupported_artifact_delete),
+        )
         .route(
             "/npm/artifacts/{reference_id}/{filename}",
             get(artifact_routes::serve_npm).head(artifact_routes::serve_npm),
@@ -166,41 +302,94 @@ fn package_router(app: Arc<App>) -> Router {
             get(artifact_routes::serve_pypi).head(artifact_routes::serve_pypi),
         )
         // A gem file: the name is the identity, the reference is looked up from the index.
-        .route("/rubygems/gems/{file}", get(rubygems_routes::gem).head(rubygems_routes::gem))
+        .route(
+            "/rubygems/gems/{file}",
+            get(rubygems_routes::gem).head(rubygems_routes::gem),
+        )
         .route(
             "/registry/rubygems/{registry}/gems/{file}",
             get(rubygems_routes::selected_gem).head(rubygems_routes::selected_gem),
         )
         // A crate archive: the `dl` of the rewritten `config.json` (Cargo appends `/{crate}/{version}/download`).
-        .route("/cargo/crates/{name}/{version}/download", get(cargo_routes::download).head(cargo_routes::download))
+        .route(
+            "/cargo/crates/{name}/{version}/download",
+            get(cargo_routes::download).head(cargo_routes::download),
+        )
         .route(
             "/registry/cargo/{registry}/crates/{name}/{version}/download",
             get(cargo_routes::selected_download).head(cargo_routes::selected_download),
         )
         // The Go module proxy: `@v/list`, `@latest`, `@v/{version}.info|mod|zip` and the checksum database
         // (`sumdb/{db}/...`), one catch-all because a module path has any number of segments.
-        .route("/go/{*path}", get(go_routes::legacy).head(go_routes::legacy))
-        .route("/registry/go/{registry}/{*path}", get(go_routes::selected).head(go_routes::selected))
+        .route(
+            "/go/{*path}",
+            get(go_routes::legacy).head(go_routes::legacy),
+        )
+        .route(
+            "/registry/go/{registry}/{*path}",
+            get(go_routes::selected).head(go_routes::selected),
+        )
         // NuGet v3: the service index, flat container, registration, search, autocomplete, vulnerability and
         // signature documents and the four files of a version, one catch-all parsed strictly by the handler.
-        .route("/nuget/{*path}", get(nuget_routes::legacy).head(nuget_routes::legacy))
-        .route("/registry/nuget/{registry}/{*path}", get(nuget_routes::selected).head(nuget_routes::selected))
+        .route(
+            "/nuget/{*path}",
+            get(nuget_routes::legacy).head(nuget_routes::legacy),
+        )
+        .route(
+            "/registry/nuget/{registry}/{*path}",
+            get(nuget_routes::selected).head(nuget_routes::selected),
+        )
         // Maven: the repository layout (metadata, files, checksums, signatures, the archetype catalog) behind one
         // catch-all parsed strictly by the handler; a selected registry's `PUT` and `DELETE` are the class-W deploy routes.
-        .route("/maven/{*path}", get(maven_routes::legacy).head(maven_routes::legacy))
-        .route("/registry/maven/{registry}/{*path}", get(maven_routes::selected).head(maven_routes::selected).put(maven_routes::selected).delete(maven_routes::selected))
+        .route(
+            "/maven/{*path}",
+            get(maven_routes::legacy).head(maven_routes::legacy),
+        )
+        .route(
+            "/registry/maven/{registry}/{*path}",
+            get(maven_routes::selected)
+                .head(maven_routes::selected)
+                .put(maven_routes::selected)
+                .delete(maven_routes::selected),
+        )
         // Conan 2: the remote's REST tree (`v2/...`: ping, login, search, revisions, files) behind one catch-all parsed strictly by the
         // handler; a selected registry's `PUT` and `DELETE` are the class-W upload routes.
-        .route("/conan/{*path}", get(conan_routes::legacy).head(conan_routes::legacy))
-        .route("/registry/conan/{registry}/{*path}", get(conan_routes::selected).head(conan_routes::selected).put(conan_routes::selected).delete(conan_routes::selected))
+        .route(
+            "/conan/{*path}",
+            get(conan_routes::legacy).head(conan_routes::legacy),
+        )
+        .route(
+            "/registry/conan/{registry}/{*path}",
+            get(conan_routes::selected)
+                .head(conan_routes::selected)
+                .put(conan_routes::selected)
+                .delete(conan_routes::selected),
+        )
         // OCI distribution: the registry API's own `/v2/` tree behind one catch-all parsed strictly by the handler (the root, with and
         // without its slash, is the client's ping); a selected registry's writes are the class-W upload and push routes.
         .route("/v2", get(oci_routes::legacy).head(oci_routes::legacy))
         .route("/v2/", get(oci_routes::legacy).head(oci_routes::legacy))
-        .route("/v2/{*path}", get(oci_routes::legacy).head(oci_routes::legacy))
-        .route("/registry/oci/{registry}/v2", get(oci_routes::selected).head(oci_routes::selected))
-        .route("/registry/oci/{registry}/v2/", get(oci_routes::selected).head(oci_routes::selected))
-        .route("/registry/oci/{registry}/v2/{*path}", get(oci_routes::selected).head(oci_routes::selected).post(oci_routes::selected).put(oci_routes::selected).patch(oci_routes::selected).delete(oci_routes::selected))
+        .route(
+            "/v2/{*path}",
+            get(oci_routes::legacy).head(oci_routes::legacy),
+        )
+        .route(
+            "/registry/oci/{registry}/v2",
+            get(oci_routes::selected).head(oci_routes::selected),
+        )
+        .route(
+            "/registry/oci/{registry}/v2/",
+            get(oci_routes::selected).head(oci_routes::selected),
+        )
+        .route(
+            "/registry/oci/{registry}/v2/{*path}",
+            get(oci_routes::selected)
+                .head(oci_routes::selected)
+                .post(oci_routes::selected)
+                .put(oci_routes::selected)
+                .patch(oci_routes::selected)
+                .delete(oci_routes::selected),
+        )
         // Upstream's own tarball paths, which existing lockfiles name.
         .route(
             "/npm/{package}/-/{filename}",
@@ -217,8 +406,14 @@ fn package_router(app: Arc<App>) -> Router {
 }
 
 async fn bound_headers(request: Request, next: Next) -> Response {
-    let size = request.headers().iter().fold(0usize, |total, (name, value)|
-        total.saturating_add(name.as_str().len()).saturating_add(value.as_bytes().len()));
+    let size = request
+        .headers()
+        .iter()
+        .fold(0usize, |total, (name, value)| {
+            total
+                .saturating_add(name.as_str().len())
+                .saturating_add(value.as_bytes().len())
+        });
     if size > 64 * 1024 {
         return StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.into_response();
     }

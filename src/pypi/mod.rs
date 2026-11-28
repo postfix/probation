@@ -108,7 +108,8 @@ pub async fn serve_in(
     let caches = app.store().caches();
 
     // The warm path: two memory lookups and nothing else (SPEC §10).
-    if registry_id == 0 && let Some(rendered) = caches.rendered.get(&render_key)
+    if registry_id == 0
+        && let Some(rendered) = caches.rendered.get(&render_key)
         && let Some(cached) = caches.projects.get(&project)
         && rendered.is_reusable(
             cached.row.generation,
@@ -133,7 +134,17 @@ pub async fn serve_in(
     }
     logging::record_cache(logging::CacheStatus::Miss);
 
-    let resolved = resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal).await?;
+    let resolved = resolve(
+        app,
+        name,
+        &policy,
+        snapshot,
+        now,
+        monotonic,
+        registry_id,
+        principal,
+    )
+    .await?;
     let refused = principal.and_then(|_| refused_listing(&policy, now, name, &resolved));
     if let (Some(verdict), Some(principal), Some(managed)) = (refused, principal, app.managed()) {
         managed.record_decision(principal, Ecosystem::PyPi, name.as_str(), None, &verdict);
@@ -141,7 +152,8 @@ pub async fn serve_in(
     let (body, content_type) = render(app, name, &resolved, &representation, registry_id);
     let body: Arc<[u8]> = Arc::from(body);
 
-    if registry_id == 0 && resolved.deadline_utc_micros > now
+    if registry_id == 0
+        && resolved.deadline_utc_micros > now
         && let Some(token) = crate::http::credential_read::cache_token(app)
     {
         caches.rendered.insert(
@@ -234,10 +246,24 @@ async fn current_project(
         // A credential-bearing read neither reads nor fills the share (one caller's upstream permission is never
         // another's), and neither does an ARTIFACT request (it always revalidates upstream); a credential-free
         // metadata read shares one fetch (single flight) for `service_share::TTL`.
-        let shareable = metadata && principal.is_none_or(|p| p.registry_read_authorization.is_none()) && crate::http::credential_read::cache_token(app).is_some();
+        let shareable = metadata
+            && principal.is_none_or(|p| p.registry_read_authorization.is_none())
+            && crate::http::credential_read::cache_token(app).is_some();
         if shareable {
-            let share = ("pypi", registry_id, principal.and_then(|p| p.registry_origin.as_ref()).map(ToString::to_string), name.as_str().to_owned());
-            return app.service_share.get_or_fetch(share, monotonic, || refresh(app, name, &key, now, monotonic, true, None, principal)).await;
+            let share = (
+                "pypi",
+                registry_id,
+                principal
+                    .and_then(|p| p.registry_origin.as_ref())
+                    .map(ToString::to_string),
+                name.as_str().to_owned(),
+            );
+            return app
+                .service_share
+                .get_or_fetch(share, monotonic, || {
+                    refresh(app, name, &key, now, monotonic, true, None, principal)
+                })
+                .await;
         }
         return refresh(app, name, &key, now, monotonic, true, None, principal).await;
     }
@@ -290,13 +316,19 @@ async fn current_project(
         // being dropped here: its validators are what make that revalidation
         // conditional — unless it is over-age, in which case the refresh sends none
         // at all.
-        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, principal).await?,
+        stale => {
+            refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, principal).await?
+        }
     };
 
     if let Some(token) = crate::http::credential_read::cache_token(app) {
-        caches
-            .projects
-            .insert_if_current(&token, key, Arc::clone(&cached), cached.approximate_bytes(), seen);
+        caches.projects.insert_if_current(
+            &token,
+            key,
+            Arc::clone(&cached),
+            cached.approximate_bytes(),
+            seen,
+        );
     }
     Ok(cached)
 }
@@ -313,7 +345,12 @@ pub async fn ensure_fresh_project(app: &App, name: &str) -> Result<Arc<Advertise
     ensure_fresh_project_in(app, name, 0, None).await
 }
 
-pub async fn ensure_fresh_project_in(app: &App, name: &str, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<Advertised>, ApiError> {
+pub async fn ensure_fresh_project_in(
+    app: &App,
+    name: &str,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Arc<Advertised>, ApiError> {
     // Already normalised when it was stored; rebuilt rather than trusted, and a name
     // that is no longer a normal form is a reference nothing can be served for.
     let name = ProjectName::from_normalized(name).ok_or_else(|| {
@@ -444,7 +481,11 @@ fn publication_of(file: &ProjectFile, first_seen: &HashMap<ReferenceId, i64>) ->
     }
 }
 
-async fn load_project(app: &App, name: &ProjectName, registry_id: u64) -> Result<Option<CachedProject>, ApiError> {
+async fn load_project(
+    app: &App,
+    name: &ProjectName,
+    registry_id: u64,
+) -> Result<Option<CachedProject>, ApiError> {
     let row = app
         .store()
         .get_project_in(registry_id, Ecosystem::PyPi, name.as_str())
@@ -538,11 +579,27 @@ async fn refresh(
     // `/simple/{project}/`, built by pushing segments onto the origin — never joined
     // and never formatted. The trailing empty segment is the canonical form upstream
     // would otherwise redirect to.
-    let selected = principal.and_then(|p| p.registry_origin.as_ref()).map(|origin|
-        crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()))
-    ).transpose().map_err(|_| ApiError::NotFound)?;
-    let url = selected.as_ref().unwrap_or(&app.origins)
-        .url_for(if selected.is_some() { OriginKind::NpmMetadata } else { OriginKind::PypiMetadata }, &["simple", name.as_str(), ""])
+    let selected = principal
+        .and_then(|p| p.registry_origin.as_ref())
+        .map(|origin| {
+            crate::upstream::OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+            )
+        })
+        .transpose()
+        .map_err(|_| ApiError::NotFound)?;
+    let url = selected
+        .as_ref()
+        .unwrap_or(&app.origins)
+        .url_for(
+            if selected.is_some() {
+                OriginKind::NpmMetadata
+            } else {
+                OriginKind::PypiMetadata
+            },
+            &["simple", name.as_str(), ""],
+        )
         .map_err(|rejection| {
             tracing::warn!(project = %name, %rejection, "refused to build an upstream URL");
             ApiError::NotFound
@@ -614,20 +671,26 @@ async fn refresh(
         },
         Ok(MetadataResponse::Missing) => {
             // C1028: a service-mode refusal is never cached (it was decided under one caller's credential).
-            if let Some(token) = crate::http::credential_read::cache_token(app).filter(|_| app.service_policy().is_none()) {
-            app.store().caches().absent.insert(
-                &token,
-                key.clone(),
-                Arc::new(AbsentMark {
-                    observed_monotonic: monotonic,
-                }),
-                128,
-            );
+            if let Some(token) = crate::http::credential_read::cache_token(app)
+                .filter(|_| app.service_policy().is_none())
+            {
+                app.store().caches().absent.insert(
+                    &token,
+                    key.clone(),
+                    Arc::new(AbsentMark {
+                        observed_monotonic: monotonic,
+                    }),
+                    128,
+                );
             }
             return Err(ApiError::NotFound);
         }
-        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::UpstreamUnauthenticated),
-        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::UpstreamDenied),
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamUnauthenticated);
+        }
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamDenied);
+        }
         Err(UpstreamError::Timeout) => {
             tracing::warn!(project = %name, "the upstream index did not answer in time");
             return Err(ApiError::UpstreamTimeout);
@@ -664,10 +727,15 @@ async fn refresh(
         references,
     };
     let committed = if app.service_policy().is_some() {
-        app.store().commit_request_references_in(key.registry_id, refresh).await
+        app.store()
+            .commit_request_references_in(key.registry_id, refresh)
+            .await
     } else {
-        app.store().commit_project_refresh_in(key.registry_id, refresh).await
-    }.map_err(storage_error)?;
+        app.store()
+            .commit_project_refresh_in(key.registry_id, refresh)
+            .await
+    }
+    .map_err(storage_error)?;
 
     // A refresh carries existing pins forward rather than changing them, but it does
     // replace the cached project, so they are read back with it.
@@ -753,7 +821,9 @@ fn render(
     registry_id: u64,
 ) -> (Vec<u8>, &'static str) {
     let mut public_url = app.config.public_url.clone();
-    if registry_id != 0 { public_url.set_path(&format!("/registry/pypi/{registry_id}/")); }
+    if registry_id != 0 {
+        public_url.set_path(&format!("/registry/pypi/{registry_id}/"));
+    }
     let mut listed = Vec::new();
     let mut versions = BTreeSet::new();
     for (file, decision) in resolved.files.iter().zip(&resolved.decisions) {
@@ -903,7 +973,11 @@ fn parse_files(
     Ok(files)
 }
 
-fn project_file(name: &ProjectName, raw: &Value, registry_id: u64) -> Result<ProjectFile, UnusableFile> {
+fn project_file(
+    name: &ProjectName,
+    raw: &Value,
+    registry_id: u64,
+) -> Result<ProjectFile, UnusableFile> {
     let filename = raw
         .get("filename")
         .and_then(Value::as_str)

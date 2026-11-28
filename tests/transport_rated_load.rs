@@ -15,7 +15,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::transport_load::{assert_warm_npm_document, concurrent, hot_read, rss_kib, sequential, service, surfaces};
+use common::transport_load::{
+    assert_warm_npm_document, concurrent, hot_read, rss_kib, sequential, service, surfaces,
+};
 use probation_policy::Ecosystem;
 
 /// Sequential samples per route and family.
@@ -43,12 +45,24 @@ async fn every_transports_hot_path_meets_its_stated_bounds() {
     let router = probation::http::router(server.app());
     let host: &[(&str, &str)] = &[("host", "packages.example.org")];
     let surfaces = surfaces();
-    assert_eq!(surfaces.len(), Ecosystem::ALL.len(), "one surface per family");
+    assert_eq!(
+        surfaces.len(),
+        Ecosystem::ALL.len(),
+        "one surface per family"
+    );
     // npm's read is the warm fixture document (what the release bench measures), asserted to be the real document.
     assert_warm_npm_document(&router, "10.1.2.3", host).await;
     // Warm every route once so the first sample is not the cold one.
     for surface in &surfaces {
-        let _ = sequential(&router, "10.1.2.3", "GET", &hot_read(surface, true), host, 5).await;
+        let _ = sequential(
+            &router,
+            "10.1.2.3",
+            "GET",
+            &hot_read(surface, true),
+            host,
+            5,
+        )
+        .await;
     }
     let before = rss_kib();
     let mut report = Vec::new();
@@ -58,36 +72,92 @@ async fn every_transports_hot_path_meets_its_stated_bounds() {
         let uri = hot_read(surface, true);
         let fetched_before = registry.calls().len();
         let (read, statuses) = sequential(&router, "10.1.2.3", "GET", &uri, host, SAMPLES).await;
-        assert_eq!(statuses, [surface.expected], "{tag}: the read answers {} every time (anything else is not the path being measured)", surface.expected);
-        let (refusal, refused) = sequential(&router, "203.0.113.9", "GET", &uri, host, SAMPLES).await;
-        assert_eq!(refused, [403], "{tag}: an unlisted peer is refused every time");
+        assert_eq!(
+            statuses,
+            [surface.expected],
+            "{tag}: the read answers {} every time (anything else is not the path being measured)",
+            surface.expected
+        );
+        let (refusal, refused) =
+            sequential(&router, "203.0.113.9", "GET", &uri, host, SAMPLES).await;
+        assert_eq!(
+            refused,
+            [403],
+            "{tag}: an unlisted peer is refused every time"
+        );
         let write = match surface.write {
             Some((verb, write_uri)) => {
-                let (latency, statuses) = sequential(&router, "10.1.2.3", verb, write_uri, host, SAMPLES).await;
-                assert_eq!(statuses, [401], "{tag}: a write without a credential is 401 every time");
+                let (latency, statuses) =
+                    sequential(&router, "10.1.2.3", verb, write_uri, host, SAMPLES).await;
+                assert_eq!(
+                    statuses,
+                    [401],
+                    "{tag}: a write without a credential is 401 every time"
+                );
                 Some(latency)
             }
             None => None,
         };
-        let (done, per_second, other) = concurrent(&router, "10.1.2.3", uri.clone(), &[("host", "packages.example.org")], CLIENTS, RUN, surface.expected).await;
-        assert_eq!(other, 0, "{tag}: every concurrent read answered {}", surface.expected);
+        let (done, per_second, other) = concurrent(
+            &router,
+            "10.1.2.3",
+            uri.clone(),
+            &[("host", "packages.example.org")],
+            CLIENTS,
+            RUN,
+            surface.expected,
+        )
+        .await;
+        assert_eq!(
+            other, 0,
+            "{tag}: every concurrent read answered {}",
+            surface.expected
+        );
         if tag == "npm" {
             // The credential-free read is shared for a few seconds (src/service_share.rs): hundreds of reads cost a handful of upstream fetches,
             // not one each. This is what makes the npm bound a share bound and not a store-commit bound.
             let fetched = registry.calls().len() - fetched_before;
             println!("npm: {fetched} upstream fetches for the whole phase");
-            assert!(fetched <= 6, "npm reads were not shared: {fetched} upstream fetches");
+            assert!(
+                fetched <= 6,
+                "npm reads were not shared: {fetched} upstream fetches"
+            );
         }
         report.push(format!("{tag:9} read {statuses:?} p50 {:?} p95 {:?} p99 {:?} | refusal p95 {:?} | write p95 {:?} | {CLIENTS} clients {done} req {per_second:.0}/s", read.p50, read.p95, read.p99, refusal.p95, write.map(|w| w.p95)));
         // Every figure is printed before any bound is judged, so a failure shows the whole table.
-        let (ceiling, floor) = if tag == "npm" { (P95_NPM_READ, FLOOR_NPM_RPS) } else { (P95_READ, FLOOR_RPS) };
-        if read.p95 > ceiling { violations.push(format!("{tag}: read p95 {:?} over {ceiling:?}", read.p95)); }
-        if refusal.p95 > P95_REFUSAL { violations.push(format!("{tag}: refusal p95 {:?} over {P95_REFUSAL:?}", refusal.p95)); }
-        if let Some(write) = write.filter(|write| write.p95 > P95_WRITE_REFUSAL) { violations.push(format!("{tag}: write refusal p95 {:?} over {P95_WRITE_REFUSAL:?}", write.p95)); }
-        if per_second < floor { violations.push(format!("{tag}: {per_second:.0} req/s under {floor}")); }
+        let (ceiling, floor) = if tag == "npm" {
+            (P95_NPM_READ, FLOOR_NPM_RPS)
+        } else {
+            (P95_READ, FLOOR_RPS)
+        };
+        if read.p95 > ceiling {
+            violations.push(format!("{tag}: read p95 {:?} over {ceiling:?}", read.p95));
+        }
+        if refusal.p95 > P95_REFUSAL {
+            violations.push(format!(
+                "{tag}: refusal p95 {:?} over {P95_REFUSAL:?}",
+                refusal.p95
+            ));
+        }
+        if let Some(write) = write.filter(|write| write.p95 > P95_WRITE_REFUSAL) {
+            violations.push(format!(
+                "{tag}: write refusal p95 {:?} over {P95_WRITE_REFUSAL:?}",
+                write.p95
+            ));
+        }
+        if per_second < floor {
+            violations.push(format!("{tag}: {per_second:.0} req/s under {floor}"));
+        }
     }
     let grown = rss_kib().saturating_sub(before);
-    println!("{}\nrss before {before} KiB, growth {grown} KiB", report.join("\n"));
-    if grown > RSS_GROWTH_KIB { violations.push(format!("the run grew the resident set by {grown} KiB (bound {RSS_GROWTH_KIB})")); }
+    println!(
+        "{}\nrss before {before} KiB, growth {grown} KiB",
+        report.join("\n")
+    );
+    if grown > RSS_GROWTH_KIB {
+        violations.push(format!(
+            "the run grew the resident set by {grown} KiB (bound {RSS_GROWTH_KIB})"
+        ));
+    }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }

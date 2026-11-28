@@ -174,7 +174,10 @@ impl OriginSet {
         Self::selected_npm_with_private(target, Vec::new())
     }
 
-    pub fn selected_npm_with_private(target: Url, private_cidrs: Vec<IpNet>) -> Result<OriginSet, UrlRejection> {
+    pub fn selected_npm_with_private(
+        target: Url,
+        private_cidrs: Vec<IpNet>,
+    ) -> Result<OriginSet, UrlRejection> {
         if target.scheme() != "https" {
             return Err(UrlRejection::Scheme);
         }
@@ -192,11 +195,20 @@ impl OriginSet {
         origins.go_archives = target.clone();
         origins.npm_metadata = target;
         origins.private_cidrs = private_cidrs;
-        origins.admit(origins.origin(OriginKind::NpmMetadata), OriginKind::NpmMetadata)?;
+        origins.admit(
+            origins.origin(OriginKind::NpmMetadata),
+            OriginKind::NpmMetadata,
+        )?;
         if let Some(url::Host::Ipv4(ip)) = origins.npm_metadata.host()
-            && !origins.allows_address(IpAddr::V4(ip)) { return Err(UrlRejection::Host); }
+            && !origins.allows_address(IpAddr::V4(ip))
+        {
+            return Err(UrlRejection::Host);
+        }
         if let Some(url::Host::Ipv6(ip)) = origins.npm_metadata.host()
-            && !origins.allows_address(IpAddr::V6(ip)) { return Err(UrlRejection::Host); }
+            && !origins.allows_address(IpAddr::V6(ip))
+        {
+            return Err(UrlRejection::Host);
+        }
         Ok(origins)
     }
 
@@ -339,23 +351,41 @@ impl OriginSet {
             && to.scheme() == "https"
             && to.port().is_none()
             && to.username().is_empty()
-            && matches!(to.host_str(), Some("production.cloudfront.docker.com" | "production.cloudflare.docker.com"))
+            && matches!(
+                to.host_str(),
+                Some("production.cloudfront.docker.com" | "production.cloudflare.docker.com")
+            )
     }
 
     /// Tests only: where this set sends OCI registry calls and where a blob's redirect may land (the upstream fake).
     /// Whether `url` may be fetched as a foreign layer: https on the default port, no userinfo, a host on the list (exact, or below a `*.` suffix).
     pub fn admits_foreign(&self, url: &Url) -> bool {
-        if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        if url.scheme() != "https"
+            || url.port().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
             return false;
         }
-        let Some(host) = url.host_str().map(str::to_ascii_lowercase) else { return false };
-        if host.parse::<std::net::IpAddr>().is_ok() || url.path().split('/').any(|segment| segment == "..") {
+        let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+            return false;
+        };
+        if host.parse::<std::net::IpAddr>().is_ok()
+            || url.path().split('/').any(|segment| segment == "..")
+        {
             return false;
         }
-        self.foreign.iter().any(|entry| match entry.strip_prefix("*.") {
-            Some(suffix) => host.len() > suffix.len() + 1 && host.ends_with(suffix) && host.as_bytes()[host.len() - suffix.len() - 1] == b'.',
-            None => *entry == host,
-        })
+        self.foreign
+            .iter()
+            .any(|entry| match entry.strip_prefix("*.") {
+                Some(suffix) => {
+                    host.len() > suffix.len() + 1
+                        && host.ends_with(suffix)
+                        && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+                }
+                None => *entry == host,
+            })
     }
 
     /// The same list for a set built for a selected registry (it is the process's, not the registry's).
@@ -409,7 +439,10 @@ impl OriginSet {
     }
 
     /// Addresses this set may never dial, whatever its private CIDRs say (LS-F9).
-    pub fn with_denylist(mut self, deny: std::sync::Arc<crate::http::service_connector::Denylist>) -> OriginSet {
+    pub fn with_denylist(
+        mut self,
+        deny: std::sync::Arc<crate::http::service_connector::Denylist>,
+    ) -> OriginSet {
         self.deny = Some(deny);
         self
     }
@@ -456,19 +489,26 @@ impl OriginSet {
         self.allow_private_addresses
     }
 
-    pub fn private_cidrs(&self) -> &[IpNet] { &self.private_cidrs }
+    pub fn private_cidrs(&self) -> &[IpNet] {
+        &self.private_cidrs
+    }
 
     /// The connected peer of a request: the address rules plus the own-listener check,
     /// which needs the peer's port.
     pub fn allows_endpoint(&self, peer: std::net::SocketAddr) -> bool {
-        !self.deny.as_ref().is_some_and(|deny| deny.denies_endpoint(peer.ip(), peer.port())) && self.allows_address(peer.ip())
+        !self
+            .deny
+            .as_ref()
+            .is_some_and(|deny| deny.denies_endpoint(peer.ip(), peer.port()))
+            && self.allows_address(peer.ip())
     }
 
     pub fn allows_address(&self, ip: IpAddr) -> bool {
         if self.deny.as_ref().is_some_and(|deny| deny.denies(ip)) {
             return false;
         }
-        self.allow_private_addresses || super::resolver::is_public(ip)
+        self.allow_private_addresses
+            || super::resolver::is_public(ip)
             || self.private_cidrs.iter().any(|cidr| cidr.contains(&ip))
     }
 
@@ -521,14 +561,26 @@ impl OriginSet {
     /// and search bases): `base` must itself be admitted for `kind` (the same origin the kind names, no
     /// credentials, no query or fragment), each segment is appended with `PathSegmentsMut::push` (`.` and `..` are
     /// refused, as in [`OriginSet::url_for`]), and the finished URL is admitted again.
-    pub fn url_below(&self, kind: OriginKind, base: &Url, segments: &[&str]) -> Result<Url, UrlRejection> {
-        if segments.iter().any(|segment| matches!(*segment, "." | "..")) || base.query().is_some() || base.fragment().is_some() {
+    pub fn url_below(
+        &self,
+        kind: OriginKind,
+        base: &Url,
+        segments: &[&str],
+    ) -> Result<Url, UrlRejection> {
+        if segments
+            .iter()
+            .any(|segment| matches!(*segment, "." | ".."))
+            || base.query().is_some()
+            || base.fragment().is_some()
+        {
             return Err(UrlRejection::PathEscape);
         }
         self.admit(base, kind)?;
         let mut url = base.clone();
         {
-            let mut path = url.path_segments_mut().map_err(|()| UrlRejection::PathEscape)?;
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|()| UrlRejection::PathEscape)?;
             path.pop_if_empty();
             for segment in segments {
                 path.push(segment);
@@ -604,7 +656,14 @@ impl OriginSet {
 }
 
 fn default_foreign() -> Vec<String> {
-    ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"].map(str::to_owned).to_vec()
+    [
+        "mcr.microsoft.com",
+        "*.data.mcr.microsoft.com",
+        "go.microsoft.com",
+        "download.microsoft.com",
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 fn parse_origin(text: &str) -> Url {

@@ -188,7 +188,18 @@ pub async fn fetch_at(
         let app = Arc::clone(app);
         let row = row.clone();
         let started = Arc::clone(&slot);
-        tokio::spawn(async move { run(app, row, origin, private_cidrs, read_authorization, archive, started).await });
+        tokio::spawn(async move {
+            run(
+                app,
+                row,
+                origin,
+                private_cidrs,
+                read_authorization,
+                archive,
+                started,
+            )
+            .await
+        });
     }
 
     match slot.wait().await {
@@ -205,7 +216,15 @@ pub async fn fetch_at(
 /// The [`Resolution`] is what makes that "every way out" rather than "every way out
 /// this code thought of" — see `concurrency::single_flight` for why it is a `Drop`
 /// guard and not a `catch_unwind` around `transfer`.
-async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private_cidrs: Vec<ipnet::IpNet>, read_authorization: Option<String>, archive: Option<url::Url>, slot: Arc<Slot<SlotOutcome>>) {
+async fn run(
+    app: Arc<App>,
+    row: ReferenceRow,
+    origin: Option<url::Url>,
+    private_cidrs: Vec<ipnet::IpNet>,
+    read_authorization: Option<String>,
+    archive: Option<url::Url>,
+    slot: Arc<Slot<SlotOutcome>>,
+) {
     let mut resolution = Resolution::new(
         app.downloads.transfers().clone(),
         row.id,
@@ -214,7 +233,17 @@ async fn run(app: Arc<App>, row: ReferenceRow, origin: Option<url::Url>, private
         row.id.to_hex(),
     );
 
-    let outcome = match transfer(&app, &row, origin.as_ref(), &private_cidrs, read_authorization, archive.as_ref(), &slot).await {
+    let outcome = match transfer(
+        &app,
+        &row,
+        origin.as_ref(),
+        &private_cidrs,
+        read_authorization,
+        archive.as_ref(),
+        &slot,
+    )
+    .await
+    {
         Ok(content) => SlotOutcome::Verified(content),
         Err(err) => SlotOutcome::Failed(Arc::new(err)),
     };
@@ -242,7 +271,16 @@ async fn transfer(
 
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
-    let read_authorization = crate::oci::serve::ambient_authorization(app, &row.reference, row.registry_id, origin, private_cidrs, read_authorization).await.map_err(DownloadError::Upstream)?;
+    let read_authorization = crate::oci::serve::ambient_authorization(
+        app,
+        &row.reference,
+        row.registry_id,
+        origin,
+        private_cidrs,
+        read_authorization,
+    )
+    .await
+    .map_err(DownloadError::Upstream)?;
     let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -339,8 +377,24 @@ async fn transfer(
     }
 
     verify_advertised(&row.reference.expected, &computed)?;
-    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization.clone(), &computed).await?;
-    verify_conan_manifest(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
+    verify_maven_sidecar(
+        app,
+        row,
+        origin,
+        private_cidrs,
+        sidecar_authorization.clone(),
+        &computed,
+    )
+    .await?;
+    verify_conan_manifest(
+        app,
+        row,
+        origin,
+        private_cidrs,
+        sidecar_authorization,
+        &computed,
+    )
+    .await?;
 
     // STATE-01. This runs before the policy re-check on purpose: SPEC §9 says
     // "persist computed digests, even when policy now blocks them", so a block
@@ -373,13 +427,22 @@ async fn transfer(
             // the generation is bumped before the cached snapshot is dropped, and the
             // next resolution reloads the project with both (C104, SPEC §9).
             if app.managed().is_some() {
-                bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
+                bump_digest_generation(
+                    app,
+                    row.registry_id,
+                    row.reference.ecosystem,
+                    &row.reference.name,
+                )
+                .await;
             }
-            app.store().caches().projects.remove(&ProjectKey::in_registry(
-                row.registry_id,
-                row.reference.ecosystem,
-                row.reference.name.as_str(),
-            ));
+            app.store()
+                .caches()
+                .projects
+                .remove(&ProjectKey::in_registry(
+                    row.registry_id,
+                    row.reference.ecosystem,
+                    row.reference.name.as_str(),
+                ));
         }
         PinOutcome::MatchedExisting => {}
         PinOutcome::Conflict => {
@@ -426,7 +489,13 @@ async fn transfer(
         // SPEC §9: "If a computed digest reveals a block not visible in upstream
         // metadata, invalidate that project's filtered metadata."
         if matches!(decision, Decision::Deny(_)) {
-            bump_digest_generation(app, row.registry_id, row.reference.ecosystem, &row.reference.name).await;
+            bump_digest_generation(
+                app,
+                row.registry_id,
+                row.reference.ecosystem,
+                &row.reference.name,
+            )
+            .await;
         }
         // The temporary file goes with `temp`; the pins stay.
         return Err(DownloadError::Refused(decision));
@@ -490,7 +559,11 @@ fn transfer_cap(row: &ReferenceRow, configured: u64) -> u64 {
 
 /// A Go `.info` or `.mod`: a few hundred bytes that precede every zip and must not queue behind the large transfers.
 fn is_small_metadata(row: &ReferenceRow) -> bool {
-    (row.reference.ecosystem == Ecosystem::Go && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod"))) || is_nuget_small(row) || is_maven_small(row) || is_conan_small(row)
+    (row.reference.ecosystem == Ecosystem::Go
+        && (row.reference.filename.ends_with(".info") || row.reference.filename.ends_with(".mod")))
+        || is_nuget_small(row)
+        || is_maven_small(row)
+        || is_conan_small(row)
 }
 
 /// A NuGet `.nuspec`, `readme` or `icon`: the small files that accompany every `.nupkg`.
@@ -502,7 +575,11 @@ fn is_nuget_small(row: &ReferenceRow) -> bool {
 /// queue behind the large transfers (a jar or a distribution archive is everything else).
 fn is_maven_small(row: &ReferenceRow) -> bool {
     row.reference.ecosystem == Ecosystem::Maven
-        && [".pom", ".module", ".sha1", ".md5", ".sha256", ".sha512", ".asc", ".xml"].iter().any(|ext| row.reference.filename.ends_with(ext))
+        && [
+            ".pom", ".module", ".sha1", ".md5", ".sha256", ".sha512", ".asc", ".xml",
+        ]
+        .iter()
+        .any(|ext| row.reference.filename.ends_with(ext))
 }
 
 /// A Conan recipe or package file that is not an archive (`conanfile.py`, `conanmanifest.txt`, `conaninfo.txt`, metadata): kilobytes that must
@@ -567,12 +644,29 @@ pub async fn fetch_request_scoped(
     read_authorization: Option<String>,
     archive: Option<&url::Url>,
 ) -> Result<RequestScoped, DownloadError> {
-    let temp_dir = app.credential_temp.as_ref().ok_or(DownloadError::Overloaded)?;
-    let permit = if is_small_metadata(row) { app.limits.small_download_permit().await } else { app.limits.download_permit().await }.ok_or(DownloadError::Overloaded)?;
+    let temp_dir = app
+        .credential_temp
+        .as_ref()
+        .ok_or(DownloadError::Overloaded)?;
+    let permit = if is_small_metadata(row) {
+        app.limits.small_download_permit().await
+    } else {
+        app.limits.download_permit().await
+    }
+    .ok_or(DownloadError::Overloaded)?;
     let _permit = permit;
     let cap = transfer_cap(row, app.config.max_artifact_bytes.get());
     let read_authorization = selected_catalog_authorization(app, row, origin, read_authorization);
-    let read_authorization = crate::oci::serve::ambient_authorization(app, &row.reference, row.registry_id, origin, private_cidrs, read_authorization).await.map_err(DownloadError::Upstream)?;
+    let read_authorization = crate::oci::serve::ambient_authorization(
+        app,
+        &row.reference,
+        row.registry_id,
+        origin,
+        private_cidrs,
+        read_authorization,
+    )
+    .await
+    .map_err(DownloadError::Upstream)?;
     let sidecar_authorization = read_authorization.clone();
     let opened = match own_origin(app, row, origin, private_cidrs) {
         Ok(()) => {
@@ -606,9 +700,12 @@ pub async fn fetch_request_scoped(
     if body.declared_length.is_some_and(|declared| declared > cap) {
         return Err(DownloadError::TooLarge { limit: cap });
     }
-    let mut temp = temp_dir.begin(body.declared_length).map_err(DownloadError::Temp)?;
+    let mut temp = temp_dir
+        .begin(body.declared_length)
+        .map_err(DownloadError::Temp)?;
     let legacy_digests = row.reference.ecosystem != Ecosystem::Oci;
-    let (mut sha256, mut sha512, mut sha1, mut size) = (Sha256::new(), Sha512::new(), Sha1::new(), 0u64);
+    let (mut sha256, mut sha512, mut sha1, mut size) =
+        (Sha256::new(), Sha512::new(), Sha1::new(), 0u64);
     let mut md5 = <md5::Md5 as md5::Digest>::new();
     let mut stream = body.stream;
     while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
@@ -625,31 +722,72 @@ pub async fn fetch_request_scoped(
             md5::Digest::update(&mut md5, &chunk);
         }
         // Off the async worker: the temporary file is a plain blocking file.
-        temp = temp.write_blocking(chunk.to_vec()).await.map_err(DownloadError::Temp)?;
+        temp = temp
+            .write_blocking(chunk.to_vec())
+            .await
+            .map_err(DownloadError::Temp)?;
     }
     if let Some(declared) = body.declared_length
         && declared != size
     {
-        return Err(DownloadError::SizeMismatch { declared, actual: size });
+        return Err(DownloadError::SizeMismatch {
+            declared,
+            actual: size,
+        });
     }
     let completed = temp.into_file();
-    let computed = Computed { sha256: sha256.finalize().into(), sha512: sha512.finalize().into(), sha1: sha1.finalize().into(), md5: md5::Digest::finalize(md5).into(), size };
+    let computed = Computed {
+        sha256: sha256.finalize().into(),
+        sha512: sha512.finalize().into(),
+        sha1: sha1.finalize().into(),
+        md5: md5::Digest::finalize(md5).into(),
+        size,
+    };
     let (sha256, sha512) = (computed.sha256, computed.sha512);
     verify_advertised(&row.reference.expected, &computed)?;
-    verify_maven_sidecar(app, row, origin, private_cidrs, sidecar_authorization.clone(), &computed).await?;
-    verify_conan_manifest(app, row, origin, private_cidrs, sidecar_authorization, &computed).await?;
-    match app.store().pin_computed_digests(row.id, sha256, sha512, size).await.map_err(DownloadError::Storage)? {
+    verify_maven_sidecar(
+        app,
+        row,
+        origin,
+        private_cidrs,
+        sidecar_authorization.clone(),
+        &computed,
+    )
+    .await?;
+    verify_conan_manifest(
+        app,
+        row,
+        origin,
+        private_cidrs,
+        sidecar_authorization,
+        &computed,
+    )
+    .await?;
+    match app
+        .store()
+        .pin_computed_digests(row.id, sha256, sha512, size)
+        .await
+        .map_err(DownloadError::Storage)?
+    {
         PinOutcome::Established => {
-            app.store().caches().projects.remove(&ProjectKey::in_registry(
-                row.registry_id,
-                row.reference.ecosystem,
-                row.reference.name.as_str(),
-            ));
+            app.store()
+                .caches()
+                .projects
+                .remove(&ProjectKey::in_registry(
+                    row.registry_id,
+                    row.reference.ecosystem,
+                    row.reference.name.as_str(),
+                ));
         }
         PinOutcome::MatchedExisting => {}
         PinOutcome::Conflict => return Err(DownloadError::PinConflict),
     }
-    Ok(RequestScoped { file: completed, size, sha256, sha512 })
+    Ok(RequestScoped {
+        file: completed,
+        size,
+        sha256,
+        sha512,
+    })
 }
 
 /// SPEC §10: "Storage write failures make readiness false". A write the content
@@ -665,9 +803,21 @@ fn content_write<T>(app: &App, result: Result<T, ContentError>) -> Result<T, Dow
 /// from the npm origin, a PyPI file from the files or the index origin. The transport
 /// admits any configured origin, so without this a document could send a fetch to
 /// the other ecosystem's host.
-fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet]) -> Result<(), UpstreamError> {
-    let selected = origin.map(|origin| crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec()))
-        .transpose().map_err(UpstreamError::RejectedUrl)?;
+fn own_origin(
+    app: &App,
+    row: &ReferenceRow,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+) -> Result<(), UpstreamError> {
+    let selected = origin
+        .map(|origin| {
+            crate::upstream::OriginSet::selected_npm_with_private(
+                origin.clone(),
+                private_cidrs.to_vec(),
+            )
+        })
+        .transpose()
+        .map_err(UpstreamError::RejectedUrl)?;
     let origins = selected.as_ref().unwrap_or(&app.origins);
     let own: &[OriginKind] = match row.reference.ecosystem {
         Ecosystem::Npm => &[OriginKind::NpmMetadata],
@@ -675,7 +825,11 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
         // A selected registry's origin travels in the slot `selected_npm_with_private` fills.
         Ecosystem::RubyGems => &[OriginKind::RubygemsMetadata, OriginKind::NpmMetadata],
         // The crate files live on the `dl` host of `config.json`; a selected registry travels in the npm slot.
-        Ecosystem::Cargo => &[OriginKind::CargoArtifacts, OriginKind::CargoIndex, OriginKind::NpmMetadata],
+        Ecosystem::Cargo => &[
+            OriginKind::CargoArtifacts,
+            OriginKind::CargoIndex,
+            OriginKind::NpmMetadata,
+        ],
         // Go's archives are served by the proxy itself (proxy.golang.org answers `.zip` directly);
         // a selected registry travels in the npm slot.
         Ecosystem::Go => &[OriginKind::GoProxy, OriginKind::NpmMetadata],
@@ -711,7 +865,11 @@ fn own_origin(app: &App, row: &ReferenceRow, origin: Option<&url::Url>, private_
 /// a version their policy blocks by this digest, until their metadata TTL ends. The
 /// artifact itself is still refused to them by their own final check.
 async fn bump_digest_generation(app: &App, registry_id: u64, ecosystem: Ecosystem, name: &str) {
-    if let Err(err) = app.store().bump_digest_generation_in(registry_id, ecosystem, name).await {
+    if let Err(err) = app
+        .store()
+        .bump_digest_generation_in(registry_id, ecosystem, name)
+        .await
+    {
         tracing::warn!(
             package = %name,
             error = %err,
@@ -747,7 +905,18 @@ async fn verify_maven_sidecar(
     computed: &Computed,
 ) -> Result<(), DownloadError> {
     let name = row.reference.filename.as_str();
-    if row.reference.ecosystem != Ecosystem::Maven || [".sha1", ".md5", ".sha256", ".sha512", ".asc", "maven-metadata.xml"].iter().any(|suffix| name.ends_with(suffix)) {
+    if row.reference.ecosystem != Ecosystem::Maven
+        || [
+            ".sha1",
+            ".md5",
+            ".sha256",
+            ".sha512",
+            ".asc",
+            "maven-metadata.xml",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    {
         return Ok(());
     }
     let mut url = row.reference.upstream_url.clone();
@@ -769,20 +938,29 @@ async fn verify_maven_sidecar(
     let body = match fetched {
         Ok(crate::upstream::MetadataResponse::Fresh { body, .. }) => body,
         Ok(crate::upstream::MetadataResponse::Missing) => return Ok(()),
-        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => return Err(DownloadError::Upstream(UpstreamError::Status(304))),
+        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => {
+            return Err(DownloadError::Upstream(UpstreamError::Status(304)));
+        }
         // A registry that has no such file may answer 403 (a bucket that does not list what is absent) as well as 404: the sidecar is
         // absent, not a failure of the file.
         Err(UpstreamError::Status(403)) => return Ok(()),
         Err(error) => return Err(DownloadError::Upstream(error)),
     };
-    let Some(published) = std::str::from_utf8(&body).ok().and_then(|text| text.split_whitespace().next()).and_then(|token| Digest::parse_hex(HashAlgorithm::Sha1, &token.to_ascii_lowercase()).ok()) else {
+    let Some(published) = std::str::from_utf8(&body)
+        .ok()
+        .and_then(|text| text.split_whitespace().next())
+        .and_then(|token| Digest::parse_hex(HashAlgorithm::Sha1, &token.to_ascii_lowercase()).ok())
+    else {
         return Ok(());
     };
     let ours = computed.digest(HashAlgorithm::Sha1);
     if published == ours {
         return Ok(());
     }
-    Err(DownloadError::IntegrityMismatch { expected: published, computed: ours })
+    Err(DownloadError::IntegrityMismatch {
+        expected: published,
+        computed: ours,
+    })
 }
 
 /// A Conan file is checked against the `conanmanifest.txt` of its own revision (`name: md5` lines) before its digests are pinned, when the
@@ -797,27 +975,48 @@ async fn verify_conan_manifest(
     computed: &Computed,
 ) -> Result<(), DownloadError> {
     let name = row.reference.filename.as_str();
-    let Some((_, file)) = name.rsplit_once("/files/") else { return Ok(()) };
-    if row.reference.ecosystem != Ecosystem::Conan || file == "conanmanifest.txt" || file.contains('/') {
+    let Some((_, file)) = name.rsplit_once("/files/") else {
+        return Ok(());
+    };
+    if row.reference.ecosystem != Ecosystem::Conan
+        || file == "conanmanifest.txt"
+        || file.contains('/')
+    {
         return Ok(());
     }
     // The manifest is the file's sibling: the last path segment of the URL (percent-encoded as it is) is replaced.
     let mut url = row.reference.upstream_url.clone();
-    let Ok(mut segments) = url.path_segments_mut() else { return Ok(()) };
+    let Ok(mut segments) = url.path_segments_mut() else {
+        return Ok(());
+    };
     segments.pop().push("conanmanifest.txt");
     drop(segments);
     let fetched = app
         .transport
-        .fetch_metadata(crate::upstream::MetadataRequest { url, origin: origin.cloned(), private_cidrs: private_cidrs.to_vec(), read_authorization, accept: "text/plain", validators: None, max_bytes: 1 << 20 })
+        .fetch_metadata(crate::upstream::MetadataRequest {
+            url,
+            origin: origin.cloned(),
+            private_cidrs: private_cidrs.to_vec(),
+            read_authorization,
+            accept: "text/plain",
+            validators: None,
+            max_bytes: 1 << 20,
+        })
         .await;
     app.upstreams.record_upstream(Call::Conan, &fetched);
     let body = match fetched {
         Ok(crate::upstream::MetadataResponse::Fresh { body, .. }) => body,
-        Ok(crate::upstream::MetadataResponse::Missing) | Err(UpstreamError::Status(403)) => return Ok(()),
-        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => return Err(DownloadError::Upstream(UpstreamError::Status(304))),
+        Ok(crate::upstream::MetadataResponse::Missing) | Err(UpstreamError::Status(403)) => {
+            return Ok(());
+        }
+        Ok(crate::upstream::MetadataResponse::NotModified { .. }) => {
+            return Err(DownloadError::Upstream(UpstreamError::Status(304)));
+        }
         Err(error) => return Err(DownloadError::Upstream(error)),
     };
-    let Ok(text) = std::str::from_utf8(&body) else { return Ok(()) };
+    let Ok(text) = std::str::from_utf8(&body) else {
+        return Ok(());
+    };
     let ours: String = computed.md5.iter().map(|b| format!("{b:02x}")).collect();
     for line in text.lines() {
         if let Some((listed, digest)) = line.rsplit_once(": ")
@@ -920,7 +1119,10 @@ impl fmt::Display for DownloadError {
                 write!(f, "the artifact exceeds the {limit}-byte cap")
             }
             DownloadError::Capacity(err) => write!(f, "{err}"),
-            DownloadError::Temp(err) => write!(f, "the credential-read temporary file refused the body: {err:?}"),
+            DownloadError::Temp(err) => write!(
+                f,
+                "the credential-read temporary file refused the body: {err:?}"
+            ),
             DownloadError::Refused(decision) => {
                 write!(f, "policy refused the verified bytes: {decision:?}")
             }

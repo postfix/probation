@@ -168,7 +168,9 @@ pub(crate) async fn test_enterprise_certificate(
     headers: HeaderMap,
     Form(form): Form<EnterpriseTestForm>,
 ) -> Response {
-    use probation::managed::enterprise_certificate::{VerifiedIssuerStatus, check_sample_issuer_status};
+    use probation::managed::enterprise_certificate::{
+        VerifiedIssuerStatus, check_sample_issuer_status,
+    };
     use probation_policy::api::EnterpriseStatus;
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::pem::PemObject;
@@ -187,36 +189,66 @@ pub(crate) async fn test_enterprise_certificate(
     if form.phase != "good" && form.phase != "revoked" {
         return refused("Choose a sample status check.");
     }
-    let certs = CertificateDer::pem_slice_iter(form.chain_pem.as_bytes())
-        .collect::<Result<Vec<_>, _>>();
-    let Ok(certs) = certs else { return refused("A valid certificate chain PEM is required."); };
-    if certs.is_empty() || certs.len() > 8 || certs.iter().any(|cert| cert.is_empty() || cert.len() > 64 * 1024) {
+    let certs =
+        CertificateDer::pem_slice_iter(form.chain_pem.as_bytes()).collect::<Result<Vec<_>, _>>();
+    let Ok(certs) = certs else {
+        return refused("A valid certificate chain PEM is required.");
+    };
+    if certs.is_empty()
+        || certs.len() > 8
+        || certs
+            .iter()
+            .any(|cert| cert.is_empty() || cert.len() > 64 * 1024)
+    {
         return refused("A bounded certificate chain is required.");
     }
     let chain: Vec<Vec<u8>> = certs.iter().map(|cert| cert.as_ref().to_vec()).collect();
     let Ok((_, leaf)) = x509_parser::parse_x509_certificate(&chain[0]) else {
         return refused("The sample leaf is invalid.");
     };
-    let uris: Vec<&str> = leaf.subject_alternative_name().ok().flatten()
-        .map(|san| san.value.general_names.iter().filter_map(|name| match name {
-            GeneralName::URI(uri) => Some(*uri), _ => None,
-        }).collect()).unwrap_or_default();
-    let [member_uri] = uris.as_slice() else { return refused("The sample must identify one member UUID."); };
+    let uris: Vec<&str> = leaf
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .map(|san| {
+            san.value
+                .general_names
+                .iter()
+                .filter_map(|name| match name {
+                    GeneralName::URI(uri) => Some(*uri),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let [member_uri] = uris.as_slice() else {
+        return refused("The sample must identify one member UUID.");
+    };
     let Some(member_uuid) = member_uri.strip_prefix("urn:probation:member:") else {
         return refused("The sample member identity is invalid.");
     };
-    let aias: Vec<&str> = leaf.extensions().iter().flat_map(|extension| match extension.parsed_extension() {
-        ParsedExtension::AuthorityInfoAccess(access) => access.accessdescs.iter()
-            .filter(|entry| entry.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1")
-            .filter_map(|entry| match &entry.access_location { GeneralName::URI(uri) => Some(*uri), _ => None })
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    }).collect();
+    let aias: Vec<&str> = leaf
+        .extensions()
+        .iter()
+        .flat_map(|extension| match extension.parsed_extension() {
+            ParsedExtension::AuthorityInfoAccess(access) => access
+                .accessdescs
+                .iter()
+                .filter(|entry| entry.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1")
+                .filter_map(|entry| match &entry.access_location {
+                    GeneralName::URI(uri) => Some(*uri),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
     let setup: Result<Option<(String, String, i64)>, _> = sqlx::query_as(
         "SELECT expected_ocsp_url, identity_field, settings_revision FROM registry_certificate_providers WHERE org_id = $1"
     ).bind(org).fetch_optional(&portal.pool).await;
     let (expected, identity_field, revision) = match setup {
-        Ok(Some(value)) => value, Ok(None) => return refused("Save enterprise trust first."),
+        Ok(Some(value)) => value,
+        Ok(None) => return refused("Save enterprise trust first."),
         Err(err) => return unavailable(err),
     };
     if validate_identity_field(&identity_field).is_err() || aias.as_slice() != [expected.as_str()] {
@@ -227,10 +259,15 @@ pub(crate) async fn test_enterprise_certificate(
          JOIN logins AS l ON l.id = m.login_id JOIN orgs AS o ON o.id = m.org_id
          WHERE m.org_id = $1 AND m.certificate_uuid::text = $2
            AND m.package_access_disabled_at IS NULL AND l.deleted_at IS NULL
-           AND o.status = 'active' AND o.deleted_at IS NULL"
-    ).bind(org).bind(member_uuid).fetch_optional(&portal.pool).await;
+           AND o.status = 'active' AND o.deleted_at IS NULL",
+    )
+    .bind(org)
+    .bind(member_uuid)
+    .fetch_optional(&portal.pool)
+    .await;
     match member {
-        Ok(Some(_)) => {}, Ok(None) => return refused("The sample member is inactive or foreign."),
+        Ok(Some(_)) => {}
+        Ok(None) => return refused("The sample member is inactive or foreign."),
         Err(err) => return unavailable(err),
     }
     let roots: Vec<String> = match sqlx::query_scalar(
@@ -238,55 +275,101 @@ pub(crate) async fn test_enterprise_certificate(
     ).bind(org).fetch_all(&portal.pool).await {
         Ok(roots) => roots, Err(err) => return unavailable(err),
     };
-    let Some(root_der) = roots.iter().find_map(|root| crate::sync::verifies_client_chain(root, &chain)) else {
+    let Some(root_der) = roots
+        .iter()
+        .find_map(|root| crate::sync::verifies_client_chain(root, &chain))
+    else {
         return refused("The sample chain does not match active organization trust.");
     };
     let leaf_fingerprint = Sha256::digest(&chain[0]);
     let root_fingerprint = Sha256::digest(&root_der);
     let issuer_der = chain.get(1).cloned().unwrap_or_else(|| root_der.clone());
-    let mut tx = match portal.pool.begin().await { Ok(tx) => tx, Err(err) => return unavailable(err) };
-    let private_cidrs = match crate::sync::approved_private_cidrs(&mut tx, org, "ocsp", &expected).await {
-        Ok(cidrs) => cidrs, Err(err) => return unavailable(err),
+    let mut tx = match portal.pool.begin().await {
+        Ok(tx) => tx,
+        Err(err) => return unavailable(err),
     };
-    if let Err(err) = tx.commit().await { return unavailable(err); }
-    let status = EnterpriseStatus { status_url: expected.clone(), issuer_der, root_der, private_cidrs };
+    let private_cidrs =
+        match crate::sync::approved_private_cidrs(&mut tx, org, "ocsp", &expected).await {
+            Ok(cidrs) => cidrs,
+            Err(err) => return unavailable(err),
+        };
+    if let Err(err) = tx.commit().await {
+        return unavailable(err);
+    }
+    let status = EnterpriseStatus {
+        status_url: expected.clone(),
+        issuer_der,
+        root_der,
+        private_cidrs,
+    };
     let observed = match check_sample_issuer_status(chain.clone(), status).await {
         Ok(status) => status,
         Err(_) => return refused("The issuer did not return a verifiable current status."),
     };
-    let mut tx = match portal.pool.begin().await { Ok(tx) => tx, Err(err) => return unavailable(err) };
+    let mut tx = match portal.pool.begin().await {
+        Ok(tx) => tx,
+        Err(err) => return unavailable(err),
+    };
     let active_org: Result<Option<bool>, _> = sqlx::query_scalar(
-        "SELECT status = 'active' AND deleted_at IS NULL FROM orgs WHERE id = $1 FOR UPDATE"
-    ).bind(org).fetch_optional(&mut *tx).await;
+        "SELECT status = 'active' AND deleted_at IS NULL FROM orgs WHERE id = $1 FOR UPDATE",
+    )
+    .bind(org)
+    .fetch_optional(&mut *tx)
+    .await;
     match active_org {
-        Ok(Some(true)) => {}, Ok(_) => return refused("The organisation is inactive."),
+        Ok(Some(true)) => {}
+        Ok(_) => return refused("The organisation is inactive."),
         Err(err) => return unavailable(err),
     }
     let session: Result<Option<(bool, Option<i32>, String)>, _> = sqlx::query_as(
         "SELECT s.totp_ok, s.scope_org_id, s.csrf_token FROM sessions AS s
          JOIN logins AS l ON l.id = s.login_id
          WHERE s.id_hash = $1 AND s.login_id = $2 AND s.expires_at > now()
-           AND l.deleted_at IS NULL FOR UPDATE OF s, l"
-    ).bind(&signed_in.session.id_hash).bind(signed_in.login_id).fetch_optional(&mut *tx).await;
+           AND l.deleted_at IS NULL FOR UPDATE OF s, l",
+    )
+    .bind(&signed_in.session.id_hash)
+    .bind(signed_in.login_id)
+    .fetch_optional(&mut *tx)
+    .await;
     let (totp_ok, scope, csrf) = match session {
-        Ok(Some(value)) => value, Ok(None) => return refused("The operator session changed; sign in and retry."),
+        Ok(Some(value)) => value,
+        Ok(None) => return refused("The operator session changed; sign in and retry."),
         Err(err) => return unavailable(err),
     };
-    if scope != signed_in.session.scope_org_id || scope.is_some_and(|id| id != org) || csrf != form.csrf {
+    if scope != signed_in.session.scope_org_id
+        || scope.is_some_and(|id| id != org)
+        || csrf != form.csrf
+    {
         return refused("The operator session changed; sign in and retry.");
     }
     let totp: Result<Option<i32>, _> = sqlx::query_scalar(
-        "SELECT login_id FROM totp WHERE login_id = $1 AND enabled_at IS NOT NULL FOR SHARE"
-    ).bind(signed_in.login_id).fetch_optional(&mut *tx).await;
-    let second_factor = match totp { Ok(value) => totp_ok || value.is_some(), Err(err) => return unavailable(err) };
+        "SELECT login_id FROM totp WHERE login_id = $1 AND enabled_at IS NOT NULL FOR SHARE",
+    )
+    .bind(signed_in.login_id)
+    .fetch_optional(&mut *tx)
+    .await;
+    let second_factor = match totp {
+        Ok(value) => totp_ok || value.is_some(),
+        Err(err) => return unavailable(err),
+    };
     let roles: Result<Vec<(String, Option<i32>)>, _> = sqlx::query_as(
         "SELECT role, org_id FROM memberships WHERE login_id = $1
-           AND (org_id = $2 OR org_id IS NULL) FOR UPDATE"
-    ).bind(signed_in.login_id).bind(org).fetch_all(&mut *tx).await;
-    let roles = match roles { Ok(value) => value, Err(err) => return unavailable(err) };
-    if !second_factor || !roles.iter().any(|(role, member_org)|
-        (role == "org_admin" && *member_org == Some(org)) ||
-        (role == "global_admin" && member_org.is_none() && scope.is_none())) {
+           AND (org_id = $2 OR org_id IS NULL) FOR UPDATE",
+    )
+    .bind(signed_in.login_id)
+    .bind(org)
+    .fetch_all(&mut *tx)
+    .await;
+    let roles = match roles {
+        Ok(value) => value,
+        Err(err) => return unavailable(err),
+    };
+    if !second_factor
+        || !roles.iter().any(|(role, member_org)| {
+            (role == "org_admin" && *member_org == Some(org))
+                || (role == "global_admin" && member_org.is_none() && scope.is_none())
+        })
+    {
         return refused("Only a current organisation admin can complete this check.");
     }
     let member: Result<Option<i32>, _> = sqlx::query_scalar(
@@ -295,10 +378,14 @@ pub(crate) async fn test_enterprise_certificate(
          WHERE m.org_id = $1 AND m.certificate_uuid::text = $2
            AND m.package_access_disabled_at IS NULL AND l.deleted_at IS NULL
            AND o.status = 'active' AND o.deleted_at IS NULL
-         FOR UPDATE OF m, l"
-    ).bind(org).bind(member_uuid).fetch_optional(&mut *tx).await;
+         FOR UPDATE OF m, l",
+    )
+    .bind(org)
+    .bind(member_uuid)
+    .fetch_optional(&mut *tx)
+    .await;
     match member {
-        Ok(Some(_)) => {},
+        Ok(Some(_)) => {}
         Ok(None) => return refused("The sample member is inactive or foreign."),
         Err(err) => return unavailable(err),
     }
@@ -306,7 +393,8 @@ pub(crate) async fn test_enterprise_certificate(
         "SELECT kind, settings_revision FROM registry_certificate_providers WHERE org_id = $1 FOR UPDATE"
     ).bind(org).fetch_optional(&mut *tx).await;
     match current {
-        Ok(Some((kind, current_revision))) if kind == "pending" && current_revision == revision => {},
+        Ok(Some((kind, current_revision))) if kind == "pending" && current_revision == revision => {
+        }
         Ok(_) => return refused("Enterprise settings changed; save and retest."),
         Err(err) => return unavailable(err),
     }
@@ -318,9 +406,15 @@ pub(crate) async fn test_enterprise_certificate(
                  VALUES ($1, $2, $3, $4::uuid, $5)
                  ON CONFLICT (org_id) DO UPDATE SET leaf_fingerprint = EXCLUDED.leaf_fingerprint,
                    root_fingerprint = EXCLUDED.root_fingerprint, member_uuid = EXCLUDED.member_uuid,
-                   expected_ocsp_url = EXCLUDED.expected_ocsp_url, good_checked_at = now()"
-            ).bind(org).bind(leaf_fingerprint.as_slice()).bind(root_fingerprint.as_slice())
-                .bind(member_uuid).bind(&expected).execute(&mut *tx).await;
+                   expected_ocsp_url = EXCLUDED.expected_ocsp_url, good_checked_at = now()",
+            )
+            .bind(org)
+            .bind(leaf_fingerprint.as_slice())
+            .bind(root_fingerprint.as_slice())
+            .bind(member_uuid)
+            .bind(&expected)
+            .execute(&mut *tx)
+            .await;
             match saved {
                 Ok(_) => match tx.commit().await {
                     Ok(()) => (StatusCode::OK, "Sample good. Commit its revocation at the issuer, then check revoked status.").into_response(),
@@ -333,11 +427,18 @@ pub(crate) async fn test_enterprise_certificate(
             let pending: Result<Option<i32>, _> = sqlx::query_scalar(
                 "SELECT org_id FROM registry_enterprise_activation_samples
                  WHERE org_id = $1 AND leaf_fingerprint = $2 AND root_fingerprint = $3
-                   AND member_uuid = $4::uuid AND expected_ocsp_url = $5 FOR UPDATE"
-            ).bind(org).bind(leaf_fingerprint.as_slice()).bind(root_fingerprint.as_slice())
-                .bind(member_uuid).bind(&expected).fetch_optional(&mut *tx).await;
+                   AND member_uuid = $4::uuid AND expected_ocsp_url = $5 FOR UPDATE",
+            )
+            .bind(org)
+            .bind(leaf_fingerprint.as_slice())
+            .bind(root_fingerprint.as_slice())
+            .bind(member_uuid)
+            .bind(&expected)
+            .fetch_optional(&mut *tx)
+            .await;
             match pending {
-                Ok(Some(_)) => {}, Ok(None) => return refused("Check this same sample as good before revoking it."),
+                Ok(Some(_)) => {}
+                Ok(None) => return refused("Check this same sample as good before revoking it."),
                 Err(err) => return unavailable(err),
             }
             let activated = sqlx::query(
@@ -347,12 +448,18 @@ pub(crate) async fn test_enterprise_certificate(
                    AND expected_ocsp_url = $2 AND identity_field = 'uri_san_membership_uuid'"
             ).bind(org).bind(&expected).bind(revision).execute(&mut *tx).await;
             match activated {
-                Ok(done) if done.rows_affected() == 1 => {},
+                Ok(done) if done.rows_affected() == 1 => {}
                 Ok(_) => return refused("Enterprise settings changed; save and retest."),
                 Err(err) => return unavailable(err),
             }
-            if let Err(err) = sqlx::query("DELETE FROM registry_enterprise_activation_samples WHERE org_id = $1")
-                .bind(org).execute(&mut *tx).await { return unavailable(err); }
+            if let Err(err) =
+                sqlx::query("DELETE FROM registry_enterprise_activation_samples WHERE org_id = $1")
+                    .bind(org)
+                    .execute(&mut *tx)
+                    .await
+            {
+                return unavailable(err);
+            }
             match tx.commit().await {
                 Ok(()) => redirect(&format!("/org/{org}/certificates")),
                 Err(err) => unavailable(err),
@@ -591,12 +698,18 @@ async fn issue(
         .bind(org).bind(member_id).bind(issuer_fingerprint).bind(leaf_fingerprint).bind(serial.as_slice())
         .execute(&mut *tx).await?;
     tx.commit().await?;
-    let npm_url = registry_id.map(|id| firewall.join(&format!("registry/npm/{id}/")))
-        .transpose().map_err(|_| IssueError::Crypto)?;
-    let pypi_url = pypi_registry_id.map(|id| firewall.join(&format!("registry/pypi/{id}/")))
-        .transpose().map_err(|_| IssueError::Crypto)?;
-    let rubygems_url = rubygems_registry_id.map(|id| firewall.join(&format!("registry/rubygems/{id}/")))
-        .transpose().map_err(|_| IssueError::Crypto)?;
+    let npm_url = registry_id
+        .map(|id| firewall.join(&format!("registry/npm/{id}/")))
+        .transpose()
+        .map_err(|_| IssueError::Crypto)?;
+    let pypi_url = pypi_registry_id
+        .map(|id| firewall.join(&format!("registry/pypi/{id}/")))
+        .transpose()
+        .map_err(|_| IssueError::Crypto)?;
+    let rubygems_url = rubygems_registry_id
+        .map(|id| firewall.join(&format!("registry/rubygems/{id}/")))
+        .transpose()
+        .map_err(|_| IssueError::Crypto)?;
     let mut script = render_bundle(
         npm_url.as_ref(),
         pypi_url.as_ref(),
@@ -626,7 +739,9 @@ fn serial_bytes() -> Result<[u8; 16], getrandom::Error> {
 /// The RubyGems client setup: `gem` and Bundler read the source and the client certificate from
 /// `~/.gemrc` and `BUNDLE_SSL_CLIENT_CERT`. Empty when the organisation has no RubyGems registry.
 fn render_rubygems(url: Option<&url::Url>) -> String {
-    url.map(|url| format!(r#"cat "$base/client-cert.pem" "$base/client-key.pem" >"$base/client.pem"
+    url.map(|url| {
+        format!(
+            r#"cat "$base/client-cert.pem" "$base/client-key.pem" >"$base/client.pem"
 cat >"$HOME/.gemrc" <<PROBATION_GEMRC
 ---
 :sources:
@@ -639,7 +754,10 @@ PROBATION_RUBY
 if ! grep -Fq 'probation/ruby-env.sh' "$HOME/.profile" 2>/dev/null; then
     printf '%s\n' '. "$HOME/.config/probation/ruby-env.sh"' >>"$HOME/.profile"
 fi
-"#)).unwrap_or_default()
+"#
+        )
+    })
+    .unwrap_or_default()
 }
 
 /// Go authenticates with an API key on the key route (C1006, C1007): the `go` command has no client
@@ -709,13 +827,22 @@ fn render_cargo(has_registry: bool) -> String {
     }
 }
 
-fn render_bundle(npm_url: Option<&url::Url>, pypi_url: Option<&url::Url>, cert: &str, ca: &str, key: &str) -> String {
+fn render_bundle(
+    npm_url: Option<&url::Url>,
+    pypi_url: Option<&url::Url>,
+    cert: &str,
+    ca: &str,
+    key: &str,
+) -> String {
     let npm = npm_url.map(|url| {
         let authority = url.host_str().expect("firewall URL host");
         let scope = format!("//{authority}{}/", url.path().trim_end_matches('/'));
         format!("cat >>\"$HOME/.npmrc\" <<'PROBATION_NPM'\nregistry={url}\n{scope}:certfile=${{HOME}}/.config/probation/client-cert.pem\n{scope}:keyfile=${{HOME}}/.config/probation/client-key.pem\nPROBATION_NPM\n")
     }).unwrap_or_default();
-    let python = pypi_url.map(|url| format!(r#"cat "$base/client-cert.pem" "$base/client-key.pem" >"$base/client.pem"
+    let python = pypi_url
+        .map(|url| {
+            format!(
+                r#"cat "$base/client-cert.pem" "$base/client-key.pem" >"$base/client.pem"
 mkdir -p "$HOME/.config/pip" "$HOME/.config/uv"
 cat >"$HOME/.config/pip/pip.conf" <<PROBATION_PIP
 [global]
@@ -742,7 +869,10 @@ PROBATION_PYTHON
 if ! grep -Fq 'probation/python-env.sh' "$HOME/.profile" 2>/dev/null; then
     printf '%s\n' '. "$HOME/.config/probation/python-env.sh"' >>"$HOME/.profile"
 fi
-"#)).unwrap_or_default();
+"#
+            )
+        })
+        .unwrap_or_default();
     format!(
         "#!/bin/sh\nset -eu\numask 077\nbase=\"$HOME/.config/probation\"\nmkdir -p \"$base\"\ncat >\"$base/client-cert.pem\" <<'PROBATION_CERT'\n{cert}PROBATION_CERT\ncat >\"$base/client-key.pem\" <<'PROBATION_KEY'\n{key}PROBATION_KEY\ncat >\"$base/issuer.pem\" <<'PROBATION_CA'\n{ca}PROBATION_CA\n{npm}{python}"
     )
@@ -793,47 +923,80 @@ mod tests {
     fn cargo_setup_points_at_the_key_route() {
         assert_eq!(render_cargo(false), "");
         let note = render_cargo(true);
-        assert!(note.contains("API key on the key route") && note.contains("Keys page"), "{note}");
-        assert!(!note.contains("config.toml"), "no configuration that could never authenticate is written");
+        assert!(
+            note.contains("API key on the key route") && note.contains("Keys page"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("config.toml"),
+            "no configuration that could never authenticate is written"
+        );
     }
 
     #[test]
     fn nuget_setup_points_at_the_key_route() {
         assert_eq!(render_nuget(false), "");
         let note = render_nuget(true);
-        assert!(note.contains("API key on the key route") && note.contains("nuget.config"), "{note}");
-        assert!(!note.contains("<add") && !note.contains("ClearTextPassword"), "no configuration that could never authenticate is written");
+        assert!(
+            note.contains("API key on the key route") && note.contains("nuget.config"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("<add") && !note.contains("ClearTextPassword"),
+            "no configuration that could never authenticate is written"
+        );
     }
 
     #[test]
     fn maven_setup_points_at_the_key_route() {
         assert_eq!(render_maven(false), "");
         let note = render_maven(true);
-        assert!(note.contains("API key on the key route") && note.contains("settings.xml"), "{note}");
-        assert!(!note.contains("<server>") && !note.contains("<password>"), "no configuration that could never authenticate is written");
+        assert!(
+            note.contains("API key on the key route") && note.contains("settings.xml"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("<server>") && !note.contains("<password>"),
+            "no configuration that could never authenticate is written"
+        );
     }
 
     #[test]
     fn oci_setup_points_at_the_key_route() {
         assert_eq!(render_oci(false), "");
         let note = render_oci(true);
-        assert!(note.contains("registry token flow") && note.contains("docker login"), "{note}");
+        assert!(
+            note.contains("registry token flow") && note.contains("docker login"),
+            "{note}"
+        );
     }
 
     #[test]
     fn conan_setup_points_at_the_key_route() {
         assert_eq!(render_conan(false), "");
         let note = render_conan(true);
-        assert!(note.contains("API key on the key route") && note.contains("conan remote login"), "{note}");
-        assert!(!note.contains("remotes.json") && !note.contains("client-cert"), "no configuration that could never authenticate is written");
+        assert!(
+            note.contains("API key on the key route") && note.contains("conan remote login"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("remotes.json") && !note.contains("client-cert"),
+            "no configuration that could never authenticate is written"
+        );
     }
 
     #[test]
     fn go_setup_points_at_the_key_route() {
         assert_eq!(render_go(false), "");
         let note = render_go(true);
-        assert!(note.contains("API key on the key route") && note.contains("GOPROXY"), "{note}");
-        assert!(!note.contains("GOFLAGS") && !note.contains("GOPROXY="), "no configuration that could never authenticate is written");
+        assert!(
+            note.contains("API key on the key route") && note.contains("GOPROXY"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("GOFLAGS") && !note.contains("GOPROXY="),
+            "no configuration that could never authenticate is written"
+        );
     }
 
     #[test]

@@ -66,7 +66,10 @@ impl Authorized {
         self.blocklist_revision
     }
 
-    pub(crate) fn under_authority(mut self, authority: Option<crate::managed::publication_gate::AuthorityReceipt>) -> Self {
+    pub(crate) fn under_authority(
+        mut self,
+        authority: Option<crate::managed::publication_gate::AuthorityReceipt>,
+    ) -> Self {
         self.authority = authority;
         self
     }

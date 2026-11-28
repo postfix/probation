@@ -302,10 +302,15 @@ async fn an_open_during_eviction_is_refused_and_a_second_eviction_stands_aside()
         async move { store.evict(&key).await }
     });
     // The watchdog only detects a deadlock; ordering comes from the notifications.
-    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified()).await.expect("the first eviction reached the hold");
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+        .await
+        .expect("the first eviction reached the hold");
     let second = store.evict(&key).await;
     let opened = store.open_verified(&key, 7).await;
-    assert!(store.path_for(&key).exists(), "the file is still there while the claim is held");
+    assert!(
+        store.path_for(&key).exists(),
+        "the file is still there while the claim is held"
+    );
     release.notify_one();
     let first = first.await.expect("the first eviction finishes");
     assert!(first, "the first eviction removed the file");

@@ -42,16 +42,25 @@ pub fn sample_config() -> Config {
     // The sample's two Unix paths are not absolute on Windows, where `Config` rightly rejects them, so both are replaced (before
     // validation) with absolute paths on the host. TOML literal strings (single quotes) keep a Windows path's backslashes verbatim.
     let absent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let mut text = std::fs::read_to_string("config.sample.toml").expect("config.sample.toml is readable");
+    let mut text =
+        std::fs::read_to_string("config.sample.toml").expect("config.sample.toml is readable");
     for (key, old, file) in [
         ("data_dir", "\"/var/lib/probation\"", "absent-data-dir"),
-        ("blocklist_file", "\"/etc/probation/blocklist.json\"", "absent-blocklist.json"),
+        (
+            "blocklist_file",
+            "\"/etc/probation/blocklist.json\"",
+            "absent-blocklist.json",
+        ),
     ] {
         let line = format!("{key} = {old}");
-        assert!(text.contains(&line), "config.sample.toml no longer has `{line}`");
+        assert!(
+            text.contains(&line),
+            "config.sample.toml no longer has `{line}`"
+        );
         text = text.replace(&line, &format!("{key} = '{}'", absent.join(file).display()));
     }
-    let mut config = Config::from_toml_str(&text).expect("config.sample.toml is valid configuration");
+    let mut config =
+        Config::from_toml_str(&text).expect("config.sample.toml is valid configuration");
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
     config
 }
@@ -655,7 +664,10 @@ pub enum FakeAnswer {
     /// A `200` with these raw bytes (a gzip or zlib RubyGems document, a binary gem).
     Bytes(Vec<u8>),
     /// A `200` with these raw bytes and a `Last-Modified` (a Maven repository dates a file by it).
-    Dated { body: Vec<u8>, last_modified: String },
+    Dated {
+        body: Vec<u8>,
+        last_modified: String,
+    },
     /// Upstream `404`/`410`.
     Missing,
     Fail(UpstreamError),
@@ -850,14 +862,20 @@ impl FakeRegistry {
         // later page is the empty list rubygems.org answers past the end.
         if let Some((_, page)) = url.query_pairs().find(|(key, _)| key == "page") {
             let path = url.path();
-            if let Some(answer) = answers.get(&format!("{path}?page={page}")).or_else(|| answers.get(&format!("{path}?page=*"))) {
+            if let Some(answer) = answers
+                .get(&format!("{path}?page={page}"))
+                .or_else(|| answers.get(&format!("{path}?page=*")))
+            {
                 return answer.clone();
             }
             if page != "1" && answers.contains_key(path) {
                 return FakeAnswer::Body("[]".to_owned());
             }
         }
-        answers.get(url.path()).cloned().unwrap_or(FakeAnswer::Missing)
+        answers
+            .get(url.path())
+            .cloned()
+            .unwrap_or(FakeAnswer::Missing)
     }
 }
 
@@ -881,15 +899,31 @@ impl Transport for FakeRegistry {
         match self.record(&req.url) {
             FakeAnswer::Bytes(body) => {
                 if body.len() as u64 > req.max_bytes {
-                    return Err(UpstreamError::TooLarge { limit: req.max_bytes });
+                    return Err(UpstreamError::TooLarge {
+                        limit: req.max_bytes,
+                    });
                 }
-                Ok(MetadataResponse::Fresh { body: body.into(), validators: UpstreamValidators::default() })
+                Ok(MetadataResponse::Fresh {
+                    body: body.into(),
+                    validators: UpstreamValidators::default(),
+                })
             }
-            FakeAnswer::Dated { body, last_modified } => {
+            FakeAnswer::Dated {
+                body,
+                last_modified,
+            } => {
                 if body.len() as u64 > req.max_bytes {
-                    return Err(UpstreamError::TooLarge { limit: req.max_bytes });
+                    return Err(UpstreamError::TooLarge {
+                        limit: req.max_bytes,
+                    });
                 }
-                Ok(MetadataResponse::Fresh { body: body.into(), validators: UpstreamValidators { etag: None, last_modified: Some(last_modified) } })
+                Ok(MetadataResponse::Fresh {
+                    body: body.into(),
+                    validators: UpstreamValidators {
+                        etag: None,
+                        last_modified: Some(last_modified),
+                    },
+                })
             }
             FakeAnswer::Body(body) => {
                 if body.len() as u64 > req.max_bytes {
@@ -974,9 +1008,15 @@ impl Transport for FakeRegistry {
         }
     }
 
-    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+    async fn probe_file(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<Option<UpstreamValidators>, UpstreamError> {
         match self.record(&req.url) {
-            FakeAnswer::Dated { last_modified, .. } => Ok(Some(UpstreamValidators { etag: None, last_modified: Some(last_modified) })),
+            FakeAnswer::Dated { last_modified, .. } => Ok(Some(UpstreamValidators {
+                etag: None,
+                last_modified: Some(last_modified),
+            })),
             FakeAnswer::Missing => Ok(None),
             FakeAnswer::Fail(error) => Err(error),
             _ => Ok(Some(UpstreamValidators::default())),
@@ -1000,7 +1040,9 @@ impl Transport for FakeRegistry {
                 Ok(ArtifactBody {
                     declared_length: Some(declared),
                     stream: probation::upstream::capped(
-                        Box::pin(futures_util::stream::once(async move { Ok(bytes::Bytes::from(body)) })),
+                        Box::pin(futures_util::stream::once(async move {
+                            Ok(bytes::Bytes::from(body))
+                        })),
                         req.max_bytes,
                     ),
                 })
@@ -1009,7 +1051,12 @@ impl Transport for FakeRegistry {
                 let declared = body.len() as u64;
                 Ok(ArtifactBody {
                     declared_length: Some(declared),
-                    stream: probation::upstream::capped(Box::pin(futures_util::stream::once(async move { Ok(bytes::Bytes::from(body)) })), req.max_bytes),
+                    stream: probation::upstream::capped(
+                        Box::pin(futures_util::stream::once(async move {
+                            Ok(bytes::Bytes::from(body))
+                        })),
+                        req.max_bytes,
+                    ),
                 })
             }
             FakeAnswer::Body(body) => {
@@ -1212,6 +1259,7 @@ pub fn run<T>(body: impl Future<Output = T>) -> T {
     runtime.block_on(body)
 }
 
+pub mod conan;
 /// Captures the crate's `ERROR` log lines so a test can assert that a background
 /// loop kept trying rather than giving up quietly.
 ///
@@ -1220,9 +1268,8 @@ pub fn run<T>(body: impl Future<Output = T>) -> T {
 /// poller, which runs on other runtime threads. Tests therefore share one buffer and
 /// select their own lines by the temp path they were given, which is unique per test.
 pub mod go;
-pub mod nuget;
 pub mod maven;
-pub mod conan;
+pub mod nuget;
 pub mod oci;
 pub mod transport_load;
 

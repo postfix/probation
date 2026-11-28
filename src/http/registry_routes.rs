@@ -14,7 +14,9 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::App;
 use crate::artifacts;
 use crate::http::error::ApiError;
-use crate::http::{audit_filter, npm_routes, registry_action, registry_read, token_packument, unpublish_reference};
+use crate::http::{
+    audit_filter, npm_routes, registry_action, registry_read, token_packument, unpublish_reference,
+};
 use crate::managed::Principal;
 use crate::managed::certificates::VerifiedPeer;
 use crate::npm;
@@ -42,7 +44,10 @@ pub async fn package(
     let rendered = if headers.contains_key(header::AUTHORIZATION)
         && (app.service_policy().is_none()
             || (original_uri.path().starts_with("/registry/npm/")
-                && principal.registry_read_authorization.as_deref().is_some_and(|value| value.starts_with("Bearer "))))
+                && principal
+                    .registry_read_authorization
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("Bearer "))))
     {
         token_packument::serve_token_packument(
             &app,
@@ -389,16 +394,40 @@ pub async fn unsupported_artifact_delete(
 ) -> Result<Response, ApiError> {
     let registry = registry_read::registry_id(&registry)?;
     let id = ReferenceId::parse_hex(&reference).map_err(|_| ApiError::NotFound)?;
-    let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
-        .filter(|value| value.starts_with("Bearer ") && value.len() > 7).ok_or(ApiError::Unauthenticated)?.to_owned();
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("Bearer ") && value.len() > 7)
+        .ok_or(ApiError::Unauthenticated)?
+        .to_owned();
     let (permit, principal) = registry_read::admit(&app, peer.clone(), registry, &headers).await?;
     let response = if app.service_policy().is_some() {
-        super::service_unpublish::consume_service_marker_then_send(&app, registry.0, id, None, &filename, &revision, authorization).await?
+        super::service_unpublish::consume_service_marker_then_send(
+            &app,
+            registry.0,
+            id,
+            None,
+            &filename,
+            &revision,
+            authorization,
+        )
+        .await?
     } else {
-        unpublish_reference::send_unpublish_delete(&app, &principal, registry.0, id, &filename, &revision, authorization).await?
+        unpublish_reference::send_unpublish_delete(
+            &app,
+            &principal,
+            registry.0,
+            id,
+            &filename,
+            &revision,
+            authorization,
+        )
+        .await?
     };
     let current = registry_read::recheck(&app, peer, registry, &headers).await?;
-    if current.registry_origin != principal.registry_origin || current.deletion_scopes != principal.deletion_scopes {
+    if current.registry_origin != principal.registry_origin
+        || current.deletion_scopes != principal.deletion_scopes
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     drop(permit);
@@ -664,7 +693,7 @@ async fn named_read(
             || current.registry_origin != principal.registry_origin
             || current.registry_private_cidrs != principal.registry_private_cidrs
             || current.registry_read_authorization != principal.registry_read_authorization
-        || current.deletion_scopes != principal.deletion_scopes
+            || current.deletion_scopes != principal.deletion_scopes
         {
             return Err(ApiError::PolicyUnavailable);
         }

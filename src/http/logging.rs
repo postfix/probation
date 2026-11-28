@@ -198,7 +198,9 @@ pub fn in_request() -> bool {
 
 /// Whether this request was marked request-scoped. False outside a request.
 pub fn request_scoped() -> bool {
-    CONTEXT.try_with(|context| context.request_scoped.load(Ordering::Relaxed)).unwrap_or(false)
+    CONTEXT
+        .try_with(|context| context.request_scoped.load(Ordering::Relaxed))
+        .unwrap_or(false)
 }
 
 /// The peer address of the connection this request arrived on, when this process was
@@ -244,14 +246,16 @@ pub async fn decide(State(app): State<Arc<App>>, request: Request, next: Next) -
     // server was built with connect-info, which happens only when the opt-in is on or
     // the firewall is managed; the port is deliberately dropped, because the peer
     // address is the whole of the consumer identity this product will ever record.
-    let peer = (app.config.log_consumer_identification || app.config.management.is_some() || app.config.service_policy.is_some())
-        .then(|| {
-            request
-                .extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(peer)| peer.ip())
-        })
-        .flatten();
+    let peer = (app.config.log_consumer_identification
+        || app.config.management.is_some()
+        || app.config.service_policy.is_some())
+    .then(|| {
+        request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(peer)| peer.ip())
+    })
+    .flatten();
     // Recorded only on the operator's opt-in; managed mode alone records no address.
     let consumer = peer.filter(|_| app.config.log_consumer_identification);
 
@@ -563,7 +567,11 @@ fn go_target(path: &str) -> Target {
         },
         None => (None, None),
     };
-    Target { ecosystem: "go", package: loggable(package), version: loggable(version) }
+    Target {
+        ecosystem: "go",
+        package: loggable(package),
+        version: loggable(version),
+    }
 }
 
 /// `/nuget/v3-flatcontainer/{id}/{version}/{file}`, `/nuget/v3-flatcontainer/{id}/index.json`,
@@ -575,11 +583,17 @@ fn nuget_target(path: &str) -> Target {
     let (package, version) = match segments.as_slice() {
         ["v3-flatcontainer", id, "index.json"] => (Some(*id), Some("index.json")),
         ["v3-flatcontainer", id, version, _] => (Some(*id), Some(*version)),
-        ["v3", "registration", id, file] => (Some(*id), Some(file.strip_suffix(".json").unwrap_or(file))),
+        ["v3", "registration", id, file] => {
+            (Some(*id), Some(file.strip_suffix(".json").unwrap_or(file)))
+        }
         ["v3", "registration", id, "page", lower, _] => (Some(*id), Some(*lower)),
         _ => (None, None),
     };
-    Target { ecosystem: "nuget", package: loggable(package), version: loggable(version) }
+    Target {
+        ecosystem: "nuget",
+        package: loggable(package),
+        version: loggable(version),
+    }
 }
 
 /// `/maven/{group dirs}/{artifact}/{version}/{file}` (also under `/registry/maven/{id}/`): the coordinate and the version
@@ -588,11 +602,30 @@ fn maven_target(path: &str) -> Target {
     let below = path.strip_prefix("/maven/").unwrap_or("");
     let (package, version) = match crate::maven::coords::parse(below) {
         Some(crate::maven::coords::Parsed::File(file)) => (Some(file.name()), Some(file.version)),
-        Some(crate::maven::coords::Parsed::Metadata { dirs, level: crate::maven::coords::Level::Artifact, .. }) => (crate::maven::coords::artifact_of(&dirs).map(|(group, artifact)| format!("{group}:{artifact}")), None),
-        Some(crate::maven::coords::Parsed::Metadata { dirs, level: crate::maven::coords::Level::Snapshot, .. }) => crate::maven::coords::snapshot_of(&dirs).map_or((None, None), |(group, artifact, version)| (Some(format!("{group}:{artifact}")), Some(version))),
+        Some(crate::maven::coords::Parsed::Metadata {
+            dirs,
+            level: crate::maven::coords::Level::Artifact,
+            ..
+        }) => (
+            crate::maven::coords::artifact_of(&dirs)
+                .map(|(group, artifact)| format!("{group}:{artifact}")),
+            None,
+        ),
+        Some(crate::maven::coords::Parsed::Metadata {
+            dirs,
+            level: crate::maven::coords::Level::Snapshot,
+            ..
+        }) => crate::maven::coords::snapshot_of(&dirs)
+            .map_or((None, None), |(group, artifact, version)| {
+                (Some(format!("{group}:{artifact}")), Some(version))
+            }),
         _ => (None, None),
     };
-    Target { ecosystem: "maven", package: loggable(package.as_deref()), version: loggable(version.as_deref()) }
+    Target {
+        ecosystem: "maven",
+        package: loggable(package.as_deref()),
+        version: loggable(version.as_deref()),
+    }
 }
 
 /// `/conan/v2/conans/{name}/{version}/{user}/{channel}/...`: the package name and the recipe version; a login, a ping and a search
@@ -601,10 +634,18 @@ fn conan_target(path: &str) -> Target {
     let below = path.strip_prefix("/conan/").unwrap_or("");
     let parts: Vec<&str> = below.split('/').collect();
     let (package, version) = match parts.as_slice() {
-        ["v2", "conans", name, version, _, _, ..] if crate::conan::coords::parse(below, None).is_some() => (Some(*name), Some(*version)),
+        ["v2", "conans", name, version, _, _, ..]
+            if crate::conan::coords::parse(below, None).is_some() =>
+        {
+            (Some(*name), Some(*version))
+        }
         _ => (None, None),
     };
-    Target { ecosystem: "conan", package: loggable(package), version: loggable(version) }
+    Target {
+        ecosystem: "conan",
+        package: loggable(package),
+        version: loggable(version),
+    }
 }
 
 /// `/v2/{name}/{manifests|blobs|...}/{reference}` (and `/registry/oci/{id}/v2/...`): the repository and the tag or digest; the ping,
@@ -612,12 +653,25 @@ fn conan_target(path: &str) -> Target {
 fn oci_target(path: &str) -> Target {
     let below = path.strip_prefix("/v2/").unwrap_or("");
     let (package, version) = match crate::oci::coords::parse(below) {
-        Some(crate::oci::coords::Parsed::Manifest { name, reference }) => (Some(name), Some(reference.text())),
-        Some(crate::oci::coords::Parsed::Blob { name, digest } | crate::oci::coords::Parsed::Referrers { name, digest }) => (Some(name), Some(digest.to_string())),
-        Some(crate::oci::coords::Parsed::Tags { name } | crate::oci::coords::Parsed::UploadStart { name } | crate::oci::coords::Parsed::Upload { name, .. }) => (Some(name), None),
+        Some(crate::oci::coords::Parsed::Manifest { name, reference }) => {
+            (Some(name), Some(reference.text()))
+        }
+        Some(
+            crate::oci::coords::Parsed::Blob { name, digest }
+            | crate::oci::coords::Parsed::Referrers { name, digest },
+        ) => (Some(name), Some(digest.to_string())),
+        Some(
+            crate::oci::coords::Parsed::Tags { name }
+            | crate::oci::coords::Parsed::UploadStart { name }
+            | crate::oci::coords::Parsed::Upload { name, .. },
+        ) => (Some(name), None),
         _ => (None, None),
     };
-    Target { ecosystem: "oci", package: loggable(package.as_deref()), version: loggable(version.as_deref()) }
+    Target {
+        ecosystem: "oci",
+        package: loggable(package.as_deref()),
+        version: loggable(version.as_deref()),
+    }
 }
 
 /// One route component, bounded and escaped. `Debug` on a `String` escapes control
@@ -818,7 +872,11 @@ mod tests {
     #[test]
     fn cargo_paths_log_their_crate_and_version() {
         for (path, package, version) in [
-            ("/cargo/crates/serde_json/1.0.140/download", Some("serde_json"), Some("1.0.140")),
+            (
+                "/cargo/crates/serde_json/1.0.140/download",
+                Some("serde_json"),
+                Some("1.0.140"),
+            ),
             ("/cargo/se/rd/serde_json", Some("serde_json"), None),
             ("/cargo/3/a/abc", Some("abc"), None),
             ("/cargo/config.json", Some("config.json"), None),
@@ -835,10 +893,26 @@ mod tests {
     #[test]
     fn go_paths_log_their_module_and_version() {
         for (path, package, version) in [
-            ("/go/github.com/!azure/x/@v/v1.2.3.zip", Some("github.com/!azure/x"), Some("v1.2.3.zip")),
-            ("/go/example.com/m/@v/list", Some("example.com/m"), Some("list")),
-            ("/go/example.com/m/@latest", Some("example.com/m"), Some("latest")),
-            ("/go/sumdb/sum.golang.org/latest", Some("sumdb"), Some("latest")),
+            (
+                "/go/github.com/!azure/x/@v/v1.2.3.zip",
+                Some("github.com/!azure/x"),
+                Some("v1.2.3.zip"),
+            ),
+            (
+                "/go/example.com/m/@v/list",
+                Some("example.com/m"),
+                Some("list"),
+            ),
+            (
+                "/go/example.com/m/@latest",
+                Some("example.com/m"),
+                Some("latest"),
+            ),
+            (
+                "/go/sumdb/sum.golang.org/latest",
+                Some("sumdb"),
+                Some("latest"),
+            ),
             ("/go/unknown", None, None),
         ] {
             let target = Target::of(path);
@@ -853,10 +927,26 @@ mod tests {
     #[test]
     fn nuget_paths_log_their_id_and_version() {
         for (path, package, version) in [
-            ("/nuget/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg", Some("newtonsoft.json"), Some("13.0.3")),
-            ("/nuget/v3-flatcontainer/newtonsoft.json/index.json", Some("newtonsoft.json"), Some("index.json")),
-            ("/nuget/v3/registration/newtonsoft.json/13.0.3.json", Some("newtonsoft.json"), Some("13.0.3")),
-            ("/nuget/v3/registration/newtonsoft.json/index.json", Some("newtonsoft.json"), Some("index")),
+            (
+                "/nuget/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg",
+                Some("newtonsoft.json"),
+                Some("13.0.3"),
+            ),
+            (
+                "/nuget/v3-flatcontainer/newtonsoft.json/index.json",
+                Some("newtonsoft.json"),
+                Some("index.json"),
+            ),
+            (
+                "/nuget/v3/registration/newtonsoft.json/13.0.3.json",
+                Some("newtonsoft.json"),
+                Some("13.0.3"),
+            ),
+            (
+                "/nuget/v3/registration/newtonsoft.json/index.json",
+                Some("newtonsoft.json"),
+                Some("index"),
+            ),
             ("/nuget/v3/index.json", None, None),
             ("/nuget/v3/query", None, None),
         ] {
@@ -871,9 +961,21 @@ mod tests {
     #[test]
     fn conan_paths_log_their_package_and_version() {
         for (path, package, version) in [
-            ("/conan/v2/conans/zlib/1.3.1/_/_/revisions/abc/files/conanfile.py", Some("zlib"), Some("1.3.1")),
-            ("/conan/v2/conans/zlib/1.3.1/_/_/latest", Some("zlib"), Some("1.3.1")),
-            ("/conan/v2/conans/mylib/2.0/acme/stable/revisions", Some("mylib"), Some("2.0")),
+            (
+                "/conan/v2/conans/zlib/1.3.1/_/_/revisions/abc/files/conanfile.py",
+                Some("zlib"),
+                Some("1.3.1"),
+            ),
+            (
+                "/conan/v2/conans/zlib/1.3.1/_/_/latest",
+                Some("zlib"),
+                Some("1.3.1"),
+            ),
+            (
+                "/conan/v2/conans/mylib/2.0/acme/stable/revisions",
+                Some("mylib"),
+                Some("2.0"),
+            ),
             ("/conan/v2/conans/search", None, None),
             ("/conan/v2/ping", None, None),
             ("/conan/v2/conans/not a/layout", None, None),
@@ -890,10 +992,22 @@ mod tests {
     fn oci_paths_log_their_repository_and_reference() {
         let d = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         for (path, package, version) in [
-            ("/v2/library/alpine/manifests/latest".to_owned(), Some("library/alpine"), Some("latest".to_owned())),
-            (format!("/v2/team/app/blobs/{d}"), Some("team/app"), Some(d.to_owned())),
+            (
+                "/v2/library/alpine/manifests/latest".to_owned(),
+                Some("library/alpine"),
+                Some("latest".to_owned()),
+            ),
+            (
+                format!("/v2/team/app/blobs/{d}"),
+                Some("team/app"),
+                Some(d.to_owned()),
+            ),
             ("/v2/team/app/tags/list".to_owned(), Some("team/app"), None),
-            ("/v2/team/app/blobs/uploads/".to_owned(), Some("team/app"), None),
+            (
+                "/v2/team/app/blobs/uploads/".to_owned(),
+                Some("team/app"),
+                None,
+            ),
             ("/v2/".to_owned(), None, None),
             ("/v2/token".to_owned(), None, None),
             ("/v2/_catalog".to_owned(), None, None),
@@ -911,10 +1025,26 @@ mod tests {
     #[test]
     fn maven_paths_log_their_coordinate_and_version() {
         for (path, package, version) in [
-            ("/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.jar", Some("org.apache.maven:maven-core"), Some("3.9.0")),
-            ("/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.pom.sha1", Some("org.apache.maven:maven-core"), Some("3.9.0")),
-            ("/maven/org/apache/maven/maven-core/maven-metadata.xml", Some("org.apache.maven:maven-core"), None),
-            ("/maven/com/foo/lib/1.0-SNAPSHOT/maven-metadata.xml", Some("com.foo:lib"), Some("1.0-SNAPSHOT")),
+            (
+                "/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.jar",
+                Some("org.apache.maven:maven-core"),
+                Some("3.9.0"),
+            ),
+            (
+                "/maven/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.pom.sha1",
+                Some("org.apache.maven:maven-core"),
+                Some("3.9.0"),
+            ),
+            (
+                "/maven/org/apache/maven/maven-core/maven-metadata.xml",
+                Some("org.apache.maven:maven-core"),
+                None,
+            ),
+            (
+                "/maven/com/foo/lib/1.0-SNAPSHOT/maven-metadata.xml",
+                Some("com.foo:lib"),
+                Some("1.0-SNAPSHOT"),
+            ),
             ("/maven/archetype-catalog.xml", None, None),
             ("/maven/not/a/layout", None, None),
         ] {

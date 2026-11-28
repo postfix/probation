@@ -24,7 +24,10 @@ enum Node {
     Num,
     Str(String),
     Arr(Vec<Node>),
-    Obj { fields: Vec<(String, Node)>, dup: bool },
+    Obj {
+        fields: Vec<(String, Node)>,
+        dup: bool,
+    },
 }
 
 impl<'de> Deserialize<'de> for Node {
@@ -87,7 +90,9 @@ impl Node {
     fn depth(&self) -> usize {
         match self {
             Node::Arr(items) => 1 + items.iter().map(Node::depth).max().unwrap_or(0),
-            Node::Obj { fields, .. } => 1 + fields.iter().map(|(_, v)| v.depth()).max().unwrap_or(0),
+            Node::Obj { fields, .. } => {
+                1 + fields.iter().map(|(_, v)| v.depth()).max().unwrap_or(0)
+            }
             _ => 0,
         }
     }
@@ -162,7 +167,9 @@ pub fn parse_central(body: &[u8], queries: usize) -> Result<CentralAnswer, Answe
     if root.has_dup() {
         return Err(AnswerError::DuplicateKey);
     }
-    let meta = root.field("probation_osv").ok_or(AnswerError::MissingEnvelopeMeta)?;
+    let meta = root
+        .field("probation_osv")
+        .ok_or(AnswerError::MissingEnvelopeMeta)?;
     let version = match meta.field("v") {
         Some(Node::Num) => serde_json::from_slice::<serde_json::Value>(body)
             .ok()
@@ -192,9 +199,11 @@ pub fn parse_central(body: &[u8], queries: usize) -> Result<CentralAnswer, Answe
             }
             let degraded = matches!(result.field("probation_degraded"), Some(Node::Bool(true)));
             let matched = match result.field("vulns") {
-                Some(Node::Arr(vulns)) => vulns
-                    .iter()
-                    .any(|v| v.field("id").and_then(Node::string).is_some_and(|id| id.starts_with("MAL-"))),
+                Some(Node::Arr(vulns)) => vulns.iter().any(|v| {
+                    v.field("id")
+                        .and_then(Node::string)
+                        .is_some_and(|id| id.starts_with("MAL-"))
+                }),
                 _ => false,
             };
             match (degraded, matched, upstream_ok) {
@@ -206,7 +215,10 @@ pub fn parse_central(body: &[u8], queries: usize) -> Result<CentralAnswer, Answe
             }
         })
         .collect();
-    Ok(CentralAnswer { upstream_ok, outcomes })
+    Ok(CentralAnswer {
+        upstream_ok,
+        outcomes,
+    })
 }
 
 /// One result to render.
@@ -232,7 +244,9 @@ pub fn render_answer(results: &[RenderedResult], upstream_ok: bool) -> Vec<u8> {
                     .map(|(id, modified)| {
                         let id = truncate(id, MAX_ID);
                         match modified {
-                            Some(m) => serde_json::json!({"id": id, "modified": truncate(m, MAX_MODIFIED)}),
+                            Some(m) => {
+                                serde_json::json!({"id": id, "modified": truncate(m, MAX_MODIFIED)})
+                            }
                             None => serde_json::json!({"id": id}),
                         }
                     })
@@ -300,8 +314,18 @@ fn query(node: &Node) -> Result<(String, String, String), QueryDefect> {
     if !package.only_fields(&["name", "ecosystem"]) {
         return Err(QueryDefect);
     }
-    let name = package.field("name").and_then(Node::string).ok_or(QueryDefect)?;
-    let ecosystem = package.field("ecosystem").and_then(Node::string).ok_or(QueryDefect)?;
-    let version = node.field("version").and_then(Node::string).filter(|v| !v.is_empty()).ok_or(QueryDefect)?;
+    let name = package
+        .field("name")
+        .and_then(Node::string)
+        .ok_or(QueryDefect)?;
+    let ecosystem = package
+        .field("ecosystem")
+        .and_then(Node::string)
+        .ok_or(QueryDefect)?;
+    let version = node
+        .field("version")
+        .and_then(Node::string)
+        .filter(|v| !v.is_empty())
+        .ok_or(QueryDefect)?;
     Ok((ecosystem.to_owned(), name.to_owned(), version.to_owned()))
 }

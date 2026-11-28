@@ -18,8 +18,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
 use axum::http::Method;
+use bytes::{Bytes, BytesMut};
 use futures_util::{Stream, StreamExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
@@ -34,8 +34,11 @@ pub use reqwest_transport::ReqwestTransport;
 pub trait Transport: Send + Sync + 'static {
     async fn fetch_metadata(&self, req: MetadataRequest)
     -> Result<MetadataResponse, UpstreamError>;
-    async fn fetch_token_packument(&self, _req: MetadataRequest, _authorization: &str)
-    -> Result<MetadataResponse, UpstreamError> {
+    async fn fetch_token_packument(
+        &self,
+        _req: MetadataRequest,
+        _authorization: &str,
+    ) -> Result<MetadataResponse, UpstreamError> {
         Err(UpstreamError::Status(501))
     }
     async fn fetch_named_read(&self, _req: NamedReadRequest) -> Result<Bytes, UpstreamError> {
@@ -54,7 +57,10 @@ pub trait Transport: Send + Sync + 'static {
     /// Whether the file at `req.url` exists, and the validators it carries, without reading its body (a Maven file's own
     /// `Last-Modified`). `None` is the repository's 404 or 410. The default reads at most one byte through `fetch_metadata`: a
     /// body over it is "exists" with no validators.
-    async fn probe_file(&self, mut req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+    async fn probe_file(
+        &self,
+        mut req: MetadataRequest,
+    ) -> Result<Option<UpstreamValidators>, UpstreamError> {
         req.max_bytes = 1;
         match self.fetch_metadata(req).await {
             Ok(MetadataResponse::Fresh { validators, .. }) => Ok(Some(validators)),
@@ -143,10 +149,16 @@ pub struct OciResponse {
 
 impl OciResponse {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(key, _)| *key == name).map(|(_, value)| value.as_str())
+        self.headers
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
     }
     pub fn headers_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
-        self.headers.iter().filter(move |(key, _)| *key == name).map(|(_, value)| value.as_str())
+        self.headers
+            .iter()
+            .filter(move |(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -287,8 +299,11 @@ impl Transport for Limited {
         self.inner.fetch_metadata(req).await
     }
 
-    async fn fetch_token_packument(&self, req: MetadataRequest, authorization: &str)
-    -> Result<MetadataResponse, UpstreamError> {
+    async fn fetch_token_packument(
+        &self,
+        req: MetadataRequest,
+        authorization: &str,
+    ) -> Result<MetadataResponse, UpstreamError> {
         let _slot = self.slot().await;
         self.inner.fetch_token_packument(req, authorization).await
     }
@@ -298,7 +313,10 @@ impl Transport for Limited {
         self.inner.fetch_named_read(req).await
     }
 
-    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
+    async fn probe_file(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<Option<UpstreamValidators>, UpstreamError> {
         let _slot = self.slot().await;
         self.inner.probe_file(req).await
     }

@@ -50,7 +50,10 @@ fn snapshot() -> ServicePolicySnapshot {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
+            osv_scope: None,
+            archive_origin: None,
+            resource_path_prefix: None,
+            token_origin: None,
         }],
     }
 }
@@ -372,9 +375,13 @@ fn explicit_service_policy_config_accepts_private_key_and_refuses_unsafe_binding
         .is_err()
     );
     assert!(Config::from_toml_str(&format!("{text}sync_interval_seconds = 0\n")).is_err());
-    let proxied = Config::from_toml_str(&format!("{text}trusted_proxies = [\"192.0.2.0/24\"]\n")).expect("a listed proxy range loads");
+    let proxied = Config::from_toml_str(&format!("{text}trusted_proxies = [\"192.0.2.0/24\"]\n"))
+        .expect("a listed proxy range loads");
     assert_eq!(proxied.service_policy.unwrap().trusted_proxies.len(), 1);
-    assert!(Config::from_toml_str(&format!("{text}trusted_proxies = [\"nonsense\"]\n")).is_err(), "a proxy that is no address range is refused");
+    assert!(
+        Config::from_toml_str(&format!("{text}trusted_proxies = [\"nonsense\"]\n")).is_err(),
+        "a proxy that is no address range is refused"
+    );
     assert!(Config::from_toml_str(&text.replace("127.0.0.1:8080", "0.0.0.0:8080")).is_err());
     // Windows has no mode bits: the key file's ACL is the operator's to restrict.
     #[cfg(unix)]
@@ -413,7 +420,14 @@ fn at_revision(revision: u64) -> ServicePolicySnapshot {
     value
 }
 
-async fn with_floor(revision: u64) -> (MockServer, ServicePolicyConfig, tempfile::TempDir, ServicePolicy) {
+async fn with_floor(
+    revision: u64,
+) -> (
+    MockServer,
+    ServicePolicyConfig,
+    tempfile::TempDir,
+    ServicePolicy,
+) {
     let server = MockServer::start().await;
     let config = config_for(&server);
     let dir = tempfile::tempdir().unwrap();
@@ -427,11 +441,20 @@ async fn with_floor(revision: u64) -> (MockServer, ServicePolicyConfig, tempfile
 async fn activation_rejects_older_revision_same_binding() {
     let (server, config, dir, policy) = with_floor(5).await;
     serve(&server, &at_revision(4)).await;
-    assert!(policy.sync_once().await.is_err(), "an older revision is a structural rejection");
+    assert!(
+        policy.sync_once().await.is_err(),
+        "an older revision is a structural rejection"
+    );
     assert_eq!(policy.snapshot().unwrap().revision, 5, "last good retained");
-    assert!(!dir.path().join("service-policy.refused").exists(), "no refusal change");
+    assert!(
+        !dir.path().join("service-policy.refused").exists(),
+        "no refusal change"
+    );
     assert_eq!(
-        ServicePolicy::load(&config, dir.path()).snapshot().unwrap().revision,
+        ServicePolicy::load(&config, dir.path())
+            .snapshot()
+            .unwrap()
+            .revision,
         5,
         "the floor survives restart"
     );
@@ -462,7 +485,10 @@ async fn activation_equal_revision_registry_edit_is_accepted() {
     edited.registries[0].trusted = true;
     serve(&server, &edited).await;
     policy.sync_once().await.unwrap();
-    assert!(policy.snapshot().unwrap().registries[0].trusted, "registry edits are latest-wins");
+    assert!(
+        policy.snapshot().unwrap().registries[0].trusted,
+        "registry edits are latest-wins"
+    );
 }
 
 #[tokio::test]
@@ -472,7 +498,10 @@ async fn activation_equal_revision_rate_change_is_accepted() {
     edited.rate_limit = std::num::NonZeroU32::new(30);
     serve(&server, &edited).await;
     policy.sync_once().await.unwrap();
-    assert_eq!(policy.snapshot().unwrap().rate_limit, std::num::NonZeroU32::new(30));
+    assert_eq!(
+        policy.snapshot().unwrap().rate_limit,
+        std::num::NonZeroU32::new(30)
+    );
 }
 
 #[tokio::test]
@@ -494,7 +523,11 @@ async fn activation_floor_reset_by_operator_command() {
     let policy = ServicePolicy::load(&config, dir.path());
     serve(&server, &at_revision(2)).await;
     policy.sync_once().await.unwrap();
-    assert_eq!(policy.snapshot().unwrap().revision, 2, "the next valid snapshot sets the new floor");
+    assert_eq!(
+        policy.snapshot().unwrap().revision,
+        2,
+        "the next valid snapshot sets the new floor"
+    );
     serve(&server, &at_revision(1)).await;
     assert!(policy.sync_once().await.is_err());
 }
@@ -503,23 +536,40 @@ async fn activation_floor_reset_by_operator_command() {
 async fn floor_reset_never_clears_a_refusal() {
     let (server, config, dir, policy) = with_floor(5).await;
     server.reset().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
     assert!(policy.sync_once().await.is_err());
     drop(policy);
     ServicePolicy::reset_revision_floor(&config, dir.path()).unwrap();
     assert!(dir.path().join("service-policy.refused").exists());
-    assert!(ServicePolicy::load(&config, dir.path()).snapshot().is_none());
+    assert!(
+        ServicePolicy::load(&config, dir.path())
+            .snapshot()
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn snapshot_404_is_not_an_authority_refusal() {
     let (server, config, dir, policy) = with_floor(5).await;
     server.reset().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
     assert!(policy.sync_once().await.is_err());
-    assert!(policy.snapshot().is_some(), "only 401/403 on the snapshot route refuse");
+    assert!(
+        policy.snapshot().is_some(),
+        "only 401/403 on the snapshot route refuse"
+    );
     assert!(!dir.path().join("service-policy.refused").exists());
-    assert!(ServicePolicy::load(&config, dir.path()).snapshot().is_some());
+    assert!(
+        ServicePolicy::load(&config, dir.path())
+            .snapshot()
+            .is_some()
+    );
 }
 
 #[test]
@@ -550,11 +600,18 @@ fn reset_revision_floor_command_leaves_the_marker_and_requires_service_policy() 
             .unwrap()
     };
     let output = run(&config);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(data.join("revision-floor-reset").exists());
     let plain = dir.path().join("plain.toml");
     std::fs::write(&plain, include_str!("../config.sample.toml")).unwrap();
-    assert!(!run(&plain).status.success(), "no service_policy section: nothing to reset");
+    assert!(
+        !run(&plain).status.success(),
+        "no service_policy section: nothing to reset"
+    );
 }
 
 // ---- LS-F7 bounds on the policy snapshot ----
@@ -569,7 +626,10 @@ async fn bound_case(over: bool, edit: impl Fn(&mut ServicePolicySnapshot, bool))
     edit(&mut value, over);
     serve(&server, &value).await;
     let accepted = policy.sync_once().await.is_ok();
-    assert!(!dir.path().join("service-policy.refused").exists(), "a bound violation is structural, never a refusal");
+    assert!(
+        !dir.path().join("service-policy.refused").exists(),
+        "a bound violation is structural, never a refusal"
+    );
     accepted
 }
 
@@ -582,7 +642,10 @@ fn descriptors(count: u64) -> Vec<RegistryDescriptor> {
             trusted: false,
             registry_private_cidrs: vec![],
             deletion_scopes: vec![],
-            osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
+            osv_scope: None,
+            archive_origin: None,
+            resource_path_prefix: None,
+            token_origin: None,
         })
         .collect()
 }
@@ -599,25 +662,32 @@ fn exception(name: String) -> probation_policy::Exception {
 #[tokio::test]
 async fn activation_rejects_snapshot_over_each_bound() {
     // registries: at most 256
-    let registries = |value: &mut ServicePolicySnapshot, over: bool| value.registries = descriptors(if over { 257 } else { 256 });
+    let registries = |value: &mut ServicePolicySnapshot, over: bool| {
+        value.registries = descriptors(if over { 257 } else { 256 })
+    };
     assert!(bound_case(false, registries).await, "256 registries");
     assert!(!bound_case(true, registries).await, "257 registries");
     // CIDR strings: at most 64 per descriptor
     let cidrs = |value: &mut ServicePolicySnapshot, over: bool| {
         value.registries[0].target_url = Some("https://10.0.0.7/".into());
-        value.registries[0].registry_private_cidrs = (0..if over { 65 } else { 64 }).map(|n| format!("10.{n}.0.0/16")).collect();
+        value.registries[0].registry_private_cidrs = (0..if over { 65 } else { 64 })
+            .map(|n| format!("10.{n}.0.0/16"))
+            .collect();
     };
     assert!(bound_case(false, cidrs).await, "64 cidrs");
     assert!(!bound_case(true, cidrs).await, "65 cidrs");
     // rules per layer: at most 10,000
     let rules = |value: &mut ServicePolicySnapshot, over: bool| {
-        value.layers[1].layer.exceptions = (0..if over { 10_001 } else { 10_000 }).map(|n| exception(format!("p{n}"))).collect();
+        value.layers[1].layer.exceptions = (0..if over { 10_001 } else { 10_000 })
+            .map(|n| exception(format!("p{n}")))
+            .collect();
     };
     assert!(bound_case(false, rules).await, "10000 rules in a layer");
     assert!(!bound_case(true, rules).await, "10001 rules in a layer");
     // any string field: at most 2048 bytes
     let strings = |value: &mut ServicePolicySnapshot, over: bool| {
-        value.layers[1].layer.exceptions = vec![exception("a".repeat(if over { 2049 } else { 2048 }))];
+        value.layers[1].layer.exceptions =
+            vec![exception("a".repeat(if over { 2049 } else { 2048 }))];
     };
     assert!(bound_case(false, strings).await, "2048-byte string");
     assert!(!bound_case(true, strings).await, "2049-byte string");
@@ -625,7 +695,13 @@ async fn activation_rejects_snapshot_over_each_bound() {
 
 // ---- LS-F3 an unknown ecosystem tag degrades only what it names ----
 
-async fn sync_raw(raw: serde_json::Value) -> (Result<(), probation::managed::service_policy::ServicePolicyError>, ServicePolicy, tempfile::TempDir) {
+async fn sync_raw(
+    raw: serde_json::Value,
+) -> (
+    Result<(), probation::managed::service_policy::ServicePolicyError>,
+    ServicePolicy,
+    tempfile::TempDir,
+) {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     let policy = ServicePolicy::load(&config_for(&server), dir.path());
@@ -643,10 +719,13 @@ fn mixed_snapshot() -> serde_json::Value {
         {"Package": {"ecosystem": "Npm", "name": "left-pad"}},
         {"Package": {"ecosystem": "Maven2", "name": "org.example:lib"}}
     ]);
-    raw["registries"].as_array_mut().unwrap().push(serde_json::json!({
-        "registry": 4, "ecosystem": "Maven2", "target_url": null, "trusted": false,
-        "registry_private_cidrs": [], "deletion_scopes": []
-    }));
+    raw["registries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "registry": 4, "ecosystem": "Maven2", "target_url": null, "trusted": false,
+            "registry_private_cidrs": [], "deletion_scopes": []
+        }));
     raw
 }
 
@@ -656,9 +735,22 @@ async fn activation_unknown_ecosystem_degrades_only_that_registry() {
     result.expect("an unknown tag is not structural");
     let active = policy.snapshot().unwrap();
     assert_eq!(active.registries.len(), 1, "the known registry stays");
-    assert_eq!(policy.unavailable_registries(), vec![RegistryId(4)], "readiness lists the unknown registry degraded");
-    assert!(policy.principal(RegistryId(4), probation_policy::Ecosystem::Npm).is_none(), "requests to it refuse");
-    assert!(policy.principal(RegistryId(3), probation_policy::Ecosystem::Npm).is_some());
+    assert_eq!(
+        policy.unavailable_registries(),
+        vec![RegistryId(4)],
+        "readiness lists the unknown registry degraded"
+    );
+    assert!(
+        policy
+            .principal(RegistryId(4), probation_policy::Ecosystem::Npm)
+            .is_none(),
+        "requests to it refuse"
+    );
+    assert!(
+        policy
+            .principal(RegistryId(3), probation_policy::Ecosystem::Npm)
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -666,7 +758,11 @@ async fn activation_mixed_version_snapshot_keeps_known_denies() {
     let (result, policy, _dir) = sync_raw(mixed_snapshot()).await;
     result.unwrap();
     let active = policy.snapshot().unwrap();
-    assert_eq!(active.layers[1].layer.blocks.len(), 1, "the npm block is active, the Maven2 rule is skipped");
+    assert_eq!(
+        active.layers[1].layer.blocks.len(),
+        1,
+        "the npm block is active, the Maven2 rule is skipped"
+    );
     assert_eq!(policy.rules_skipped_unknown_ecosystem(), 1);
 }
 
@@ -697,11 +793,13 @@ async fn descriptor_naming_loopback_or_link_local_is_rejected_before_activation(
         ("https://169.254.169.254/", "169.254.0.0/16"),
         ("https://[::ffff:127.0.0.1]/", "127.0.0.0/8"),
     ] {
-        let (result, policy, _dir) = sync_raw(serde_json::to_value(targeting(url, cidr)).unwrap()).await;
+        let (result, policy, _dir) =
+            sync_raw(serde_json::to_value(targeting(url, cidr)).unwrap()).await;
         assert!(result.is_err(), "{url}");
         assert!(policy.snapshot().is_none(), "{url}");
     }
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(targeting("https://10.0.0.5/", "10.0.0.0/8")).unwrap()).await;
+    let (result, _policy, _dir) =
+        sync_raw(serde_json::to_value(targeting("https://10.0.0.5/", "10.0.0.0/8")).unwrap()).await;
     result.expect("an ordinary private registry named by its own CIDR stays allowed");
 }
 
@@ -709,9 +807,13 @@ async fn descriptor_naming_loopback_or_link_local_is_rejected_before_activation(
 async fn descriptor_naming_the_enforcers_own_listener_is_rejected() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
-    let policy = ServicePolicy::load(&config_for(&server), dir.path()).with_listener("203.0.113.5:8080".parse().unwrap());
+    let policy = ServicePolicy::load(&config_for(&server), dir.path())
+        .with_listener("203.0.113.5:8080".parse().unwrap());
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(targeting("https://203.0.113.5:8080/", "203.0.113.0/24")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(targeting("https://203.0.113.5:8080/", "203.0.113.0/24")),
+        )
         .mount(&server)
         .await;
     assert!(policy.sync_once().await.is_err());
@@ -736,8 +838,15 @@ fn service_config(url: &str, key_bytes: &[u8]) -> Result<Config, probation::conf
 #[test]
 #[cfg(unix)]
 fn config_server_url_rejects_path_query_userinfo_fragment_and_http() {
-    for ok in ["https://policy.example.test", "https://policy.example.test/", "https://policy.example.test:8443"] {
-        assert!(service_config(ok, b"prb_01234567890123456789012345678901").is_ok(), "{ok}");
+    for ok in [
+        "https://policy.example.test",
+        "https://policy.example.test/",
+        "https://policy.example.test:8443",
+    ] {
+        assert!(
+            service_config(ok, b"prb_01234567890123456789012345678901").is_ok(),
+            "{ok}"
+        );
     }
     for bad in [
         "http://policy.example.test",
@@ -746,8 +855,13 @@ fn config_server_url_rejects_path_query_userinfo_fragment_and_http() {
         "https://user:pw@policy.example.test",
         "https://policy.example.test/#frag",
     ] {
-        let error = service_config(bad, b"prb_01234567890123456789012345678901").expect_err(bad).to_string();
-        assert!(!error.contains("pw@") && !error.contains("user:pw"), "the message never echoes a URL with credentials: {error}");
+        let error = service_config(bad, b"prb_01234567890123456789012345678901")
+            .expect_err(bad)
+            .to_string();
+        assert!(
+            !error.contains("pw@") && !error.contains("user:pw"),
+            "the message never echoes a URL with credentials: {error}"
+        );
     }
 }
 
@@ -762,7 +876,10 @@ fn config_service_key_rejects_control_non_ascii_and_overlong() {
         &[b"prb_".as_slice(), &[b'a'; 600]].concat(),
     ] {
         let error = service_config(url, bad).expect_err("rejected").to_string();
-        assert!(!error.contains("prb_0123"), "the message never echoes the key: {error}");
+        assert!(
+            !error.contains("prb_0123"),
+            "the message never echoes the key: {error}"
+        );
     }
 }
 
@@ -772,8 +889,14 @@ fn config_service_key_trims_single_trailing_newline() {
     let url = "https://policy.example.test";
     assert!(service_config(url, b"prb_01234567890123456789012345678901\n").is_ok());
     assert!(service_config(url, b"prb_01234567890123456789012345678901\r\n").is_ok());
-    assert!(service_config(url, b"prb_01234567890123456789012345678901\n\n").is_err(), "exactly one is trimmed");
-    assert!(service_config(url, b"prb_01234567890123456789012345678901 ").is_err(), "trailing space is not trimmed");
+    assert!(
+        service_config(url, b"prb_01234567890123456789012345678901\n\n").is_err(),
+        "exactly one is trimmed"
+    );
+    assert!(
+        service_config(url, b"prb_01234567890123456789012345678901 ").is_err(),
+        "trailing space is not trimmed"
+    );
     assert!(service_config(url, b" prb_01234567890123456789012345678901").is_err());
 }
 
@@ -787,9 +910,16 @@ fn config_control_plane_and_credential_temp_keys() {
     assert_eq!(ok.control_plane_cidrs.len(), 1);
     assert_eq!(ok.credential_temp_max_request_bytes, Some(4294967296));
     assert!(with("control_plane_cidrs = [\"not-a-cidr\"]").is_err());
-    assert!(with("credential_temp_max_total_bytes = 0").is_err(), "positive when set");
+    assert!(
+        with("credential_temp_max_total_bytes = 0").is_err(),
+        "positive when set"
+    );
     let default = Config::from_toml_str(sample).unwrap();
-    assert!(default.credential_temp_max_request_bytes.is_none() && default.credential_temp_max_total_bytes.is_none(), "no cap by default");
+    assert!(
+        default.credential_temp_max_request_bytes.is_none()
+            && default.credential_temp_max_total_bytes.is_none(),
+        "no cap by default"
+    );
 }
 
 #[tokio::test]
@@ -797,7 +927,9 @@ async fn descriptor_hostname_resolving_to_a_denied_address_is_rejected_at_activa
     // `localhost` resolves to loopback; the registry's own private CIDRs cannot unlock it
     // (LS-F9: hostnames are checked as resolved, at activation and again at connect).
     let mut snapshot = targeting("https://localhost:9443/", "127.0.0.0/8");
-    snapshot.registries[0].registry_private_cidrs.push("::1/128".into());
+    snapshot.registries[0]
+        .registry_private_cidrs
+        .push("::1/128".into());
     let (result, policy, _dir) = sync_raw(serde_json::to_value(snapshot).unwrap()).await;
     assert!(result.is_err());
     assert!(policy.snapshot().is_none());
@@ -810,11 +942,21 @@ async fn unknown_ecosystem_degraded_state_survives_restart() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     let config = config_for(&server);
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(mixed_snapshot())).mount(&server).await;
-    ServicePolicy::load(&config, dir.path()).sync_once().await.unwrap();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mixed_snapshot()))
+        .mount(&server)
+        .await;
+    ServicePolicy::load(&config, dir.path())
+        .sync_once()
+        .await
+        .unwrap();
     let restarted = ServicePolicy::load(&config, dir.path());
     assert!(restarted.snapshot().is_some());
-    assert_eq!(restarted.unavailable_registries(), vec![RegistryId(4)], "readiness still lists the unknown registry");
+    assert_eq!(
+        restarted.unavailable_registries(),
+        vec![RegistryId(4)],
+        "readiness still lists the unknown registry"
+    );
     assert_eq!(restarted.rules_skipped_unknown_ecosystem(), 1);
 }
 
@@ -834,16 +976,27 @@ fn listen_port_zero_is_refused_under_service_policy() {
             key
         )
     };
-    let refused = Config::from_toml_str(&text("127.0.0.1:0")).expect_err("port 0 cannot name the own listener").to_string();
+    let refused = Config::from_toml_str(&text("127.0.0.1:0"))
+        .expect_err("port 0 cannot name the own listener")
+        .to_string();
     assert!(refused.contains("listen"), "{refused}");
     assert!(Config::from_toml_str(&text("127.0.0.1:8080")).is_ok());
     // Without [service_policy] a random port stays allowed (tests and local use).
-    assert!(Config::from_toml_str(&include_str!("../config.sample.toml").replace("127.0.0.1:8080", "127.0.0.1:0")).is_ok());
+    assert!(
+        Config::from_toml_str(
+            &include_str!("../config.sample.toml").replace("127.0.0.1:8080", "127.0.0.1:0")
+        )
+        .is_ok()
+    );
 }
 
 // ---- row 18: the optional archive origin of a Cargo descriptor ----
 
-fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option<&str>) -> ServicePolicySnapshot {
+fn archived(
+    origin: &str,
+    ecosystem: probation_policy::Ecosystem,
+    target: Option<&str>,
+) -> ServicePolicySnapshot {
     let mut value = snapshot();
     value.registries[0].ecosystem = ecosystem;
     value.registries[0].target_url = target.map(str::to_owned);
@@ -852,50 +1005,193 @@ fn archived(origin: &str, ecosystem: probation_policy::Ecosystem, target: Option
 }
 
 #[tokio::test]
-async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one() {
+async fn archive_origin_is_checked_like_a_target_and_only_a_cargo_registry_with_a_target_may_carry_one()
+ {
     use probation_policy::Ecosystem::{Cargo, Conan, Go, Maven, Npm, NuGet, Oci};
     let target = Some("https://registry.example.test/api/cargo/repo/index/");
     for (origin, ecosystem, target, why) in [
-        ("http://files.example.test/crates", Cargo, target, "not https"),
-        ("https://user:pw@files.example.test/crates", Cargo, target, "userinfo"),
-        ("https://files.example.test/crates?x=1", Cargo, target, "query"),
-        ("https://files.example.test/crates#f", Cargo, target, "fragment"),
+        (
+            "http://files.example.test/crates",
+            Cargo,
+            target,
+            "not https",
+        ),
+        (
+            "https://user:pw@files.example.test/crates",
+            Cargo,
+            target,
+            "userinfo",
+        ),
+        (
+            "https://files.example.test/crates?x=1",
+            Cargo,
+            target,
+            "query",
+        ),
+        (
+            "https://files.example.test/crates#f",
+            Cargo,
+            target,
+            "fragment",
+        ),
         ("https://127.0.0.1/crates", Cargo, target, "loopback"),
-        ("https://169.254.169.254/crates", Cargo, target, "metadata address"),
-        ("https://[::ffff:127.0.0.1]/crates", Cargo, target, "mapped loopback"),
-        ("https://files.example.test/crates", Npm, target, "not a Cargo registry"),
-        ("https://files.example.test/go", Go, None, "a Go registry needs a target of its own"),
-        ("https://127.0.0.1/go", Go, Some("https://goproxy.example.test/repo/"), "loopback"),
-        ("https://files.example.test/nuget", NuGet, None, "a NuGet registry needs a target of its own"),
-        ("https://files.example.test/maven", Maven, None, "a Maven registry needs a target of its own"),
-        ("https://169.254.169.254/maven", Maven, Some("https://nexus.example.test/repository/releases/"), "metadata address"),
-        ("https://files.example.test/conan", Conan, None, "a Conan registry needs a target of its own"),
-        ("https://169.254.169.254/conan", Conan, Some("https://art.example.test/artifactory/api/conan/c/"), "metadata address"),
-        ("https://files.example.test/oci", Oci, None, "an OCI registry needs a target of its own"),
-        ("https://169.254.169.254/oci", Oci, Some("https://registry.example.test/"), "metadata address"),
-        ("https://169.254.169.254/nuget", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"), "metadata address"),
-        ("https://files.example.test/crates", Cargo, None, "no target"),
+        (
+            "https://169.254.169.254/crates",
+            Cargo,
+            target,
+            "metadata address",
+        ),
+        (
+            "https://[::ffff:127.0.0.1]/crates",
+            Cargo,
+            target,
+            "mapped loopback",
+        ),
+        (
+            "https://files.example.test/crates",
+            Npm,
+            target,
+            "not a Cargo registry",
+        ),
+        (
+            "https://files.example.test/go",
+            Go,
+            None,
+            "a Go registry needs a target of its own",
+        ),
+        (
+            "https://127.0.0.1/go",
+            Go,
+            Some("https://goproxy.example.test/repo/"),
+            "loopback",
+        ),
+        (
+            "https://files.example.test/nuget",
+            NuGet,
+            None,
+            "a NuGet registry needs a target of its own",
+        ),
+        (
+            "https://files.example.test/maven",
+            Maven,
+            None,
+            "a Maven registry needs a target of its own",
+        ),
+        (
+            "https://169.254.169.254/maven",
+            Maven,
+            Some("https://nexus.example.test/repository/releases/"),
+            "metadata address",
+        ),
+        (
+            "https://files.example.test/conan",
+            Conan,
+            None,
+            "a Conan registry needs a target of its own",
+        ),
+        (
+            "https://169.254.169.254/conan",
+            Conan,
+            Some("https://art.example.test/artifactory/api/conan/c/"),
+            "metadata address",
+        ),
+        (
+            "https://files.example.test/oci",
+            Oci,
+            None,
+            "an OCI registry needs a target of its own",
+        ),
+        (
+            "https://169.254.169.254/oci",
+            Oci,
+            Some("https://registry.example.test/"),
+            "metadata address",
+        ),
+        (
+            "https://169.254.169.254/nuget",
+            NuGet,
+            Some("https://pkgs.example.test/nuget/v3/index.json"),
+            "metadata address",
+        ),
+        (
+            "https://files.example.test/crates",
+            Cargo,
+            None,
+            "no target",
+        ),
         ("not a url", Cargo, target, "not a URL"),
     ] {
-        let (result, policy, _dir) = sync_raw(serde_json::to_value(archived(origin, ecosystem, target)).unwrap()).await;
-        assert!(result.is_err() && policy.snapshot().is_none(), "{origin} ({why}) must be rejected before activation");
+        let (result, policy, _dir) =
+            sync_raw(serde_json::to_value(archived(origin, ecosystem, target)).unwrap()).await;
+        assert!(
+            result.is_err() && policy.snapshot().is_none(),
+            "{origin} ({why}) must be rejected before activation"
+        );
     }
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://files.example.test/api/cargo/repo/crates", Cargo, target)).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://files.example.test/api/cargo/repo/crates",
+            Cargo,
+            target,
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("an ordinary archive origin is accepted");
     // A Go registry with a target may declare where its zips are redirected to (row 19).
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://zips.example.test/bucket", Go, Some("https://goproxy.example.test/repo/"))).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://zips.example.test/bucket",
+            Go,
+            Some("https://goproxy.example.test/repo/"),
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("a Go registry's archive origin is accepted");
     // A NuGet registry with a target may declare where its packages are redirected to (row 20).
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", NuGet, Some("https://pkgs.example.test/nuget/v3/index.json"))).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://blobs.example.test/store",
+            NuGet,
+            Some("https://pkgs.example.test/nuget/v3/index.json"),
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("a NuGet registry's archive origin is accepted");
     // A Maven registry with a target may declare where its artifacts are redirected to (row 21).
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Maven, Some("https://nexus.example.test/repository/releases/"))).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://blobs.example.test/store",
+            Maven,
+            Some("https://nexus.example.test/repository/releases/"),
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("a Maven registry's archive origin is accepted");
     // A Conan registry with a target may declare where its archives are redirected to (row 23).
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Conan, Some("https://art.example.test/artifactory/api/conan/c/"))).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://blobs.example.test/store",
+            Conan,
+            Some("https://art.example.test/artifactory/api/conan/c/"),
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("a Conan registry's archive origin is accepted");
     // An OCI registry with a target may declare where its blobs are redirected to (row 24).
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(archived("https://blobs.example.test/store", Oci, Some("https://registry.example.test/"))).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(archived(
+            "https://blobs.example.test/store",
+            Oci,
+            Some("https://registry.example.test/"),
+        ))
+        .unwrap(),
+    )
+    .await;
     result.expect("an OCI registry's archive origin is accepted");
 }
 
@@ -921,13 +1217,20 @@ async fn a_resource_path_prefix_is_checked_and_only_a_nuget_registry_with_a_targ
         ("/org%2Fa", NuGet, target, "encoded"),
         ("/org-a?x=1", NuGet, target, "query"),
         ("/org a", NuGet, target, "space"),
-        ("/org-a", Cargo, Some("https://registry.example.test/index/"), "not a NuGet registry"),
+        (
+            "/org-a",
+            Cargo,
+            Some("https://registry.example.test/index/"),
+            "not a NuGet registry",
+        ),
         ("/org-a", NuGet, None, "no target"),
     ] {
-        let (result, _policy, _dir) = sync_raw(serde_json::to_value(with(prefix, ecosystem, target)).unwrap()).await;
+        let (result, _policy, _dir) =
+            sync_raw(serde_json::to_value(with(prefix, ecosystem, target)).unwrap()).await;
         assert!(result.is_err(), "{why}: {prefix}");
     }
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(with("/org-a/_packaging", NuGet, target)).unwrap()).await;
+    let (result, _policy, _dir) =
+        sync_raw(serde_json::to_value(with("/org-a/_packaging", NuGet, target)).unwrap()).await;
     result.expect("an ordinary prefix is accepted");
 }
 
@@ -945,19 +1248,46 @@ async fn a_token_origin_is_an_https_origin_and_only_an_oci_registry_with_a_targe
     };
     for (origin, ecosystem, target, why) in [
         ("http://gitlab.example.test", Oci, target, "not https"),
-        ("https://user:pw@gitlab.example.test", Oci, target, "userinfo"),
-        ("https://gitlab.example.test/jwt/auth", Oci, target, "a path"),
+        (
+            "https://user:pw@gitlab.example.test",
+            Oci,
+            target,
+            "userinfo",
+        ),
+        (
+            "https://gitlab.example.test/jwt/auth",
+            Oci,
+            target,
+            "a path",
+        ),
         ("https://gitlab.example.test/?x=1", Oci, target, "query"),
         ("https://gitlab.example.test/#f", Oci, target, "fragment"),
         ("https://127.0.0.1", Oci, target, "loopback"),
         ("https://169.254.169.254", Oci, target, "metadata address"),
-        ("https://gitlab.example.test", Oci, None, "an OCI registry needs a target of its own"),
-        ("https://gitlab.example.test", Conan, Some("https://art.example.test/c/"), "not an OCI registry"),
+        (
+            "https://gitlab.example.test",
+            Oci,
+            None,
+            "an OCI registry needs a target of its own",
+        ),
+        (
+            "https://gitlab.example.test",
+            Conan,
+            Some("https://art.example.test/c/"),
+            "not an OCI registry",
+        ),
         ("not a url", Oci, target, "not a URL"),
     ] {
-        let (result, policy, _dir) = sync_raw(serde_json::to_value(tokened(origin, ecosystem, target)).unwrap()).await;
-        assert!(result.is_err() && policy.snapshot().is_none(), "{origin} ({why}) must be rejected before activation");
+        let (result, policy, _dir) =
+            sync_raw(serde_json::to_value(tokened(origin, ecosystem, target)).unwrap()).await;
+        assert!(
+            result.is_err() && policy.snapshot().is_none(),
+            "{origin} ({why}) must be rejected before activation"
+        );
     }
-    let (result, _policy, _dir) = sync_raw(serde_json::to_value(tokened("https://gitlab.example.test", Oci, target)).unwrap()).await;
+    let (result, _policy, _dir) = sync_raw(
+        serde_json::to_value(tokened("https://gitlab.example.test", Oci, target)).unwrap(),
+    )
+    .await;
     result.expect("an OCI registry's token origin is accepted");
 }

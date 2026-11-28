@@ -3044,8 +3044,14 @@ async fn t_sync_newer_layer_rebuilds_cached_keys() {
 async fn t_report_carries_osv_counters() {
     let h = harness(|_, _| {}).await;
     h.sync.sync_rounds(1).await;
-    let osv = last_report(&h.sync).osv.expect("a managed report carries the OSV counters");
-    assert_eq!(osv, probation_policy::api::OsvReport::default(), "nothing asked yet");
+    let osv = last_report(&h.sync)
+        .osv
+        .expect("a managed report carries the OSV counters");
+    assert_eq!(
+        osv,
+        probation_policy::api::OsvReport::default(),
+        "nothing asked yet"
+    );
     // An older firewall's report (no `osv` key) is still read, and the key is left out when absent.
     let mut report = last_report(&h.sync);
     report.osv = None;

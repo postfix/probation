@@ -74,7 +74,14 @@ async fn fixture(warm: bool) -> Fx {
         report: managed.report(probation_policy::api::Upstreams {
             npm: probation_policy::api::Reachability::Ok,
             pypi: probation_policy::api::Reachability::Ok,
-            osv: probation_policy::api::Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+            osv: probation_policy::api::Reachability::Ok,
+            rubygems: None,
+            cargo: None,
+            go: None,
+            nuget: None,
+            maven: None,
+            conan: None,
+            oci: None,
         }),
         activity: vec![],
         activity_dropped: vec![],
@@ -93,10 +100,9 @@ async fn fixture(warm: bool) -> Fx {
         .unwrap()
         .parse()
         .unwrap();
-    let id = probation::store::rows::ReferenceId::parse_hex(
-        url.path().split('/').rev().nth(1).unwrap(),
-    )
-    .unwrap();
+    let id =
+        probation::store::rows::ReferenceId::parse_hex(url.path().split('/').rev().nth(1).unwrap())
+            .unwrap();
     if warm {
         let r = server
             .get_with_headers(url.path(), &[("authorization", &bearer)])
@@ -104,7 +110,13 @@ async fn fixture(warm: bool) -> Fx {
         assert_eq!(r.status().as_u16(), 200);
         r.bytes().await.unwrap();
     }
-    Fx { server, bearer, id, _osv: osv, _dir: dir }
+    Fx {
+        server,
+        bearer,
+        id,
+        _osv: osv,
+        _dir: dir,
+    }
 }
 
 impl Fx {
@@ -151,11 +163,20 @@ impl Fx {
 
 async fn released(r: axum::response::Response) -> (bool, Vec<u8>) {
     let ok = r.status().is_success();
-    (ok, axum::body::to_bytes(r.into_body(), 4096).await.unwrap().to_vec())
+    (
+        ok,
+        axum::body::to_bytes(r.into_body(), 4096)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
 }
 
-const CASES: [(Method, Option<&str>); 3] =
-    [(Method::GET, None), (Method::HEAD, None), (Method::GET, Some("bytes=0-7"))];
+const CASES: [(Method, Option<&str>); 3] = [
+    (Method::GET, None),
+    (Method::HEAD, None),
+    (Method::GET, Some("bytes=0-7")),
+];
 
 #[tokio::test]
 async fn osv_flip_after_prepare_refuses_cold_and_warm_all_methods() {
@@ -167,7 +188,10 @@ async fn osv_flip_after_prepare_refuses_cold_and_warm_all_methods() {
             fx.flip_osv().await;
             let (ok, body) = released(prepared.into_response()).await;
             assert!(!ok, "warm={warm} {m} {range:?} must refuse");
-            assert!(!body.windows(8).any(|w| w == b"verified"), "no payload bytes");
+            assert!(
+                !body.windows(8).any(|w| w == b"verified"),
+                "no payload bytes"
+            );
         }
     }
 }
@@ -181,7 +205,10 @@ async fn osv_flip_before_prepare_and_no_flip_deliver() {
         assert!(ok && body == BYTES.as_bytes());
         fx.flip_osv().await;
         let (ok, body) = released(fx.prepare(&p, &Method::GET, None).await.into_response()).await;
-        assert!(ok && body == BYTES.as_bytes(), "a flip before the generation read must not refuse");
+        assert!(
+            ok && body == BYTES.as_bytes(),
+            "a flip before the generation read must not refuse"
+        );
     }
 }
 
@@ -226,7 +253,9 @@ async fn barrier_publication_governs_release() {
         gate.set_barrier(Arc::new(move || {
             if publish {
                 let g3 = Arc::clone(&g2);
-                std::thread::spawn(move || g3.publish(|| ()).unwrap()).join().unwrap();
+                std::thread::spawn(move || g3.publish(|| ()).unwrap())
+                    .join()
+                    .unwrap();
             }
         }));
         let (ok, _) = released(prepared.into_response()).await;
@@ -239,7 +268,13 @@ async fn publish_after_prepare_refuses_even_if_unchanged() {
     let fx = fixture(true).await;
     let p = fx.principal().await;
     let prepared = fx.prepare(&p, &Method::GET, None).await;
-    fx.server.app().managed().unwrap().publication_gate().publish(|| ()).unwrap();
+    fx.server
+        .app()
+        .managed()
+        .unwrap()
+        .publication_gate()
+        .publish(|| ())
+        .unwrap();
     let (ok, _) = released(prepared.into_response()).await;
     assert!(!ok);
 }

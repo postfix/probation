@@ -24,7 +24,12 @@ impl Digest {
             "sha512" => (Algorithm::Sha512, 128),
             _ => return None,
         };
-        (hex.len() == length && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then(|| Digest { algorithm, hex: hex.to_owned() })
+        (hex.len() == length && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then(
+            || Digest {
+                algorithm,
+                hex: hex.to_owned(),
+            },
+        )
     }
 
     /// The digest of `bytes` in this digest's algorithm.
@@ -44,7 +49,16 @@ impl Digest {
 
 impl std::fmt::Display for Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", if self.algorithm == Algorithm::Sha256 { "sha256" } else { "sha512" }, self.hex)
+        write!(
+            f,
+            "{}:{}",
+            if self.algorithm == Algorithm::Sha256 {
+                "sha256"
+            } else {
+                "sha512"
+            },
+            self.hex
+        )
     }
 }
 
@@ -74,12 +88,20 @@ impl Reference {
 /// `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`.
 pub fn valid_tag(tag: &str) -> bool {
     let mut bytes = tag.bytes();
-    tag.len() <= 128 && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_') && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    tag.len() <= 128
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// An upload session id: what a registry puts in a `Location` (a UUID, or any token of these characters).
 pub fn valid_session(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'=' | b'+'))
+    !id.is_empty()
+        && id.len() <= 256
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'=' | b'+'))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,14 +112,30 @@ pub enum Parsed {
     Token,
     /// `GET /v2/_catalog`.
     Catalog,
-    Manifest { name: String, reference: Reference },
-    Blob { name: String, digest: Digest },
-    Tags { name: String },
-    Referrers { name: String, digest: Digest },
+    Manifest {
+        name: String,
+        reference: Reference,
+    },
+    Blob {
+        name: String,
+        digest: Digest,
+    },
+    Tags {
+        name: String,
+    },
+    Referrers {
+        name: String,
+        digest: Digest,
+    },
     /// `POST /v2/{name}/blobs/uploads/`.
-    UploadStart { name: String },
+    UploadStart {
+        name: String,
+    },
     /// `GET|PATCH|PUT|DELETE /v2/{name}/blobs/uploads/{session}`.
-    Upload { name: String, session: String },
+    Upload {
+        name: String,
+        session: String,
+    },
 }
 
 /// `path` is what follows `v2` (no leading slash; empty for the ping). `query` is the raw query string.
@@ -120,22 +158,42 @@ pub fn parse(path: &str) -> Option<Parsed> {
     };
     let n = segments.len();
     // `blobs/uploads/` ends in an empty segment.
-    if n >= 4 && segments[n - 3] == "blobs" && segments[n - 2] == "uploads" && segments[n - 1].is_empty() {
+    if n >= 4
+        && segments[n - 3] == "blobs"
+        && segments[n - 2] == "uploads"
+        && segments[n - 1].is_empty()
+    {
         return Some(Parsed::UploadStart { name: name(n - 3)? });
     }
-    if n >= 4 && segments[n - 3] == "blobs" && segments[n - 2] == "uploads" && valid_session(segments[n - 1]) {
-        return Some(Parsed::Upload { name: name(n - 3)?, session: segments[n - 1].to_owned() });
+    if n >= 4
+        && segments[n - 3] == "blobs"
+        && segments[n - 2] == "uploads"
+        && valid_session(segments[n - 1])
+    {
+        return Some(Parsed::Upload {
+            name: name(n - 3)?,
+            session: segments[n - 1].to_owned(),
+        });
     }
     if n >= 3 && segments[n - 2] == "manifests" {
-        return Some(Parsed::Manifest { name: name(n - 2)?, reference: Reference::parse(segments[n - 1])? });
+        return Some(Parsed::Manifest {
+            name: name(n - 2)?,
+            reference: Reference::parse(segments[n - 1])?,
+        });
     }
     // A blob by sha256 or sha512. The bytes are verified in the algorithm asked for, and judged under their sha256 (computed while they stream
     // in), so a block by digest cannot be sidestepped by another spelling.
     if n >= 3 && segments[n - 2] == "blobs" {
-        return Some(Parsed::Blob { name: name(n - 2)?, digest: Digest::parse(segments[n - 1])? });
+        return Some(Parsed::Blob {
+            name: name(n - 2)?,
+            digest: Digest::parse(segments[n - 1])?,
+        });
     }
     if n >= 3 && segments[n - 2] == "referrers" {
-        return Some(Parsed::Referrers { name: name(n - 2)?, digest: Digest::parse(segments[n - 1])? });
+        return Some(Parsed::Referrers {
+            name: name(n - 2)?,
+            digest: Digest::parse(segments[n - 1])?,
+        });
     }
     if n >= 3 && segments[n - 2] == "tags" && segments[n - 1] == "list" {
         return Some(Parsed::Tags { name: name(n - 2)? });
@@ -146,13 +204,19 @@ pub fn parse(path: &str) -> Option<Parsed> {
 /// The query keys a read takes, each at most once with a bounded value. `ns` names the registry a client was asked to pull from
 /// (containerd and the Docker daemon send it to a mirror); the others are the list parameters of the distribution spec.
 pub fn read_query(query: Option<&str>, keys: &[&str]) -> Option<Vec<(String, String)>> {
-    let Some(query) = query else { return Some(Vec::new()) };
+    let Some(query) = query else {
+        return Some(Vec::new());
+    };
     if query.len() > 2048 {
         return None;
     }
     let mut out: Vec<(String, String)> = Vec::new();
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        if !keys.contains(&key.as_ref()) || value.len() > 512 || out.iter().any(|(seen, _)| *seen == key) || value.chars().any(char::is_control) {
+        if !keys.contains(&key.as_ref())
+            || value.len() > 512
+            || out.iter().any(|(seen, _)| *seen == key)
+            || value.chars().any(char::is_control)
+        {
             return None;
         }
         out.push((key.into_owned(), value.into_owned()));
@@ -169,13 +233,47 @@ mod tests {
     #[test]
     fn a_path_has_one_meaning_and_everything_else_is_nothing() {
         assert_eq!(parse(""), Some(Parsed::Ping));
-        assert_eq!(parse("library/alpine/manifests/latest"), Some(Parsed::Manifest { name: "library/alpine".into(), reference: Reference::Tag("latest".into()) }));
-        assert!(matches!(parse(&format!("a/b/c/manifests/{D}")), Some(Parsed::Manifest { reference: Reference::Digest(_), .. })));
-        assert!(matches!(parse(&format!("alpine/blobs/{D}")), Some(Parsed::Blob { .. })));
-        assert!(matches!(parse(&format!("alpine/referrers/{D}")), Some(Parsed::Referrers { .. })));
-        assert_eq!(parse("alpine/tags/list"), Some(Parsed::Tags { name: "alpine".into() }));
-        assert_eq!(parse("alpine/blobs/uploads/"), Some(Parsed::UploadStart { name: "alpine".into() }));
-        assert_eq!(parse("a/blobs/blobs/uploads/abc-1"), Some(Parsed::Upload { name: "a/blobs".into(), session: "abc-1".into() }));
+        assert_eq!(
+            parse("library/alpine/manifests/latest"),
+            Some(Parsed::Manifest {
+                name: "library/alpine".into(),
+                reference: Reference::Tag("latest".into())
+            })
+        );
+        assert!(matches!(
+            parse(&format!("a/b/c/manifests/{D}")),
+            Some(Parsed::Manifest {
+                reference: Reference::Digest(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&format!("alpine/blobs/{D}")),
+            Some(Parsed::Blob { .. })
+        ));
+        assert!(matches!(
+            parse(&format!("alpine/referrers/{D}")),
+            Some(Parsed::Referrers { .. })
+        ));
+        assert_eq!(
+            parse("alpine/tags/list"),
+            Some(Parsed::Tags {
+                name: "alpine".into()
+            })
+        );
+        assert_eq!(
+            parse("alpine/blobs/uploads/"),
+            Some(Parsed::UploadStart {
+                name: "alpine".into()
+            })
+        );
+        assert_eq!(
+            parse("a/blobs/blobs/uploads/abc-1"),
+            Some(Parsed::Upload {
+                name: "a/blobs".into(),
+                session: "abc-1".into()
+            })
+        );
         for bad in [
             "Alpine/manifests/latest",
             "alpine/manifests/",
@@ -195,13 +293,24 @@ mod tests {
         ] {
             assert!(parse(bad).is_none(), "{bad}");
         }
-        assert!(parse(&format!("{}/manifests/latest", "a/".repeat(600))).is_none(), "name over 255 bytes");
+        assert!(
+            parse(&format!("{}/manifests/latest", "a/".repeat(600))).is_none(),
+            "name over 255 bytes"
+        );
     }
 
     #[test]
     fn a_digest_is_verified_in_its_own_algorithm() {
-        assert_eq!(Digest::of(Algorithm::Sha256, b"").to_string(), "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(Digest::parse(&Digest::of(Algorithm::Sha512, b"x").to_string()).unwrap().algorithm, Algorithm::Sha512);
+        assert_eq!(
+            Digest::of(Algorithm::Sha256, b"").to_string(),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            Digest::parse(&Digest::of(Algorithm::Sha512, b"x").to_string())
+                .unwrap()
+                .algorithm,
+            Algorithm::Sha512
+        );
         assert!(Digest::parse("sha256:abc").is_none());
     }
 

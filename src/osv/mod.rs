@@ -129,7 +129,11 @@ impl PutView<'_> {
         if let Some(entry) = self.inner.matched.get(&key) {
             return (entry.expires_at > self.now).then_some(true);
         }
-        self.inner.lru.peek(&key).filter(|entry| entry.expires_at > self.now).map(|entry| entry.matched)
+        self.inner
+            .lru
+            .peek(&key)
+            .filter(|entry| entry.expires_at > self.now)
+            .map(|entry| entry.matched)
     }
 }
 
@@ -168,7 +172,11 @@ impl OsvCache {
     fn build(match_ttl: Duration, retained: Option<Retained>) -> OsvCache {
         let capacity = NonZeroUsize::new(OSV_CACHE_ENTRIES).expect("a non-zero bound");
         OsvCache {
-            entries: Mutex::new(Inner { lru: LruCache::new(capacity), matched: HashMap::new(), dirty: false }),
+            entries: Mutex::new(Inner {
+                lru: LruCache::new(capacity),
+                matched: HashMap::new(),
+                dirty: false,
+            }),
             match_ttl,
             generation: Arc::default(),
             retained,
@@ -181,8 +189,20 @@ impl OsvCache {
 
     /// A managed endpoint's cache: stale-if-error matches, exempt from eviction, loaded
     /// from and persisted to `path`. An unreadable file loads empty and never blocks.
-    fn managed(match_ttl: Duration, stale_window: Duration, path: Option<PathBuf>, health: Arc<UpstreamHealth>) -> OsvCache {
-        let cache = OsvCache::build(match_ttl, Some(Retained { stale_window, path: path.clone(), health: Arc::clone(&health) }));
+    fn managed(
+        match_ttl: Duration,
+        stale_window: Duration,
+        path: Option<PathBuf>,
+        health: Arc<UpstreamHealth>,
+    ) -> OsvCache {
+        let cache = OsvCache::build(
+            match_ttl,
+            Some(Retained {
+                stale_window,
+                path: path.clone(),
+                health: Arc::clone(&health),
+            }),
+        );
         if let Some(path) = path
             && path.exists()
         {
@@ -199,11 +219,15 @@ impl OsvCache {
                     let wall_unix = wall.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
                     let mut inner = cache.entries.lock().expect("the OSV cache");
                     for entry in loaded.entries {
-                        let remaining = Duration::from_secs(entry.expiry_unix.saturating_sub(wall_unix));
+                        let remaining =
+                            Duration::from_secs(entry.expiry_unix.saturating_sub(wall_unix));
                         // Past its TTL by construction: asked again as soon as the server is.
                         inner.matched.insert(
                             (entry.ecosystem, entry.name, entry.version),
-                            MatchedEntry { expires_at: now, stale_until: now + remaining },
+                            MatchedEntry {
+                                expires_at: now,
+                                stale_until: now + remaining,
+                            },
                         );
                     }
                 }
@@ -227,7 +251,8 @@ impl OsvCache {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn advance(&self, by: Duration) {
-        self.skew_ms.fetch_add(by.as_millis() as u64, Ordering::Relaxed);
+        self.skew_ms
+            .fetch_add(by.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// A live answer only: an expired or absent one is `None`, and so is a matched entry
@@ -284,18 +309,28 @@ impl OsvCache {
         let mut inner = self.entries.lock().expect("the OSV cache");
         let was_live_match = match inner.matched.get(&key) {
             Some(entry) => entry.expires_at > now,
-            None => inner.lru.peek(&key).is_some_and(|entry| entry.matched && entry.expires_at > now),
+            None => inner
+                .lru
+                .peek(&key)
+                .is_some_and(|entry| entry.matched && entry.expires_at > now),
         };
         match &self.retained {
             Some(retained) if matched => {
                 inner.lru.pop(&key);
                 inner.matched.insert(
                     key,
-                    MatchedEntry { expires_at: now + self.match_ttl, stale_until: now + self.match_ttl + retained.stale_window },
+                    MatchedEntry {
+                        expires_at: now + self.match_ttl,
+                        stale_until: now + self.match_ttl + retained.stale_window,
+                    },
                 );
                 // The memory cap: nearest expiry out, counted as a health warning.
                 while inner.matched.len() > OSV_MATCHED_CAP {
-                    let nearest = inner.matched.iter().min_by_key(|(_, e)| e.stale_until).map(|(k, _)| k.clone());
+                    let nearest = inner
+                        .matched
+                        .iter()
+                        .min_by_key(|(_, e)| e.stale_until)
+                        .map(|(k, _)| k.clone());
                     match nearest {
                         Some(k) => inner.matched.remove(&k),
                         None => break,
@@ -308,8 +343,18 @@ impl OsvCache {
                 if retained.is_some() && inner.matched.remove(&key).is_some() {
                     inner.dirty = true;
                 }
-                let ttl = if matched { self.match_ttl } else { OSV_NEGATIVE_TTL };
-                inner.lru.put(key, CacheEntry { matched, expires_at: now + ttl });
+                let ttl = if matched {
+                    self.match_ttl
+                } else {
+                    OSV_NEGATIVE_TTL
+                };
+                inner.lru.put(
+                    key,
+                    CacheEntry {
+                        matched,
+                        expires_at: now + ttl,
+                    },
+                );
             }
         }
         #[cfg(any(test, feature = "test-support"))]
@@ -324,11 +369,19 @@ impl OsvCache {
     /// Writes the matched entries when they changed since the last write. Blocking file
     /// I/O: the batcher calls it from `spawn_blocking`.
     fn persist(&self) {
-        let Some(retained) = &self.retained else { return };
+        let Some(retained) = &self.retained else {
+            return;
+        };
         let Some(path) = &retained.path else { return };
-        let _serial = self.persist_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serial = self
+            .persist_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = self.now();
-        let wall_unix = self.wall().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let wall_unix = self
+            .wall()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         let entries: Vec<(Ecosystem, String, String, u64)> = {
             let mut inner = self.entries.lock().expect("the OSV cache");
             if !inner.dirty {
@@ -339,7 +392,14 @@ impl OsvCache {
                 .matched
                 .iter()
                 .filter(|(_, e)| e.stale_until > now)
-                .map(|((eco, name, version), e)| (*eco, name.clone(), version.clone(), wall_unix + e.stale_until.saturating_duration_since(now).as_secs()))
+                .map(|((eco, name, version), e)| {
+                    (
+                        *eco,
+                        name.clone(),
+                        version.clone(),
+                        wall_unix + e.stale_until.saturating_duration_since(now).as_secs(),
+                    )
+                })
                 .collect()
         };
         let rendered = matches::render_matches(&entries);
@@ -405,7 +465,10 @@ pub fn central_base(server: &Url, allow_http: bool) -> Result<Url, CentralBaseEr
         return Err(CentralBaseError);
     }
     let mut base = server.clone();
-    base.path_segments_mut().map_err(|()| CentralBaseError)?.pop_if_empty().push("osv");
+    base.path_segments_mut()
+        .map_err(|()| CentralBaseError)?
+        .pop_if_empty()
+        .push("osv");
     Ok(base)
 }
 
@@ -422,7 +485,11 @@ fn central_http_client(allow_http: bool) -> Client {
 /// The effective OSV scope of a registry (LS-F12): a registry on its family's fixed
 /// public source is `Public`; for any other target the explicit field wins, and an absent
 /// field is `Public` (no protection is removed; the operator may set `Private`).
-pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit: Option<OsvScope>) -> OsvScope {
+pub fn effective_scope(
+    ecosystem: Ecosystem,
+    target_url: Option<&str>,
+    explicit: Option<OsvScope>,
+) -> OsvScope {
     let Some(target_url) = target_url else {
         // No custom target: the family's own public registry.
         return OsvScope::Public;
@@ -434,7 +501,12 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         Ecosystem::RubyGems => &["rubygems.org", "index.rubygems.org"],
         Ecosystem::Cargo => &["index.crates.io", "static.crates.io"],
         Ecosystem::Go => &["proxy.golang.org", "sum.golang.org"],
-        Ecosystem::NuGet => &["api.nuget.org", "azuresearch-usnc.nuget.org", "azuresearch-ussc.nuget.org", "www.nuget.org"],
+        Ecosystem::NuGet => &[
+            "api.nuget.org",
+            "azuresearch-usnc.nuget.org",
+            "azuresearch-ussc.nuget.org",
+            "www.nuget.org",
+        ],
         Ecosystem::Maven => &["repo.maven.apache.org", "repo1.maven.org"],
         Ecosystem::Conan => &["center2.conan.io", "center.conan.io"],
         Ecosystem::Oci => &[],
@@ -443,7 +515,11 @@ pub fn effective_scope(ecosystem: Ecosystem, target_url: Option<&str>, explicit:
         .and_then(|text| Url::parse(text).ok())
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
         .is_some_and(|host| fixed.contains(&host.as_str()));
-    if public_source { OsvScope::Public } else { explicit.unwrap_or(OsvScope::Public) }
+    if public_source {
+        OsvScope::Public
+    } else {
+        explicit.unwrap_or(OsvScope::Public)
+    }
 }
 
 impl OsvClient {
@@ -479,7 +555,14 @@ impl OsvClient {
         upstreams: Arc<UpstreamHealth>,
     ) -> (OsvClient, JoinHandle<()>) {
         let cache = Arc::new(OsvCache::new(cache_ttl));
-        OsvClient::spawn_on(client, batcher::Target::direct(url), cache, request_timeout, shutdown, upstreams)
+        OsvClient::spawn_on(
+            client,
+            batcher::Target::direct(url),
+            cache,
+            request_timeout,
+            shutdown,
+            upstreams,
+        )
     }
 
     /// A managed endpoint's client (C1030): the same cache, batcher and fail-open rules,
@@ -500,7 +583,14 @@ impl OsvClient {
         // Built here, never handed in: redirects off and https only, so no caller can send the
         // credential across an origin by passing a more permissive client (SEC-8).
         let client = central_http_client(options.allow_http);
-        OsvClient::spawn_on(client, batcher::Target::central(target), cache, options.request_timeout, shutdown, upstreams)
+        OsvClient::spawn_on(
+            client,
+            batcher::Target::central(target),
+            cache,
+            options.request_timeout,
+            shutdown,
+            upstreams,
+        )
     }
 
     fn spawn_on(
@@ -540,7 +630,9 @@ impl OsvClient {
     /// window (managed mode): what a log-only "would have blocked" record must see.
     pub fn cached_or_stale(&self, ecosystem: Ecosystem, name: &str, version: &str) -> Option<bool> {
         let key = (ecosystem, name.to_owned(), version.to_owned());
-        self.cache.get(&key).or_else(|| self.cache.stale_match(&key).then_some(true))
+        self.cache
+            .get(&key)
+            .or_else(|| self.cache.stale_match(&key).then_some(true))
     }
 
     /// **Test seam, `test-support` only.** `threads` threads each store one match and persist.
@@ -550,7 +642,10 @@ impl OsvClient {
             for i in 0..threads {
                 let cache = Arc::clone(&self.cache);
                 scope.spawn(move || {
-                    cache.put((Ecosystem::Npm, format!("p{round}-{i}"), "1.0.0".to_owned()), true);
+                    cache.put(
+                        (Ecosystem::Npm, format!("p{round}-{i}"), "1.0.0".to_owned()),
+                        true,
+                    );
                     cache.persist();
                 });
             }
@@ -578,20 +673,31 @@ impl OsvClient {
     #[cfg(feature = "test-support")]
     pub fn fill_unmatched_for_test(&self, count: usize) {
         for i in 0..count {
-            self.cache.put((Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()), false);
+            self.cache.put(
+                (Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()),
+                false,
+            );
         }
     }
 
     #[cfg(feature = "test-support")]
     pub fn fill_matched_for_test(&self, count: usize) {
         for i in 0..count {
-            self.cache.put((Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()), true);
+            self.cache.put(
+                (Ecosystem::Npm, format!("fill-{i}"), "1.0.0".to_owned()),
+                true,
+            );
         }
     }
 
     #[cfg(feature = "test-support")]
     pub fn matched_len(&self) -> usize {
-        self.cache.entries.lock().expect("the OSV cache").matched.len()
+        self.cache
+            .entries
+            .lock()
+            .expect("the OSV cache")
+            .matched
+            .len()
     }
 
     /// `true` only on a confirmed OSV `MAL-*` match. Every failure path — a cache
@@ -687,7 +793,10 @@ pub async fn evaluate_scoped(
         .policy
         .rules_for(candidate.ecosystem, candidate.name, candidate.version);
     // A family OSV has no ecosystem for (container images) is never asked about, whatever the scope says.
-    if rules.osv == OsvSetting::Off || scope == OsvScope::Private || batcher::osv_ecosystem(candidate.ecosystem).is_none() {
+    if rules.osv == OsvSetting::Off
+        || scope == OsvScope::Private
+        || batcher::osv_ecosystem(candidate.ecosystem).is_none()
+    {
         return blind.decision;
     }
 
@@ -946,7 +1055,8 @@ mod tests {
     async fn osv_skipped_for_private_registry() {
         for (scope, asked) in [(OsvScope::Private, 0), (OsvScope::Public, 1)] {
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
             let decision = evaluate_scoped(
                 &client,
                 &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
@@ -958,12 +1068,19 @@ mod tests {
             shutdown.cancel();
             let _ = handle.await;
             assert_eq!(count.load(Ordering::SeqCst), asked, "{scope:?}");
-            assert_eq!(matches!(decision, Decision::Allow), scope == OsvScope::Private, "{scope:?}: {decision:?}");
+            assert_eq!(
+                matches!(decision, Decision::Allow),
+                scope == OsvScope::Private,
+                "{scope:?}: {decision:?}"
+            );
         }
     }
 
     fn gem_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::RubyGems, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::RubyGems,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 17, LS-F12: a RubyGems registry the operator sets Private is never asked about
@@ -975,14 +1092,39 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &gem_candidate("internal-gem", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &gem_candidate("internal-gem", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's gem name reaches no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's gem name reaches no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
         // The fixed public source ignores the field: rubygems.org is always Public.
-        assert_eq!(effective_scope(Ecosystem::RubyGems, Some("https://rubygems.org/"), Some(OsvScope::Private)), OsvScope::Public);
-        assert_eq!(effective_scope(Ecosystem::RubyGems, Some("https://index.rubygems.org/"), Some(OsvScope::Private)), OsvScope::Public);
+        assert_eq!(
+            effective_scope(
+                Ecosystem::RubyGems,
+                Some("https://rubygems.org/"),
+                Some(OsvScope::Private)
+            ),
+            OsvScope::Public
+        );
+        assert_eq!(
+            effective_scope(
+                Ecosystem::RubyGems,
+                Some("https://index.rubygems.org/"),
+                Some(OsvScope::Private)
+            ),
+            OsvScope::Public
+        );
     }
 
     /// Row 17, LS-F12: a public mirror whose operator says Public (and a custom mirror
@@ -994,17 +1136,35 @@ mod tests {
             let scope = effective_scope(Ecosystem::RubyGems, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &gem_candidate("rack", "9.9.9"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &gem_candidate("rack", "9.9.9"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
     fn cargo_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::Cargo, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::Cargo,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 18, LS-F12: a Cargo registry the operator sets Private is never asked about (its
@@ -1016,13 +1176,31 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &cargo_candidate("internal-crate", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &cargo_candidate("internal-crate", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's crate name reaches no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's crate name reaches no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
-        for public in ["https://index.crates.io/", "https://static.crates.io/crates"] {
-            assert_eq!(effective_scope(Ecosystem::Cargo, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        for public in [
+            "https://index.crates.io/",
+            "https://static.crates.io/crates",
+        ] {
+            assert_eq!(
+                effective_scope(Ecosystem::Cargo, Some(public), Some(OsvScope::Private)),
+                OsvScope::Public,
+                "{public}"
+            );
         }
     }
 
@@ -1035,17 +1213,35 @@ mod tests {
             let scope = effective_scope(Ecosystem::Cargo, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &cargo_candidate("serde-json", "9.9.9"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &cargo_candidate("serde-json", "9.9.9"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
     fn nuget_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::NuGet, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::NuGet,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 20, LS-F12 (`osv_skipped_for_private_registry_in_nuget`): a NuGet registry the operator sets
@@ -1057,13 +1253,32 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &nuget_candidate("corp.internal.pkg", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &nuget_candidate("corp.internal.pkg", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's package id reaches no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's package id reaches no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
-        for public in ["https://api.nuget.org/v3/index.json", "https://azuresearch-usnc.nuget.org/query", "https://www.nuget.org/api/v2/package"] {
-            assert_eq!(effective_scope(Ecosystem::NuGet, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        for public in [
+            "https://api.nuget.org/v3/index.json",
+            "https://azuresearch-usnc.nuget.org/query",
+            "https://www.nuget.org/api/v2/package",
+        ] {
+            assert_eq!(
+                effective_scope(Ecosystem::NuGet, Some(public), Some(OsvScope::Private)),
+                OsvScope::Public,
+                "{public}"
+            );
         }
     }
 
@@ -1076,17 +1291,35 @@ mod tests {
             let scope = effective_scope(Ecosystem::NuGet, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &nuget_candidate("newtonsoft.json", "9.9.9"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &nuget_candidate("newtonsoft.json", "9.9.9"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
     fn maven_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::Maven, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::Maven,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 21, LS-F12 (`osv_skipped_for_private_registry_in_maven`): a Maven registry the operator sets Private is never asked
@@ -1098,13 +1331,31 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &maven_candidate("corp.internal:secret-lib", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &maven_candidate("corp.internal:secret-lib", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's coordinates reach no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's coordinates reach no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
-        for public in ["https://repo.maven.apache.org/maven2/", "https://repo1.maven.org/maven2/org/x/y/1/y-1.jar"] {
-            assert_eq!(effective_scope(Ecosystem::Maven, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        for public in [
+            "https://repo.maven.apache.org/maven2/",
+            "https://repo1.maven.org/maven2/org/x/y/1/y-1.jar",
+        ] {
+            assert_eq!(
+                effective_scope(Ecosystem::Maven, Some(public), Some(OsvScope::Private)),
+                OsvScope::Public,
+                "{public}"
+            );
         }
     }
 
@@ -1117,17 +1368,35 @@ mod tests {
             let scope = effective_scope(Ecosystem::Maven, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &maven_candidate("org.apache.logging.log4j:log4j-core", "2.14.1"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &maven_candidate("org.apache.logging.log4j:log4j-core", "2.14.1"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
     fn conan_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::Conan, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::Conan,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 23, LS-F12 (`osv_skipped_for_private_registry_in_conan`): a Conan registry the operator sets Private is never asked
@@ -1139,13 +1408,31 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &conan_candidate("secret-lib", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &conan_candidate("secret-lib", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's names reach no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's names reach no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
-        for public in ["https://center2.conan.io/", "https://center.conan.io/v2/conans/zlib/1.3.1/_/_/latest"] {
-            assert_eq!(effective_scope(Ecosystem::Conan, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+        for public in [
+            "https://center2.conan.io/",
+            "https://center.conan.io/v2/conans/zlib/1.3.1/_/_/latest",
+        ] {
+            assert_eq!(
+                effective_scope(Ecosystem::Conan, Some(public), Some(OsvScope::Private)),
+                OsvScope::Public,
+                "{public}"
+            );
         }
     }
 
@@ -1158,12 +1445,27 @@ mod tests {
             let scope = effective_scope(Ecosystem::Conan, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &conan_candidate("log4j", "1.0.0"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &conan_candidate("log4j", "1.0.0"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
@@ -1172,20 +1474,48 @@ mod tests {
     #[tokio::test]
     async fn osv_not_applicable_to_oci() {
         for explicit in [Some(OsvScope::Public), Some(OsvScope::Private), None] {
-            let scope = effective_scope(Ecosystem::Oci, Some("https://registry.example.org/"), explicit);
+            let scope = effective_scope(
+                Ecosystem::Oci,
+                Some("https://registry.example.org/"),
+                explicit,
+            );
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let candidate = Candidate { ecosystem: Ecosystem::Oci, ..candidate("library/alpine", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") };
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &candidate, scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let candidate = Candidate {
+                ecosystem: Ecosystem::Oci,
+                ..candidate(
+                    "library/alpine",
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+            };
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &candidate,
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 0, "{explicit:?}: an image is never asked about");
-            assert!(matches!(decision, Decision::Allow), "{explicit:?}: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "{explicit:?}: an image is never asked about"
+            );
+            assert!(
+                matches!(decision, Decision::Allow),
+                "{explicit:?}: {decision:?}"
+            );
         }
     }
 
     fn go_candidate<'a>(name: &'a str, version: &'a str) -> Candidate<'a> {
-        Candidate { ecosystem: Ecosystem::Go, ..candidate(name, version) }
+        Candidate {
+            ecosystem: Ecosystem::Go,
+            ..candidate(name, version)
+        }
     }
 
     /// Row 19, LS-F12 (`osv_skipped_for_private_registry_in_go`): a Go registry the operator sets
@@ -1198,13 +1528,28 @@ mod tests {
         assert_eq!(scope, OsvScope::Private);
         let (url, _server, count) = mode_server(true).await;
         let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-        let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &go_candidate("corp.example/internal", "1.0.0"), scope).await;
+        let decision = evaluate_scoped(
+            &client,
+            &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+            10_000_000,
+            &go_candidate("corp.example/internal", "1.0.0"),
+            scope,
+        )
+        .await;
         shutdown.cancel();
         let _ = handle.await;
-        assert_eq!(count.load(Ordering::SeqCst), 0, "a Private registry's module path reaches no OSV server");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a Private registry's module path reaches no OSV server"
+        );
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
         for public in ["https://proxy.golang.org/", "https://sum.golang.org/"] {
-            assert_eq!(effective_scope(Ecosystem::Go, Some(public), Some(OsvScope::Private)), OsvScope::Public, "{public}");
+            assert_eq!(
+                effective_scope(Ecosystem::Go, Some(public), Some(OsvScope::Private)),
+                OsvScope::Public,
+                "{public}"
+            );
         }
     }
 
@@ -1218,12 +1563,27 @@ mod tests {
             let scope = effective_scope(Ecosystem::Go, Some(mirror), explicit);
             assert_eq!(scope, OsvScope::Public, "{explicit:?}");
             let (url, _server, count) = mode_server(true).await;
-            let (client, handle, shutdown) = spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
-            let decision = evaluate_scoped(&client, &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)), 10_000_000, &go_candidate("github.com/Azure/x", "9.9.9"), scope).await;
+            let (client, handle, shutdown) =
+                spawn(url, StdDuration::from_secs(60), SHIPPED_TIMEOUT);
+            let decision = evaluate_scoped(
+                &client,
+                &standalone(OsvMode::Enforce, clean_snapshot(10_000_000)),
+                10_000_000,
+                &go_candidate("github.com/Azure/x", "9.9.9"),
+                scope,
+            )
+            .await;
             shutdown.cancel();
             let _ = handle.await;
-            assert_eq!(count.load(Ordering::SeqCst), 1, "{explicit:?}: the public mirror is queried");
-            assert!(!matches!(decision, Decision::Allow), "{explicit:?}: a MAL match denies: {decision:?}");
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "{explicit:?}: the public mirror is queried"
+            );
+            assert!(
+                !matches!(decision, Decision::Allow),
+                "{explicit:?}: a MAL match denies: {decision:?}"
+            );
         }
     }
 
@@ -1352,7 +1712,11 @@ mod tests {
 
         assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
         assert!(!client.check(Ecosystem::Npm, "left-pad", "1.0.0").await);
-        assert_eq!(count.load(Ordering::SeqCst), 2, "a failure is not cached, so OSV is asked again");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "a failure is not cached, so OSV is asked again"
+        );
 
         shutdown.cancel();
         let _ = handle.await;

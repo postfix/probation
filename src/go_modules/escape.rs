@@ -62,7 +62,9 @@ pub fn valid_module_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= MAX_PATH
         && valid_go_path(path)
-        && path.split('/').next().is_some_and(|first| first.contains('.') && !first.starts_with('.') && !first.ends_with('.'))
+        && path.split('/').next().is_some_and(|first| {
+            first.contains('.') && !first.starts_with('.') && !first.ends_with('.')
+        })
 }
 
 /// A decoded module path from its escaped URL spelling, or `None`.
@@ -77,9 +79,14 @@ pub fn valid_version(version: &str) -> bool {
     if version.is_empty() || version.len() > MAX_VERSION {
         return false;
     }
-    let Some(rest) = version.strip_prefix('v') else { return false };
+    let Some(rest) = version.strip_prefix('v') else {
+        return false;
+    };
     match semver::Version::parse(rest) {
-        Ok(parsed) => (parsed.build.is_empty() || parsed.build.as_str() == "incompatible") && parsed.to_string() == rest,
+        Ok(parsed) => {
+            (parsed.build.is_empty() || parsed.build.as_str() == "incompatible")
+                && parsed.to_string() == rest
+        }
         Err(_) => false,
     }
 }
@@ -102,7 +109,9 @@ pub fn valid_rev(rev: &str) -> bool {
         && !valid_version(rev)
         && !rev.starts_with(['.', '-'])
         && !rev.contains("..")
-        && rev.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+        && rev
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
 }
 
 /// The decoded revision from its escaped file-name stem, or `None`.

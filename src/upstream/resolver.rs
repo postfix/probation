@@ -12,8 +12,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use ipnet::IpNet;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use crate::upstream::UpstreamError;
 
@@ -37,7 +37,10 @@ impl GuardedResolver {
         })
     }
 
-    pub fn with_cidrs(allow_private_addresses: bool, private_cidrs: Vec<IpNet>) -> Arc<GuardedResolver> {
+    pub fn with_cidrs(
+        allow_private_addresses: bool,
+        private_cidrs: Vec<IpNet>,
+    ) -> Arc<GuardedResolver> {
         Self::with_denylist(allow_private_addresses, private_cidrs, None, None)
     }
 
@@ -48,7 +51,12 @@ impl GuardedResolver {
         deny: Option<Arc<crate::http::service_connector::Denylist>>,
         port: Option<u16>,
     ) -> Arc<GuardedResolver> {
-        Arc::new(GuardedResolver { allow_private_addresses, private_cidrs, deny, port })
+        Arc::new(GuardedResolver {
+            allow_private_addresses,
+            private_cidrs,
+            deny,
+            port,
+        })
     }
 }
 
@@ -72,16 +80,25 @@ impl Resolve for GuardedResolver {
             // Resolved once; every answer must pass the denylist, and the answers returned
             // are the ones dialled (no second resolution).
             if let Some(deny) = &deny
-                && let Some(addr) = resolved.iter().find(|addr| port.map_or_else(|| deny.denies(addr.ip()), |port| deny.denies_endpoint(addr.ip(), port)))
+                && let Some(addr) = resolved.iter().find(|addr| {
+                    port.map_or_else(
+                        || deny.denies(addr.ip()),
+                        |port| deny.denies_endpoint(addr.ip(), port),
+                    )
+                })
             {
-                return Err(Box::new(UpstreamError::RejectedAddress { addr: addr.ip() }) as BoxError);
+                return Err(
+                    Box::new(UpstreamError::RejectedAddress { addr: addr.ip() }) as BoxError
+                );
             }
             if !allow_private_addresses {
                 // One bad answer refuses the whole name. Returning the rest instead
                 // would let a host that resolves to both a public and an internal
                 // address decide which one we connect to.
-                if let Some(addr) = resolved.iter().find(|addr| !is_public(addr.ip())
-                    && !private_cidrs.iter().any(|cidr| cidr.contains(&addr.ip()))) {
+                if let Some(addr) = resolved.iter().find(|addr| {
+                    !is_public(addr.ip())
+                        && !private_cidrs.iter().any(|cidr| cidr.contains(&addr.ip()))
+                }) {
                     let rejected = UpstreamError::RejectedAddress { addr: addr.ip() };
                     return Err(Box::new(rejected) as BoxError);
                 }

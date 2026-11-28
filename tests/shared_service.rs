@@ -111,7 +111,10 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
+                osv_scope: None,
+                archive_origin: None,
+                resource_path_prefix: None,
+                token_origin: None,
             },
             RegistryDescriptor {
                 registry: RegistryId(4),
@@ -120,7 +123,10 @@ fn policy_snapshot() -> ServicePolicySnapshot {
                 trusted: false,
                 registry_private_cidrs: vec![],
                 deletion_scopes: vec![],
-                osv_scope: None, archive_origin: None, resource_path_prefix: None, token_origin: None,
+                osv_scope: None,
+                archive_origin: None,
+                resource_path_prefix: None,
+                token_origin: None,
             },
         ],
     }
@@ -162,13 +168,27 @@ async fn shared_service_final_handoff_orders_publication() {
                             common::pypi_upstream_path("final-package"),
                             "/packages/final_package-1.0.0-py3-none-any.whl".into(),
                         ),
-                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
-                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-                        Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-                        Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+                        Ecosystem::RubyGems => unreachable!(
+                            "this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"
+                        ),
+                        Ecosystem::Cargo => unreachable!(
+                            "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+                        ),
+                        Ecosystem::Go => unreachable!(
+                            "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+                        ),
+                        Ecosystem::NuGet => unreachable!(
+                            "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+                        ),
+                        Ecosystem::Maven => unreachable!(
+                            "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+                        ),
+                        Ecosystem::Conan => unreachable!(
+                            "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+                        ),
+                        Ecosystem::Oci => unreachable!(
+                            "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+                        ),
                     };
                 registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                 registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -407,13 +427,27 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                             }),
                             "/packages/race_package-1.0.0-py3-none-any.whl".into(),
                         ),
-                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
-                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-                        Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-                        Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+                        Ecosystem::RubyGems => unreachable!(
+                            "this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"
+                        ),
+                        Ecosystem::Cargo => unreachable!(
+                            "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+                        ),
+                        Ecosystem::Go => unreachable!(
+                            "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+                        ),
+                        Ecosystem::NuGet => unreachable!(
+                            "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+                        ),
+                        Ecosystem::Maven => unreachable!(
+                            "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+                        ),
+                        Ecosystem::Conan => unreachable!(
+                            "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+                        ),
+                        Ecosystem::Oci => unreachable!(
+                            "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+                        ),
                     };
                     registry.answer(&upstream, FakeAnswer::Body(raw.to_string()));
                     registry.answer(&artifact_upstream, FakeAnswer::Body(bytes.into()));
@@ -447,13 +481,27 @@ async fn shared_http_cold_warm_selected_and_legacy_authority_changes() {
                     let artifact = match ecosystem {
                         Ecosystem::Npm => &listing["versions"]["1.0.0"]["dist"]["tarball"],
                         Ecosystem::PyPi => &listing["files"][0]["url"],
-                        Ecosystem::RubyGems => unreachable!("this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"),
-                        Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-                        Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-                        Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-                        Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-                        Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-                        Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+                        Ecosystem::RubyGems => unreachable!(
+                            "this matrix loops npm and PyPI only; RubyGems is covered in tests/rubygems_registry.rs"
+                        ),
+                        Ecosystem::Cargo => unreachable!(
+                            "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+                        ),
+                        Ecosystem::Go => unreachable!(
+                            "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+                        ),
+                        Ecosystem::NuGet => unreachable!(
+                            "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+                        ),
+                        Ecosystem::Maven => unreachable!(
+                            "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+                        ),
+                        Ecosystem::Conan => unreachable!(
+                            "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+                        ),
+                        Ecosystem::Oci => unreachable!(
+                            "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+                        ),
                     };
                     let mut artifact_path = reqwest::Url::parse(artifact.as_str().unwrap())
                         .unwrap()
@@ -644,9 +692,18 @@ async fn shared_service_applies_one_policy_without_downstream_login() {
     );
     let before_delete = transport.0.calls().len();
     for (path, expected) in [
-        ("/registry/npm/3/left-pad/-/left-pad-1.0.0.tgz".to_owned(), StatusCode::METHOD_NOT_ALLOWED),
-        ("/registry/npm/3/left-pad/-rev/1-old".to_owned(), StatusCode::UNAUTHORIZED),
-        (format!("{artifact_path}/-rev/1-old"), StatusCode::UNAUTHORIZED),
+        (
+            "/registry/npm/3/left-pad/-/left-pad-1.0.0.tgz".to_owned(),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            "/registry/npm/3/left-pad/-rev/1-old".to_owned(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            format!("{artifact_path}/-rev/1-old"),
+            StatusCode::UNAUTHORIZED,
+        ),
     ] {
         assert_eq!(
             reqwest::Client::new()
@@ -1020,13 +1077,18 @@ async fn readiness_reports_policy_gate_and_degraded_registries() {
         {"Package": {"ecosystem": "Npm", "name": "left-pad"}},
         {"Package": {"ecosystem": "Maven2", "name": "org.example:lib"}}
     ]);
-    raw["registries"].as_array_mut().unwrap().push(serde_json::json!({
-        "registry": 9, "ecosystem": "Maven2", "target_url": null, "trusted": false,
-        "registry_private_cidrs": [], "deletion_scopes": []
-    }));
-    Mock::given(method("GET")).and(path("/api/v1/policy/snapshot"))
+    raw["registries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "registry": 9, "ecosystem": "Maven2", "target_url": null, "trusted": false,
+            "registry_private_cidrs": [], "deletion_scopes": []
+        }));
+    Mock::given(method("GET"))
+        .and(path("/api/v1/policy/snapshot"))
         .respond_with(ResponseTemplate::new(200).set_body_json(raw))
-        .mount(&policy_server).await;
+        .mount(&policy_server)
+        .await;
     let dir = tempfile::tempdir().unwrap();
     let mut config = config_with_open_blocklist(dir.path());
     config.service_policy = Some(ServicePolicyConfig {
@@ -1037,12 +1099,19 @@ async fn readiness_reports_policy_gate_and_degraded_registries() {
         trusted_proxies: vec![],
     });
     let server = TestServer::start_with_upstream(
-        config, TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
-        Arc::new(CredentialRegistry(FakeRegistry::new(), std::sync::Mutex::new(Vec::new()))) as Arc<dyn Transport>, fake_origins(),
-    ).await;
+        config,
+        TestClock::at_rfc3339("2026-04-06T12:00:00Z").shared(),
+        Arc::new(CredentialRegistry(
+            FakeRegistry::new(),
+            std::sync::Mutex::new(Vec::new()),
+        )) as Arc<dyn Transport>,
+        fake_origins(),
+    )
+    .await;
     let response = server.get("/health/ready").await;
     assert_eq!(response.status(), StatusCode::OK);
-    let detail: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap_or(serde_json::Value::Null);
+    let detail: serde_json::Value =
+        serde_json::from_str(&response.text().await.unwrap()).unwrap_or(serde_json::Value::Null);
     assert_eq!(detail["policy_active"], true);
     assert_eq!(detail["degraded_registries"], serde_json::json!([9]));
     assert_eq!(detail["policy_rules_skipped_unknown_ecosystem"], 1);

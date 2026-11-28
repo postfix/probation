@@ -29,8 +29,9 @@ use url::Url;
 use crate::upstream::origins::{OriginKind, OriginSet};
 use crate::upstream::resolver::GuardedResolver;
 use crate::upstream::{
-    ActionRequest, ActionResponse, ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest, MetadataResponse, NamedReadRequest, OciRequest, OciResponse, Transport,
-    UpstreamError, UpstreamValidators, capped, collect_capped,
+    ActionRequest, ActionResponse, ArtifactBody, ArtifactRequest, ByteStream, MetadataRequest,
+    MetadataResponse, NamedReadRequest, OciRequest, OciResponse, Transport, UpstreamError,
+    UpstreamValidators, capped, collect_capped,
 };
 
 /// SPEC §11's four numbers.
@@ -108,7 +109,10 @@ impl ReqwestTransport {
 
     /// Snapshot-sourced registries (every selected origin) are dialled under this denylist
     /// (LS-F9). Standalone and legacy targets keep their own gate.
-    pub fn with_denylist(mut self, deny: std::sync::Arc<crate::http::service_connector::Denylist>) -> ReqwestTransport {
+    pub fn with_denylist(
+        mut self,
+        deny: std::sync::Arc<crate::http::service_connector::Denylist>,
+    ) -> ReqwestTransport {
         self.service_deny = Some(deny);
         self
     }
@@ -116,22 +120,44 @@ impl ReqwestTransport {
     /// Admission before any request: the URL must belong to a configured origin,
     /// and must pass the same check a redirect hop passes.
     fn admitted(origins: &OriginSet, url: &Url) -> Result<OriginKind, UpstreamError> {
-        origins
-            .admit_any(url)
-            .map_err(UpstreamError::RejectedUrl)
+        origins.admit_any(url).map_err(UpstreamError::RejectedUrl)
     }
 
-    fn selected(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool) -> Result<(OriginSet, Client), UpstreamError> {
-        self.selected_within(origin, private_cidrs, artifact, follow_redirects, METADATA_TOTAL_TIMEOUT, None, false)
+    fn selected(
+        &self,
+        origin: Option<&Url>,
+        private_cidrs: &[ipnet::IpNet],
+        artifact: bool,
+        follow_redirects: bool,
+    ) -> Result<(OriginSet, Client), UpstreamError> {
+        self.selected_within(
+            origin,
+            private_cidrs,
+            artifact,
+            follow_redirects,
+            METADATA_TOTAL_TIMEOUT,
+            None,
+            false,
+        )
     }
 
     /// `archive`: a Go registry's declared archive origin, the one other origin a redirect of its zip may land on.
     #[allow(clippy::too_many_arguments)]
-    fn selected_within(&self, origin: Option<&Url>, private_cidrs: &[ipnet::IpNet], artifact: bool, follow_redirects: bool, metadata_total: Duration, archive: Option<&Url>, archives: bool) -> Result<(OriginSet, Client), UpstreamError> {
+    fn selected_within(
+        &self,
+        origin: Option<&Url>,
+        private_cidrs: &[ipnet::IpNet],
+        artifact: bool,
+        follow_redirects: bool,
+        metadata_total: Duration,
+        archive: Option<&Url>,
+        archives: bool,
+    ) -> Result<(OriginSet, Client), UpstreamError> {
         let origins = match origin {
             Some(origin) => {
-                let selected = OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
-                    .map_err(UpstreamError::RejectedUrl)?;
+                let selected =
+                    OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec())
+                        .map_err(UpstreamError::RejectedUrl)?;
                 let selected = match archive {
                     Some(archive) => selected.with_selected_archive(archive.clone()),
                     None => selected,
@@ -143,11 +169,14 @@ impl ReqwestTransport {
                 }
             }
             None if follow_redirects => {
-                return Ok((self.origins.clone(), match (artifact, archives) {
-                    (true, true) => self.artifact_client.clone(),
-                    (true, false) => self.plain_artifact_client.clone(),
-                    (false, _) => self.metadata_client.clone(),
-                }));
+                return Ok((
+                    self.origins.clone(),
+                    match (artifact, archives) {
+                        (true, true) => self.artifact_client.clone(),
+                        (true, false) => self.plain_artifact_client.clone(),
+                        (false, _) => self.metadata_client.clone(),
+                    },
+                ));
             }
             None => self.origins.clone(),
         };
@@ -157,12 +186,18 @@ impl ReqwestTransport {
             builder = builder.redirect(redirect::Policy::none());
         }
         if artifact {
-            builder = builder.read_timeout(ARTIFACT_READ_TIMEOUT).timeout(ARTIFACT_TOTAL_TIMEOUT)
-                .no_gzip().no_brotli().no_zstd();
+            builder = builder
+                .read_timeout(ARTIFACT_READ_TIMEOUT)
+                .timeout(ARTIFACT_TOTAL_TIMEOUT)
+                .no_gzip()
+                .no_brotli()
+                .no_zstd();
         } else {
             builder = builder.timeout(metadata_total);
         }
-        let client = builder.build().map_err(|err| UpstreamError::Transport(err.to_string()))?;
+        let client = builder
+            .build()
+            .map_err(|err| UpstreamError::Transport(err.to_string()))?;
         Ok((origins, client))
     }
 }
@@ -176,7 +211,14 @@ fn base_builder(origins: &OriginSet, archives: bool) -> ClientBuilder {
         .referer(false)
         .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
-        .dns_resolver(GuardedResolver::with_denylist(origins.allows_private_addresses(), origins.private_cidrs().to_vec(), origins.denylist(), origins.origin(OriginKind::NpmMetadata).port_or_known_default()))
+        .dns_resolver(GuardedResolver::with_denylist(
+            origins.allows_private_addresses(),
+            origins.private_cidrs().to_vec(),
+            origins.denylist(),
+            origins
+                .origin(OriginKind::NpmMetadata)
+                .port_or_known_default(),
+        ))
         .redirect(same_origin_policy(origins.clone(), archives))
 }
 
@@ -197,11 +239,20 @@ fn same_origin_policy(origins: OriginSet, archives: bool) -> redirect::Policy {
         };
         let Some(kind) = origins.kind_of(previous) else {
             // A foreign layer's URL redirects only within the foreign list (credentials were never sent to it).
-            return if archives && origins.admits_foreign(previous) && origins.admits_foreign(attempt.url()) { attempt.follow() } else { attempt.stop() };
+            return if archives
+                && origins.admits_foreign(previous)
+                && origins.admits_foreign(attempt.url())
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            };
         };
         match origins.admit(attempt.url(), kind) {
             Ok(()) => attempt.follow(),
-            Err(_) if archives && origins.admits_archive_redirect(kind, attempt.url()) => attempt.follow(),
+            Err(_) if archives && origins.admits_archive_redirect(kind, attempt.url()) => {
+                attempt.follow()
+            }
             // `stop` rather than `error`, so the refused hop arrives here as a 3xx
             // response and can be reported as the redirect it was, with its target.
             Err(_) => attempt.stop(),
@@ -212,69 +263,136 @@ fn same_origin_policy(origins: OriginSet, archives: bool) -> redirect::Policy {
 #[async_trait]
 impl Transport for ReqwestTransport {
     async fn send_action(&self, req: ActionRequest) -> Result<ActionResponse, UpstreamError> {
-        let total = if req.body_len > UPLOAD_BODY_BYTES { ARTIFACT_TOTAL_TIMEOUT } else { METADATA_TOTAL_TIMEOUT };
-        let (origins, client) = self.selected_within(Some(&req.origin), &req.private_cidrs, false, false, total, None, false)?;
+        let total = if req.body_len > UPLOAD_BODY_BYTES {
+            ARTIFACT_TOTAL_TIMEOUT
+        } else {
+            METADATA_TOTAL_TIMEOUT
+        };
+        let (origins, client) = self.selected_within(
+            Some(&req.origin),
+            &req.private_cidrs,
+            false,
+            false,
+            total,
+            None,
+            false,
+        )?;
         Self::admitted(&origins, &req.url)?;
-        let mut request = client.request(req.method, req.url).header(header::ACCEPT, "application/json");
+        let mut request = client
+            .request(req.method, req.url)
+            .header(header::ACCEPT, "application/json");
         if let Some(authorization) = req.authorization {
-            request = request.header(header::AUTHORIZATION,
-                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+            request = request.header(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?,
+            );
         }
         if let Some(content_type) = req.content_type {
-            request = request.header(header::CONTENT_TYPE,
-                HeaderValue::from_str(&content_type).map_err(|_| UpstreamError::Status(400))?);
+            request = request.header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&content_type).map_err(|_| UpstreamError::Status(400))?,
+            );
         }
         if let Some(otp) = req.otp {
-            request = request.header("OTP", HeaderValue::from_str(&otp).map_err(|_| UpstreamError::Status(400))?);
+            request = request.header(
+                "OTP",
+                HeaderValue::from_str(&otp).map_err(|_| UpstreamError::Status(400))?,
+            );
         }
         if let Some(api_key) = req.api_key {
-            let mut value = HeaderValue::from_str(&api_key).map_err(|_| UpstreamError::Status(400))?;
+            let mut value =
+                HeaderValue::from_str(&api_key).map_err(|_| UpstreamError::Status(400))?;
             value.set_sensitive(true);
             request = request.header("X-NuGet-ApiKey", value);
         }
         let body = futures_util::stream::try_unfold(req.body, |mut file| async move {
             let mut chunk = [0u8; 64 * 1024];
             let count = file.read(&mut chunk).await?;
-            Ok::<_, std::io::Error>((count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)))
+            Ok::<_, std::io::Error>(
+                (count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)),
+            )
         });
-        let response = request.header(header::CONTENT_LENGTH, req.body_len.to_string())
-            .body(reqwest::Body::wrap_stream(body)).send().await.map_err(upstream_error)?;
+        let response = request
+            .header(header::CONTENT_LENGTH, req.body_len.to_string())
+            .body(reqwest::Body::wrap_stream(body))
+            .send()
+            .await
+            .map_err(upstream_error)?;
         check_connected_peer(&response, &origins)?;
-        if let Some(rejected) = refused_redirect(&response) { return Err(rejected); }
+        if let Some(rejected) = refused_redirect(&response) {
+            return Err(rejected);
+        }
         let status = response.status().as_u16();
         let content_type = header_string(&response, header::CONTENT_TYPE);
         let body = collect_capped(byte_stream(response), req.max_bytes).await?;
-        Ok(ActionResponse { status, content_type, body })
+        Ok(ActionResponse {
+            status,
+            content_type,
+            body,
+        })
     }
 
     async fn fetch_oci(&self, req: OciRequest) -> Result<OciResponse, UpstreamError> {
-        let long = req.body.as_ref().is_some_and(|(_, length)| *length > UPLOAD_BODY_BYTES);
-        let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, false, false, if long { ARTIFACT_TOTAL_TIMEOUT } else { METADATA_TOTAL_TIMEOUT }, None, false)?;
+        let long = req
+            .body
+            .as_ref()
+            .is_some_and(|(_, length)| *length > UPLOAD_BODY_BYTES);
+        let (origins, client) = self.selected_within(
+            req.origin.as_ref(),
+            &req.private_cidrs,
+            false,
+            false,
+            if long {
+                ARTIFACT_TOTAL_TIMEOUT
+            } else {
+                METADATA_TOTAL_TIMEOUT
+            },
+            None,
+            false,
+        )?;
         // Only the registry itself (or the realm origin a caller named): the storage origin of a blob redirect is not a registry.
-        if !matches!(Self::admitted(&origins, &req.url)?, OriginKind::OciRegistry | OriginKind::NpmMetadata) {
-            return Err(UpstreamError::RejectedUrl(crate::upstream::UrlRejection::ForeignOrigin));
+        if !matches!(
+            Self::admitted(&origins, &req.url)?,
+            OriginKind::OciRegistry | OriginKind::NpmMetadata
+        ) {
+            return Err(UpstreamError::RejectedUrl(
+                crate::upstream::UrlRejection::ForeignOrigin,
+            ));
         }
         let bad = |_| UpstreamError::Status(400);
         let mut request = client.request(req.method, req.url);
-        request = request.header(header::ACCEPT, HeaderValue::from_str(req.accept.as_deref().unwrap_or("*/*")).map_err(bad)?);
+        request = request.header(
+            header::ACCEPT,
+            HeaderValue::from_str(req.accept.as_deref().unwrap_or("*/*")).map_err(bad)?,
+        );
         if let Some(authorization) = req.authorization {
             let mut value = HeaderValue::from_str(&authorization).map_err(bad)?;
             value.set_sensitive(true);
             request = request.header(header::AUTHORIZATION, value);
         }
         if let Some(content_type) = req.content_type {
-            request = request.header(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).map_err(bad)?);
+            request = request.header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&content_type).map_err(bad)?,
+            );
         }
         if let Some(range) = req.content_range {
-            request = request.header(header::CONTENT_RANGE, HeaderValue::from_str(&range).map_err(bad)?);
+            request = request.header(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&range).map_err(bad)?,
+            );
         }
         if let Some((file, length)) = req.body {
             let body = futures_util::stream::try_unfold(file, |mut file| async move {
                 let mut chunk = [0u8; 64 * 1024];
                 let count = file.read(&mut chunk).await?;
-                Ok::<_, std::io::Error>((count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)))
+                Ok::<_, std::io::Error>(
+                    (count != 0).then(|| (Bytes::copy_from_slice(&chunk[..count]), file)),
+                )
             });
-            request = request.header(header::CONTENT_LENGTH, length.to_string()).body(reqwest::Body::wrap_stream(body));
+            request = request
+                .header(header::CONTENT_LENGTH, length.to_string())
+                .body(reqwest::Body::wrap_stream(body));
         }
         let response = request.send().await.map_err(upstream_error)?;
         check_connected_peer(&response, &origins)?;
@@ -287,10 +405,19 @@ impl Transport for ReqwestTransport {
             ("link", header::LINK),
             ("location", header::LOCATION),
             ("range", header::RANGE),
-            ("docker-content-digest", HeaderName::from_static("docker-content-digest")),
-            ("docker-upload-uuid", HeaderName::from_static("docker-upload-uuid")),
+            (
+                "docker-content-digest",
+                HeaderName::from_static("docker-content-digest"),
+            ),
+            (
+                "docker-upload-uuid",
+                HeaderName::from_static("docker-upload-uuid"),
+            ),
             ("oci-subject", HeaderName::from_static("oci-subject")),
-            ("oci-filters-applied", HeaderName::from_static("oci-filters-applied")),
+            (
+                "oci-filters-applied",
+                HeaderName::from_static("oci-filters-applied"),
+            ),
         ] {
             for value in response.headers().get_all(&key).iter().take(8) {
                 if let Some(text) = value.to_str().ok().filter(|text| text.len() <= 8192) {
@@ -299,23 +426,32 @@ impl Transport for ReqwestTransport {
             }
         }
         let body = collect_capped(byte_stream(response), req.max_bytes).await?;
-        Ok(OciResponse { status, headers, body })
+        Ok(OciResponse {
+            status,
+            headers,
+            body,
+        })
     }
 
     async fn fetch_named_read(&self, req: NamedReadRequest) -> Result<bytes::Bytes, UpstreamError> {
-        let (origins, client) = self.selected(Some(&req.origin), &req.private_cidrs, false, true)?;
+        let (origins, client) =
+            self.selected(Some(&req.origin), &req.private_cidrs, false, true)?;
         Self::admitted(&origins, &req.url)?;
-        let mut request = client.request(req.method, req.url)
+        let mut request = client
+            .request(req.method, req.url)
             .header(header::ACCEPT, "application/json");
         if let Some(authorization) = req.authorization {
-            let value = HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?;
+            let value =
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?;
             request = request.header(header::AUTHORIZATION, value);
         }
         if let Some(content_encoding) = req.content_encoding {
             request = request.header(header::CONTENT_ENCODING, content_encoding);
         }
         if !req.body.is_empty() {
-            request = request.header(header::CONTENT_TYPE, "application/json").body(req.body);
+            request = request
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(req.body);
         }
         let response = request.send().await.map_err(upstream_error)?;
         check_connected_peer(&response, &origins)?;
@@ -333,14 +469,18 @@ impl Transport for ReqwestTransport {
         req: MetadataRequest,
         authorization: &str,
     ) -> Result<MetadataResponse, UpstreamError> {
-        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, false)?;
+        let (origins, client) =
+            self.selected(req.origin.as_ref(), &req.private_cidrs, false, false)?;
         Self::admitted(&origins, &req.url)?;
-        let authorization = HeaderValue::from_str(authorization)
-            .map_err(|_| UpstreamError::Status(400))?;
-        let response = client.get(req.url)
+        let authorization =
+            HeaderValue::from_str(authorization).map_err(|_| UpstreamError::Status(400))?;
+        let response = client
+            .get(req.url)
             .header(header::ACCEPT, req.accept)
             .header(header::AUTHORIZATION, authorization)
-            .send().await.map_err(upstream_error)?;
+            .send()
+            .await
+            .map_err(upstream_error)?;
         check_connected_peer(&response, &origins)?;
         match response.status().as_u16() {
             200 => Ok(MetadataResponse::Fresh {
@@ -359,15 +499,18 @@ impl Transport for ReqwestTransport {
         &self,
         req: MetadataRequest,
     ) -> Result<MetadataResponse, UpstreamError> {
-        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
+        let (origins, client) =
+            self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
         Self::admitted(&origins, &req.url)?;
 
         let mut request = client
             .get(req.url.clone())
             .header(header::ACCEPT, req.accept);
         if let Some(authorization) = req.read_authorization {
-            request = request.header(header::AUTHORIZATION,
-                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+            request = request.header(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?,
+            );
         }
         if let Some(validators) = &req.validators {
             if let Some(etag) = validator_header(validators.etag.as_deref()) {
@@ -403,12 +546,21 @@ impl Transport for ReqwestTransport {
         }
     }
 
-    async fn probe_file(&self, req: MetadataRequest) -> Result<Option<UpstreamValidators>, UpstreamError> {
-        let (origins, client) = self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
+    async fn probe_file(
+        &self,
+        req: MetadataRequest,
+    ) -> Result<Option<UpstreamValidators>, UpstreamError> {
+        let (origins, client) =
+            self.selected(req.origin.as_ref(), &req.private_cidrs, false, true)?;
         Self::admitted(&origins, &req.url)?;
-        let mut request = client.get(req.url.clone()).header(header::ACCEPT, req.accept);
+        let mut request = client
+            .get(req.url.clone())
+            .header(header::ACCEPT, req.accept);
         if let Some(authorization) = req.read_authorization {
-            request = request.header(header::AUTHORIZATION, HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?);
+            request = request.header(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&authorization).map_err(|_| UpstreamError::Status(400))?,
+            );
         }
         // Only the headers are read: the response (and its body) is dropped, closing the transfer.
         let response = request.send().await.map_err(upstream_error)?;
@@ -425,9 +577,22 @@ impl Transport for ReqwestTransport {
 
     async fn open_artifact(&self, req: ArtifactRequest) -> Result<ArtifactBody, UpstreamError> {
         let credentialed = req.read_authorization.is_some();
-        let (origins, client) = self.selected_within(req.origin.as_ref(), &req.private_cidrs, true, !credentialed, METADATA_TOTAL_TIMEOUT, req.archive_origin.as_ref().filter(|_| req.allow_archive_redirect), req.allow_archive_redirect)?;
+        let (origins, client) = self.selected_within(
+            req.origin.as_ref(),
+            &req.private_cidrs,
+            true,
+            !credentialed,
+            METADATA_TOTAL_TIMEOUT,
+            req.archive_origin
+                .as_ref()
+                .filter(|_| req.allow_archive_redirect),
+            req.allow_archive_redirect,
+        )?;
         // A foreign layer's own URL (an OCI layer descriptor's `urls`, https on the operator's list) is an artifact like any other, fetched with no credential.
-        if !(req.allow_archive_redirect && req.read_authorization.is_none() && origins.admits_foreign(&req.url)) {
+        if !(req.allow_archive_redirect
+            && req.read_authorization.is_none()
+            && origins.admits_foreign(&req.url))
+        {
             Self::admitted(&origins, &req.url)?;
         }
         let mut url = req.url;
@@ -436,15 +601,22 @@ impl Transport for ReqwestTransport {
         let response = loop {
             let mut request = client.get(url.clone());
             if let Some(value) = authorization.take() {
-                request = request.header(header::AUTHORIZATION,
-                    HeaderValue::from_str(&value).map_err(|_| UpstreamError::Status(400))?);
+                request = request.header(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&value).map_err(|_| UpstreamError::Status(400))?,
+                );
             }
             let response = request.send().await.map_err(upstream_error)?;
             check_connected_peer(&response, &origins)?;
             if credentialed && matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-                let location = response.headers().get(header::LOCATION)
-                    .and_then(|value| value.to_str().ok()).ok_or(UpstreamError::Status(response.status().as_u16()))?;
-                let next = url.join(location).map_err(|_| UpstreamError::Status(response.status().as_u16()))?;
+                let location = response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or(UpstreamError::Status(response.status().as_u16()))?;
+                let next = url
+                    .join(location)
+                    .map_err(|_| UpstreamError::Status(response.status().as_u16()))?;
                 if redirects >= MAX_REDIRECT_HOPS {
                     return Err(UpstreamError::RedirectLimit { to: next });
                 }
@@ -452,7 +624,11 @@ impl Transport for ReqwestTransport {
                 // previous hop was on, or be a Go zip's redirect to its archive origin: never another origin of the
                 // set (the public proxy, the checksum database, another family's host).
                 let from = origins.kind_of(&url).unwrap_or(OriginKind::NpmMetadata);
-                if origins.admit(&next, from).is_err() && !(req.allow_archive_redirect && (origins.admits_archive_redirect(from, &next) || (origins.admits_foreign(&url) && origins.admits_foreign(&next)))) {
+                if origins.admit(&next, from).is_err()
+                    && !(req.allow_archive_redirect
+                        && (origins.admits_archive_redirect(from, &next)
+                            || (origins.admits_foreign(&url) && origins.admits_foreign(&next))))
+                {
                     return Err(UpstreamError::RejectedRedirect { to: next });
                 }
                 url = next;
@@ -483,8 +659,9 @@ impl Transport for ReqwestTransport {
 /// DNS vetting precedes connect; this also checks the peer reqwest actually used.
 /// A missing peer address is not evidence of a permitted connection.
 fn check_connected_peer(response: &Response, origins: &OriginSet) -> Result<(), UpstreamError> {
-    let peer = response.remote_addr().ok_or_else(||
-        UpstreamError::Transport("upstream connected peer unavailable".to_owned()))?;
+    let peer = response.remote_addr().ok_or_else(|| {
+        UpstreamError::Transport("upstream connected peer unavailable".to_owned())
+    })?;
     if !origins.allows_endpoint(peer) {
         return Err(UpstreamError::RejectedAddress { addr: peer.ip() });
     }
@@ -505,15 +682,25 @@ mod connected_peer_tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
         });
-        let response = Client::builder().no_proxy().build().unwrap()
-            .get(format!("http://{address}/")).send().await.unwrap();
+        let response = Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
         server.await.unwrap();
         let origins = OriginSet::selected_npm_with_private(
             Url::parse("https://private-registry.e2e.test/").unwrap(),
             vec!["10.77.0.2/32".parse().unwrap()],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(check_connected_peer(&response, &origins),
             Err(UpstreamError::RejectedAddress { addr }) if addr.is_loopback()));
     }

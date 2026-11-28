@@ -1,14 +1,14 @@
 // The policy server of the kind lane's "pull secret through the Probation endpoint" check (LANE=cluster, run-kind-lane.sh).
 //
 //   node tests/e2e/cluster/policy-server.mjs up   --work DIR --registry-host private.kind.test:5000 --registry-cidr 172.18.0.9/32 --out policy.json
-//   node tests/e2e/cluster/policy-server.mjs down --work DIR
+//   node tests/e2e/cluster/policy-server.mjs down --work DIR [--logs DIR]
 //
 // It reuses the e2e harness (tests/e2e/harness) and does what scenarios/service-cluster.mjs does before it points a service at the stack: the
 // compose stack's policy server (postgres, gateway, mail sink, bridge, the fakes the portal's sign-up needs, the server), an organisation admin with an
 // authenticator, an OCI registry whose target is the private registry (a private address, so an operator approves its exact host, port and address),
 // the policy that lets a fresh image through, and a service key. Nothing is re-implemented: `PolicyStack` only leaves out what this lane never uses (the
 // firewalls and the client containers); the sign-up, TOTP, policy and key steps are the harness's own `helpers`.
-// `up` leaves the stack running and writes {registryId, serviceKey, ca, project, gateway}; `down` removes it.
+// `up` leaves the stack running and writes {registryId, serviceKey, ca, project, gateway}; `down` removes it, after writing the stack's logs to --logs.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Stack } from "../harness/stack.mjs";
@@ -37,11 +37,18 @@ const work = resolve(args.work ?? "");
 const stack = new PolicyStack({ work, project: PROJECT, net: process.env.E2E_NET ?? "11.220.0", bridgePort: Number(process.env.E2E_BRIDGE_PORT ?? 18128) });
 
 if (process.argv[2] === "down") {
+  if (args.logs) {
+    try {
+      await stack.collect(resolve(args.logs));
+    } catch {
+      // the logs are best effort
+    }
+  }
   stack.down();
   process.exit(0);
 }
 if (process.argv[2] !== "up" || !args.work || !args["registry-host"] || !args["registry-cidr"] || !args.out) {
-  console.error("usage: policy-server.mjs up --work DIR --registry-host HOST:PORT --registry-cidr CIDR --out FILE | down --work DIR");
+  console.error("usage: policy-server.mjs up --work DIR --registry-host HOST:PORT --registry-cidr CIDR --out FILE | down --work DIR [--logs DIR]");
   process.exit(2);
 }
 

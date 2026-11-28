@@ -249,9 +249,18 @@ fn routes() -> Routes {
         "/org/{org}/registries/{registry}/delete-scope",
         post(registries::set_delete_scope),
     )
-    .post("/org/{org}/private-egress", post(registries::request_private_egress))
-    .get("/admin/private-egress", get(registries::private_egress_queue))
-    .post("/admin/private-egress/{id}/approve", post(registries::approve_private_egress))
+    .post(
+        "/org/{org}/private-egress",
+        post(registries::request_private_egress),
+    )
+    .get(
+        "/admin/private-egress",
+        get(registries::private_egress_queue),
+    )
+    .post(
+        "/admin/private-egress/{id}/approve",
+        post(registries::approve_private_egress),
+    )
     .post(
         "/certificates/setup",
         post(certificates::issue_setup_bundle),

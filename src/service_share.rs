@@ -51,7 +51,9 @@ struct Cleanup<'a> {
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
         if let Ok(mut flights) = self.share.flights.lock()
-            && flights.get(self.key).is_some_and(|held| Arc::ptr_eq(held, self.flight))
+            && flights
+                .get(self.key)
+                .is_some_and(|held| Arc::ptr_eq(held, self.flight))
         {
             flights.remove(self.key);
         }
@@ -77,25 +79,46 @@ impl ServiceShare {
             cells.remove(&key);
             let mut total: u64 = cells.values().map(|cell| cell.bytes).sum();
             while cells.len() >= MAX || total + bytes > MAX_TOTAL_BYTES {
-                let Some(oldest) = cells.iter().min_by_key(|(_, cell)| (cell.at, cell.seq)).map(|(key, _)| key.clone()) else { break };
+                let Some(oldest) = cells
+                    .iter()
+                    .min_by_key(|(_, cell)| (cell.at, cell.seq))
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
                 if let Some(gone) = cells.remove(&oldest) {
                     total -= gone.bytes;
                 }
             }
-            cells.insert(key, Cell { at: now, bytes, seq: *seq, project: Arc::clone(project) });
+            cells.insert(
+                key,
+                Cell {
+                    at: now,
+                    bytes,
+                    seq: *seq,
+                    project: Arc::clone(project),
+                },
+            );
         }
     }
 
     /// The cell count and the bytes they account for. **Test support.**
     #[cfg(feature = "test-support")]
     pub(crate) fn stats(&self) -> (usize, u64) {
-        self.cells.lock().map_or((0, 0), |table| (table.0.len(), table.0.values().map(|cell| cell.bytes).sum()))
+        self.cells.lock().map_or((0, 0), |table| {
+            (table.0.len(), table.0.values().map(|cell| cell.bytes).sum())
+        })
     }
 
     /// The cell if it is fresh, else one fetch for every concurrent caller of this key. The first caller fetches while the
     /// others wait on its lock; a fetch that failed or was dropped leaves no cell, and each waiter then fetches for itself
     /// (concurrently, so one failure never queues the others behind it). Failures are never cached.
-    pub(crate) async fn get_or_fetch<E, F, Fut>(&self, key: Key, now: Instant, fetch: F) -> Result<Arc<CachedProject>, E>
+    pub(crate) async fn get_or_fetch<E, F, Fut>(
+        &self,
+        key: Key,
+        now: Instant,
+        fetch: F,
+    ) -> Result<Arc<CachedProject>, E>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<CachedProject>, E>>,
@@ -103,13 +126,23 @@ impl ServiceShare {
         if let Some(project) = self.get(&key, now) {
             return Ok(project);
         }
-        let flight = self.flights.lock().ok().map(|mut flights| Arc::clone(flights.entry(key.clone()).or_default()));
-        let Some(flight) = flight else { return fetch().await };
+        let flight = self
+            .flights
+            .lock()
+            .ok()
+            .map(|mut flights| Arc::clone(flights.entry(key.clone()).or_default()));
+        let Some(flight) = flight else {
+            return fetch().await;
+        };
         let (guard, leader) = match Arc::clone(&flight).try_lock_owned() {
             Ok(guard) => (guard, true),
             Err(_) => (Arc::clone(&flight).lock_owned().await, false),
         };
-        let _cleanup = leader.then_some(Cleanup { share: self, key: &key, flight: &flight });
+        let _cleanup = leader.then_some(Cleanup {
+            share: self,
+            key: &key,
+            flight: &flight,
+        });
         if let Some(project) = self.get(&key, now) {
             return Ok(project);
         }
@@ -137,17 +170,32 @@ mod tests {
         let now = Instant::now();
         let leader = tokio::spawn({
             let share = Arc::clone(&share);
-            async move { share.get_or_fetch::<&str, _, _>(key(), now, std::future::pending).await }
+            async move {
+                share
+                    .get_or_fetch::<&str, _, _>(key(), now, std::future::pending)
+                    .await
+            }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         let waiter = tokio::spawn({
             let share = Arc::clone(&share);
-            async move { share.get_or_fetch::<&str, _, _>(key(), now, || async { Err("upstream failed") }).await.err() }
+            async move {
+                share
+                    .get_or_fetch::<&str, _, _>(key(), now, || async { Err("upstream failed") })
+                    .await
+                    .err()
+            }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         leader.abort();
-        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("the waiter must not hang").unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the waiter must not hang")
+            .unwrap();
         assert_eq!(outcome, Some("upstream failed"));
-        assert!(share.flights.lock().unwrap().is_empty(), "no flight entry outlives its leader");
+        assert!(
+            share.flights.lock().unwrap().is_empty(),
+            "no flight entry outlives its leader"
+        );
     }
 }

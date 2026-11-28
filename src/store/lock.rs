@@ -65,9 +65,21 @@ pub fn acquire(data_dir: &Path) -> Result<DataDirLock, LockError> {
 /// CephFS is the case this refuses). `fuseblk` (ntfs-3g on a local device) is local and is not listed.
 pub fn is_network_filesystem(fstype: &str) -> bool {
     let t = fstype.to_ascii_lowercase();
-    t.starts_with("nfs") || t.starts_with("cifs") || t.starts_with("smb") || t.starts_with("ceph") || t.starts_with("glusterfs")
-        || t == "lustre" || t == "9p" || t == "afs" || t == "fuse" || t.starts_with("fuse.")
-        || t.starts_with("gfs2") || t.starts_with("ocfs2") || t == "gpfs" || t == "beegfs" || t == "virtiofs"
+    t.starts_with("nfs")
+        || t.starts_with("cifs")
+        || t.starts_with("smb")
+        || t.starts_with("ceph")
+        || t.starts_with("glusterfs")
+        || t == "lustre"
+        || t == "9p"
+        || t == "afs"
+        || t == "fuse"
+        || t.starts_with("fuse.")
+        || t.starts_with("gfs2")
+        || t.starts_with("ocfs2")
+        || t == "gpfs"
+        || t == "beegfs"
+        || t == "virtiofs"
 }
 
 /// The file system type of the mount that holds `path`, read from the text of `/proc/self/mountinfo` (longest mount point wins).
@@ -77,8 +89,16 @@ pub fn filesystem_type(mountinfo: &str, path: &Path) -> Option<String> {
         let mut out = Vec::with_capacity(bytes.len());
         let mut i = 0;
         while i < bytes.len() {
-            if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1..i + 4].iter().all(|b| (b'0'..=b'7').contains(b)) {
-                out.push(u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 4]).unwrap_or("0"), 8).unwrap_or(b'?'));
+            if bytes[i] == b'\\'
+                && i + 3 < bytes.len()
+                && bytes[i + 1..i + 4]
+                    .iter()
+                    .all(|b| (b'0'..=b'7').contains(b))
+            {
+                out.push(
+                    u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 4]).unwrap_or("0"), 8)
+                        .unwrap_or(b'?'),
+                );
                 i += 4;
             } else {
                 out.push(bytes[i]);
@@ -89,9 +109,15 @@ pub fn filesystem_type(mountinfo: &str, path: &Path) -> Option<String> {
     }
     let mut best: Option<(usize, String)> = None;
     for line in mountinfo.lines() {
-        let Some((before, after)) = line.split_once(" - ") else { continue };
-        let Some(mount_point) = before.split(' ').nth(4) else { continue };
-        let Some(fstype) = after.split(' ').next() else { continue };
+        let Some((before, after)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(mount_point) = before.split(' ').nth(4) else {
+            continue;
+        };
+        let Some(fstype) = after.split(' ').next() else {
+            continue;
+        };
         let mount_point = PathBuf::from(unescape(mount_point));
         if path.starts_with(&mount_point) {
             let depth = mount_point.components().count();
@@ -111,14 +137,25 @@ pub fn refuse_network_filesystem(data_dir: &Path, allow: bool) -> Result<(), Loc
         return Ok(());
     }
     match probe_filesystem(data_dir) {
-        Ok(Some(fstype)) if is_network_filesystem(&fstype) => Err(LockError::NetworkFilesystem { path: data_dir.to_path_buf(), fstype }),
+        Ok(Some(fstype)) if is_network_filesystem(&fstype) => Err(LockError::NetworkFilesystem {
+            path: data_dir.to_path_buf(),
+            fstype,
+        }),
         Ok(_) => Ok(()),
-        Err(source) => Err(LockError::Unclassifiable { path: data_dir.to_path_buf(), source }),
+        Err(source) => Err(LockError::Unclassifiable {
+            path: data_dir.to_path_buf(),
+            source,
+        }),
     }
 }
 
 fn covering_type(mountinfo: &str, resolved: &Path) -> io::Result<String> {
-    filesystem_type(mountinfo, resolved).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no line of the mount table covers the data directory"))
+    filesystem_type(mountinfo, resolved).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "no line of the mount table covers the data directory",
+        )
+    })
 }
 
 /// The type of the file system that holds `data_dir`, from the mount table; `Ok(None)` only where this platform has none (not Linux); on Linux a table that does not cover the path is an error.
@@ -148,7 +185,8 @@ fn probe_filesystem(data_dir: &Path) -> io::Result<Option<String>> {
 /// **Test seam** (feature `test-support`): replaces the mount-table probe of `refuse_network_filesystem`, so a test can make `App::start`
 /// see any file system type, or an unreadable mount table. `None` restores the real probe.
 #[cfg(feature = "test-support")]
-pub type FilesystemProbe = std::sync::Arc<dyn Fn(&Path) -> io::Result<Option<String>> + Send + Sync>;
+pub type FilesystemProbe =
+    std::sync::Arc<dyn Fn(&Path) -> io::Result<Option<String>> + Send + Sync>;
 #[cfg(feature = "test-support")]
 static TEST_PROBE: std::sync::Mutex<Option<FilesystemProbe>> = std::sync::Mutex::new(None);
 #[cfg(feature = "test-support")]
@@ -159,7 +197,10 @@ pub fn set_filesystem_probe(probe: Option<FilesystemProbe>) {
 #[cfg(test)]
 fn judge_filesystem(mountinfo: &str, resolved: &Path, data_dir: &Path) -> Result<(), LockError> {
     match filesystem_type(mountinfo, resolved) {
-        Some(fstype) if is_network_filesystem(&fstype) => Err(LockError::NetworkFilesystem { path: data_dir.to_path_buf(), fstype }),
+        Some(fstype) if is_network_filesystem(&fstype) => Err(LockError::NetworkFilesystem {
+            path: data_dir.to_path_buf(),
+            fstype,
+        }),
         _ => Ok(()),
     }
 }
@@ -223,36 +264,103 @@ mod network_filesystem_tests {
 
     #[test]
     fn the_longest_mount_point_decides_the_type() {
-        assert_eq!(filesystem_type(MOUNTINFO, Path::new("/var/lib/probation")).as_deref(), Some("ext4"));
-        assert_eq!(filesystem_type(MOUNTINFO, Path::new("/mnt/share/data")).as_deref(), Some("nfs4"));
-        assert_eq!(filesystem_type(MOUNTINFO, Path::new("/mnt/share/local/x")).as_deref(), Some("tmpfs"));
-        assert_eq!(filesystem_type(MOUNTINFO, Path::new("/mnt/with space/x")).as_deref(), Some("fuse.sshfs"), "octal escapes are decoded");
-        assert_eq!(filesystem_type(MOUNTINFO, Path::new("/mnt/sharepoint")).as_deref(), Some("ext4"), "a prefix of a name is not a mount point");
+        assert_eq!(
+            filesystem_type(MOUNTINFO, Path::new("/var/lib/probation")).as_deref(),
+            Some("ext4")
+        );
+        assert_eq!(
+            filesystem_type(MOUNTINFO, Path::new("/mnt/share/data")).as_deref(),
+            Some("nfs4")
+        );
+        assert_eq!(
+            filesystem_type(MOUNTINFO, Path::new("/mnt/share/local/x")).as_deref(),
+            Some("tmpfs")
+        );
+        assert_eq!(
+            filesystem_type(MOUNTINFO, Path::new("/mnt/with space/x")).as_deref(),
+            Some("fuse.sshfs"),
+            "octal escapes are decoded"
+        );
+        assert_eq!(
+            filesystem_type(MOUNTINFO, Path::new("/mnt/sharepoint")).as_deref(),
+            Some("ext4"),
+            "a prefix of a name is not a mount point"
+        );
     }
 
     #[test]
     fn a_mount_table_that_covers_nothing_is_an_error_not_a_pass() {
         assert!(covering_type("", Path::new("/var/lib/probation")).is_err());
-        assert_eq!(covering_type(MOUNTINFO, Path::new("/var/lib/probation")).unwrap(), "ext4");
+        assert_eq!(
+            covering_type(MOUNTINFO, Path::new("/var/lib/probation")).unwrap(),
+            "ext4"
+        );
     }
 
     #[test]
     fn network_and_fuse_types_are_refused_and_local_ones_are_not() {
-        for network in ["nfs", "nfs4", "cifs", "smb3", "smbfs", "ceph", "glusterfs", "lustre", "9p", "afs", "fuse", "fuse.sshfs", "fuse.s3fs", "gfs2", "ocfs2", "gpfs", "beegfs", "virtiofs"] {
+        for network in [
+            "nfs",
+            "nfs4",
+            "cifs",
+            "smb3",
+            "smbfs",
+            "ceph",
+            "glusterfs",
+            "lustre",
+            "9p",
+            "afs",
+            "fuse",
+            "fuse.sshfs",
+            "fuse.s3fs",
+            "gfs2",
+            "ocfs2",
+            "gpfs",
+            "beegfs",
+            "virtiofs",
+        ] {
             assert!(is_network_filesystem(network), "{network}");
         }
-        for local in ["ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "fuseblk", "f2fs", "vfat"] {
+        for local in [
+            "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "fuseblk", "f2fs", "vfat",
+        ] {
             assert!(!is_network_filesystem(local), "{local}");
         }
     }
 
     #[test]
     fn a_data_directory_on_a_network_mount_is_refused_with_the_type_named() {
-        let err = judge_filesystem(MOUNTINFO, Path::new("/mnt/share/data"), Path::new("/mnt/share/data")).unwrap_err();
-        assert!(matches!(&err, LockError::NetworkFilesystem { fstype, .. } if fstype == "nfs4"), "{err:?}");
-        assert!(err.to_string().contains("nfs4") && err.to_string().contains("allow_network_data_dir"), "{err}");
-        assert!(judge_filesystem(MOUNTINFO, Path::new("/var/lib/probation"), Path::new("/var/lib/probation")).is_ok());
-        assert!(judge_filesystem(MOUNTINFO, Path::new("/mnt/ntfs/data"), Path::new("/mnt/ntfs/data")).is_ok(), "fuseblk is a local device");
+        let err = judge_filesystem(
+            MOUNTINFO,
+            Path::new("/mnt/share/data"),
+            Path::new("/mnt/share/data"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, LockError::NetworkFilesystem { fstype, .. } if fstype == "nfs4"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("nfs4") && err.to_string().contains("allow_network_data_dir"),
+            "{err}"
+        );
+        assert!(
+            judge_filesystem(
+                MOUNTINFO,
+                Path::new("/var/lib/probation"),
+                Path::new("/var/lib/probation")
+            )
+            .is_ok()
+        );
+        assert!(
+            judge_filesystem(
+                MOUNTINFO,
+                Path::new("/mnt/ntfs/data"),
+                Path::new("/mnt/ntfs/data")
+            )
+            .is_ok(),
+            "fuseblk is a local device"
+        );
     }
 
     #[test]

@@ -32,15 +32,28 @@ pub fn private_violations(sddl: &str, allowed: &[&str]) -> Vec<String> {
 }
 
 /// `private_violations` with every trustee and the owner resolved to its SID by `resolve` before the comparison (on Windows, the OS).
-pub fn private_violations_resolved(sddl: &str, allowed: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+pub fn private_violations_resolved(
+    sddl: &str,
+    allowed: &[&str],
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> Vec<String> {
     let mut found = Vec::new();
     match owner(sddl) {
         None => found.push("(no owner)".to_owned()),
-        Some(owner) if !is_allowed(&owner, allowed, resolve) => found.push(format!("owner {owner}")),
+        Some(owner) if !is_allowed(&owner, allowed, resolve) => {
+            found.push(format!("owner {owner}"))
+        }
         Some(_) => {}
     }
     match dacl_start(sddl) {
-        Some(start) if sddl[start..].split('(').next().is_some_and(|flags| flags.contains("NO_ACCESS_CONTROL")) => found.push("(NULL DACL: everyone)".to_owned()),
+        Some(start)
+            if sddl[start..]
+                .split('(')
+                .next()
+                .is_some_and(|flags| flags.contains("NO_ACCESS_CONTROL")) =>
+        {
+            found.push("(NULL DACL: everyone)".to_owned())
+        }
         Some(_) => found.extend(dacl_trustees(sddl, allowed, resolve)),
         None => found.push("(NULL DACL: everyone)".to_owned()),
     }
@@ -49,7 +62,11 @@ pub fn private_violations_resolved(sddl: &str, allowed: &[&str], resolve: &dyn F
 
 /// True when the owner named by `sddl` is SYSTEM, the Administrators or one of `allowed` (after `resolve`). A descriptor with no owner
 /// is not trusted. Only the owner is judged.
-pub fn owner_trusted(sddl: &str, allowed: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> bool {
+pub fn owner_trusted(
+    sddl: &str,
+    allowed: &[&str],
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> bool {
     owner(sddl).is_some_and(|owner| is_allowed(&owner, allowed, resolve))
 }
 
@@ -61,7 +78,11 @@ pub fn protected_dir_sddl(user_sid: &str) -> String {
 
 fn owner(sddl: &str) -> Option<String> {
     let rest = sddl.strip_prefix("O:")?;
-    let end = ["G:", "D:", "S:"].iter().filter_map(|m| rest.find(m)).min().unwrap_or(rest.len());
+    let end = ["G:", "D:", "S:"]
+        .iter()
+        .filter_map(|m| rest.find(m))
+        .min()
+        .unwrap_or(rest.len());
     let owner = &rest[..end];
     (!owner.is_empty()).then(|| owner.to_owned())
 }
@@ -76,7 +97,15 @@ pub fn allowed_for(user_sid: &str, service_name: &str) -> Vec<String> {
 /// The service name from `PROBATION_SERVICE_NAME`; anything that is not a plain name falls back to the default `Probation`.
 pub fn service_name(value: Option<String>) -> String {
     match value {
-        Some(name) if !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) => name,
+        Some(name)
+            if !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) =>
+        {
+            name
+        }
         _ => "Probation".to_owned(),
     }
 }
@@ -85,13 +114,24 @@ pub fn service_name(value: Option<String>) -> String {
 /// under `S-1-5-80`.
 pub fn service_sid(name: &str) -> String {
     use sha1::{Digest, Sha1};
-    let bytes: Vec<u8> = name.to_uppercase().encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let bytes: Vec<u8> = name
+        .to_uppercase()
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
     let digest = Sha1::digest(&bytes);
-    let words: Vec<String> = digest.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]).to_string()).collect();
+    let words: Vec<String> = digest
+        .chunks(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]).to_string())
+        .collect();
     format!("S-1-5-80-{}", words.join("-"))
 }
 
-fn dacl_trustees(sddl: &str, allowed_sids: &[&str], resolve: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+fn dacl_trustees(
+    sddl: &str,
+    allowed_sids: &[&str],
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> Vec<String> {
     let Some(start) = dacl_start(sddl) else {
         return vec!["(no DACL: everyone)".to_owned()];
     };
@@ -103,7 +143,9 @@ fn dacl_trustees(sddl: &str, allowed_sids: &[&str], resolve: &dyn Fn(&str) -> Op
             '(' if depth == 0 => depth = 1,
             ')' if depth == 1 => {
                 depth = 0;
-                if let Some(trustee) = granted_trustee(&ace).filter(|t| !is_allowed(t, allowed_sids, resolve) && !outside.contains(t)) {
+                if let Some(trustee) = granted_trustee(&ace)
+                    .filter(|t| !is_allowed(t, allowed_sids, resolve) && !outside.contains(t))
+                {
                     outside.push(trustee);
                 }
                 ace.clear();
@@ -121,7 +163,9 @@ fn dacl_start(sddl: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(found) = sddl[from..].find("D:") {
         let after = from + found + 2;
-        let flags_end = sddl[after..].find(|c: char| c == '(' || c == 'S' && sddl[after..].starts_with("S:")).map_or(sddl.len(), |n| after + n);
+        let flags_end = sddl[after..]
+            .find(|c: char| c == '(' || c == 'S' && sddl[after..].starts_with("S:"))
+            .map_or(sddl.len(), |n| after + n);
         let flags = &sddl[after..flags_end];
         if flags.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
             return Some(after);
@@ -136,7 +180,10 @@ fn dacl_start(sddl: &str) -> Option<usize> {
 /// own SID, judged as itself on the child (install-service.ps1 `Get-DaclViolation` allows it too). The owner is checked separately.
 fn granted_trustee(ace: &str) -> Option<String> {
     let fields: Vec<&str> = ace.split(';').collect();
-    (fields.len() >= 6 && matches!(fields[0], "A" | "OA" | "XA" | "ZA") && !matches!(fields[5], "CO" | "S-1-3-0")).then(|| fields[5].to_owned())
+    (fields.len() >= 6
+        && matches!(fields[0], "A" | "OA" | "XA" | "ZA")
+        && !matches!(fields[5], "CO" | "S-1-3-0"))
+    .then(|| fields[5].to_owned())
 }
 
 /// True when `descriptor_and_user` (path or handle) says the DACL grants access beyond SYSTEM, Administrators and the current account.
@@ -146,7 +193,10 @@ fn shared_by(read: Result<(String, String), u32>) -> bool {
         Ok((sddl, user)) => {
             // The account running this process and the service's own virtual account (an elevated `check-config` at upgrade runs as
             // an administrator and finds the service's SID in the key's DACL).
-            let allowed = allowed_for(&user, &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()));
+            let allowed = allowed_for(
+                &user,
+                &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()),
+            );
             let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
             !private_violations_resolved(&sddl, &allowed, &windows_reader::resolve_sid).is_empty()
         }
@@ -159,7 +209,10 @@ fn shared_by(read: Result<(String, String), u32>) -> bool {
 fn owner_trusted_by(read: Result<(String, String), u32>) -> bool {
     match read {
         Ok((sddl, user)) => {
-            let allowed = allowed_for(&user, &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()));
+            let allowed = allowed_for(
+                &user,
+                &service_name(std::env::var("PROBATION_SERVICE_NAME").ok()),
+            );
             let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
             owner_trusted(&sddl, &allowed, &windows_reader::resolve_sid)
         }
@@ -203,18 +256,24 @@ mod windows_reader {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE};
+    use windows_sys::Win32::Foundation::{GetLastError, HANDLE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, ConvertStringSidToSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
         GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
     use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn text(pointer: *mut u16) -> String {
         // SAFETY: `pointer` is a NUL-terminated wide string the system allocated for this call.
-        let len = (0..).take_while(|&n| unsafe { *pointer.add(n) } != 0).count();
+        let len = (0..)
+            .take_while(|&n| unsafe { *pointer.add(n) } != 0)
+            .count();
         String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(pointer, len) })
     }
 
@@ -243,17 +302,37 @@ mod windows_reader {
         // SAFETY: plain Win32 call with valid out-pointers; the descriptor is freed by `finish`.
         unsafe {
             let mut descriptor = std::ptr::null_mut();
-            let status = GetNamedSecurityInfoW(wide.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut descriptor);
+            let status = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            );
             finish(status, descriptor)
         }
     }
 
     /// The same read for an open handle, so the answer is about the object that was opened, whatever its path names later.
-    pub fn descriptor_and_user_of(handle: std::os::windows::io::RawHandle) -> Result<(String, String), u32> {
+    pub fn descriptor_and_user_of(
+        handle: std::os::windows::io::RawHandle,
+    ) -> Result<(String, String), u32> {
         // SAFETY: `handle` is open for the call (the caller holds it); out-pointers are valid; the descriptor is freed by `finish`.
         unsafe {
             let mut descriptor = std::ptr::null_mut();
-            let status = GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut descriptor);
+            let status = GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            );
             finish(status, descriptor)
         }
     }
@@ -262,14 +341,23 @@ mod windows_reader {
     ///
     /// # Safety
     /// `descriptor` is the system allocation a successful `status` returned.
-    unsafe fn finish(status: u32, descriptor: *mut core::ffi::c_void) -> Result<(String, String), u32> {
+    unsafe fn finish(
+        status: u32,
+        descriptor: *mut core::ffi::c_void,
+    ) -> Result<(String, String), u32> {
         if status != 0 {
             return Err(status);
         }
         // SAFETY: valid descriptor and out-pointers; every system allocation is freed with LocalFree.
         unsafe {
             let mut sddl = std::ptr::null_mut();
-            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION, &mut sddl, std::ptr::null_mut());
+            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                &mut sddl,
+                std::ptr::null_mut(),
+            );
             let sddl_text = (converted != 0).then(|| text(sddl));
             LocalFree(sddl.cast());
             LocalFree(descriptor);
@@ -288,7 +376,13 @@ mod windows_reader {
             let mut needed = 0u32;
             GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
             let mut buffer = vec![0u8; needed as usize];
-            let got = GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), needed, &mut needed);
+            let got = GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            );
             if got == 0 {
                 return Err(3);
             }
@@ -306,15 +400,28 @@ mod windows_reader {
 
     /// Creates `path` with the protected DACL of `protected_dir_sddl`; `Err(code)` is the Win32 error (183: already exists).
     pub fn create_protected_dir(path: &Path) -> Result<(), u32> {
-        let sddl: Vec<u16> = super::protected_dir_sddl(&current_user_sid()?).encode_utf16().chain(Some(0)).collect();
+        let sddl: Vec<u16> = super::protected_dir_sddl(&current_user_sid()?)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         // SAFETY: valid NUL-terminated inputs and out-pointer; the descriptor outlives the call and is freed with LocalFree.
         unsafe {
             let mut descriptor = std::ptr::null_mut();
-            if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) == 0 {
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            ) == 0
+            {
                 return Err(5);
             }
-            let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: 0,
+            };
             let made = CreateDirectoryW(wide.as_ptr(), &attributes) != 0;
             let error = if made { 0 } else { GetLastError() };
             LocalFree(descriptor);
@@ -331,10 +438,23 @@ mod tests {
     fn protected_dir_dacl_grants_only_system_administrators_and_the_user() {
         const USER: &str = "S-1-5-21-1-2-3-1001";
         let dacl = protected_dir_sddl(USER);
-        assert!(dacl.starts_with("D:P("), "protected: nothing is inherited from the data directory");
-        assert_eq!(trustees_outside(&format!("O:BA{dacl}"), USER), Vec::<String>::new(), "no trustee beyond the three");
-        assert_eq!(private_violations(&format!("O:BA{dacl}"), &[USER]), Vec::<String>::new());
+        assert!(
+            dacl.starts_with("D:P("),
+            "protected: nothing is inherited from the data directory"
+        );
+        assert_eq!(
+            trustees_outside(&format!("O:BA{dacl}"), USER),
+            Vec::<String>::new(),
+            "no trustee beyond the three"
+        );
+        assert_eq!(
+            private_violations(&format!("O:BA{dacl}"), &[USER]),
+            Vec::<String>::new()
+        );
         // A neighbour's DACL that also grants Users is told apart from it.
-        assert_eq!(trustees_outside(&format!("O:BA{dacl}(A;OICI;0x1301bf;;;BU)"), USER), ["BU"]);
+        assert_eq!(
+            trustees_outside(&format!("O:BA{dacl}(A;OICI;0x1301bf;;;BU)"), USER),
+            ["BU"]
+        );
     }
 }

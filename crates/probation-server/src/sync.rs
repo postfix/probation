@@ -21,7 +21,8 @@ use ipnet::IpNet;
 use probation_policy::api::{
     CertificateAdmission, CertificateAdmissionRequest, ChainLink, ChangesRequest, ChangesResponse,
     KeyHash, KeyId, KeyLookup, KeyLookupRequest, LayersRequest, LayersResponse, LimitChange,
-    LimitSource, LockRange, MemberCertificateId, OrgId, PlaceLayer, RegistryDeletionScope, SettingsPush,
+    LimitSource, LockRange, MemberCertificateId, OrgId, PlaceLayer, RegistryDeletionScope,
+    SettingsPush,
 };
 use probation_policy::{LayerKind, PlaceRef};
 use serde::Serialize;
@@ -205,7 +206,10 @@ impl OsvCaller {
 }
 
 fn place_code(kind: &str) -> u8 {
-    ["platform", "org", "group", "user", "personal"].iter().position(|k| *k == kind).map_or(255, |i| i as u8)
+    ["platform", "org", "group", "user", "personal"]
+        .iter()
+        .position(|k| *k == kind)
+        .map_or(255, |i| i as u8)
 }
 
 pub struct SyncState {
@@ -217,7 +221,11 @@ pub struct SyncState {
 }
 
 impl SyncState {
-    pub fn new(pool: PgPool, trusted_proxies: Vec<IpNet>, secrets: Option<crate::accounts::SecretBox>) -> SyncState {
+    pub fn new(
+        pool: PgPool,
+        trusted_proxies: Vec<IpNet>,
+        secrets: Option<crate::accounts::SecretBox>,
+    ) -> SyncState {
         SyncState {
             pool,
             secrets,
@@ -240,7 +248,11 @@ impl SyncState {
     /// The closed set of credentials the OSV route accepts (C1030, D-OSV1): a live
     /// `fwt_` firewall token from one of its allowed sources, or a live service-kind key.
     /// Everything else is `Unauthenticated`; the sync request window is not charged.
-    pub(crate) async fn osv_caller(&self, headers: &HeaderMap, peer: IpAddr) -> Result<OsvCaller, SyncError> {
+    pub(crate) async fn osv_caller(
+        &self,
+        headers: &HeaderMap,
+        peer: IpAddr,
+    ) -> Result<OsvCaller, SyncError> {
         let bearer = headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
@@ -253,14 +265,22 @@ impl SyncState {
         match crate::service_policy::live_service_key_id(&self.pool, bearer).await? {
             Some((id, kind, root)) => {
                 // Org, group and user keys share their organisation's tenant.
-                let code = if matches!(kind.as_str(), "org" | "group" | "user") { 1 } else { place_code(&kind) };
+                let code = if matches!(kind.as_str(), "org" | "group" | "user") {
+                    1
+                } else {
+                    place_code(&kind)
+                };
                 Ok(OsvCaller::Service(id, (code, root.unwrap_or(0))))
             }
             None => Err(SyncError::Unauthenticated),
         }
     }
 
-    async fn firewall_identity(&self, headers: &HeaderMap, peer: IpAddr) -> Result<(i32, Tenant), SyncError> {
+    async fn firewall_identity(
+        &self,
+        headers: &HeaderMap,
+        peer: IpAddr,
+    ) -> Result<(i32, Tenant), SyncError> {
         let token = headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
@@ -394,7 +414,9 @@ impl From<StoreError> for SyncError {
                 tracing::error!(?place, "a place in the store has no layer row");
                 SyncError::Store(sqlx::Error::RowNotFound)
             }
-            StoreError::UnknownEcosystem(tag) => SyncError::Store(StoreError::unknown_ecosystem_as_db(tag)),
+            StoreError::UnknownEcosystem(tag) => {
+                SyncError::Store(StoreError::unknown_ecosystem_as_db(tag))
+            }
         }
     }
 }
@@ -495,21 +517,53 @@ async fn admit_certificate(
     let Some([member_uri]) = uri.as_deref() else {
         return Ok(refused());
     };
-    let (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, enterprise_status) =
-        if let Some((org, member, member_uuid, group, serial, root_pem, _, target_url, trusted, read_authorization_enc)) = row {
-            if leaf.raw_serial() != serial.as_slice()
-                || *member_uri != format!("urn:probation:member:{member_uuid}") {
-                return Ok(refused());
-            }
-            let Some(root_der) = verifies_client_chain(&root_pem, &asked.chain) else {
-                return Ok(refused());
-            };
-            (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, None)
-        } else {
-            let Some(member_uuid) = member_uri.strip_prefix("urn:probation:member:") else {
-                return Ok(refused());
-            };
-            #[allow(clippy::type_complexity)]
+    let (
+        org,
+        member,
+        member_uuid,
+        group,
+        root_der,
+        target_url,
+        trusted,
+        read_authorization_enc,
+        enterprise_status,
+    ) = if let Some((
+        org,
+        member,
+        member_uuid,
+        group,
+        serial,
+        root_pem,
+        _,
+        target_url,
+        trusted,
+        read_authorization_enc,
+    )) = row
+    {
+        if leaf.raw_serial() != serial.as_slice()
+            || *member_uri != format!("urn:probation:member:{member_uuid}")
+        {
+            return Ok(refused());
+        }
+        let Some(root_der) = verifies_client_chain(&root_pem, &asked.chain) else {
+            return Ok(refused());
+        };
+        (
+            org,
+            member,
+            member_uuid,
+            group,
+            root_der,
+            target_url,
+            trusted,
+            read_authorization_enc,
+            None,
+        )
+    } else {
+        let Some(member_uuid) = member_uri.strip_prefix("urn:probation:member:") else {
+            return Ok(refused());
+        };
+        #[allow(clippy::type_complexity)]
             let enterprise: Option<(i32, i32, String, Option<i32>, String, Option<String>, bool, Option<Vec<u8>>)> = sqlx::query_as(
                 "SELECT r.org_id, m.id, m.certificate_uuid::text, m.group_id,
                         provider.expected_ocsp_url, r.target_url, r.trusted, r.read_authorization_enc
@@ -525,44 +579,89 @@ async fn admit_certificate(
             )
             .bind(asked.registry.0 as i64).bind(member_uuid).bind(asked.ecosystem.as_tag())
             .fetch_optional(&mut *tx).await?;
-            let Some((org, member, member_uuid, group, expected_status, target_url, trusted, read_authorization_enc)) = enterprise else {
-                return Ok(refused());
-            };
-            // Exactly one OCSP AIA URI, equal to the saved issuer expectation.
-            let aia: Vec<&str> = leaf.extensions().iter().flat_map(|extension| match extension.parsed_extension() {
-                ParsedExtension::AuthorityInfoAccess(access) => access.accessdescs.iter()
+        let Some((
+            org,
+            member,
+            member_uuid,
+            group,
+            expected_status,
+            target_url,
+            trusted,
+            read_authorization_enc,
+        )) = enterprise
+        else {
+            return Ok(refused());
+        };
+        // Exactly one OCSP AIA URI, equal to the saved issuer expectation.
+        let aia: Vec<&str> = leaf
+            .extensions()
+            .iter()
+            .flat_map(|extension| match extension.parsed_extension() {
+                ParsedExtension::AuthorityInfoAccess(access) => access
+                    .accessdescs
+                    .iter()
                     .filter(|entry| entry.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1")
-                    .filter_map(|entry| match &entry.access_location { GeneralName::URI(uri) => Some(*uri), _ => None })
+                    .filter_map(|entry| match &entry.access_location {
+                        GeneralName::URI(uri) => Some(*uri),
+                        _ => None,
+                    })
                     .collect::<Vec<_>>(),
                 _ => Vec::new(),
-            }).collect();
-            if aia.as_slice() != [expected_status.as_str()] {
-                return Ok(refused());
-            }
-            let roots: Vec<String> = sqlx::query_scalar(
+            })
+            .collect();
+        if aia.as_slice() != [expected_status.as_str()] {
+            return Ok(refused());
+        }
+        let roots: Vec<String> = sqlx::query_scalar(
                 "SELECT certificate_pem FROM registry_certificate_roots WHERE org_id = $1 AND active ORDER BY fingerprint",
             ).bind(org).fetch_all(&mut *tx).await?;
-            let Some(root_der) = roots.iter().find_map(|pem| verifies_client_chain(pem, &asked.chain)) else {
-                return Ok(refused());
-            };
-            let issuer_der = asked.chain.get(1).cloned().unwrap_or_else(|| root_der.clone());
-            let status = probation_policy::api::EnterpriseStatus {
-                status_url: expected_status,
-                issuer_der,
-                root_der: root_der.clone(),
-                private_cidrs: Vec::new(),
-            };
-            (org, member, member_uuid, group, root_der, target_url, trusted, read_authorization_enc, Some(status))
+        let Some(root_der) = roots
+            .iter()
+            .find_map(|pem| verifies_client_chain(pem, &asked.chain))
+        else {
+            return Ok(refused());
         };
+        let issuer_der = asked
+            .chain
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| root_der.clone());
+        let status = probation_policy::api::EnterpriseStatus {
+            status_url: expected_status,
+            issuer_der,
+            root_der: root_der.clone(),
+            private_cidrs: Vec::new(),
+        };
+        (
+            org,
+            member,
+            member_uuid,
+            group,
+            root_der,
+            target_url,
+            trusted,
+            read_authorization_enc,
+            Some(status),
+        )
+    };
     let _ = root_der;
     let read_authorization = if let Some(sealed) = read_authorization_enc {
-        let Some(value) = state.secrets.as_ref().and_then(|secrets| secrets.open(&format!("registry read org {org}"), &sealed))
-            .and_then(|bytes| String::from_utf8(bytes).ok()) else {
-            tracing::error!(registry = asked.registry.0, "registry read credential cannot be opened");
+        let Some(value) = state
+            .secrets
+            .as_ref()
+            .and_then(|secrets| secrets.open(&format!("registry read org {org}"), &sealed))
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        else {
+            tracing::error!(
+                registry = asked.registry.0,
+                "registry read credential cannot be opened"
+            );
             return Err(SyncError::Store(sqlx::Error::RowNotFound));
         };
         Some(value)
-    } else { None };
+    } else {
+        None
+    };
     let registry_private_cidrs = if let Some(target) = &target_url {
         approved_private_cidrs(&mut tx, org, "registry", target).await?
     } else {
@@ -570,7 +669,8 @@ async fn admit_certificate(
     };
     let mut enterprise_status = enterprise_status;
     if let Some(status) = &mut enterprise_status {
-        status.private_cidrs = approved_private_cidrs(&mut tx, org, "ocsp", &status.status_url).await?;
+        status.private_cidrs =
+            approved_private_cidrs(&mut tx, org, "ocsp", &status.status_url).await?;
     }
 
     let mut chain = vec![tenancy::PLATFORM, tenancy::org_place(OrgId(org as u32))];
@@ -608,10 +708,11 @@ async fn admit_certificate(
         "SELECT origin, path_prefix, forward_bearer FROM registry_delete_origins WHERE registry_id = $1 ORDER BY origin, path_prefix"
     ).bind(asked.registry.0 as i64).fetch_all(&mut *tx).await?
         .into_iter().map(|(origin, path_prefix, forward_bearer)| RegistryDeletionScope { origin, path_prefix, forward_bearer }).collect();
-    let token_origin: Option<String> = sqlx::query_scalar("SELECT token_origin FROM registries WHERE id = $1")
-        .bind(asked.registry.0 as i64)
-        .fetch_one(&mut *tx)
-        .await?;
+    let token_origin: Option<String> =
+        sqlx::query_scalar("SELECT token_origin FROM registries WHERE id = $1")
+            .bind(asked.registry.0 as i64)
+            .fetch_one(&mut *tx)
+            .await?;
     tx.commit().await?;
     Ok(Json(CertificateAdmission::Granted {
         registry: asked.registry,
@@ -641,15 +742,26 @@ pub(crate) async fn approved_private_cidrs(
     purpose: &str,
     target: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let Ok(url) = url::Url::parse(target) else { return Ok(Vec::new()); };
-    let Some(host) = url.host_str() else { return Ok(Vec::new()); };
-    let Some(port) = url.port_or_known_default() else { return Ok(Vec::new()); };
+    let Ok(url) = url::Url::parse(target) else {
+        return Ok(Vec::new());
+    };
+    let Some(host) = url.host_str() else {
+        return Ok(Vec::new());
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return Ok(Vec::new());
+    };
     sqlx::query_scalar(
         "SELECT cidr::text FROM registry_private_egress
          WHERE org_id = $1 AND purpose = $2 AND host = $3 AND port = $4
            AND approved_at IS NOT NULL ORDER BY id",
-    ).bind(org).bind(purpose).bind(host.to_ascii_lowercase()).bind(port as i32)
-        .fetch_all(&mut **tx).await
+    )
+    .bind(org)
+    .bind(purpose)
+    .bind(host.to_ascii_lowercase())
+    .bind(port as i32)
+    .fetch_all(&mut **tx)
+    .await
 }
 
 pub(crate) fn verifies_client_chain(root_pem: &str, chain: &[Vec<u8>]) -> Option<Vec<u8>> {
@@ -663,9 +775,14 @@ pub(crate) fn verifies_client_chain(root_pem: &str, chain: &[Vec<u8>]) -> Option
     let verifier = WebPkiClientVerifier::builder_with_provider(
         Arc::new(roots),
         Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
-    ).build().ok()?;
-    let certs: Vec<CertificateDer<'static>> = chain.iter().cloned().map(CertificateDer::from).collect();
-    verifier.verify_client_cert(&certs[0], &certs[1..], UnixTime::now()).ok()?;
+    )
+    .build()
+    .ok()?;
+    let certs: Vec<CertificateDer<'static>> =
+        chain.iter().cloned().map(CertificateDer::from).collect();
+    verifier
+        .verify_client_cert(&certs[0], &certs[1..], UnixTime::now())
+        .ok()?;
     Some(root.as_ref().to_vec())
 }
 

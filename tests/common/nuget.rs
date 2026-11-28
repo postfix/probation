@@ -87,17 +87,32 @@ pub fn leaf(id: &str, version: &str, published: Option<&str>, listed: bool) -> V
 
 /// A registration index of `pages` (each a list of leaves). Inline pages carry their leaves; `linked`
 /// pages are written as links and returned as `(path, document)` to be served separately.
-pub fn registration(id: &str, pages: &[Vec<Value>], linked: &[usize]) -> (String, Vec<(String, String)>) {
+pub fn registration(
+    id: &str,
+    pages: &[Vec<Value>],
+    linked: &[usize],
+) -> (String, Vec<(String, String)>) {
     let mut separate = Vec::new();
     let mut items = Vec::new();
     for (n, page) in pages.iter().enumerate() {
-        let lower = page.first().and_then(|l| l["catalogEntry"]["version"].as_str()).unwrap_or("0").to_ascii_lowercase();
-        let upper = page.last().and_then(|l| l["catalogEntry"]["version"].as_str()).unwrap_or("0").to_ascii_lowercase();
+        let lower = page
+            .first()
+            .and_then(|l| l["catalogEntry"]["version"].as_str())
+            .unwrap_or("0")
+            .to_ascii_lowercase();
+        let upper = page
+            .last()
+            .and_then(|l| l["catalogEntry"]["version"].as_str())
+            .unwrap_or("0")
+            .to_ascii_lowercase();
         let page_url = format!("{INDEX_ORIGIN}{REG}{id}/page/{lower}/{upper}.json");
         let mut object = json!({"@id": page_url, "@type": "catalog:CatalogPage", "count": page.len(), "lower": lower, "upper": upper});
         if linked.contains(&n) {
             let document = json!({"@id": page_url, "@type": "catalog:CatalogPage", "count": page.len(), "lower": lower, "upper": upper, "parent": format!("{INDEX_ORIGIN}{REG}{id}/index.json"), "items": page});
-            separate.push((format!("{REG}{id}/page/{lower}/{upper}.json"), document.to_string()));
+            separate.push((
+                format!("{REG}{id}/page/{lower}/{upper}.json"),
+                document.to_string(),
+            ));
         } else {
             object["items"] = json!(page);
         }
@@ -139,7 +154,9 @@ pub fn nupkg(id: &str, version: &str) -> Vec<u8> {
         out.extend_from_slice(&[0, 0]);
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(data);
-        central.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0]);
+        central.extend_from_slice(&[
+            0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0,
+        ]);
         central.extend_from_slice(&crc.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());

@@ -88,9 +88,11 @@ if [ "$LANE" = cri ]; then
   private_registry_up
   docker exec "$NODE" sh -c "echo '$REGIP private.kind.test' >> /etc/hosts"
   docker exec "$NODE" mkdir -p "/etc/containerd/certs.d/$PRIVATE"
-  docker exec -i "$NODE" sh -c "cat > '/etc/containerd/certs.d/$PRIVATE/ca.crt'" < "$WORK_DIR/registry/reg.crt"
+  docker exec -i "$NODE" sh -c "cat > '/etc/containerd/certs.d/$PRIVATE/ca.crt'" < "$WORK_DIR/registry/ca/ca.crt"
   printf 'server = "https://%s"\n\n[host."https://%s"]\n  capabilities = ["pull", "resolve"]\n  ca = "ca.crt"\n' "$PRIVATE" "$PRIVATE" | docker exec -i "$NODE" sh -c "cat > '/etc/containerd/certs.d/$PRIVATE/hosts.toml'"
-  expect "the kind node's containerd reads registry hosts from /etc/containerd/certs.d" docker exec "$NODE" sh -c "crictl info | grep -q /etc/containerd/certs.d"
+  # (Not `crictl info`: containerd 2.x reports no registry configuration there, and kind's own config_path is '', the default that reads certs.d.)
+  # The registry's certificate is under the lane CA (registry-lib.sh): a pull with no credential gets past TLS only with certs.d/$PRIVATE/ca.crt, and is then refused (401).
+  expect "the kind node's containerd reads registry hosts from /etc/containerd/certs.d (a pull of $PRIV_IMAGE with no credential passes TLS with its ca.crt and is refused for authorization, not x509)" bash -c "out=\$(docker exec $NODE crictl pull $PRIV_IMAGE 2>&1) && exit 1; printf '%s' \"\$out\" | grep -Eqi 'authoriz|401' && ! printf '%s' \"\$out\" | grep -q x509"
   kubectl create secret docker-registry private-pull --docker-server="$PRIVATE" --docker-username=puller --docker-password="$PULL_PW"
   kubectl create secret docker-registry other-server-pull --docker-server=other.kind.test:5000 --docker-username=puller --docker-password="$PULL_PW"
   lane_pod secret-ok "$PRIV_IMAGE" Always private-pull
@@ -110,7 +112,8 @@ if [ "$LANE" = cri ]; then
   # ---- the node: the installer, with the service's own image preloaded BY DIGEST (the kubelet's use of a preloaded image is checked below) ----
   # An OCI archive of ONE platform's manifest (skopeo picks it from the index), named repository@<that manifest's digest> by install-node.sh. The
   # repository is one that does not exist on registry.k8s.io: a pod of it can only run if the preload is what the kubelet uses.
-  skopeo copy --override-os linux --override-arch amd64 "docker://$BUSYBOX" "oci-archive:$WORK_DIR/preload.tar:1"
+  # The source is PRELOAD_IMAGE, not the private registry's image (registry-lib.sh: the kubelet would re-verify that one by pulling).
+  skopeo copy --override-os linux --override-arch amd64 "docker://$PRELOAD_IMAGE" "oci-archive:$WORK_DIR/preload.tar:1"
   PRELOAD_DIGEST=$(python3 - "$WORK_DIR/preload.tar" <<'PY'
 import json, sys, tarfile
 with tarfile.open(sys.argv[1]) as t:
@@ -146,6 +149,8 @@ PY
   expect "kubelet pull: $REF is still not on the node (the pull left nothing behind)" bash -c "! docker exec $NODE crictl inspecti $REF"
   # IfNotPresent and a digest the node holds (the preload): no pull is needed. The repository does not exist on registry.k8s.io and the endpoint does
   # not resolve, so a pull could not have succeeded: Running with the event "already present on machine" shows the kubelet used the preload.
+  # The premise: the CRI holds the preload by its digest, and it is another image than the one the pull-secret pods pulled WITH a secret.
+  expect "kubelet preload, premise: the CRI holds $PRELOAD_REF and its image id is not that of $PRIV_IMAGE (pulled with a secret, which the kubelet re-verifies by pulling)" bash -c "pre=\$(docker exec $NODE crictl inspecti -o go-template --template '{{.status.id}}' $PRELOAD_REF) && [ -n \"\$pre\" ] && [ \"\$pre\" != \"\$(docker exec $NODE crictl inspecti -o go-template --template '{{.status.id}}' $PRIV_IMAGE 2>/dev/null)\" ]"
   lane_pod preloaded "$PRELOAD_REF" IfNotPresent
   expect "kubelet preload: a pod of $PRELOAD_REF (IfNotPresent) reaches Running although nothing can be pulled" wait_until 150 pod_phase_is default preloaded Running
   expect "kubelet preload: the kubelet found the image already present on the node (no pull)" pod_event_matches default preloaded 'already present on machine'

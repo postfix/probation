@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt as _, StreamExt};
 
 use common::{
     FakeAnswer, FakeRegistry, Gate, SlowReader, TestClock, TestServer, artifact_path, body_bytes,
@@ -41,6 +41,7 @@ use probation::artifacts::content::ContentKey;
 use probation::artifacts::download;
 use probation::config::Config;
 use probation::policy::{BlocklistSnapshot, Ecosystem};
+use probation::store::StoreError;
 use probation::store::rows::{
     ArtifactReference, ProjectRefresh, ReferenceId, ReferenceRow, ReferenceUpsert,
 };
@@ -1327,25 +1328,26 @@ async fn the_waiter_cap_refuses_at_once_and_a_leaving_waiter_frees_its_place() {
 /// The store is one task, so the only thing a blocklist commit can be made to wait
 /// for is the transaction already running — and TM-1's worst case is the largest one
 /// this server will run, a project refresh of `max_references_per_project`
-/// references. This starts that refresh, loads the low-priority queue behind it, and
-/// sends the commit, all in one `join!` so the queue contents are not a matter of
-/// scheduling luck: `join!` polls in order, and each of these futures puts its command
-/// on a queue the first time it is polled.
+/// references. This sends that refresh, fills the low-priority queue behind it, and
+/// sends the commit, each command put on its queue by one poll from this task, so the
+/// queue contents are fixed by the order of the sends and not by how long the refresh
+/// takes.
 ///
 /// The commit then has to land inside the bound, and without waiting for the
-/// maintenance backlog queued beside it to drain.
+/// maintenance backlog queued beside it to drain. Neither half of that second claim is
+/// read from a clock, so it holds however fast the database works the backlog: the
+/// commit is accepted while the maintenance queue is full (so it is not queued behind
+/// the backlog), and a content row written right behind it on the critical queue is in
+/// the answer of a sentinel queued behind the backlog (so it ran before the backlog
+/// drained).
 ///
-/// What this does **not** witness is the biased select itself: deleting `biased;` from
-/// the store loop leaves this test passing, because a random choice between the two
-/// ready queues still costs the commit only about one extra maintenance command, which
-/// is well inside the margin below. The bound and the backlog are what TM-1 names; the
-/// priority rule's own witness would have to be something other than a clock.
+/// The biased select itself is witnessed only in part: putting the maintenance branch
+/// first fails this test every time, but deleting `biased;` fails it only sometimes
+/// (two runs in eight when measured), because a random choice between the two ready
+/// queues usually still reaches the commit and the marker before the sentinel.
 ///
-/// This one test runs on a multi-threaded runtime. The store is a single task, and on
-/// a current-thread runtime it runs every queued command back to back without the test
-/// task ever being scheduled in between — so every reply is observed at the same
-/// instant and the order they were *executed* in is invisible. A second worker thread
-/// is what lets this test see each answer as it lands.
+/// This one test runs on a multi-threaded runtime, so the refresh's and the commit's
+/// replies are each observed as they land, which is what the time bound reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocklist_commit_is_not_delayed_by_a_large_project_refresh() {
     let harness = harness_with(vec![(V1, FakeAnswer::Body("body".to_owned()))], |config| {
@@ -1379,6 +1381,7 @@ async fn blocklist_commit_is_not_delayed_by_a_large_project_refresh() {
             }
         })
         .collect();
+    let marker_reference = references[0].id;
 
     let document = common::snapshot(7, "2026-04-05T00:00:00Z", "2099-01-01T00:00:00Z", "");
     let snapshot = Arc::new(
@@ -1386,92 +1389,105 @@ async fn blocklist_commit_is_not_delayed_by_a_large_project_refresh() {
             .expect("the test blocklist is valid"),
     );
 
-    let started = std::time::Instant::now();
-    let refresh = tokio::spawn({
-        let store = store.clone();
-        async move {
-            let outcome = store
-                .commit_project_refresh(ProjectRefresh {
-                    ecosystem: Ecosystem::Npm,
-                    name: "bulk-widget".to_owned(),
-                    payload: Arc::from(b"{}".as_slice()),
-                    validators: UpstreamValidators::default(),
-                    validated_at_micros: now,
-                    fetched_at_micros: now,
-                    references,
-                })
-                .await;
-            (outcome, std::time::Instant::now())
-        }
-    });
-
-    // Wait until that refresh is genuinely inside its transaction. A probe on the
-    // critical queue that cannot be answered is what "the store is busy with one
-    // transaction" looks like from outside, and it is the only thing this test needs
-    // to be sure of before it queues everything else.
-    let probing = std::time::Instant::now() + PATIENCE;
-    loop {
-        assert!(
-            std::time::Instant::now() < probing,
-            "the maximum-size refresh never reached the store"
-        );
-        let probe = store.get_reference(
-            ReferenceId::parse_hex(&"00".repeat(32)).expect("a reference id nothing matches"),
-        );
-        if tokio::time::timeout(Duration::from_millis(100), probe)
-            .await
-            .is_err()
-        {
-            break;
-        }
-    }
-
-    // Now, with the store occupied: a real backlog on the low-priority queue, and the
-    // blocklist commit beside it on the critical one.
-    for batch in 0..4u8 {
-        store.touch_content(
+    // Built before anything is sent, so that everything below reaches the queues in
+    // a few sends while the refresh is still the store's one transaction.
+    let touches: Vec<Vec<(ContentKey, i64)>> = (0..4u8)
+        .map(|batch| {
             (0..5_000u16)
                 .map(|index| {
                     let mut key = [batch; 32];
                     key[..2].copy_from_slice(&index.to_le_bytes());
                     (ContentKey::from_sha256(key), now)
                 })
-                .collect(),
-        );
-    }
+                .collect()
+        })
+        .collect();
 
-    // Queued behind that backlog: when this answers, the backlog has been worked
-    // through. It is the only way to time work the maintenance queue does not reply to.
-    let sentinel = async {
-        let outcome = store.eviction_plan().await;
+    let started = std::time::Instant::now();
+    let mut refresh = Box::pin(async {
+        let outcome = store
+            .commit_project_refresh(ProjectRefresh {
+                ecosystem: Ecosystem::Npm,
+                name: "bulk-widget".to_owned(),
+                payload: Arc::from(b"{}".as_slice()),
+                validators: UpstreamValidators::default(),
+                validated_at_micros: now,
+                fetched_at_micros: now,
+                references,
+            })
+            .await;
         (outcome, std::time::Instant::now())
-    };
+    });
+    // The first poll puts the refresh on the critical queue. From here on the store
+    // is either inside that transaction or about to start it, and either way it
+    // runs it to the end before it looks at anything queued below. No wait and no
+    // probe: the order is fixed by the sends, not by how long the refresh takes.
+    assert!(
+        refresh.as_mut().now_or_never().is_none(),
+        "the maximum-size refresh finished before anything could queue behind it"
+    );
+
+    // A real backlog on the low-priority queue, ...
+    for keys in touches {
+        store.touch_content(keys);
+    }
+    // ... then the sentinel behind it: it runs only once the backlog has been worked
+    // through, and its answer is the content table as it stood at that point ...
+    let mut sentinel = Box::pin(store.eviction_plan());
+    assert!(
+        sentinel.as_mut().now_or_never().is_none(),
+        "the sentinel is queued behind the backlog"
+    );
+    // ... then more maintenance until the queue refuses one. A full maintenance queue
+    // is what makes the commit's route observable: queued behind this backlog, it
+    // would be refused as `Busy` instead of committed.
+    let refused = (0..1_000)
+        .find_map(|_| store.eviction_plan().now_or_never())
+        .expect("the maintenance queue fills while the store works the refresh");
+    assert!(
+        matches!(refused, Err(StoreError::Busy)),
+        "a full maintenance queue refuses with Busy, got {refused:?}"
+    );
     let commit = async {
         let outcome = tokio::time::timeout(COMMIT_BOUND, store.commit_blocklist(snapshot)).await;
         (outcome, std::time::Instant::now())
     };
+    // Queued on the critical queue right behind the commit, so it runs after the
+    // commit and before anything later on that queue. It writes a content row, which
+    // the sentinel's answer shows if and only if this ran before the sentinel did.
+    // That is the order the store *executed* in, read from the data rather than
+    // from when each reply happened to be observed, so it does not depend on how
+    // fast the database works the backlog.
+    let marker_key = ContentKey::from_sha256([0xa5; 32]);
+    let marker = store.publish_content(marker_key, [0xa5; 64], 1, marker_reference, now);
 
-    let ((planned, sentinel_at), (committed, commit_at)) = tokio::join!(sentinel, commit);
-    let (refreshed, refresh_at) = refresh.await.expect("the refresh task finishes");
+    let ((refreshed, refresh_at), planned, (committed, commit_at), marked) =
+        tokio::join!(refresh, sentinel, commit, marker);
     let commit_elapsed = commit_at.duration_since(started);
     let refresh_elapsed = refresh_at.duration_since(started);
 
     refreshed.expect("the maximum-size refresh committed");
-    planned.expect("the maintenance backlog was worked through");
+    let planned = planned.expect("the maintenance backlog was worked through");
     committed
         .unwrap_or_else(|_| panic!("the blocklist commit did not land within {COMMIT_BOUND:?}"))
-        .expect("the blocklist commit succeeded");
+        .expect("the blocklist commit was accepted beside a full maintenance queue and succeeded");
+    marked.expect("the marker queued behind the commit was written");
 
     assert!(
         commit_elapsed <= refresh_elapsed + Duration::from_millis(500),
         "the commit ({commit_elapsed:?}) waited for the running transaction \
          ({refresh_elapsed:?}) and for nothing beyond it"
     );
+    // Commit, then marker, on the critical queue; backlog, then sentinel, on the
+    // maintenance one. The sentinel seeing the marker means the commit ran before
+    // the sentinel, i.e. while the backlog was still queued or being worked.
     assert!(
-        sentinel_at > commit_at + Duration::from_millis(500),
-        "the commit did not wait for the maintenance backlog to drain: commit at \
-         {commit_elapsed:?}, maintenance done at {:?}",
-        sentinel_at.duration_since(started)
+        planned
+            .oldest_first
+            .iter()
+            .any(|(key, _)| *key == marker_key),
+        "the commit waited for the maintenance backlog to drain: the sentinel queued \
+         behind the backlog ran before the marker queued behind the commit"
     );
 
     let row = store

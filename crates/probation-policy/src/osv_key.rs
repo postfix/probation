@@ -37,22 +37,41 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
     match ecosystem {
         Ecosystem::Npm => {
             let plain = |s: &str| {
-                !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'!' | b'\'' | b'(' | b')' | b'*'))
+                !s.is_empty()
+                    && s.bytes().all(|b| {
+                        b.is_ascii_alphanumeric()
+                            || matches!(
+                                b,
+                                b'.' | b'_' | b'~' | b'-' | b'!' | b'\'' | b'(' | b')' | b'*'
+                            )
+                    })
             };
             match name.strip_prefix('@') {
-                Some(scoped) => scoped.split_once('/').is_some_and(|(scope, rest)| plain(scope) && plain(rest)),
+                Some(scoped) => scoped
+                    .split_once('/')
+                    .is_some_and(|(scope, rest)| plain(scope) && plain(rest)),
                 None => plain(name),
             }
         }
-        Ecosystem::PyPi => name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')),
+        Ecosystem::PyPi => name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')),
         // LS-F6: gem name `[A-Za-z0-9._-]`, case kept (validated, never normalised).
-        Ecosystem::RubyGems => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
+        Ecosystem::RubyGems => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
         // LS-F6: crate name `[A-Za-z0-9_-]`, validated and never normalised.
-        Ecosystem::Cargo => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+        Ecosystem::Cargo => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
         // LS-F6: decoded module path `[A-Za-z0-9._~/-]`, case kept; the `!`-escaped proxy form is a key error.
-        Ecosystem::Go => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/')),
+        Ecosystem::Go => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/')),
         // LS-F6: package id `[A-Za-z0-9._-]`, validated and never normalised (OSV answers any case).
-        Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
+        Ecosystem::NuGet => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
         // LS-F6: `groupId:artifactId`, each part `[A-Za-z0-9._-]`, exactly one `:`, case kept.
         Ecosystem::Maven => crate::names::valid_maven_name(name),
         // LS-F6: the package name, `[A-Za-z0-9_][A-Za-z0-9_+.-]*`, case kept (OSV's `ConanCenter` ecosystem keys by name).
@@ -64,7 +83,9 @@ fn name_ok(ecosystem: Ecosystem, name: &str) -> bool {
 
 /// Printable ASCII without spaces, 1 to `MAX_VERSION` (1024) bytes.
 fn version_ok(version: &str) -> bool {
-    !version.is_empty() && version.len() <= MAX_VERSION && version.bytes().all(|b| (0x21..=0x7e).contains(&b))
+    !version.is_empty()
+        && version.len() <= MAX_VERSION
+        && version.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
 pub fn osv_key(ecosystem: Ecosystem, name: &str, version: &str) -> Result<OsvKey, OsvKeyError> {
@@ -74,5 +95,9 @@ pub fn osv_key(ecosystem: Ecosystem, name: &str, version: &str) -> Result<OsvKey
     if !version_ok(version) {
         return Err(OsvKeyError::Version);
     }
-    Ok(OsvKey { ecosystem, name: name.to_owned(), version: version.to_owned() })
+    Ok(OsvKey {
+        ecosystem,
+        name: name.to_owned(),
+        version: version.to_owned(),
+    })
 }

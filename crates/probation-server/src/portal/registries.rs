@@ -10,8 +10,31 @@ use super::{Shared, not_found, redirect, refused, unavailable};
 
 /// id, name, ecosystem, target, trusted, has a read credential, archive origin, resource path prefix, token origin.
 /// then the stored `osv_scope` (empty: the default rule) and what it means for the names this registry sends (row 27).
-type CatalogRow = (i64, String, String, String, bool, bool, String, String, String, String, &'static str);
-type StoredRow = (i64, String, String, String, bool, bool, String, String, String, String);
+type CatalogRow = (
+    i64,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    String,
+    String,
+    String,
+    String,
+    &'static str,
+);
+type StoredRow = (
+    i64,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    String,
+    String,
+    String,
+    String,
+);
 
 #[derive(Template)]
 #[template(
@@ -74,9 +97,12 @@ pub(crate) struct ReadCredentialForm {
 
 #[derive(Deserialize)]
 pub(crate) struct DeleteScopeForm {
-    #[serde(default)] csrf: String,
-    #[serde(default)] origin: String,
-    #[serde(default)] path_prefix: String,
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    origin: String,
+    #[serde(default)]
+    path_prefix: String,
     forward_bearer: Option<String>,
     remove: Option<String>,
 }
@@ -91,18 +117,36 @@ pub(crate) async fn set_delete_scope(
         Ok(value) => value,
         Err(answer) => return answer,
     };
-    let Some(place) = super::organisation::org_place(&portal, &signed_in, org).await else { return not_found(); };
-    if let Err(answer) = super::organisation::admin_on(&portal, &signed_in, &place).await { return answer; }
-    let Ok(origin) = url::Url::parse(&form.origin) else { return refused("Enter an exact HTTPS origin."); };
-    if origin.scheme() != "https" || origin.host_str().is_none() || !origin.username().is_empty()
-        || origin.password().is_some() || origin.query().is_some() || origin.fragment().is_some()
-        || origin.path() != "/" || form.path_prefix.is_empty() || !form.path_prefix.starts_with('/')
-        || form.path_prefix.contains("//") || form.path_prefix.contains('\\')
-        || form.path_prefix.split('/').any(|part| part == "." || part == "..")
+    let Some(place) = super::organisation::org_place(&portal, &signed_in, org).await else {
+        return not_found();
+    };
+    if let Err(answer) = super::organisation::admin_on(&portal, &signed_in, &place).await {
+        return answer;
+    }
+    let Ok(origin) = url::Url::parse(&form.origin) else {
+        return refused("Enter an exact HTTPS origin.");
+    };
+    if origin.scheme() != "https"
+        || origin.host_str().is_none()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || origin.path() != "/"
+        || form.path_prefix.is_empty()
+        || !form.path_prefix.starts_with('/')
+        || form.path_prefix.contains("//")
+        || form.path_prefix.contains('\\')
+        || form
+            .path_prefix
+            .split('/')
+            .any(|part| part == "." || part == "..")
         || form.path_prefix.to_ascii_lowercase().contains("%2e")
         || form.path_prefix.to_ascii_lowercase().contains("%2f")
         || form.path_prefix.to_ascii_lowercase().contains("%5c")
-    { return refused("Enter an exact HTTPS origin and unambiguous path prefix."); }
+    {
+        return refused("Enter an exact HTTPS origin and unambiguous path prefix.");
+    }
     let exact_origin = origin.origin().ascii_serialization();
     let result = if form.remove.is_some() {
         sqlx::query("DELETE FROM registry_delete_origins WHERE registry_id = $1 AND origin = $2 AND path_prefix = $3 AND EXISTS (SELECT 1 FROM registries WHERE id = $1 AND org_id = $4 AND ecosystem = 'npm' AND removed_at IS NULL)")
@@ -144,36 +188,54 @@ pub(crate) async fn catalog(
     ).bind(org).fetch_all(&portal.pool).await;
     match (rows, scopes) {
         (Ok(rows), Ok(scopes)) => {
-            let rows: Vec<CatalogRow> = rows.into_iter().map(|row| {
-                let explicit = match row.9.as_str() { "public" => Some(probation_policy::api::OsvScope::Public), "private" => Some(probation_policy::api::OsvScope::Private), _ => None };
-                let ecosystem = probation_policy::Ecosystem::from_tag(&row.2);
-                let target = (!row.3.is_empty()).then_some(row.3.as_str());
-                let line = ecosystem.map_or(crate::osv_view::NOT_APPLICABLE, |ecosystem| crate::osv_view::registry_line(ecosystem, target, explicit));
-                (row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, line)
-            }).collect();
-            let families: Vec<(&'static str, String, &'static str)> = crate::osv_view::coverage().iter().map(|row| (row.tag, crate::osv_view::coverage_label(row), row.name)).collect();
+            let rows: Vec<CatalogRow> = rows
+                .into_iter()
+                .map(|row| {
+                    let explicit = match row.9.as_str() {
+                        "public" => Some(probation_policy::api::OsvScope::Public),
+                        "private" => Some(probation_policy::api::OsvScope::Private),
+                        _ => None,
+                    };
+                    let ecosystem = probation_policy::Ecosystem::from_tag(&row.2);
+                    let target = (!row.3.is_empty()).then_some(row.3.as_str());
+                    let line = ecosystem.map_or(crate::osv_view::NOT_APPLICABLE, |ecosystem| {
+                        crate::osv_view::registry_line(ecosystem, target, explicit)
+                    });
+                    (
+                        row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, line,
+                    )
+                })
+                .collect();
+            let families: Vec<(&'static str, String, &'static str)> = crate::osv_view::coverage()
+                .iter()
+                .map(|row| (row.tag, crate::osv_view::coverage_label(row), row.name))
+                .collect();
             (
-            StatusCode::OK,
-            axum::response::Html(
-                CatalogPage {
-                    org,
-                    csrf: signed_in.session.csrf(),
-                    rows: &rows,
-                    families: &families,
-                    scopes: &scopes,
-                }
-                .render()
-                .expect("registry catalog template"),
-            ),
-        )
-            .into_response()
+                StatusCode::OK,
+                axum::response::Html(
+                    CatalogPage {
+                        org,
+                        csrf: signed_in.session.csrf(),
+                        rows: &rows,
+                        families: &families,
+                        scopes: &scopes,
+                    }
+                    .render()
+                    .expect("registry catalog template"),
+                ),
+            )
+                .into_response()
         }
         (Err(err), _) | (_, Err(err)) => unavailable(err),
     }
 }
 
 /// The audited columns of a registry, as the audit log shows them, read `FOR UPDATE` so a `before` is the row the UPDATE then replaces (never the credential itself: only whether one is configured).
-async fn registry_state(conn: &mut sqlx::PgConnection, org: i32, registry: i64) -> Result<Option<serde_json::Value>, sqlx::Error> {
+async fn registry_state(
+    conn: &mut sqlx::PgConnection,
+    org: i32,
+    registry: i64,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT jsonb_build_object('name', name, 'ecosystem', ecosystem, 'target_url', target_url, 'trusted', trusted, 'osv_scope', osv_scope, 'archive_origin', archive_origin, 'token_origin', token_origin, 'resource_path_prefix', resource_path_prefix, 'read_credential_configured', read_authorization_enc IS NOT NULL, 'removed', removed_at IS NOT NULL) FROM registries WHERE id = $1 AND org_id = $2 FOR UPDATE",
     )
@@ -182,9 +244,27 @@ async fn registry_state(conn: &mut sqlx::PgConnection, org: i32, registry: i64) 
 
 /// Records one audit row for a registry change in the SAME transaction as the change (the audit log's rule: a change and its row commit together
 /// or not at all), then commits. `before` is `registry_state` taken before the change.
-async fn commit_audited(mut tx: sqlx::Transaction<'static, sqlx::Postgres>, actor: &crate::tenancy::Actor, org: i32, registry: i64, action: &str, before: Option<serde_json::Value>) -> Result<(), sqlx::Error> {
+async fn commit_audited(
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    actor: &crate::tenancy::Actor,
+    org: i32,
+    registry: i64,
+    action: &str,
+    before: Option<serde_json::Value>,
+) -> Result<(), sqlx::Error> {
     let after = registry_state(&mut tx, org, registry).await?;
-    crate::audit::record(&mut tx, crate::audit::Entry { actor, org_id: Some(org), action, subject: format!("registry:{registry}"), before, after }).await?;
+    crate::audit::record(
+        &mut tx,
+        crate::audit::Entry {
+            actor,
+            org_id: Some(org),
+            action,
+            subject: format!("registry:{registry}"),
+            before,
+            after,
+        },
+    )
+    .await?;
     tx.commit().await
 }
 
@@ -208,8 +288,10 @@ pub(crate) async fn add(
     let Ok(target) = url::Url::parse(&form.target_url) else {
         return refused("A valid HTTPS registry target is required.");
     };
-    if !matches!(form.ecosystem.as_str(), "npm" | "pypi" | "rubygems" | "cargo" | "go" | "nuget" | "maven" | "conan" | "oci")
-        || form.name.trim().is_empty()
+    if !matches!(
+        form.ecosystem.as_str(),
+        "npm" | "pypi" | "rubygems" | "cargo" | "go" | "nuget" | "maven" | "conan" | "oci"
+    ) || form.name.trim().is_empty()
         || form.name.len() > 200
         || target.scheme() != "https"
         || target.host_str().is_none()
@@ -228,9 +310,12 @@ pub(crate) async fn add(
     {
         return refused("A valid read-only Authorization value is required.");
     }
-    let sealed = (!read_authorization.is_empty()).then(|| portal.secrets.seal(
-        &format!("registry read org {org}"), read_authorization.as_bytes(),
-    ));
+    let sealed = (!read_authorization.is_empty()).then(|| {
+        portal.secrets.seal(
+            &format!("registry read org {org}"),
+            read_authorization.as_bytes(),
+        )
+    });
     let added: Result<(), sqlx::Error> = async {
         let mut tx = portal.pool.begin().await?;
         let id: i64 = sqlx::query_scalar(
@@ -396,13 +481,19 @@ pub(crate) async fn set_archive_origin(
     } else {
         match crate::service_policy::valid_archive_origin(text) {
             Some(url) => Some(url.to_string()),
-            None => return refused("An archive origin is an HTTPS URL without credentials, query or fragment."),
+            None => {
+                return refused(
+                    "An archive origin is an HTTPS URL without credentials, query or fragment.",
+                );
+            }
         }
     };
     let changed: Result<bool, sqlx::Error> = async {
         let mut tx = portal.pool.begin().await?;
         let before = registry_state(&mut tx, org, registry).await?;
-        if !crate::service_policy::set_archive_origin(&mut *tx, org, registry, origin.as_deref()).await? {
+        if !crate::service_policy::set_archive_origin(&mut *tx, org, registry, origin.as_deref())
+            .await?
+        {
             return Ok(false);
         }
         commit_audited(tx, &actor, org, registry, "registry.archive_origin", before).await?;
@@ -448,13 +539,19 @@ pub(crate) async fn set_token_origin(
     } else {
         match crate::service_policy::valid_token_origin(text) {
             Some(url) => Some(url.origin().ascii_serialization()),
-            None => return refused("A token origin is an HTTPS origin without a path, credentials, query or fragment."),
+            None => {
+                return refused(
+                    "A token origin is an HTTPS origin without a path, credentials, query or fragment.",
+                );
+            }
         }
     };
     let changed: Result<bool, sqlx::Error> = async {
         let mut tx = portal.pool.begin().await?;
         let before = registry_state(&mut tx, org, registry).await?;
-        if !crate::service_policy::set_token_origin(&mut *tx, org, registry, origin.as_deref()).await? {
+        if !crate::service_policy::set_token_origin(&mut *tx, org, registry, origin.as_deref())
+            .await?
+        {
             return Ok(false);
         }
         commit_audited(tx, &actor, org, registry, "registry.token_origin", before).await?;
@@ -500,7 +597,9 @@ pub(crate) async fn set_resource_prefix(
     } else if probation::managed::service_policy::valid_resource_prefix(text) {
         Some(text)
     } else {
-        return refused("A resource path prefix starts with / and is whole path segments (letters, digits, . _ ~ -), without a trailing slash.");
+        return refused(
+            "A resource path prefix starts with / and is whole path segments (letters, digits, . _ ~ -), without a trailing slash.",
+        );
     };
     let changed: Result<bool, sqlx::Error> = async {
         let mut tx = portal.pool.begin().await?;
@@ -508,7 +607,15 @@ pub(crate) async fn set_resource_prefix(
         if !crate::service_policy::set_resource_prefix(&mut *tx, org, registry, prefix).await? {
             return Ok(false);
         }
-        commit_audited(tx, &actor, org, registry, "registry.resource_prefix", before).await?;
+        commit_audited(
+            tx,
+            &actor,
+            org,
+            registry,
+            "registry.resource_prefix",
+            before,
+        )
+        .await?;
         Ok(true)
     }
     .await;
@@ -544,7 +651,11 @@ pub(crate) async fn set_read_credential(
     {
         return refused("Enter a valid Authorization value or select Clear credential.");
     }
-    let sealed = (!clear).then(|| portal.secrets.seal(&format!("registry read org {org}"), value.as_bytes()));
+    let sealed = (!clear).then(|| {
+        portal
+            .secrets
+            .seal(&format!("registry read org {org}"), value.as_bytes())
+    });
     let changed: Result<bool, sqlx::Error> = async {
         let mut tx = portal.pool.begin().await?;
         let before = registry_state(&mut tx, org, registry).await?;
@@ -599,9 +710,13 @@ pub(crate) async fn request_private_egress(
     let Ok(cidr) = form.cidr.parse::<ipnet::IpNet>() else {
         return refused("A valid destination CIDR is required.");
     };
-    if target.scheme() != "https" || target.host_str().is_none()
-        || !target.username().is_empty() || target.password().is_some()
-        || target.fragment().is_some() || !matches!(form.purpose.as_str(), "registry" | "ocsp") {
+    if target.scheme() != "https"
+        || target.host_str().is_none()
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || target.fragment().is_some()
+        || !matches!(form.purpose.as_str(), "registry" | "ocsp")
+    {
         return refused("An exact HTTPS destination is required.");
     }
     let configured: Result<bool, _> = if form.purpose == "registry" {
@@ -616,15 +731,24 @@ pub(crate) async fn request_private_egress(
         Err(err) => return unavailable(err),
         Ok(true) => {}
     }
-    let host = target.host_str().expect("validated host").to_ascii_lowercase();
+    let host = target
+        .host_str()
+        .expect("validated host")
+        .to_ascii_lowercase();
     let port = target.port_or_known_default().expect("HTTPS has a port") as i32;
     let done = sqlx::query(
         "INSERT INTO registry_private_egress (org_id, purpose, host, port, cidr, requested_by)
          VALUES ($1, $2, $3, $4, $5::cidr, $6)
          ON CONFLICT (org_id, purpose, host, port, cidr) DO NOTHING",
     )
-    .bind(org).bind(&form.purpose).bind(host).bind(port).bind(cidr.to_string())
-    .bind(signed_in.login_id).execute(&portal.pool).await;
+    .bind(org)
+    .bind(&form.purpose)
+    .bind(host)
+    .bind(port)
+    .bind(cidr.to_string())
+    .bind(signed_in.login_id)
+    .execute(&portal.pool)
+    .await;
     match done {
         Ok(_) => redirect(&format!("/org/{org}/registries")),
         Err(err) => unavailable(err),
@@ -632,13 +756,19 @@ pub(crate) async fn request_private_egress(
 }
 
 #[derive(Template)]
-#[template(source = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Private egress approvals</title></head><body><a class=\"skip\" href=\"#main\">Skip to main content</a><main id=\"main\"><h1>Private egress approvals</h1><ul>{% for row in rows %}<li>{{ row.0 }} org {{ row.1 }} {{ row.2 }} {{ row.3 }}:{{ row.4 }} {{ row.5 }}{% if row.6 %} approved{% else %}<form method=\"post\" action=\"/admin/private-egress/{{ row.0 }}/approve\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><button type=\"submit\">Approve</button></form>{% endif %}</li>{% endfor %}</ul></main></body></html>", ext = "html")]
+#[template(
+    source = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Private egress approvals</title></head><body><a class=\"skip\" href=\"#main\">Skip to main content</a><main id=\"main\"><h1>Private egress approvals</h1><ul>{% for row in rows %}<li>{{ row.0 }} org {{ row.1 }} {{ row.2 }} {{ row.3 }}:{{ row.4 }} {{ row.5 }}{% if row.6 %} approved{% else %}<form method=\"post\" action=\"/admin/private-egress/{{ row.0 }}/approve\"><input type=\"hidden\" name=\"csrf\" value=\"{{ csrf }}\"><button type=\"submit\">Approve</button></form>{% endif %}</li>{% endfor %}</ul></main></body></html>",
+    ext = "html"
+)]
 struct EgressPage<'a> {
     csrf: &'a str,
     rows: &'a [(i64, i32, String, String, i32, String, bool)],
 }
 
-pub(crate) async fn private_egress_queue(State(portal): State<Shared>, headers: HeaderMap) -> Response {
+pub(crate) async fn private_egress_queue(
+    State(portal): State<Shared>,
+    headers: HeaderMap,
+) -> Response {
     let signed_in = match portal.signed_in(&headers).await {
         Ok(value) => value,
         Err(answer) => return answer,
@@ -649,11 +779,22 @@ pub(crate) async fn private_egress_queue(State(portal): State<Shared>, headers: 
     let rows = sqlx::query_as::<_, (i64, i32, String, String, i32, String, bool)>(
         "SELECT id, org_id, purpose, host, port, cidr::text, approved_at IS NOT NULL
          FROM registry_private_egress ORDER BY id",
-    ).fetch_all(&portal.pool).await;
+    )
+    .fetch_all(&portal.pool)
+    .await;
     match rows {
-        Ok(rows) => (StatusCode::OK, axum::response::Html(EgressPage {
-            csrf: signed_in.session.csrf(), rows: &rows,
-        }.render().expect("private egress template"))).into_response(),
+        Ok(rows) => (
+            StatusCode::OK,
+            axum::response::Html(
+                EgressPage {
+                    csrf: signed_in.session.csrf(),
+                    rows: &rows,
+                }
+                .render()
+                .expect("private egress template"),
+            ),
+        )
+            .into_response(),
         Err(err) => unavailable(err),
     }
 }
@@ -674,7 +815,11 @@ pub(crate) async fn approve_private_egress(
     let done = sqlx::query(
         "UPDATE registry_private_egress SET approved_by = $1, approved_at = now()
          WHERE id = $2 AND approved_at IS NULL",
-    ).bind(signed_in.login_id).bind(id).execute(&portal.pool).await;
+    )
+    .bind(signed_in.login_id)
+    .bind(id)
+    .execute(&portal.pool)
+    .await;
     match done {
         Ok(done) if done.rows_affected() == 1 => redirect("/admin/private-egress"),
         Ok(_) => not_found(),

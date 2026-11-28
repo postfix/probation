@@ -38,7 +38,12 @@ impl FailureKind {
 
 /// Replaces `<dir>/service-failure.txt` with a bounded description of the failure.
 pub fn record(dir: &Path, kind: FailureKind, message: &str) -> std::io::Result<()> {
-    let mut text = format!("probation service failed: {} (exit code {})\n{}\n", kind.label(), kind.code(), message);
+    let mut text = format!(
+        "probation service failed: {} (exit code {})\n{}\n",
+        kind.label(),
+        kind.code(),
+        message
+    );
     if text.len() as u64 > MAX_BYTES {
         let mut cut = MAX_BYTES as usize;
         while !text.is_char_boundary(cut) {
@@ -48,7 +53,8 @@ pub fn record(dir: &Path, kind: FailureKind, message: &str) -> std::io::Result<(
     }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    let mut file = crate::delivery::owner_only(&mut options).open(dir.join("service-failure.txt"))?;
+    let mut file =
+        crate::delivery::owner_only(&mut options).open(dir.join("service-failure.txt"))?;
     file.write_all(text.as_bytes())?;
     file.sync_all()
 }

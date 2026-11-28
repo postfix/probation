@@ -28,7 +28,9 @@ pub(super) async fn admit(
     registry: RegistryId,
     headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
-    if app.service_policy().is_some() { return admit_for(app, peer, registry, headers, Ecosystem::Npm).await; }
+    if app.service_policy().is_some() {
+        return admit_for(app, peer, registry, headers, Ecosystem::Npm).await;
+    }
     let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
     if !app.store().is_healthy() {
         return Err(ApiError::StorageUnusable);
@@ -48,97 +50,145 @@ pub(super) async fn admit(
 }
 
 pub(super) async fn admit_rubygems(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::RubyGems).await
 }
 
 pub(super) async fn recheck_rubygems(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::RubyGems).await
 }
 
 pub(super) async fn admit_cargo(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::Cargo).await
 }
 
 pub(super) async fn recheck_cargo(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::Cargo).await
 }
 
 pub(super) async fn admit_go(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::Go).await
 }
 
 pub(super) async fn recheck_go(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::Go).await
 }
 
 pub(super) async fn admit_nuget(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::NuGet).await
 }
 
 pub(super) async fn recheck_nuget(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::NuGet).await
 }
 
 pub(super) async fn admit_conan(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::Conan).await
 }
 
 pub(super) async fn recheck_conan(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::Conan).await
 }
 
 pub(super) async fn admit_oci(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::Oci).await
 }
 
 pub(super) async fn recheck_oci(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::Oci).await
 }
 
 pub(super) async fn admit_maven(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::Maven).await
 }
 
 pub(super) async fn recheck_maven(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::Maven).await
 }
 
 pub(super) async fn admit_pypi(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     admit_for(app, peer, registry, headers, Ecosystem::PyPi).await
 }
 
 async fn admit_for(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
     ecosystem: Ecosystem,
 ) -> Result<(OwnedSemaphorePermit, Principal), ApiError> {
     let permit = app.limits.active_permit().ok_or(ApiError::Overloaded)?;
@@ -146,7 +196,10 @@ async fn admit_for(
         return Err(ApiError::StorageUnusable);
     }
     if app.service_policy().is_some() {
-        return Ok((permit, service_principal(app, registry, ecosystem, headers)?));
+        return Ok((
+            permit,
+            service_principal(app, registry, ecosystem, headers)?,
+        ));
     }
     let managed = app.managed().ok_or(ApiError::NotReady)?;
     if !managed.ready() {
@@ -172,19 +225,27 @@ pub(super) async fn recheck(
 }
 
 pub(super) async fn recheck_pypi(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
 ) -> Result<Principal, ApiError> {
     recheck_for(app, peer, registry, headers, Ecosystem::PyPi).await
 }
 
 async fn recheck_for(
-    app: &Arc<App>, peer: Option<Extension<VerifiedPeer>>, registry: RegistryId, headers: &HeaderMap,
+    app: &Arc<App>,
+    peer: Option<Extension<VerifiedPeer>>,
+    registry: RegistryId,
+    headers: &HeaderMap,
     ecosystem: Ecosystem,
 ) -> Result<Principal, ApiError> {
     if !app.store().is_healthy() {
         return Err(ApiError::StorageUnusable);
     }
-    if app.service_policy().is_some() { return service_principal(app, registry, ecosystem, headers); }
+    if app.service_policy().is_some() {
+        return service_principal(app, registry, ecosystem, headers);
+    }
     let managed = app.managed().ok_or(ApiError::NotReady)?;
     if !managed.ready() {
         return Err(ApiError::NotReady);
@@ -199,16 +260,28 @@ async fn recheck_for(
     Ok(principal)
 }
 
-fn service_principal(app: &App, registry: RegistryId, ecosystem: Ecosystem, headers: &HeaderMap) -> Result<Principal, ApiError> {
+fn service_principal(
+    app: &App,
+    registry: RegistryId,
+    ecosystem: Ecosystem,
+    headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
     let service = app.service_policy().ok_or(ApiError::NotReady)?;
     service.snapshot().ok_or(ApiError::PolicyUnavailable)?;
-    let mut principal = service.principal(registry, ecosystem).ok_or(ApiError::NotFound)?;
+    let mut principal = service
+        .principal(registry, ecosystem)
+        .ok_or(ApiError::NotFound)?;
     if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
         let value = value.to_str().map_err(|_| ApiError::Unauthenticated)?;
         // RubyGems sends its API key bare in `Authorization`; npm and PyPI send Bearer or Basic.
         // Cargo sends its registry token bare as well (`Authorization: <token>`).
-        let bare_key_ok = matches!(ecosystem, Ecosystem::RubyGems | Ecosystem::Cargo) && !value.trim().is_empty();
-        if value.len() > 8192 || !(bare_key_ok || value.starts_with("Bearer ") || value.starts_with("Basic ")) { return Err(ApiError::Unauthenticated); }
+        let bare_key_ok =
+            matches!(ecosystem, Ecosystem::RubyGems | Ecosystem::Cargo) && !value.trim().is_empty();
+        if value.len() > 8192
+            || !(bare_key_ok || value.starts_with("Bearer ") || value.starts_with("Basic "))
+        {
+            return Err(ApiError::Unauthenticated);
+        }
         principal.registry_read_authorization = Some(value.to_owned());
     }
     Ok(principal)

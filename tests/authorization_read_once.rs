@@ -39,45 +39,170 @@ const ALLOWED: &[(&str, &str, &str, usize)] = &[
         "get(AUTHORIZATION)",
         1,
     ),
-    ("src/managed/mod.rs", "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority", "insert(AUTHORIZATION,HeaderValue::from_static(\"Bearerprb_01234567890123456789012345678901\"))", 1),
-    ("src/managed/mod.rs", "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority", "get(AUTHORIZATION)", 1),
-    ("src/http/registry_routes.rs", "fn package", "contains_key(header::AUTHORIZATION)", 1),
-    ("src/http/registry_read.rs", "fn service_principal", "get(axum::http::header::AUTHORIZATION)", 1),
-    ("src/http/registry_routes.rs", "fn named_read", "get(header::AUTHORIZATION)", 1),
-    ("src/http/registry_routes.rs", "fn unsupported_artifact_delete", "get(header::AUTHORIZATION)", 1),
-    ("src/http/token_packument.rs", "fn check_canonical_token_packument", "get(header::AUTHORIZATION)", 1),
-    ("src/http/registry_action.rs", "fn admit_publish_request", "get(header::AUTHORIZATION)", 2),
-    ("src/http/pypi_routes.rs", "fn selected_upload", "get(header::AUTHORIZATION)", 1),
+    (
+        "src/managed/mod.rs",
+        "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority",
+        "insert(AUTHORIZATION,HeaderValue::from_static(\"Bearerprb_01234567890123456789012345678901\"))",
+        1,
+    ),
+    (
+        "src/managed/mod.rs",
+        "fn place_invalidation_cannot_stamp_an_old_admission_with_new_authority",
+        "get(AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/registry_routes.rs",
+        "fn package",
+        "contains_key(header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/registry_read.rs",
+        "fn service_principal",
+        "get(axum::http::header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/registry_routes.rs",
+        "fn named_read",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/registry_routes.rs",
+        "fn unsupported_artifact_delete",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/token_packument.rs",
+        "fn check_canonical_token_packument",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/registry_action.rs",
+        "fn admit_publish_request",
+        "get(header::AUTHORIZATION)",
+        2,
+    ),
+    (
+        "src/http/pypi_routes.rs",
+        "fn selected_upload",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
     // Row 17: `gem push` / `gem yank` forward the caller's own API key, as the PyPI upload does.
-    ("src/http/rubygems_routes.rs", "fn forward_write", "get(header::AUTHORIZATION)", 1),
+    (
+        "src/http/rubygems_routes.rs",
+        "fn forward_write",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
     // Row 18 follow-up: Cargo's registry API forwards the caller's own token to the registry's API root.
-    ("src/http/cargo_routes.rs", "fn forward_api", "get(header::AUTHORIZATION)", 1),
+    (
+        "src/http/cargo_routes.rs",
+        "fn forward_api",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
     // Row 20: NuGet's publish endpoints forward the caller's own `Authorization` (and `X-NuGet-ApiKey`) to the publish endpoint the registry's service index names.
-    ("src/http/nuget_routes.rs", "fn forward_write", "credential(&headers,\"authorization\")", 1),
+    (
+        "src/http/nuget_routes.rs",
+        "fn forward_write",
+        "credential(&headers,\"authorization\")",
+        1,
+    ),
     // Row 21: Maven's deploy endpoints forward the caller's own `Authorization` (Basic from `settings.xml`) to the registry's own origin.
-    ("src/http/maven_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
-    ("src/http/conan_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    (
+        "src/http/maven_routes.rs",
+        "fn credential",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
+    (
+        "src/http/conan_routes.rs",
+        "fn credential",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
     // Row 24: OCI's push and upload endpoints forward the caller's own `Authorization` (the token of the registry's token flow, or Basic) to the registry's own origin.
-    ("src/http/oci_routes.rs", "fn credential", "get(header::AUTHORIZATION)", 1),
+    (
+        "src/http/oci_routes.rs",
+        "fn credential",
+        "get(header::AUTHORIZATION)",
+        1,
+    ),
     // The OCI exchange of the transport sends the credential it is given (the caller's own, or a token the firewall obtained) to the origin it names and nowhere else.
-    ("src/upstream/reqwest_transport.rs", "fn fetch_oci", "header(header::AUTHORIZATION,value)", 1),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn fetch_oci",
+        "header(header::AUTHORIZATION,value)",
+        1,
+    ),
     // Fix round of row 21: the spool counts its places per credential presented (a hash of the header name and value, never sent or stored) ...
     ("src/http/spool.rs", "fn owner_in", "\"authorization\"", 1),
     // ... and `probe_file` reads a Maven file's headers with the caller's own read credential, as `fetch_metadata` does.
-    ("src/upstream/reqwest_transport.rs", "fn probe_file", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
-    ("src/upstream/reqwest_transport.rs", "fn fetch_named_read", "header(header::AUTHORIZATION,value)", 1),
-    ("src/upstream/reqwest_transport.rs", "fn fetch_token_packument", "header(header::AUTHORIZATION,authorization)", 1),
-    ("src/upstream/reqwest_transport.rs", "fn send_action", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
-    ("src/upstream/reqwest_transport.rs", "fn fetch_metadata", "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)", 1),
-    ("src/upstream/reqwest_transport.rs", "fn open_artifact", "header(header::AUTHORIZATION,HeaderValue::from_str(&value).map_err(|_|UpstreamError::Status(400))?)", 1),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn probe_file",
+        "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)",
+        1,
+    ),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn fetch_named_read",
+        "header(header::AUTHORIZATION,value)",
+        1,
+    ),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn fetch_token_packument",
+        "header(header::AUTHORIZATION,authorization)",
+        1,
+    ),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn send_action",
+        "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)",
+        1,
+    ),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn fetch_metadata",
+        "header(header::AUTHORIZATION,HeaderValue::from_str(&authorization).map_err(|_|UpstreamError::Status(400))?)",
+        1,
+    ),
+    (
+        "src/upstream/reqwest_transport.rs",
+        "fn open_artifact",
+        "header(header::AUTHORIZATION,HeaderValue::from_str(&value).map_err(|_|UpstreamError::Status(400))?)",
+        1,
+    ),
     // Row 30 (C1030): a managed endpoint's OSV batcher sends the endpoint's own credential
     // (firewall token or service key) to its configured policy server only, origin-checked.
-    ("src/osv/batcher.rs", "", "usereqwest::header::{AUTHORIZATION,CONTENT_TYPE,HeaderValue};", 1),
-    ("src/osv/batcher.rs", "fn send_central", "header(AUTHORIZATION,value)", 1),
+    (
+        "src/osv/batcher.rs",
+        "",
+        "usereqwest::header::{AUTHORIZATION,CONTENT_TYPE,HeaderValue};",
+        1,
+    ),
+    (
+        "src/osv/batcher.rs",
+        "fn send_central",
+        "header(AUTHORIZATION,value)",
+        1,
+    ),
     // Row 25 fix round: not HTTP at all. `Win32::Security::Authorization` is the Windows access-control API module (it reads the DACL of the
     // service key file, src/key_acl.rs); the word is the module's name and no header or credential is involved.
     // W1 fix (D29) added `ConvertStringSidToSidW` to this import to resolve SDDL aliases such as `LA`; still the Windows ACL API, no HTTP header or credential.
-    ("src/key_acl.rs", "", "usewindows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW,ConvertSidToStringSidW,ConvertStringSidToSidW,ConvertStringSecurityDescriptorToSecurityDescriptorW,GetNamedSecurityInfoW,GetSecurityInfo,SDDL_REVISION_1,SE_FILE_OBJECT,};", 1),
+    (
+        "src/key_acl.rs",
+        "",
+        "usewindows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW,ConvertSidToStringSidW,ConvertStringSecurityDescriptorToSecurityDescriptorW,ConvertStringSidToSidW,GetNamedSecurityInfoW,GetSecurityInfo,SDDL_REVISION_1,SE_FILE_OBJECT};",
+        1,
+    ),
     ("src/config.rs", "struct Config", "siem_auth_header", 1),
     ("src/config.rs", "struct RawConfig", "siem_auth_header", 1),
     ("src/config.rs", "fn validate", "siem_auth_header", 4),
@@ -358,11 +483,31 @@ fn words(code: &[u8], word: &str) -> Vec<usize> {
     found
 }
 
+/// Whitespace-free statement text, with the two layout choices `rustfmt` makes dropped: a trailing comma before
+/// `)`, and the order of the items inside a `use ...::{...}` list. Neither changes what the statement does, and
+/// every argument, path and item is still compared, so a changed statement is still a different string.
 fn squeeze(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
+    let text = String::from_utf8_lossy(bytes)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join("")
+        .replace(",)", ")");
+    match (text.starts_with("use"), text.find('{'), text.rfind('}')) {
+        (true, Some(open), Some(close)) if open < close => {
+            let mut items: Vec<&str> = text[open + 1..close]
+                .split(',')
+                .filter(|item| !item.is_empty())
+                .collect();
+            items.sort_unstable();
+            format!(
+                "{}{{{}}}{}",
+                &text[..open],
+                items.join(","),
+                &text[close + 1..]
+            )
+        }
+        _ => text,
+    }
 }
 
 /// Every hit in one file: (enclosing fn, key, line).
@@ -936,4 +1081,31 @@ fn a_comment_naming_the_header_is_not_a_hit() {
     });
     let problems = mismatches(&scan(copy.path()));
     assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// `squeeze` ignores only formatting: a trailing comma before `)` and the order of a `use` list. A changed
+/// argument or a changed import item is still a different statement, so the allowlist still rejects it.
+#[test]
+fn formatting_is_ignored_but_a_changed_statement_is_still_caught() {
+    assert_eq!(squeeze(b"f(a,\n    b,\n)"), squeeze(b"f(a, b)"));
+    assert_eq!(
+        squeeze(b"use x::{B, A,};"),
+        squeeze(b"use x::{\n    A,\n    B\n};")
+    );
+    assert_ne!(squeeze(b"f(a, c,)"), squeeze(b"f(a, b)"));
+    assert_ne!(squeeze(b"use x::{A, C};"), squeeze(b"use x::{A, B};"));
+
+    // End to end: an argument changed in a reviewed (trailing-comma) call is a hit outside the allowlist.
+    let copy = mutated("src/upstream/reqwest_transport.rs", |text| {
+        text.replacen(
+            "HeaderValue::from_str(&value)",
+            "HeaderValue::from_str(&other)",
+            1,
+        )
+    });
+    let problems = mismatches(&scan(copy.path()));
+    assert!(
+        problems.iter().any(|p| p.contains("&other")),
+        "the changed argument is reported: {problems:#?}"
+    );
 }

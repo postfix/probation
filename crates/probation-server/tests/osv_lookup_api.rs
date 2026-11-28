@@ -79,8 +79,12 @@ async fn fake_handler(
             .iter()
             .zip(&tokens)
             .map(|(n, t)| match (n.as_str(), t.as_deref()) {
-                (n, None) if n.starts_with("slowpage") => json!({"vulns": [], "next_page_token": "s2"}),
-                (n, Some("s2")) if n.starts_with("slowpage") => json!({"vulns": [], "next_page_token": "s3"}),
+                (n, None) if n.starts_with("slowpage") => {
+                    json!({"vulns": [], "next_page_token": "s2"})
+                }
+                (n, Some("s2")) if n.starts_with("slowpage") => {
+                    json!({"vulns": [], "next_page_token": "s3"})
+                }
                 _ => json!({}),
             })
             .collect();
@@ -91,8 +95,12 @@ async fn fake_handler(
             .iter()
             .zip(&tokens)
             .map(|(n, t)| match (n.as_str(), t.as_deref()) {
-                ("paged", None) => json!({"vulns": [{"id": "GHSA-first"}], "next_page_token": "p2"}),
-                ("paged", Some(_)) => json!({"vulns": [{"id": "MAL-2026-5", "modified": "2026-02-02T00:00:00Z"}]}),
+                ("paged", None) => {
+                    json!({"vulns": [{"id": "GHSA-first"}], "next_page_token": "p2"})
+                }
+                ("paged", Some(_)) => {
+                    json!({"vulns": [{"id": "MAL-2026-5", "modified": "2026-02-02T00:00:00Z"}]})
+                }
                 _ => json!({}),
             })
             .collect();
@@ -101,7 +109,8 @@ async fn fake_handler(
     fake.batches.lock().unwrap().push(names.clone());
     let delay = *fake.delay.lock().unwrap();
     let now_in_flight = fake.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-    fake.max_in_flight.fetch_max(now_in_flight, Ordering::SeqCst);
+    fake.max_in_flight
+        .fetch_max(now_in_flight, Ordering::SeqCst);
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
@@ -121,17 +130,23 @@ async fn fake_handler(
     let mode = fake.mode.lock().unwrap().clone();
     match mode {
         Mode::Normal => axum::Json(json!({"results": results(&names)})).into_response(),
-        Mode::FailFirst if fake.calls.load(Ordering::SeqCst) == 1 => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Mode::FailFirst if fake.calls.load(Ordering::SeqCst) == 1 => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
         Mode::FailFirst => axum::Json(json!({"results": results(&names)})).into_response(),
         Mode::Status(code, retry) => {
             let mut response = StatusCode::from_u16(code).unwrap().into_response();
             if let Some(retry) = retry {
-                response.headers_mut().insert("retry-after", retry.parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("retry-after", retry.parse().unwrap());
             }
             response
         }
         Mode::Garbage(bytes) => bytes.into_response(),
-        Mode::Misaligned => axum::Json(json!({"results": results(&names[..names.len() - 1])})).into_response(),
+        Mode::Misaligned => {
+            axum::Json(json!({"results": results(&names[..names.len() - 1])})).into_response()
+        }
         Mode::Huge(n) => {
             let mut body = br#"{"results":[],"pad":""#.to_vec();
             body.extend(std::iter::repeat_n(b'a', n));
@@ -166,7 +181,10 @@ async fn fake_upstream() -> (url::Url, Arc<Fake>) {
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    (url::Url::parse(&format!("http://{addr}/v1/querybatch")).unwrap(), fake)
+    (
+        url::Url::parse(&format!("http://{addr}/v1/querybatch")).unwrap(),
+        fake,
+    )
 }
 
 // ---- the server under test --------------------------------------------------------
@@ -185,16 +203,27 @@ async fn rig_with(configure: impl FnOnce(&mut OsvLimits)) -> Rig {
     rig_proxied(configure, Vec::new()).await
 }
 
-async fn rig_proxied(configure: impl FnOnce(&mut OsvLimits), trusted_proxies: Vec<ipnet::IpNet>) -> Rig {
+async fn rig_proxied(
+    configure: impl FnOnce(&mut OsvLimits),
+    trusted_proxies: Vec<ipnet::IpNet>,
+) -> Rig {
     let db = Db::fresh().await;
     let admin = db.global_admin().await;
     let org = db.org("Osv org").await;
     let (actor, place) = db.as_admin(admin, org).await;
-    let service_key = keys::create(&db.app, &actor, &place, "service").await.unwrap().secret;
-    let fw_token = fleet::register(&db.app, &Actor::Operator, "fw", &["127.0.0.0/8".parse().unwrap()])
+    let service_key = keys::create(&db.app, &actor, &place, "service")
         .await
         .unwrap()
-        .token;
+        .secret;
+    let fw_token = fleet::register(
+        &db.app,
+        &Actor::Operator,
+        "fw",
+        &["127.0.0.0/8".parse().unwrap()],
+    )
+    .await
+    .unwrap()
+    .token;
     let (upstream, fake) = fake_upstream().await;
     let sync = Arc::new(SyncState::new(db.app.clone(), trusted_proxies, None));
     let mut limits = OsvLimits::default();
@@ -205,13 +234,19 @@ async fn rig_proxied(configure: impl FnOnce(&mut OsvLimits), trusted_proxies: Ve
     let osv = Arc::new(
         OsvState::new(Arc::clone(&sync), upstream)
             .with_limits(limits)
-            .with_clock(Arc::new(move || base_instant + Duration::from_millis(clock.load(Ordering::SeqCst)))),
+            .with_clock(Arc::new(move || {
+                base_instant + Duration::from_millis(clock.load(Ordering::SeqCst))
+            })),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = probation_server::build_router_with_osv(sync, Arc::clone(&osv));
     tokio::spawn(async move {
-        let _ = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await;
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
     });
     Rig {
         db,
@@ -230,11 +265,14 @@ async fn rig() -> Rig {
 
 impl Rig {
     fn advance(&self, by: Duration) {
-        self.clock_ms.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+        self.clock_ms
+            .fetch_add(by.as_millis() as u64, Ordering::SeqCst);
     }
 
     async fn post_raw(&self, token: Option<&str>, body: Vec<u8>) -> reqwest::Response {
-        let mut request = client().post(self.base.join("osv/v1/querybatch").unwrap()).body(body);
+        let mut request = client()
+            .post(self.base.join("osv/v1/querybatch").unwrap())
+            .body(body);
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
@@ -272,12 +310,19 @@ async fn osv_route_requires_authentication() {
     let admin = rig.db.global_admin().await;
     let org = rig.db.org("Other").await;
     let (actor, place) = rig.db.as_admin(admin, org).await;
-    let revoked = keys::create(&rig.db.app, &actor, &place, "revoked").await.unwrap();
-    keys::revoke_as_operator(&rig.db.app, revoked.id).await.unwrap();
+    let revoked = keys::create(&rig.db.app, &actor, &place, "revoked")
+        .await
+        .unwrap();
+    keys::revoke_as_operator(&rig.db.app, revoked.id)
+        .await
+        .unwrap();
     let login = rig.db.login().await;
     let personal = rig.db.personal(login).await;
     let (uactor, uplace) = rig.db.as_admin(admin, personal).await;
-    let user_key = keys::create(&rig.db.app, &uactor, &uplace, "user").await.unwrap().secret;
+    let user_key = keys::create(&rig.db.app, &uactor, &uplace, "user")
+        .await
+        .unwrap()
+        .secret;
 
     for token in [
         None,
@@ -299,9 +344,14 @@ async fn osv_route_requires_authentication() {
 #[tokio::test]
 async fn firewall_token_from_a_disallowed_source_is_401_on_the_osv_route() {
     let rig = rig().await;
-    let other = fleet::register(&rig.db.app, &Actor::Operator, "elsewhere", &["10.9.0.0/16".parse().unwrap()])
-        .await
-        .unwrap();
+    let other = fleet::register(
+        &rig.db.app,
+        &Actor::Operator,
+        "elsewhere",
+        &["10.9.0.0/16".parse().unwrap()],
+    )
+    .await
+    .unwrap();
     let response = rig.post(Some(&other.token), &[("left-pad", "1.3.0")]).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(rig.fake.calls(), 0);
@@ -310,7 +360,9 @@ async fn firewall_token_from_a_disallowed_source_is_401_on_the_osv_route() {
 #[tokio::test]
 async fn response_shape_matches_osv_dev_golden() {
     let rig = rig().await;
-    let answer = rig.ask(&[("mal-pkg", "1.0.0"), ("left-pad", "1.3.0")]).await;
+    let answer = rig
+        .ask(&[("mal-pkg", "1.0.0"), ("left-pad", "1.3.0")])
+        .await;
     assert_eq!(
         answer,
         json!({
@@ -327,14 +379,24 @@ async fn response_shape_matches_osv_dev_golden() {
 #[tokio::test]
 async fn server_cache_hit_makes_no_upstream_call_and_ttl_expiry_re_asks() {
     let rig = rig().await;
-    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")]).await;
+    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")])
+        .await;
     assert_eq!(rig.fake.calls(), 1);
-    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")]).await;
+    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")])
+        .await;
     assert_eq!(rig.fake.calls(), 1, "both answers held");
     rig.advance(Duration::from_secs(31));
-    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")]).await;
-    assert_eq!(rig.fake.calls(), 2, "the 30 s no-match expired, the match (3600 s) is still held");
-    assert_eq!(rig.fake.batches.lock().unwrap()[1], vec!["left-pad".to_owned()]);
+    rig.ask(&[("left-pad", "1.3.0"), ("mal-pkg", "1.0.0")])
+        .await;
+    assert_eq!(
+        rig.fake.calls(),
+        2,
+        "the 30 s no-match expired, the match (3600 s) is still held"
+    );
+    assert_eq!(
+        rig.fake.batches.lock().unwrap()[1],
+        vec!["left-pad".to_owned()]
+    );
     rig.advance(Duration::from_secs(3600));
     rig.ask(&[("mal-pkg", "1.0.0")]).await;
     assert_eq!(rig.fake.calls(), 3, "the match expired too");
@@ -347,7 +409,9 @@ async fn server_coalesces_identical_concurrent_queries() {
     let mut tasks = Vec::new();
     for _ in 0..6 {
         let rig = Arc::clone(&rig);
-        tasks.push(tokio::spawn(async move { rig.ask(&[("left-pad", "1.3.0")]).await }));
+        tasks.push(tokio::spawn(async move {
+            rig.ask(&[("left-pad", "1.3.0")]).await
+        }));
     }
     for task in tasks {
         let answer = task.await.unwrap();
@@ -373,7 +437,11 @@ async fn osv_cancelled_waiter_does_not_fail_coalesced_peer() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     leader.abort();
     let answer = follower.await.unwrap();
-    assert_eq!(answer["results"][0], json!({}), "the follower still got the real answer");
+    assert_eq!(
+        answer["results"][0],
+        json!({}),
+        "the follower still got the real answer"
+    );
     assert_eq!(answer["probation_osv"]["upstream_ok"], true);
     assert_eq!(rig.fake.calls(), 1);
 }
@@ -386,15 +454,30 @@ async fn osv_batch_limits_refuse_oversize_and_rate_limited() {
     })
     .await;
     // Oversize count: 1001 queries is 413 before any work.
-    let many: Vec<(String, String)> = (0..1001).map(|i| (format!("p{i}"), "1.0.0".to_owned())).collect();
+    let many: Vec<(String, String)> = (0..1001)
+        .map(|i| (format!("p{i}"), "1.0.0".to_owned()))
+        .collect();
     let refs: Vec<(&str, &str)> = many.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-    assert_eq!(rig.post(Some(&rig.fw_token), &refs).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &refs).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
     assert_eq!(rig.fake.calls(), 0);
     // Two keys spend the burst; the next request finds the bucket empty at admission.
     rig.ask(&[("a", "1.0.0"), ("b", "1.0.0")]).await;
-    assert_eq!(rig.post(Some(&rig.fw_token), &[("c", "1.0.0")]).await.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &[("c", "1.0.0")])
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
     // Another credential has its own budget.
-    assert_eq!(rig.post(Some(&rig.service_key), &[("c", "1.0.0")]).await.status(), StatusCode::OK);
+    assert_eq!(
+        rig.post(Some(&rig.service_key), &[("c", "1.0.0")])
+            .await
+            .status(),
+        StatusCode::OK
+    );
     // Cache hits are never charged.
     rig.advance(Duration::from_secs(60));
     rig.ask(&[("a", "1.0.0"), ("b", "1.0.0")]).await;
@@ -411,32 +494,53 @@ async fn osv_keys_beyond_the_remaining_budget_are_degraded_not_the_batch() {
     assert_eq!(answer["results"][0], json!({}));
     assert_eq!(answer["results"][1], json!({}));
     assert_eq!(answer["results"][2], json!({"probation_degraded": true}));
-    assert_eq!(answer["probation_osv"]["upstream_ok"], true, "a budget degrade is not an upstream failure");
+    assert_eq!(
+        answer["probation_osv"]["upstream_ok"], true,
+        "a budget degrade is not an upstream failure"
+    );
 }
 
 #[tokio::test]
 async fn osv_body_cap_before_parse() {
     let rig = rig().await;
-    let response = rig.post_raw(Some(&rig.fw_token), vec![b'x'; 1_048_577]).await;
+    let response = rig
+        .post_raw(Some(&rig.fw_token), vec![b'x'; 1_048_577])
+        .await;
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     // At the limit the body is read, then parsed and found malformed.
-    let response = rig.post_raw(Some(&rig.fw_token), vec![b'x'; 1_048_576]).await;
+    let response = rig
+        .post_raw(Some(&rig.fw_token), vec![b'x'; 1_048_576])
+        .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     // A valid body padded to exactly the limit is accepted.
     let mut body = query_body(&[("left-pad", "1.3.0")]);
     body.resize(1_048_576, b' ');
-    assert_eq!(rig.post_raw(Some(&rig.fw_token), body).await.status(), StatusCode::OK);
+    assert_eq!(
+        rig.post_raw(Some(&rig.fw_token), body).await.status(),
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
 async fn osv_envelope_defects_return_4xx() {
     let rig = rig().await;
-    for body in ["not json", "[]", "{}", r#"{"queries":5}"#, r#"{"queries":[],"queries":[]}"#] {
-        let response = rig.post_raw(Some(&rig.fw_token), body.as_bytes().to_vec()).await;
+    for body in [
+        "not json",
+        "[]",
+        "{}",
+        r#"{"queries":5}"#,
+        r#"{"queries":[],"queries":[]}"#,
+    ] {
+        let response = rig
+            .post_raw(Some(&rig.fw_token), body.as_bytes().to_vec())
+            .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
     }
     let empty = rig.ask(&[]).await;
-    assert_eq!(empty, json!({"results": [], "probation_osv": {"v": 1, "upstream_ok": true}}));
+    assert_eq!(
+        empty,
+        json!({"results": [], "probation_osv": {"v": 1, "upstream_ok": true}})
+    );
     assert_eq!(rig.fake.calls(), 0);
 }
 
@@ -450,7 +554,9 @@ async fn osv_bad_key_never_fails_batch_mates() {
         {"package": {"name": "x", "ecosystem": "npm"}, "version": "1", "commit": "abc"},
         {"package": {"name": "mal-pkg", "ecosystem": "npm"}, "version": "1.0.0"},
     ]});
-    let response = rig.post_raw(Some(&rig.fw_token), serde_json::to_vec(&body).unwrap()).await;
+    let response = rig
+        .post_raw(Some(&rig.fw_token), serde_json::to_vec(&body).unwrap())
+        .await;
     assert_eq!(response.status(), StatusCode::OK);
     let answer: Value = json(response).await;
     let degraded = json!({"probation_degraded": true});
@@ -459,7 +565,11 @@ async fn osv_bad_key_never_fails_batch_mates() {
     assert_eq!(answer["results"][2], degraded, "unlisted ecosystem");
     assert_eq!(answer["results"][3], degraded, "unknown field");
     assert_eq!(answer["results"][4]["vulns"][0]["id"], "MAL-2026-1");
-    assert_eq!(rig.fake.batches.lock().unwrap()[0].len(), 2, "only the two good keys went upstream");
+    assert_eq!(
+        rig.fake.batches.lock().unwrap()[0].len(),
+        2,
+        "only the two good keys went upstream"
+    );
 }
 
 #[tokio::test]
@@ -478,20 +588,37 @@ async fn osv_duplicate_queries_charged_once() {
 async fn server_upstream_failure_answers_degraded_and_counts() {
     let rig = rig().await;
     rig.fake.set(Mode::Status(500, None));
-    let response = rig.post(Some(&rig.fw_token), &[("left-pad", "1.3.0")]).await;
-    assert_eq!(response.status(), StatusCode::OK, "never 5xx for upstream trouble");
+    let response = rig
+        .post(Some(&rig.fw_token), &[("left-pad", "1.3.0")])
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "never 5xx for upstream trouble"
+    );
     let answer: Value = json(response).await;
     assert_eq!(answer["results"][0], json!({"probation_degraded": true}));
     assert_eq!(answer["probation_osv"]["upstream_ok"], false);
     let health = rig.osv.health();
-    assert_eq!((health.results_total, health.results_degraded, health.upstream_failures), (1, 1, 1));
+    assert_eq!(
+        (
+            health.results_total,
+            health.results_degraded,
+            health.upstream_failures
+        ),
+        (1, 1, 1)
+    );
     // osv_failure_not_cached_as_confirmed_no_match
     rig.fake.set(Mode::Normal);
     let answer = rig.ask(&[("left-pad", "1.3.0")]).await;
     assert_eq!(answer["results"][0], json!({}));
     assert_eq!(rig.fake.calls(), 2, "the failure was not cached");
     let health = rig.osv.health();
-    assert_eq!((health.results_total, health.results_degraded), (2, 1), "osv_degraded_counters_move");
+    assert_eq!(
+        (health.results_total, health.results_degraded),
+        (2, 1),
+        "osv_degraded_counters_move"
+    );
 }
 
 #[tokio::test]
@@ -500,7 +627,10 @@ async fn osv_cache_hits_answered_when_upstream_down() {
     rig.ask(&[("mal-pkg", "1.0.0")]).await;
     rig.fake.set(Mode::Status(503, None));
     let answer = rig.ask(&[("mal-pkg", "1.0.0"), ("fresh", "1.0.0")]).await;
-    assert_eq!(answer["results"][0]["vulns"][0]["id"], "MAL-2026-1", "the held match is still served");
+    assert_eq!(
+        answer["results"][0]["vulns"][0]["id"], "MAL-2026-1",
+        "the held match is still served"
+    );
     assert_eq!(answer["results"][1], json!({"probation_degraded": true}));
     assert_eq!(answer["probation_osv"]["upstream_ok"], false);
 }
@@ -519,16 +649,24 @@ async fn osv_misaligned_upstream_response_stores_nothing() {
     let rig = rig().await;
     rig.fake.set(Mode::Misaligned);
     let answer = rig.ask(&[("a", "1"), ("b", "1")]).await;
-    assert_eq!(answer["results"], json!([{"probation_degraded": true}, {"probation_degraded": true}]));
+    assert_eq!(
+        answer["results"],
+        json!([{"probation_degraded": true}, {"probation_degraded": true}])
+    );
     rig.fake.set(Mode::Normal);
     rig.ask(&[("a", "1"), ("b", "1")]).await;
-    assert_eq!(rig.fake.calls(), 2, "nothing from the misaligned answer was stored");
+    assert_eq!(
+        rig.fake.calls(),
+        2,
+        "nothing from the misaligned answer was stored"
+    );
 }
 
 #[tokio::test]
 async fn osv_garbage_upstream_body_degrades() {
     let rig = rig().await;
-    rig.fake.set(Mode::Garbage(b"<html>captive portal</html>".to_vec()));
+    rig.fake
+        .set(Mode::Garbage(b"<html>captive portal</html>".to_vec()));
     let answer = rig.ask(&[("a", "1")]).await;
     assert_eq!(answer["results"][0], json!({"probation_degraded": true}));
 }
@@ -537,9 +675,15 @@ async fn osv_garbage_upstream_body_degrades() {
 async fn osv_4xx_for_a_combined_batch_is_split_per_key() {
     let rig = rig().await;
     rig.fake.set(Mode::RejectBatches);
-    let answer = rig.ask(&[("good", "1"), ("poison", "1"), ("mal-pkg", "1.0.0")]).await;
+    let answer = rig
+        .ask(&[("good", "1"), ("poison", "1"), ("mal-pkg", "1.0.0")])
+        .await;
     assert_eq!(answer["results"][0], json!({}));
-    assert_eq!(answer["results"][1], json!({"probation_degraded": true}), "only the poisoned key fails");
+    assert_eq!(
+        answer["results"][1],
+        json!({"probation_degraded": true}),
+        "only the poisoned key fails"
+    );
     assert_eq!(answer["results"][2]["vulns"][0]["id"], "MAL-2026-1");
 }
 
@@ -553,11 +697,18 @@ async fn osv_upstream_429_opens_breaker() {
     // osv_breaker_open_bounded_with_jitter: an upstream-controlled 3600 s never holds it
     // longer than 60 s, and a larger or unparsable value counts as 30 s.
     let open = rig.osv.breaker_open_for();
-    assert!(open > Duration::ZERO && open <= Duration::from_secs(60), "{open:?}");
+    assert!(
+        open > Duration::ZERO && open <= Duration::from_secs(60),
+        "{open:?}"
+    );
     rig.fake.set(Mode::Normal);
     let answer = rig.ask(&[("b", "1")]).await;
     assert_eq!(answer["results"][0], json!({"probation_degraded": true}));
-    assert_eq!(rig.fake.calls(), 1, "no upstream call while the breaker is open");
+    assert_eq!(
+        rig.fake.calls(),
+        1,
+        "no upstream call while the breaker is open"
+    );
     rig.advance(Duration::from_secs(61));
     let answer = rig.ask(&[("b", "1")]).await;
     assert_eq!(answer["results"][0], json!({}));
@@ -569,7 +720,10 @@ async fn osv_retry_after_is_capped() {
     rig.fake.set(Mode::Status(429, Some("soon")));
     rig.ask(&[("a", "1")]).await;
     let open = rig.osv.breaker_open_for();
-    assert!(open >= Duration::from_secs(29) && open <= Duration::from_secs(34), "unparsable counts as 30 s: {open:?}");
+    assert!(
+        open >= Duration::from_secs(29) && open <= Duration::from_secs(34),
+        "unparsable counts as 30 s: {open:?}"
+    );
 }
 
 #[tokio::test]
@@ -591,7 +745,11 @@ async fn osv_slow_upstream_and_coalesced_follower_answer_degraded_before_client_
     // The upstream would take 5 s; both answers come at the server's own deadline. The
     // deadline itself is strictly below the client's 400 ms floor (asserted exactly, so
     // the proof does not depend on how loaded this host is).
-    assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
     // User decision: server 1500 ms, strictly below the client's 2000 ms default and its
     // 1600 ms floor.
     assert_eq!(OsvLimits::default().deadline, Duration::from_millis(1500));
@@ -622,7 +780,10 @@ async fn osv_flood_does_not_429_sync_routes() {
     .await;
     rig.ask(&[("a", "1")]).await;
     for _ in 0..5 {
-        assert_eq!(rig.post(Some(&rig.fw_token), &[("z", "1")]).await.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            rig.post(Some(&rig.fw_token), &[("z", "1")]).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
     let response = client()
         .post(rig.base.join("api/v1/sync/layers").unwrap())
@@ -632,7 +793,11 @@ async fn osv_flood_does_not_429_sync_routes() {
         .send()
         .await
         .unwrap();
-    assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS, "the OSV budget is separate from the sync window");
+    assert_ne!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the OSV budget is separate from the sync window"
+    );
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -640,9 +805,15 @@ async fn osv_flood_does_not_429_sync_routes() {
 async fn osv_pre_auth_failures_are_throttled_per_peer() {
     let rig = rig().await;
     for _ in 0..10 {
-        assert_eq!(rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
-    assert_eq!(rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }
 
 #[test]
@@ -685,14 +856,20 @@ async fn osv_logs_contain_no_query_keys() {
     }
     let sink = Sink::default();
     let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt().with_writer(sink.clone()).with_max_level(tracing::Level::TRACE).finish(),
+        tracing_subscriber::fmt()
+            .with_writer(sink.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .finish(),
     );
     let rig = rig().await;
     rig.fake.set(Mode::Status(500, None));
     rig.ask(&[("secret-internal-name", "9.9.9")]).await;
     rig.ask(&[("bad name", "9.9.9")]).await;
     let logged = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
-    assert!(!logged.contains("secret-internal-name") && !logged.contains("9.9.9"), "{logged}");
+    assert!(
+        !logged.contains("secret-internal-name") && !logged.contains("9.9.9"),
+        "{logged}"
+    );
 }
 
 #[tokio::test]
@@ -700,7 +877,10 @@ async fn osv_duplicate_object_keys() {
     let rig = rig().await;
     // At the top level: the envelope is refused. Inside a query: that query alone degrades.
     let envelope = br#"{"queries":[],"queries":[]}"#.to_vec();
-    assert_eq!(rig.post_raw(Some(&rig.fw_token), envelope).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rig.post_raw(Some(&rig.fw_token), envelope).await.status(),
+        StatusCode::BAD_REQUEST
+    );
     let body = br#"{"queries":[
         {"package":{"name":"a","ecosystem":"npm"},"version":"1"},
         {"package":{"name":"b","ecosystem":"npm","name":"c"},"version":"1"},
@@ -709,24 +889,31 @@ async fn osv_duplicate_object_keys() {
     let response = rig.post_raw(Some(&rig.fw_token), body).await;
     assert_eq!(response.status(), StatusCode::OK);
     let answer = json(response).await;
-    assert_eq!(answer["results"], json!([{}, {"probation_degraded": true}, {"probation_degraded": true}]));
+    assert_eq!(
+        answer["results"],
+        json!([{}, {"probation_degraded": true}, {"probation_degraded": true}])
+    );
     assert_eq!(rig.fake.batches.lock().unwrap()[0], vec!["a".to_owned()]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn osv_saturating_load_leaves_sync_latency_within_bound() {
-    let rig = Arc::new(rig_with(|l| {
-        l.key_burst = 100_000;
-        l.key_rate_per_minute = 100_000;
-    })
-    .await);
+    let rig = Arc::new(
+        rig_with(|l| {
+            l.key_burst = 100_000;
+            l.key_rate_per_minute = 100_000;
+        })
+        .await,
+    );
     *rig.fake.delay.lock().unwrap() = Duration::from_millis(150);
     let mut flood = Vec::new();
     for i in 0..300 {
         let rig = Arc::clone(&rig);
         flood.push(tokio::spawn(async move {
             let name = format!("flood-{i}");
-            rig.post(Some(&rig.fw_token), &[(name.as_str(), "1.0.0")]).await.status()
+            rig.post(Some(&rig.fw_token), &[(name.as_str(), "1.0.0")])
+                .await
+                .status()
         }));
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -741,7 +928,11 @@ async fn osv_saturating_load_leaves_sync_latency_within_bound() {
             .send()
             .await
             .unwrap();
-        assert!(!response.status().is_server_error(), "{}", response.status());
+        assert!(
+            !response.status().is_server_error(),
+            "{}",
+            response.status()
+        );
         slowest = slowest.max(started.elapsed());
     }
     for task in flood {
@@ -749,30 +940,43 @@ async fn osv_saturating_load_leaves_sync_latency_within_bound() {
     }
     // Pool starvation shows as a 5xx above or as stalls of seconds; the bound leaves room for a
     // loaded CI host (this test failed once at 2 s while the host load average was above 10).
-    assert!(slowest < Duration::from_secs(10), "sync latency under an OSV flood: {slowest:?}");
+    assert!(
+        slowest < Duration::from_secs(10),
+        "sync latency under an OSV flood: {slowest:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn osv_upstream_concurrency_is_capped() {
-    let rig = Arc::new(rig_with(|l| {
-        l.upstream_concurrency = 2;
-        l.deadline = Duration::from_secs(5);
-    })
-    .await);
+    let rig = Arc::new(
+        rig_with(|l| {
+            l.upstream_concurrency = 2;
+            l.deadline = Duration::from_secs(5);
+        })
+        .await,
+    );
     *rig.fake.delay.lock().unwrap() = Duration::from_millis(100);
     let mut tasks = Vec::new();
     for i in 0..8 {
         let rig = Arc::clone(&rig);
         tasks.push(tokio::spawn(async move {
             let name = format!("cap-{i}");
-            json(rig.post(Some(&rig.fw_token), &[(name.as_str(), "1.0.0")]).await).await
+            json(
+                rig.post(Some(&rig.fw_token), &[(name.as_str(), "1.0.0")])
+                    .await,
+            )
+            .await
         }));
     }
     for task in tasks {
         assert_eq!(task.await.unwrap()["probation_osv"]["upstream_ok"], true);
     }
     assert_eq!(rig.fake.calls(), 8);
-    assert!(rig.fake.max_in_flight.load(Ordering::SeqCst) <= 2, "{}", rig.fake.max_in_flight.load(Ordering::SeqCst));
+    assert!(
+        rig.fake.max_in_flight.load(Ordering::SeqCst) <= 2,
+        "{}",
+        rig.fake.max_in_flight.load(Ordering::SeqCst)
+    );
 }
 
 // ---- review fixes (SEC-1 to SEC-5, SEC-9, code-review F5) ---------------------------------
@@ -794,21 +998,38 @@ async fn post_with_forwarded(rig: &Rig, token: &str, forwarded: &str) -> reqwest
 async fn osv_pre_auth_throttle_follows_the_forwarded_source_and_exempts_valid_requests() {
     let rig = rig_proxied(|_| {}, vec!["127.0.0.1/32".parse().unwrap()]).await;
     for _ in 0..10 {
-        assert_eq!(post_with_forwarded(&rig, "fwt_bad", "10.1.1.9").await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            post_with_forwarded(&rig, "fwt_bad", "10.1.1.9")
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
-    assert_eq!(post_with_forwarded(&rig, "fwt_bad", "10.1.1.9").await.status(), StatusCode::TOO_MANY_REQUESTS, "that address is throttled");
     assert_eq!(
-        post_with_forwarded(&rig, "fwt_bad", "10.1.1.10").await.status(),
+        post_with_forwarded(&rig, "fwt_bad", "10.1.1.9")
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "that address is throttled"
+    );
+    assert_eq!(
+        post_with_forwarded(&rig, "fwt_bad", "10.1.1.10")
+            .await
+            .status(),
         StatusCode::UNAUTHORIZED,
         "another client behind the same proxy has its own count"
     );
     assert_eq!(
-        post_with_forwarded(&rig, &rig.service_key, "10.1.1.10").await.status(),
+        post_with_forwarded(&rig, &rig.service_key, "10.1.1.10")
+            .await
+            .status(),
         StatusCode::OK,
         "another client behind the same proxy is unaffected"
     );
     assert_eq!(
-        post_with_forwarded(&rig, &rig.service_key, "10.1.1.9").await.status(),
+        post_with_forwarded(&rig, &rig.service_key, "10.1.1.9")
+            .await
+            .status(),
         StatusCode::OK,
         "a request that authenticates is exempt even from a throttled address"
     );
@@ -823,16 +1044,28 @@ async fn osv_follower_retries_as_its_own_leader_when_the_leader_fails() {
     let attacker = {
         let rig = Arc::clone(&rig);
         tokio::spawn(async move {
-            let response = rig.post(Some(&rig.service_key), &[("victim", "1.0.0"), ("other", "1.0.0")]).await;
+            let response = rig
+                .post(
+                    Some(&rig.service_key),
+                    &[("victim", "1.0.0"), ("other", "1.0.0")],
+                )
+                .await;
             json(response).await
         })
     };
     tokio::time::sleep(Duration::from_millis(50)).await;
     let victim = rig.ask(&[("victim", "1.0.0")]).await;
-    assert_eq!(victim["results"][0], json!({}), "the victim got a real answer, not the leader's failure");
+    assert_eq!(
+        victim["results"][0],
+        json!({}),
+        "the victim got a real answer, not the leader's failure"
+    );
     assert_eq!(victim["probation_osv"]["upstream_ok"], true);
     let attacker = attacker.await.unwrap();
-    assert_eq!(attacker["probation_osv"]["upstream_ok"], false, "the failing leader itself degrades");
+    assert_eq!(
+        attacker["probation_osv"]["upstream_ok"], false,
+        "the failing leader itself degrades"
+    );
     assert_eq!(rig.fake.calls(), 2);
 }
 
@@ -842,10 +1075,18 @@ async fn osv_leader_completes_into_the_cache_past_the_deadline() {
     let rig = rig_with(|l| l.deadline = Duration::from_millis(200)).await;
     *rig.fake.delay.lock().unwrap() = Duration::from_millis(700);
     let first = rig.ask(&[("slow-but-fine", "1.0.0")]).await;
-    assert_eq!(first["results"][0], json!({"probation_degraded": true}), "answered at the deadline");
+    assert_eq!(
+        first["results"][0],
+        json!({"probation_degraded": true}),
+        "answered at the deadline"
+    );
     tokio::time::sleep(Duration::from_millis(900)).await;
     let second = rig.ask(&[("slow-but-fine", "1.0.0")]).await;
-    assert_eq!(second["results"][0], json!({}), "the late upstream answer was kept");
+    assert_eq!(
+        second["results"][0],
+        json!({}),
+        "the late upstream answer was kept"
+    );
     assert_eq!(second["probation_osv"]["upstream_ok"], true);
     assert_eq!(rig.fake.calls(), 1, "no second upstream call");
 }
@@ -857,8 +1098,18 @@ async fn osv_leader_batches_are_chunked_to_the_client_batch() {
     let refs: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "1.0.0")).collect();
     let answer = rig.ask(&refs).await;
     assert_eq!(answer["probation_osv"]["upstream_ok"], true);
-    let sizes: Vec<usize> = rig.fake.batches.lock().unwrap().iter().map(Vec::len).collect();
-    assert!(sizes.iter().all(|n| *n <= 256) && sizes.iter().sum::<usize>() == 600, "{sizes:?}");
+    let sizes: Vec<usize> = rig
+        .fake
+        .batches
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Vec::len)
+        .collect();
+    assert!(
+        sizes.iter().all(|n| *n <= 256) && sizes.iter().sum::<usize>() == 600,
+        "{sizes:?}"
+    );
 }
 
 /// SEC-4: cache-hit traffic is metered too.
@@ -872,10 +1123,23 @@ async fn osv_authenticated_cache_hit_requests_are_rate_limited() {
     rig.ask(&[("left-pad", "1.3.0")]).await;
     let mut statuses = Vec::new();
     for _ in 0..6 {
-        statuses.push(rig.post(Some(&rig.fw_token), &[("left-pad", "1.3.0")]).await.status());
+        statuses.push(
+            rig.post(Some(&rig.fw_token), &[("left-pad", "1.3.0")])
+                .await
+                .status(),
+        );
     }
-    assert!(statuses.contains(&StatusCode::TOO_MANY_REQUESTS), "{statuses:?}");
-    assert_eq!(rig.post(Some(&rig.service_key), &[("left-pad", "1.3.0")]).await.status(), StatusCode::OK, "another credential has its own");
+    assert!(
+        statuses.contains(&StatusCode::TOO_MANY_REQUESTS),
+        "{statuses:?}"
+    );
+    assert_eq!(
+        rig.post(Some(&rig.service_key), &[("left-pad", "1.3.0")])
+            .await
+            .status(),
+        StatusCode::OK,
+        "another credential has its own"
+    );
 }
 
 /// SEC-5: one shared egress; a global key budget keeps many credentials from tripping the
@@ -892,8 +1156,16 @@ async fn osv_global_key_budget_bounds_all_credentials_together() {
     .await;
     let a = rig.ask(&[("a1", "1"), ("a2", "1")]).await;
     assert_eq!(a["results"], json!([{}, {}]));
-    let b = json(rig.post(Some(&rig.service_key), &[("b1", "1"), ("b2", "1")]).await).await;
-    assert_eq!(b["results"], json!([{}, {"probation_degraded": true}]), "the third key of the minute is over the global budget");
+    let b = json(
+        rig.post(Some(&rig.service_key), &[("b1", "1"), ("b2", "1")])
+            .await,
+    )
+    .await;
+    assert_eq!(
+        b["results"],
+        json!([{}, {"probation_degraded": true}]),
+        "the third key of the minute is over the global budget"
+    );
     rig.fake.set(Mode::Status(429, Some("5")));
     rig.advance(Duration::from_secs(120));
     rig.ask(&[("c1", "1")]).await;
@@ -919,14 +1191,29 @@ async fn osv_follower_fires_its_own_call_behind_a_slow_chunk() {
     let rig = Arc::new(rig().await);
     let attacker = {
         let rig = Arc::clone(&rig);
-        tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("slowpage", "1.0.0"), ("victim", "1.0.0")]).await.status() })
+        tokio::spawn(async move {
+            rig.post(
+                Some(&rig.service_key),
+                &[("slowpage", "1.0.0"), ("victim", "1.0.0")],
+            )
+            .await
+            .status()
+        })
     };
     tokio::time::sleep(Duration::from_millis(100)).await;
     let started = Instant::now();
     let victim = rig.ask(&[("victim", "1.0.0")]).await;
-    assert_eq!(victim["results"][0], json!({}), "a real answer, not degraded");
+    assert_eq!(
+        victim["results"][0],
+        json!({}),
+        "a real answer, not degraded"
+    );
     assert_eq!(victim["probation_osv"]["upstream_ok"], true);
-    assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
     let _ = attacker.await;
 }
 
@@ -938,7 +1225,9 @@ async fn osv_healthy_leader_still_serves_followers_with_one_call() {
     let mut tasks = Vec::new();
     for _ in 0..6 {
         let rig = Arc::clone(&rig);
-        tasks.push(tokio::spawn(async move { rig.ask(&[("popular", "1.0.0")]).await }));
+        tasks.push(tokio::spawn(async move {
+            rig.ask(&[("popular", "1.0.0")]).await
+        }));
     }
     for task in tasks {
         assert_eq!(task.await.unwrap()["probation_osv"]["upstream_ok"], true);
@@ -951,24 +1240,40 @@ async fn osv_healthy_leader_still_serves_followers_with_one_call() {
 async fn osv_bad_token_flood_from_a_blocked_source_does_not_starve_valid_callers() {
     let rig = Arc::new(rig().await);
     // Known good before the flood (it authenticated once).
-    assert_eq!(rig.post(Some(&rig.service_key), &[("a", "1")]).await.status(), StatusCode::OK);
+    assert_eq!(
+        rig.post(Some(&rig.service_key), &[("a", "1")])
+            .await
+            .status(),
+        StatusCode::OK
+    );
     for _ in 0..12 {
         let _ = rig.post(Some("fwt_bad"), &[("a", "1")]).await;
     }
     let mut flood = Vec::new();
     for i in 0..300 {
         let rig = Arc::clone(&rig);
-        flood.push(tokio::spawn(async move { rig.post(Some(&format!("fwt_bad{i}")), &[("a", "1")]).await.status() }));
+        flood.push(tokio::spawn(async move {
+            rig.post(Some(&format!("fwt_bad{i}")), &[("a", "1")])
+                .await
+                .status()
+        }));
     }
     let valid = rig.post(Some(&rig.service_key), &[("a", "1")]).await;
-    assert_eq!(valid.status(), StatusCode::OK, "a known credential from the flooded source still gets in");
+    assert_eq!(
+        valid.status(),
+        StatusCode::OK,
+        "a known credential from the flooded source still gets in"
+    );
     let mut throttled = 0;
     for task in flood {
         if task.await.unwrap() == StatusCode::TOO_MANY_REQUESTS {
             throttled += 1;
         }
     }
-    assert!(throttled > 200, "the blocked source is turned away without a lookup: {throttled}");
+    assert!(
+        throttled > 200,
+        "the blocked source is turned away without a lookup: {throttled}"
+    );
 }
 
 /// NEW-2: connections that drip a body hold neither a parse permit nor anyone else's turn.
@@ -992,8 +1297,14 @@ async fn osv_slow_bodies_do_not_hold_parse_permits() {
         drippers.push(stream);
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let answer = rig.post(Some(&rig.fw_token), &[("left-pad", "1.3.0")]).await;
-    assert_eq!(answer.status(), StatusCode::OK, "another credential is served while bodies drip");
+    let answer = rig
+        .post(Some(&rig.fw_token), &[("left-pad", "1.3.0")])
+        .await;
+    assert_eq!(
+        answer.status(),
+        StatusCode::OK,
+        "another credential is served while bodies drip"
+    );
     drop(drippers);
 }
 
@@ -1011,8 +1322,16 @@ async fn osv_one_tenant_cannot_starve_the_global_budget() {
     let names: Vec<String> = (0..30).map(|i| format!("greedy-{i}")).collect();
     let refs: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "1")).collect();
     let greedy = json(rig.post(Some(&rig.service_key), &refs).await).await;
-    let degraded = greedy["results"].as_array().unwrap().iter().filter(|r| r["probation_degraded"] == true).count();
-    assert!(degraded >= 18, "the tenant stopped at its share: {degraded} degraded of 30");
+    let degraded = greedy["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["probation_degraded"] == true)
+        .count();
+    assert!(
+        degraded >= 18,
+        "the tenant stopped at its share: {degraded} degraded of 30"
+    );
     // Another tenant (the firewall token) still has budget.
     let other = rig.ask(&[("fresh-1", "1"), ("fresh-2", "1")]).await;
     assert_eq!(other["results"], json!([{}, {}]));
@@ -1032,14 +1351,25 @@ async fn osv_body_cap_and_batch_cap_contract_for_maximum_size_keys() {
         serde_json::to_vec(&json!({"queries": queries})).unwrap()
     };
     let legal = big(256);
-    assert!(legal.len() < 1_048_576, "a maximum-size client batch fits: {}", legal.len());
+    assert!(
+        legal.len() < 1_048_576,
+        "a maximum-size client batch fits: {}",
+        legal.len()
+    );
     let response = rig.post_raw(Some(&rig.fw_token), legal).await;
     assert_eq!(response.status(), StatusCode::OK);
     let oversized = big(1000);
     assert!(oversized.len() > 1_048_576, "{}", oversized.len());
     let calls = rig.fake.calls();
-    assert_eq!(rig.post_raw(Some(&rig.fw_token), oversized).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(rig.fake.calls(), calls, "no upstream work for a refused envelope");
+    assert_eq!(
+        rig.post_raw(Some(&rig.fw_token), oversized).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        rig.fake.calls(),
+        calls,
+        "no upstream work for a refused envelope"
+    );
 }
 
 // ---- third review round ------------------------------------------------------------------
@@ -1048,7 +1378,10 @@ async fn osv_body_cap_and_batch_cap_contract_for_maximum_size_keys() {
 async fn service_key_at(rig: &Rig, place: probation_policy::PlaceRef) -> String {
     let admin = rig.db.global_admin().await;
     let (actor, authorized) = rig.db.as_admin(admin, place).await;
-    keys::create(&rig.db.app, &actor, &authorized, "tenant").await.unwrap().secret
+    keys::create(&rig.db.app, &actor, &authorized, "tenant")
+        .await
+        .unwrap()
+        .secret
 }
 
 /// NEW-1: a credential that stops authenticating (revoked, deleted) stops being exempt and
@@ -1059,39 +1392,67 @@ async fn osv_revoked_credential_is_rejected_without_a_lookup_after_the_first_401
     let org = rig.db.org("Departing").await;
     let admin = rig.db.global_admin().await;
     let (actor, place) = rig.db.as_admin(admin, org).await;
-    let key = keys::create(&rig.db.app, &actor, &place, "leaver").await.unwrap();
-    assert_eq!(rig.post(Some(&key.secret), &[("a", "1")]).await.status(), StatusCode::OK);
+    let key = keys::create(&rig.db.app, &actor, &place, "leaver")
+        .await
+        .unwrap();
+    assert_eq!(
+        rig.post(Some(&key.secret), &[("a", "1")]).await.status(),
+        StatusCode::OK
+    );
     keys::revoke_as_operator(&rig.db.app, key.id).await.unwrap();
     let before = rig.osv.health().auth_lookups;
     for i in 0..50 {
         let status = rig.post(Some(&key.secret), &[("a", "1")]).await.status();
         // 401 while the source is counted, 429 once it is blocked; never 200.
-        assert!(status == StatusCode::UNAUTHORIZED || (i >= 10 && status == StatusCode::TOO_MANY_REQUESTS), "{i}: {status}");
+        assert!(
+            status == StatusCode::UNAUTHORIZED
+                || (i >= 10 && status == StatusCode::TOO_MANY_REQUESTS),
+            "{i}: {status}"
+        );
     }
-    assert_eq!(rig.osv.health().auth_lookups - before, 1, "one lookup found it revoked; the rest were not looked up");
+    assert_eq!(
+        rig.osv.health().auth_lookups - before,
+        1,
+        "one lookup found it revoked; the rest were not looked up"
+    );
 }
 
 /// NEW-1: even a valid credential cannot occupy the auth gate: lookups are limited per
 /// credential before the gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn osv_valid_credential_flood_is_limited_before_the_auth_gate() {
-    let rig = Arc::new(rig_with(|l| {
-        l.request_burst = 40;
-        l.request_rate_per_second = 1;
-    })
-    .await);
+    let rig = Arc::new(
+        rig_with(|l| {
+            l.request_burst = 40;
+            l.request_rate_per_second = 1;
+        })
+        .await,
+    );
     let before = rig.osv.health().auth_lookups;
     let mut tasks = Vec::new();
     for _ in 0..400 {
         let rig = Arc::clone(&rig);
-        tasks.push(tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("left-pad", "1")]).await.status() }));
+        tasks.push(tokio::spawn(async move {
+            rig.post(Some(&rig.service_key), &[("left-pad", "1")])
+                .await
+                .status()
+        }));
     }
     for task in tasks {
         let _ = task.await;
     }
     let lookups = rig.osv.health().auth_lookups - before;
-    assert!(lookups <= 45, "400 requests of one credential cost {lookups} lookups");
-    assert_eq!(rig.post(Some(&rig.fw_token), &[("left-pad", "1")]).await.status(), StatusCode::OK, "another credential is unaffected");
+    assert!(
+        lookups <= 45,
+        "400 requests of one credential cost {lookups} lookups"
+    );
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &[("left-pad", "1")])
+            .await
+            .status(),
+        StatusCode::OK,
+        "another credential is unaffected"
+    );
 }
 
 /// NEW-1: blocked requests are rejected without extending the block, so it ends 60 s after the
@@ -1102,16 +1463,27 @@ async fn osv_valid_credential_flood_is_limited_before_the_auth_gate() {
 async fn osv_blocked_requests_do_not_extend_the_block() {
     let rig = rig().await;
     for _ in 0..10 {
-        assert_eq!(rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            rig.post(Some("fwt_bad"), &[("a", "1")]).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
     // A client retrying every second for 12 s: all cheaply turned away, none extends the block.
     for _ in 0..12 {
         rig.advance(Duration::from_secs(1));
-        assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::TOO_MANY_REQUESTS, "a first-time credential is turned away while blocked");
+        assert_eq!(
+            rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a first-time credential is turned away while blocked"
+        );
     }
     // 60 s after the last real failure (all ten were at second 0) the block is over.
     rig.advance(Duration::from_secs(48));
-    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK, "recovered 60 s after the last real failure");
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(),
+        StatusCode::OK,
+        "recovered 60 s after the last real failure"
+    );
 }
 
 /// SEC-2: followers of a hot key share one rescue call.
@@ -1122,13 +1494,19 @@ async fn osv_followers_of_a_hot_key_share_one_rescue_call() {
     let mut tasks = Vec::new();
     for _ in 0..50 {
         let rig = Arc::clone(&rig);
-        tasks.push(tokio::spawn(async move { rig.ask(&[("hot", "1.0.0")]).await }));
+        tasks.push(tokio::spawn(
+            async move { rig.ask(&[("hot", "1.0.0")]).await },
+        ));
     }
     for task in tasks {
         let answer = task.await.unwrap();
         assert_eq!(answer["probation_osv"]["upstream_ok"], true);
     }
-    assert!(rig.fake.calls() <= 2, "50 followers made {} upstream calls", rig.fake.calls());
+    assert!(
+        rig.fake.calls() <= 2,
+        "50 followers made {} upstream calls",
+        rig.fake.calls()
+    );
 }
 
 /// SEC-2: slow chunks that hold every ordinary upstream permit cannot starve a rescue call.
@@ -1137,13 +1515,27 @@ async fn osv_slow_chunks_cannot_starve_a_rescue_call() {
     let rig = Arc::new(rig_with(|l| l.upstream_concurrency = 2).await);
     let a = {
         let rig = Arc::clone(&rig);
-        tokio::spawn(async move { rig.post(Some(&rig.service_key), &[("slowpage-1", "1.0.0"), ("victim", "1.0.0")]).await.status() })
+        tokio::spawn(async move {
+            rig.post(
+                Some(&rig.service_key),
+                &[("slowpage-1", "1.0.0"), ("victim", "1.0.0")],
+            )
+            .await
+            .status()
+        })
     };
     let org = rig.db.org("Second attacker").await;
     let second = service_key_at(&rig, org).await;
     let b = {
         let rig = Arc::clone(&rig);
-        tokio::spawn(async move { rig.post(Some(&second), &[("slowpage-2", "1.0.0"), ("other", "1.0.0")]).await.status() })
+        tokio::spawn(async move {
+            rig.post(
+                Some(&second),
+                &[("slowpage-2", "1.0.0"), ("other", "1.0.0")],
+            )
+            .await
+            .status()
+        })
     };
     tokio::time::sleep(Duration::from_millis(150)).await;
     let victim = rig.ask(&[("victim", "1.0.0")]).await;
@@ -1173,9 +1565,17 @@ async fn osv_share_is_per_organisation_not_per_place() {
         let names: Vec<String> = (0..10).map(|i| format!("org-{n}-{i}")).collect();
         let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
         let answer = json(rig.post(Some(key), &refs).await).await;
-        accepted += answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+        accepted += answer["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| **r == json!({}))
+            .count();
     }
-    assert!(accepted <= 10, "four places of one organisation got {accepted} of a 10-key share");
+    assert!(
+        accepted <= 10,
+        "four places of one organisation got {accepted} of a 10-key share"
+    );
 }
 
 /// SEC-5: with the shared budget down to its reserve, every tenant keeps its own floor.
@@ -1206,7 +1606,12 @@ async fn osv_every_tenant_keeps_a_floor_when_the_shared_budget_is_spent() {
         let names: Vec<String> = (0..5).map(|j| format!("fresh-{i}-{j}")).collect();
         let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
         let answer = json(rig.post(Some(&key), &refs).await).await;
-        let ok = answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+        let ok = answer["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| **r == json!({}))
+            .count();
         assert_eq!(ok, 5, "fresh tenant {i} kept its floor");
     }
 }
@@ -1217,14 +1622,30 @@ async fn osv_every_tenant_keeps_a_floor_when_the_shared_budget_is_spent() {
 async fn osv_out_of_cidr_holder_cannot_lock_out_the_real_firewall() {
     let rig = rig_proxied(|_| {}, vec!["127.0.0.1/32".parse().unwrap()]).await;
     // The real firewall (the proxy peer, inside 127.0.0.0/8) authenticates once.
-    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK);
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(),
+        StatusCode::OK
+    );
     // The same token from outside its allowed sources: refused, however often.
     for _ in 0..5 {
-        assert_eq!(post_with_forwarded(&rig, &rig.fw_token, "10.1.1.9").await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            post_with_forwarded(&rig, &rig.fw_token, "10.1.1.9")
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
     let before = rig.osv.health().auth_lookups;
-    assert_eq!(rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(), StatusCode::OK, "the real firewall is not locked out");
-    assert_eq!(rig.osv.health().auth_lookups - before, 1, "and it was looked up, not turned away from memory");
+    assert_eq!(
+        rig.post(Some(&rig.fw_token), &[("a", "1")]).await.status(),
+        StatusCode::OK,
+        "the real firewall is not locked out"
+    );
+    assert_eq!(
+        rig.osv.health().auth_lookups - before,
+        1,
+        "and it was looked up, not turned away from memory"
+    );
 }
 
 /// R4-2: the floors of many minted tenants together are bounded by one shared pool.
@@ -1254,8 +1675,19 @@ async fn osv_floors_of_many_tenants_are_bounded_by_one_pool() {
         let names: Vec<String> = (0..5).map(|j| format!("minted-{i}-{j}")).collect();
         let refs: Vec<(&str, &str)> = names.iter().map(|x| (x.as_str(), "1")).collect();
         let answer = json(rig.post(Some(&key), &refs).await).await;
-        accepted += answer["results"].as_array().unwrap().iter().filter(|r| **r == json!({})).count();
+        accepted += answer["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| **r == json!({}))
+            .count();
     }
-    assert!(accepted <= 12, "30 minted tenants drew {accepted} keys beyond the shared budget (pool of 10)");
-    assert!(accepted >= 5, "the first tenants still got their floor from the pool: {accepted}");
+    assert!(
+        accepted <= 12,
+        "30 minted tenants drew {accepted} keys beyond the shared budget (pool of 10)"
+    );
+    assert!(
+        accepted >= 5,
+        "the first tenants still got their floor from the pool: {accepted}"
+    );
 }

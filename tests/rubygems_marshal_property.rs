@@ -7,43 +7,65 @@ use probation::rubygems::marshal::{Limits, filter_tuple_index, validate_gemspec}
 use proptest::prelude::*;
 
 fn slice() -> Vec<u8> {
-    let gz = std::fs::read(format!("{}/tests/fixtures/rubygems/full-index-slice.4.8.gz", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let gz = std::fs::read(format!(
+        "{}/tests/fixtures/rubygems/full-index-slice.4.8.gz",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
     let raw = inflate::inflate(&gz, false, inflate::TUPLE_INDEX_CAP).unwrap();
     raw[..raw.len().min(4096)].to_vec()
 }
 
 fn specs() -> Vec<Vec<u8>> {
-    std::fs::read_dir(format!("{}/tests/fixtures/rubygems", env!("CARGO_MANIFEST_DIR")))
+    std::fs::read_dir(format!(
+        "{}/tests/fixtures/rubygems",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+    .filter_map(|e| e.ok())
+    .filter(|e| e.file_name().to_string_lossy().ends_with(".gemspec.rz"))
+    .map(|e| {
+        inflate::inflate(
+            &std::fs::read(e.path()).unwrap(),
+            true,
+            inflate::GEMSPEC_CAP,
+        )
         .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".gemspec.rz"))
-        .map(|e| inflate::inflate(&std::fs::read(e.path()).unwrap(), true, inflate::GEMSPEC_CAP).unwrap())
-        .collect()
+    })
+    .collect()
 }
 
-const SMALL: Limits = Limits { max_depth: 32, max_nodes: 5_000, memory_budget: 200_000 };
+const SMALL: Limits = Limits {
+    max_depth: 32,
+    max_nodes: 5_000,
+    memory_budget: 200_000,
+};
 
 /// A real stream with up to eight bytes overwritten, inserted or removed, or cut short.
 fn mutated(base: Vec<u8>) -> impl Strategy<Value = Vec<u8>> {
     let len = base.len();
-    (prop::collection::vec((0..len, any::<u8>(), 0u8..3), 0..8), 0..=len).prop_map(move |(edits, cut)| {
-        let mut bytes = base.clone();
-        for (at, byte, kind) in edits {
-            let at = at.min(bytes.len().saturating_sub(1));
-            if bytes.is_empty() {
-                break;
-            }
-            match kind {
-                0 => bytes[at] = byte,
-                1 => bytes.insert(at, byte),
-                _ => {
-                    bytes.remove(at);
+    (
+        prop::collection::vec((0..len, any::<u8>(), 0u8..3), 0..8),
+        0..=len,
+    )
+        .prop_map(move |(edits, cut)| {
+            let mut bytes = base.clone();
+            for (at, byte, kind) in edits {
+                let at = at.min(bytes.len().saturating_sub(1));
+                if bytes.is_empty() {
+                    break;
+                }
+                match kind {
+                    0 => bytes[at] = byte,
+                    1 => bytes.insert(at, byte),
+                    _ => {
+                        bytes.remove(at);
+                    }
                 }
             }
-        }
-        bytes.truncate(cut.max(2).min(bytes.len()));
-        bytes
-    })
+            bytes.truncate(cut.max(2).min(bytes.len()));
+            bytes
+        })
 }
 
 proptest! {

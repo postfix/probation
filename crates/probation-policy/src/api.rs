@@ -218,7 +218,10 @@ pub enum CertificateAdmission {
 impl std::fmt::Debug for CertificateAdmission {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Granted { registry, .. } => f.debug_struct("Granted").field("registry", registry).finish_non_exhaustive(),
+            Self::Granted { registry, .. } => f
+                .debug_struct("Granted")
+                .field("registry", registry)
+                .finish_non_exhaustive(),
             Self::Refused => f.write_str("Refused"),
         }
     }
@@ -605,13 +608,20 @@ mod tests {
                     upstreams: Upstreams {
                         npm: Reachability::Ok,
                         pypi: Reachability::Unreachable,
-                        osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+                        osv: Reachability::Ok,
+                        rubygems: None,
+                        cargo: None,
+                        go: None,
+                        nuget: None,
+                        maven: None,
+                        conan: None,
+                        oci: None,
                     },
                 },
                 effective_period_seconds: 55,
                 version: "0.2.2".to_owned(),
                 failed_revision: None,
-            osv: None,
+                osv: None,
             },
             activity: vec![ActivityEvent {
                 event_id: "1-1".to_owned(),

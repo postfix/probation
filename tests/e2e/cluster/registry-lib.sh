@@ -1,22 +1,31 @@
 # Sourced by run-kind-lane.sh (and by tests/node_scripts.rs, with stub tools): the private registry the pull-secret checks use, the pods of the kubelet's own
 # pulls, and `pull_through_service`, the kubelet's pull secret THROUGH the Probation endpoint of the cluster lane. Needs lane-lib.sh. NOT RUN YET on a
 # hosted runner (hosted run pending).
-# Public images, pinned by digest: the one the private registry and the preload are filled with, the registry itself, and htpasswd (bcrypt, which the registry requires).
+# Public images, pinned by digest: the one the private registry is filled with, the registry itself, the cri lane's preload, and htpasswd (bcrypt, which
+# the registry requires). The preload must NOT be the private registry's image: the kubelet (KubeletEnsureSecretPulledImages, on by default since 1.35)
+# re-verifies, by pulling, an image it once pulled with a pull secret before a pod without that secret may use it (hosted run 46132781149).
 BUSYBOX=docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 REGISTRY_IMAGE=docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+PRELOAD_IMAGE=docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
 HTPASSWD_IMAGE=docker.io/library/httpd:2.4.66-alpine@sha256:968c8b4098fcecb473762b45f6c541a3b2b2cfab2caccb1edbd2cece071ef160
 REG=$CLUSTER-private-registry
 PRIVATE=private.kind.test:5000
 PRIV_IMAGE=$PRIVATE/private/app:1
 registry_up() { [ "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:5000/v2/)" = 401 ]; }
 # A private registry (registry:2) on the kind network behind TLS and basic auth (user `puller`, the password in PULL_PW), filled with $PRIV_IMAGE (busybox).
-# Its certificate (CN and SAN private.kind.test, localhost) is its own CA: $WORK_DIR/registry/reg.crt. Sets PULL_PW and REGIP; finish removes the container.
+# Its certificate (CN and SAN private.kind.test, localhost) is an end-entity certificate, $WORK_DIR/registry/reg.crt, under a lane CA,
+# $WORK_DIR/registry/ca/ca.crt, which is what clients trust. Not one self-signed certificate: `openssl req -x509` marks it CA:TRUE, and the
+# service's rustls refuses a CA presented by a server (CaUsedAsEndEntity, every pull through the service 502, hosted run 46132781149).
+# Sets PULL_PW and REGIP; finish removes the container.
 private_registry_up() {
   command -v skopeo >/dev/null || fail "skopeo is required (it fills the private registry and builds the preload archive)"
   PULL_PW=$(openssl rand -hex 12)
   mkdir -p "$WORK_DIR/registry/ca"
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$WORK_DIR/registry/reg.key" -out "$WORK_DIR/registry/reg.crt" -subj "/CN=private.kind.test" -addext "subjectAltName=DNS:private.kind.test,DNS:localhost,IP:127.0.0.1" -days 2
-  cp "$WORK_DIR/registry/reg.crt" "$WORK_DIR/registry/ca/ca.crt"
+  # (the CA key is not in ca/: skopeo's cert dir takes a .key there for a client certificate)
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$WORK_DIR/registry/ca.key" -out "$WORK_DIR/registry/ca/ca.crt" -subj "/CN=probation lane registry CA" -addext "keyUsage=critical,keyCertSign,cRLSign" -days 2
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$WORK_DIR/registry/reg.key" -out "$WORK_DIR/registry/reg.csr" -subj "/CN=private.kind.test"
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:private.kind.test,DNS:localhost,IP:127.0.0.1\n' > "$WORK_DIR/registry/reg.ext"
+  openssl x509 -req -in "$WORK_DIR/registry/reg.csr" -CA "$WORK_DIR/registry/ca/ca.crt" -CAkey "$WORK_DIR/registry/ca.key" -set_serial "0x$(openssl rand -hex 8)" -extfile "$WORK_DIR/registry/reg.ext" -out "$WORK_DIR/registry/reg.crt" -days 2
   docker run --rm --entrypoint htpasswd "$HTPASSWD_IMAGE" -Bbn puller "$PULL_PW" > "$WORK_DIR/registry/htpasswd"
   docker run -d --name "$REG" --network kind -p 127.0.0.1:5000:5000 -v "$WORK_DIR/registry:/auth:ro" -e REGISTRY_HTTP_ADDR=0.0.0.0:5000 -e REGISTRY_HTTP_TLS_CERTIFICATE=/auth/reg.crt -e REGISTRY_HTTP_TLS_KEY=/auth/reg.key -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=probation-lane -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd "$REGISTRY_IMAGE" >/dev/null
   wait_until 60 registry_up || fail "the private registry did not come up (it must answer 401 without a credential)"
@@ -77,8 +86,8 @@ pull_through_service() {
   docker network connect kind "$gateway"
   gwip=$(node_ip "$gateway")
   # Everything the service needs to reach the policy server (sync.e2e.test, the gateway's address) and the registry (private.kind.test, its address)
-  # and to trust them: the e2e CA and the registry's certificate, added to the system roots. Lane-only changes of the manifest copy.
-  cat /etc/ssl/certs/ca-certificates.crt "$(policy_value ca)" "$WORK_DIR/registry/reg.crt" > "$WORK_DIR/ca-bundle.pem"
+  # and to trust them: the e2e CA and the registry's CA, added to the system roots. Lane-only changes of the manifest copy.
+  cat /etc/ssl/certs/ca-certificates.crt "$(policy_value ca)" "$WORK_DIR/registry/ca/ca.crt" > "$WORK_DIR/ca-bundle.pem"
   kubectl -n probation create secret generic probation-ca-bundle --from-file=ca-bundle.pem="$WORK_DIR/ca-bundle.pem"
   printf '%s\n' "$service_key" > "$WORK_DIR/service-key.policy"
   kubectl -n probation create secret generic probation-service-key --from-file=service-key="$WORK_DIR/service-key.policy" --dry-run=client -o yaml | kubectl apply -f -
@@ -131,5 +140,8 @@ PY
   expect "through the service: a secret of ANOTHER server (other.kind.test:5000) is refused the same way (matching is by the image's host)" wait_until 180 pod_event_matches default svc-secret-other "$auth_failed"
   expect "through the service: the pod with no secret does not run" not pod_phase_is default svc-secret-none Running
   expect "through the service: the pod with the other server's secret does not run" not pod_phase_is default svc-secret-other Running
+  # The service pod of this block is replaced by the later rollout and the registry is removed by finish: keep their logs now.
+  kubectl -n probation logs deployment/probation --all-containers --timestamps > "$WORK_DIR/logs/through-service-probation.log" 2>&1 || true
+  registry_log > "$WORK_DIR/logs/private-registry.log" || true
   kubectl delete pod svc-secret-ok svc-secret-none svc-secret-other --ignore-not-found --wait=false
 }

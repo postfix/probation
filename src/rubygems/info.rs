@@ -42,7 +42,10 @@ fn version_ok(v: &str) -> bool {
 }
 
 fn platform_ok(p: &str) -> bool {
-    !p.is_empty() && p.len() <= 128 && p.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    !p.is_empty()
+        && p.len() <= 128
+        && p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 impl Entry {
@@ -63,7 +66,13 @@ impl Entry {
     }
 
     pub fn expected(&self) -> Vec<Digest> {
-        self.sha256.map(|bytes| Digest { algorithm: HashAlgorithm::Sha256, bytes: Box::from(bytes.as_slice()) }).into_iter().collect()
+        self.sha256
+            .map(|bytes| Digest {
+                algorithm: HashAlgorithm::Sha256,
+                bytes: Box::from(bytes.as_slice()),
+            })
+            .into_iter()
+            .collect()
     }
 }
 
@@ -101,7 +110,10 @@ pub fn parse_info(body: &[u8], max_entries: usize) -> Result<Vec<Entry>, InfoErr
                         }
                     }
                     Some(("created_at", at)) => {
-                        created_micros = at.parse::<jiff::Timestamp>().ok().map(|t| t.as_microsecond());
+                        created_micros = at
+                            .parse::<jiff::Timestamp>()
+                            .ok()
+                            .map(|t| t.as_microsecond());
                     }
                     _ => {}
                 }
@@ -139,7 +151,9 @@ pub fn valid_gem_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && !name.starts_with(['-', '.'])
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Every way a file name `{name}-{rest}.gem` can split into a gem name and a
@@ -147,13 +161,20 @@ pub fn valid_gem_name(name: &str) -> bool {
 /// caller resolves which split is real against the index and refuses when more than one
 /// is (ambiguity refuses, it never guesses).
 pub fn filename_candidates(filename: &str) -> Vec<(String, String)> {
-    let Some(stem) = filename.strip_suffix(".gem") else { return Vec::new() };
+    let Some(stem) = filename.strip_suffix(".gem") else {
+        return Vec::new();
+    };
     stem.match_indices('-')
         .filter(|(at, _)| stem[at + 1..].starts_with(|c: char| c.is_ascii_digit()) && *at > 0)
         .map(|(at, _)| (stem[..at].to_owned(), stem[at + 1..].to_owned()))
         .filter(|(name, rest)| {
             let version = rest.split('-').next().unwrap_or("");
-            valid_gem_name(name) && rest.len() <= 160 && version_ok(version) && rest.split_once('-').is_none_or(|(_, platform)| platform_ok(platform))
+            valid_gem_name(name)
+                && rest.len() <= 160
+                && version_ok(version)
+                && rest
+                    .split_once('-')
+                    .is_none_or(|(_, platform)| platform_ok(platform))
         })
         .collect()
 }
@@ -161,6 +182,10 @@ pub fn filename_candidates(filename: &str) -> Vec<(String, String)> {
 /// The upstream URL of a gem file under `origin` (`{origin}/gems/{file}`).
 pub fn gem_url(origin: &Url, filename: &str) -> Option<Url> {
     let mut url = origin.clone();
-    url.path_segments_mut().ok()?.pop_if_empty().push("gems").push(filename);
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .push("gems")
+        .push(filename);
     Some(url)
 }

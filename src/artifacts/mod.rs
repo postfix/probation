@@ -71,7 +71,17 @@ pub async fn serve_artifact(
     method: &Method,
     range_header: Option<&str>,
 ) -> Result<ArtifactResponse, ApiError> {
-    serve_artifact_in(app, principal, ecosystem, 0, id, filename, method, range_header).await
+    serve_artifact_in(
+        app,
+        principal,
+        ecosystem,
+        0,
+        id,
+        filename,
+        method,
+        range_header,
+    )
+    .await
 }
 
 /// The decision a request would get before any byte is fetched (the first half of [`serve_artifact_in`]): the policy is valid, the reference is
@@ -85,13 +95,22 @@ pub async fn preflight(
     id: ReferenceId,
     filename: &str,
 ) -> Result<ReferenceRow, ApiError> {
-    let policy = app.policy_for(principal).ok_or(ApiError::PolicyUnavailable)?;
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
     let now = app.clock.now_utc_micros();
-    if !policy.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_valid_at(now)) {
+    if !policy
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     let row = load_reference(app, id).await?;
-    if row.registry_id != registry_id || row.reference.ecosystem != ecosystem || row.reference.filename != filename {
+    if row.registry_id != registry_id
+        || row.reference.ecosystem != ecosystem
+        || row.reference.filename != filename
+    {
         return Err(ApiError::NotFound);
     }
     let pinned = row.pinned_digests();
@@ -156,24 +175,66 @@ pub async fn serve_artifact_in(
     // Only now, with every locally conclusive answer already given (PERF-01), does
     // this request touch upstream metadata.
     // A NuGet registry's `target_url` names its service index; every file lives anywhere on its host.
-    let nuget_root = principal.and_then(|p| p.registry_origin.as_ref()).filter(|_| row.reference.ecosystem == Ecosystem::NuGet).and_then(|target| crate::nuget::serve::selected_root(app, target));
-    let origin = if row.reference.ecosystem == Ecosystem::NuGet { nuget_root.as_ref() } else { principal.and_then(|p| p.registry_origin.as_ref()) };
+    let nuget_root = principal
+        .and_then(|p| p.registry_origin.as_ref())
+        .filter(|_| row.reference.ecosystem == Ecosystem::NuGet)
+        .and_then(|target| crate::nuget::serve::selected_root(app, target));
+    let origin = if row.reference.ecosystem == Ecosystem::NuGet {
+        nuget_root.as_ref()
+    } else {
+        principal.and_then(|p| p.registry_origin.as_ref())
+    };
     let private_cidrs = principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice());
     let read_authorization = principal.and_then(|p| p.registry_read_authorization.as_deref());
-    ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
+    ensure_membership(
+        app,
+        &row,
+        principal,
+        origin,
+        private_cidrs,
+        read_authorization,
+    )
+    .await?;
 
     // A Cargo archive that lives outside the registry's index path is fetched from the origin its descriptor
     // declares, and only from there; the registry's credential goes along only when that is the registry's own origin.
     let archive = principal
         .and_then(|p| p.registry_archive_origin.as_ref())
-        .filter(|archive| row.reference.ecosystem == Ecosystem::Cargo && url_under(archive, &row.reference.upstream_url));
+        .filter(|archive| {
+            row.reference.ecosystem == Ecosystem::Cargo
+                && url_under(archive, &row.reference.upstream_url)
+        });
     // A Go registry's declared archive origin, from the same principal the request was admitted under.
-    let go_archive = principal.and_then(|p| p.registry_archive_origin.as_ref()).filter(|_| matches!(row.reference.ecosystem, Ecosystem::Go | Ecosystem::NuGet | Ecosystem::Maven | Ecosystem::Conan | Ecosystem::Oci));
+    let go_archive = principal
+        .and_then(|p| p.registry_archive_origin.as_ref())
+        .filter(|_| {
+            matches!(
+                row.reference.ecosystem,
+                Ecosystem::Go
+                    | Ecosystem::NuGet
+                    | Ecosystem::Maven
+                    | Ecosystem::Conan
+                    | Ecosystem::Oci
+            )
+        });
     let (download_origin, download_authorization) = match archive {
-        Some(archive) => (Some(archive), read_authorization.filter(|_| origin.is_some_and(|own| own.origin() == archive.origin()))),
+        Some(archive) => (
+            Some(archive),
+            read_authorization
+                .filter(|_| origin.is_some_and(|own| own.origin() == archive.origin())),
+        ),
         None => (origin, read_authorization),
     };
-    let (file, pinned, downloaded) = open_or_download(app, &row, pinned, download_origin, private_cidrs, download_authorization, go_archive).await?;
+    let (file, pinned, downloaded) = open_or_download(
+        app,
+        &row,
+        pinned,
+        download_origin,
+        private_cidrs,
+        download_authorization,
+        go_archive,
+    )
+    .await?;
     // SPEC §11 asks the decision line to carry a cache status. For an artifact that is
     // exactly this: were the bytes already verified on disk, or did this request pay
     // for the transfer?
@@ -190,7 +251,15 @@ pub async fn serve_artifact_in(
     // working out whether the TTL lapsed mid-flight: it is one comparison stricter,
     // and a great deal simpler to be sure of.
     if downloaded {
-        ensure_membership(app, &row, principal, origin, private_cidrs, read_authorization).await?;
+        ensure_membership(
+            app,
+            &row,
+            principal,
+            origin,
+            private_cidrs,
+            read_authorization,
+        )
+        .await?;
     }
 
     // The final check. SPEC §9: "A request is authorized by its final successful
@@ -244,17 +313,94 @@ pub async fn serve_artifact_in(
 /// Every artifact request reaches this, warm ones included, so the set it asks for is
 /// parsed once per project snapshot and kept with it rather than recomputed per call
 /// (SPEC §12's warm-artifact target).
-async fn ensure_membership(app: &App, row: &ReferenceRow, principal: Option<&Principal>, origin: Option<&url::Url>, private_cidrs: &[ipnet::IpNet], read_authorization: Option<&str>) -> Result<(), ApiError> {
+async fn ensure_membership(
+    app: &App,
+    row: &ReferenceRow,
+    principal: Option<&Principal>,
+    origin: Option<&url::Url>,
+    private_cidrs: &[ipnet::IpNet],
+    read_authorization: Option<&str>,
+) -> Result<(), ApiError> {
     let advertised = match row.reference.ecosystem {
-        Ecosystem::Npm => npm::ensure_fresh_project_at(app, &row.reference.name, row.registry_id, origin, private_cidrs, read_authorization).await?,
-        Ecosystem::PyPi => pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal).await?,
-        Ecosystem::RubyGems => crate::rubygems::serve::ensure_fresh_project_in(app, &row.reference.name, &row.reference.filename, row.registry_id, principal).await?,
-        Ecosystem::Cargo => crate::cargo_registry::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
-        Ecosystem::Go => crate::go_modules::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
-        Ecosystem::NuGet => crate::nuget::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
-        Ecosystem::Maven => crate::maven::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
-        Ecosystem::Conan => crate::conan::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
-        Ecosystem::Oci => crate::oci::serve::ensure_fresh_project_in(app, &row.reference, row.registry_id, principal).await?,
+        Ecosystem::Npm => {
+            npm::ensure_fresh_project_at(
+                app,
+                &row.reference.name,
+                row.registry_id,
+                origin,
+                private_cidrs,
+                read_authorization,
+            )
+            .await?
+        }
+        Ecosystem::PyPi => {
+            pypi::ensure_fresh_project_in(app, &row.reference.name, row.registry_id, principal)
+                .await?
+        }
+        Ecosystem::RubyGems => {
+            crate::rubygems::serve::ensure_fresh_project_in(
+                app,
+                &row.reference.name,
+                &row.reference.filename,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::Cargo => {
+            crate::cargo_registry::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::Go => {
+            crate::go_modules::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::NuGet => {
+            crate::nuget::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::Maven => {
+            crate::maven::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::Conan => {
+            crate::conan::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
+        Ecosystem::Oci => {
+            crate::oci::serve::ensure_fresh_project_in(
+                app,
+                &row.reference,
+                row.registry_id,
+                principal,
+            )
+            .await?
+        }
     };
 
     if advertised.contains(&row.id) {
@@ -289,7 +435,9 @@ async fn evaluate(
     let sha256_text;
     if row.reference.ecosystem == Ecosystem::Oci {
         if row.reference.version.starts_with("sha512:")
-            && let Some(computed) = pinned.iter().find(|digest| digest.algorithm == crate::policy::HashAlgorithm::Sha256)
+            && let Some(computed) = pinned
+                .iter()
+                .find(|digest| digest.algorithm == crate::policy::HashAlgorithm::Sha256)
         {
             sha256_text = format!("sha256:{}", hex::encode(&computed.bytes));
             candidate.version = &sha256_text;
@@ -298,7 +446,14 @@ async fn evaluate(
             return blocked;
         }
     }
-    osv::evaluate_scoped(&app.osv, policy, now, &candidate, app.osv_scope(row.registry_id)).await
+    osv::evaluate_scoped(
+        &app.osv,
+        policy,
+        now,
+        &candidate,
+        app.osv_scope(row.registry_id),
+    )
+    .await
 }
 
 fn candidate<'a>(row: &'a ReferenceRow, pinned: &'a [Digest]) -> Candidate<'a> {
@@ -420,15 +575,30 @@ async fn open_or_download(
     // C1028: a credential-bearing read (the caller's own upstream credential, or any request
     // the allow-list of LS-F4 classed request-scoped) is never served from and never
     // written to the shared content store; its body lives in a request-owned file.
-    if app.service_policy().is_some() && (read_authorization.is_some() || crate::http::logging::request_scoped()) {
-        let scoped = download::fetch_request_scoped(app, row, origin, private_cidrs, read_authorization.map(str::to_owned), go_archive)
-            .await
-            .map_err(|err| service_download_error(app, &err))?;
+    if app.service_policy().is_some()
+        && (read_authorization.is_some() || crate::http::logging::request_scoped())
+    {
+        let scoped = download::fetch_request_scoped(
+            app,
+            row,
+            origin,
+            private_cidrs,
+            read_authorization.map(str::to_owned),
+            go_archive,
+        )
+        .await
+        .map_err(|err| service_download_error(app, &err))?;
         let mut pinned = pinned;
         if pinned.is_empty() {
             pinned = vec![
-                Digest { algorithm: crate::policy::HashAlgorithm::Sha256, bytes: Box::from(scoped.sha256.as_slice()) },
-                Digest { algorithm: crate::policy::HashAlgorithm::Sha512, bytes: Box::from(scoped.sha512.as_slice()) },
+                Digest {
+                    algorithm: crate::policy::HashAlgorithm::Sha256,
+                    bytes: Box::from(scoped.sha256.as_slice()),
+                },
+                Digest {
+                    algorithm: crate::policy::HashAlgorithm::Sha512,
+                    bytes: Box::from(scoped.sha512.as_slice()),
+                },
             ];
         }
         app.store().caches().references.remove(&row.id);
@@ -461,9 +631,16 @@ async fn open_or_download(
         }
     }
 
-    let verified = download::fetch_at(app, row, origin.cloned(), private_cidrs.to_vec(), read_authorization.map(str::to_owned), go_archive.cloned())
-        .await
-        .map_err(|err| service_download_error(app, &err))?;
+    let verified = download::fetch_at(
+        app,
+        row,
+        origin.cloned(),
+        private_cidrs.to_vec(),
+        read_authorization.map(str::to_owned),
+        go_archive.cloned(),
+    )
+    .await
+    .map_err(|err| service_download_error(app, &err))?;
     // The row in hand predates the pins this download just established.
     app.store().caches().references.remove(&row.id);
 
@@ -534,8 +711,12 @@ const fn deny_reason(reason: DenyReason) -> &'static str {
 fn service_download_error(app: &App, err: &DownloadError) -> ApiError {
     if app.service_policy().is_some() {
         match err {
-            DownloadError::Upstream(crate::upstream::UpstreamError::Status(401)) => return ApiError::UpstreamUnauthenticated,
-            DownloadError::Upstream(crate::upstream::UpstreamError::Status(403)) => return ApiError::UpstreamDenied,
+            DownloadError::Upstream(crate::upstream::UpstreamError::Status(401)) => {
+                return ApiError::UpstreamUnauthenticated;
+            }
+            DownloadError::Upstream(crate::upstream::UpstreamError::Status(403)) => {
+                return ApiError::UpstreamDenied;
+            }
             _ => {}
         }
     }
@@ -557,7 +738,9 @@ fn download_error(err: &DownloadError, now: i64) -> ApiError {
     match err {
         DownloadError::Refused(decision) => decision_error(*decision, now),
         DownloadError::Capacity(_) => ApiError::CapacityExhausted,
-        DownloadError::Temp(crate::http::credential_temp::TempError::TooLarge) => ApiError::PayloadTooLarge,
+        DownloadError::Temp(crate::http::credential_temp::TempError::TooLarge) => {
+            ApiError::PayloadTooLarge
+        }
         DownloadError::Temp(crate::http::credential_temp::TempError::Busy) => ApiError::Overloaded,
         DownloadError::Temp(_) => ApiError::CapacityExhausted,
         DownloadError::Upstream(crate::upstream::UpstreamError::Timeout) => {

@@ -555,15 +555,17 @@ pub async fn members(
     Ok(rows
         .into_iter()
         .map(
-            |(id, login_id, email, role, group, via_sso, org_only, package_access_disabled)| MemberRow {
-                id,
-                login_id,
-                email,
-                role,
-                group,
-                via_sso,
-                org_only,
-                package_access_disabled,
+            |(id, login_id, email, role, group, via_sso, org_only, package_access_disabled)| {
+                MemberRow {
+                    id,
+                    login_id,
+                    email,
+                    role,
+                    group,
+                    via_sso,
+                    org_only,
+                    package_access_disabled,
+                }
             },
         )
         .collect())

@@ -30,7 +30,9 @@ use crate::managed::report::Call;
 use crate::policy::{Candidate, Decision, DenyReason, Ecosystem, PublicationTime};
 use crate::store::cache::Advertised;
 use crate::store::rows::{ProjectRefresh, ReferenceId, ReferenceUpsert};
-use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, OriginSet, UpstreamError, UpstreamValidators};
+use crate::upstream::{
+    MetadataRequest, MetadataResponse, OriginKind, OriginSet, UpstreamError, UpstreamValidators,
+};
 
 pub struct Rendered {
     pub body: bytes::Bytes,
@@ -132,7 +134,9 @@ impl Known {
     fn publication(&self) -> PublicationTime {
         match self.time {
             Dated::Upstream(micros) => PublicationTime::Upstream(micros),
-            Dated::Undated => self.first_seen.map_or(PublicationTime::Unknown, PublicationTime::FirstSeen),
+            Dated::Undated => self
+                .first_seen
+                .map_or(PublicationTime::Unknown, PublicationTime::FirstSeen),
         }
     }
 }
@@ -220,13 +224,39 @@ impl Default for Shared {
 impl Shared {
     /// `max_upstream_requests` is the process's cap on calls open to remotes; judging takes at most half of it.
     pub fn new(max_upstream_requests: usize) -> Shared {
-        Shared { cells: Default::default(), refresh: Arc::new(tokio::sync::Semaphore::new(REFRESHES)), per_registry: Default::default(), row_gates: Default::default(), raw: Default::default(), verdicts: Default::default(), flights: Default::default(), judging: Default::default(), unfinished: Default::default(), judging_total: Arc::new(tokio::sync::Semaphore::new((max_upstream_requests / 2).max(1))), searches: Default::default(), searches_total: Arc::new(tokio::sync::Semaphore::new(SEARCHES_TOTAL)), owner_searches: Default::default(), owner_total: Default::default(), owner_judging: Default::default(), big_decodes: Arc::new(tokio::sync::Semaphore::new(BIG_DECODES)), per_credential: Default::default(), own: Default::default() }
+        Shared {
+            cells: Default::default(),
+            refresh: Arc::new(tokio::sync::Semaphore::new(REFRESHES)),
+            per_registry: Default::default(),
+            row_gates: Default::default(),
+            raw: Default::default(),
+            verdicts: Default::default(),
+            flights: Default::default(),
+            judging: Default::default(),
+            unfinished: Default::default(),
+            judging_total: Arc::new(tokio::sync::Semaphore::new(
+                (max_upstream_requests / 2).max(1),
+            )),
+            searches: Default::default(),
+            searches_total: Arc::new(tokio::sync::Semaphore::new(SEARCHES_TOTAL)),
+            owner_searches: Default::default(),
+            owner_total: Default::default(),
+            owner_judging: Default::default(),
+            big_decodes: Arc::new(tokio::sync::Semaphore::new(BIG_DECODES)),
+            per_credential: Default::default(),
+            own: Default::default(),
+        }
     }
 }
 
 /// The sizes of the process-owned tables (cells, refresh-place tables, row gates, shared lists), so a test can assert each stays bounded.
 pub fn table_sizes(app: &App) -> [usize; 4] {
-    [lock(&app.conan.cells).len(), lock(&app.conan.per_registry).len(), lock(&app.conan.row_gates).len(), lock(&app.conan.raw).len()]
+    [
+        lock(&app.conan.cells).len(),
+        lock(&app.conan.per_registry).len(),
+        lock(&app.conan.row_gates).len(),
+        lock(&app.conan.raw).len(),
+    ]
 }
 
 /// How many verdicts the process holds (a test measures the judging rate by it).
@@ -239,15 +269,26 @@ pub fn verdict_count(app: &App) -> usize {
 #[cfg(feature = "test-support")]
 pub fn own_sizes(app: &App) -> (usize, usize, usize) {
     let own = lock(&app.conan.own);
-    (own.by_key.len(), own.per_credential.values().map(std::collections::BTreeSet::len).sum(), own.order.len())
+    (
+        own.by_key.len(),
+        own.per_credential
+            .values()
+            .map(std::collections::BTreeSet::len)
+            .sum(),
+        own.order.len(),
+    )
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn origin_key(principal: Option<&Principal>) -> Option<String> {
-    principal.and_then(|p| p.registry_origin.as_ref()).map(Url::to_string)
+    principal
+        .and_then(|p| p.registry_origin.as_ref())
+        .map(Url::to_string)
 }
 
 fn cell_for(app: &App, registry_id: u64, principal: Option<&Principal>, name: &str) -> Arc<Cell> {
@@ -263,12 +304,18 @@ fn cell_for(app: &App, registry_id: u64, principal: Option<&Principal>, name: &s
 }
 
 fn exists_ttl(app: &App) -> Duration {
-    if app.service_policy().is_some() { SERVICE_EXISTS_TTL } else { Duration::from_secs(app.config.metadata_ttl_seconds) }
+    if app.service_policy().is_some() {
+        SERVICE_EXISTS_TTL
+    } else {
+        Duration::from_secs(app.config.metadata_ttl_seconds)
+    }
 }
 
 /// A short digest of a credential (or of nothing): who a place or an upload belongs to.
 fn credential_digest(principal: Option<&Principal>) -> Option<[u8; 16]> {
-    principal.and_then(|p| p.registry_read_authorization.as_deref()).map(digest_of_text)
+    principal
+        .and_then(|p| p.registry_read_authorization.as_deref())
+        .map(digest_of_text)
 }
 
 fn digest_of_text(text: &str) -> [u8; 16] {
@@ -295,31 +342,56 @@ struct Places {
     _global: tokio::sync::OwnedSemaphorePermit,
 }
 
-async fn refresh_places(app: &App, registry_id: u64, principal: Option<&Principal>) -> Result<Places, ApiError> {
+async fn refresh_places(
+    app: &App,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Places, ApiError> {
     let credential = credential_digest(principal);
     tokio::time::timeout(REFRESH_WAIT, async {
-        let share = credential.map(|digest| {
-            let mut map = lock(&app.conan.per_credential);
-            let key = (registry_id, digest[..8].try_into().expect("8 bytes"));
-            if map.len() >= 1_024 && !map.contains_key(&key) {
-                map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
-            }
-            Arc::clone(map.entry(key).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(PER_CREDENTIAL_PLACES))))
-        });
+        let share =
+            credential.map(|digest| {
+                let mut map = lock(&app.conan.per_credential);
+                let key = (registry_id, digest[..8].try_into().expect("8 bytes"));
+                if map.len() >= 1_024 && !map.contains_key(&key) {
+                    map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
+                }
+                Arc::clone(map.entry(key).or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(PER_CREDENTIAL_PLACES))
+                }))
+            });
         let credential = match share {
-            Some(semaphore) => Some(semaphore.acquire_owned().await.map_err(|_| ApiError::InternalFailure)?),
+            Some(semaphore) => Some(
+                semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| ApiError::InternalFailure)?,
+            ),
             None => None,
         };
-        let own = {
-            let mut map = lock(&app.conan.per_registry);
-            if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
-                map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
-            }
-            Arc::clone(map.entry(registry_id).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(REFRESHES_PER_REGISTRY))))
-        };
-        let registry = own.acquire_owned().await.map_err(|_| ApiError::InternalFailure)?;
-        let global = Arc::clone(&app.conan.refresh).acquire_owned().await.map_err(|_| ApiError::InternalFailure)?;
-        Ok::<_, ApiError>(Places { _credential: credential, _registry: registry, _global: global })
+        let own =
+            {
+                let mut map = lock(&app.conan.per_registry);
+                if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
+                    map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
+                }
+                Arc::clone(map.entry(registry_id).or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(REFRESHES_PER_REGISTRY))
+                }))
+            };
+        let registry = own
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::InternalFailure)?;
+        let global = Arc::clone(&app.conan.refresh)
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::InternalFailure)?;
+        Ok::<_, ApiError>(Places {
+            _credential: credential,
+            _registry: registry,
+            _global: global,
+        })
     })
     .await
     .map_err(|_| ApiError::UpstreamTimeout)?
@@ -348,13 +420,21 @@ pub fn note_upload(app: &App, authorization: &str, registry_id: u64, unit: &Unit
     if own.by_key.len() >= MAX_OWN {
         // Expired entries are the oldest ones; then the oldest tenth.
         while let Some(old) = own.oldest() {
-            if own.by_key.get(&old).is_some_and(|(at, _, _)| now.saturating_duration_since(*at) >= OWN_TTL) {
+            if own
+                .by_key
+                .get(&old)
+                .is_some_and(|(at, _, _)| now.saturating_duration_since(*at) >= OWN_TTL)
+            {
                 own.forget(&old);
             } else {
                 break;
             }
         }
-        for _ in 0..if own.by_key.len() >= MAX_OWN { MAX_OWN / 10 } else { 0 } {
+        for _ in 0..if own.by_key.len() >= MAX_OWN {
+            MAX_OWN / 10
+        } else {
+            0
+        } {
             let Some(old) = own.oldest() else { break };
             own.forget(&old);
         }
@@ -365,7 +445,11 @@ pub fn note_upload(app: &App, authorization: &str, registry_id: u64, unit: &Unit
     own.order.insert(seq, key);
     let held = own.per_credential.entry(tag).or_default();
     held.insert(seq);
-    let oldest = if held.len() > OWN_PER_CREDENTIAL { held.first().copied() } else { None };
+    let oldest = if held.len() > OWN_PER_CREDENTIAL {
+        held.first().copied()
+    } else {
+        None
+    };
     if let Some(old) = oldest.and_then(|first| own.order.get(&first).copied()) {
         own.forget(&old);
     }
@@ -379,10 +463,20 @@ fn cooldown_only(decision: &Decision) -> bool {
 
 /// Whether the caller's own credential uploaded this unit (its upload existence checks, and its reads of the lists naming it, must work
 /// while the unit is in its cooldown; any other credential sees the cooldown).
-fn uploaded_by_caller(app: &App, principal: Option<&Principal>, registry_id: u64, unit_key: &str) -> bool {
-    let Some(credential) = credential_digest(principal) else { return false };
+fn uploaded_by_caller(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    unit_key: &str,
+) -> bool {
+    let Some(credential) = credential_digest(principal) else {
+        return false;
+    };
     let now = app.clock.now_monotonic();
-    lock(&app.conan.own).by_key.get(&own_key(credential, registry_id, unit_key)).is_some_and(|(at, _, _)| now.saturating_duration_since(*at) < OWN_TTL)
+    lock(&app.conan.own)
+        .by_key
+        .get(&own_key(credential, registry_id, unit_key))
+        .is_some_and(|(at, _, _)| now.saturating_duration_since(*at) < OWN_TTL)
 }
 
 // ------------------------------------------------------------------ origins and upstream
@@ -396,21 +490,33 @@ fn origins_for(app: &App, principal: Option<&Principal>) -> Result<Origins, ApiE
     match principal.and_then(|p| p.registry_origin.as_ref()) {
         // A selected registry's origin (its remote root, path included) travels in the slot `selected_npm_with_private` fills.
         Some(origin) => Ok(Origins {
-            set: OriginSet::selected_npm_with_private(origin.clone(), principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone())).map_err(|_| ApiError::NotFound)?,
+            set: OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+            )
+            .map_err(|_| ApiError::NotFound)?,
             kind: OriginKind::NpmMetadata,
         }),
-        None => Ok(Origins { set: app.origins.clone(), kind: OriginKind::ConanRemote }),
+        None => Ok(Origins {
+            set: app.origins.clone(),
+            kind: OriginKind::ConanRemote,
+        }),
     }
 }
 
 fn url_of(origins: &Origins, segments: &[String]) -> Result<Url, ApiError> {
     let parts: Vec<&str> = segments.iter().map(String::as_str).collect();
-    origins.set.url_for(origins.kind, &parts).map_err(|_| ApiError::NotFound)
+    origins
+        .set
+        .url_for(origins.kind, &parts)
+        .map_err(|_| ApiError::NotFound)
 }
 
 fn status_error(app: &App, error: UpstreamError) -> ApiError {
     match error {
-        UpstreamError::Status(401) if app.service_policy().is_some() => ApiError::UpstreamUnauthenticated,
+        UpstreamError::Status(401) if app.service_policy().is_some() => {
+            ApiError::UpstreamUnauthenticated
+        }
         UpstreamError::Status(403) if app.service_policy().is_some() => ApiError::UpstreamDenied,
         UpstreamError::Timeout => ApiError::UpstreamTimeout,
         other => {
@@ -420,7 +526,13 @@ fn status_error(app: &App, error: UpstreamError) -> ApiError {
     }
 }
 
-async fn fetch(app: &App, principal: Option<&Principal>, url: Url, accept: &'static str, max_bytes: u64) -> Result<Option<bytes::Bytes>, ApiError> {
+async fn fetch(
+    app: &App,
+    principal: Option<&Principal>,
+    url: Url,
+    accept: &'static str,
+    max_bytes: u64,
+) -> Result<Option<bytes::Bytes>, ApiError> {
     let fetched = app
         .transport
         .fetch_metadata(MetadataRequest {
@@ -443,7 +555,12 @@ async fn fetch(app: &App, principal: Option<&Principal>, url: Url, accept: &'sta
 }
 
 /// Whether a file exists upstream and its own `Last-Modified`, asked without reading its body (inside the registry's fetch places).
-async fn probe(app: &App, principal: Option<&Principal>, registry_id: u64, url: Url) -> Result<Option<Dated>, ApiError> {
+async fn probe(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    url: Url,
+) -> Result<Option<Dated>, ApiError> {
     let _places = refresh_places(app, registry_id, principal).await?;
     let fetched = app
         .transport
@@ -459,10 +576,16 @@ async fn probe(app: &App, principal: Option<&Principal>, registry_id: u64, url: 
         .await;
     app.upstreams.record_upstream(Call::Conan, &fetched);
     match fetched {
-        Ok(Some(validators)) => Ok(Some(match validators.last_modified.as_deref().map(|text| jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(text.trim())) {
-            Some(Ok(at)) if at.as_second() >= EARLIEST => Dated::Upstream(at.as_microsecond()),
-            _ => Dated::Undated,
-        })),
+        Ok(Some(validators)) => Ok(Some(
+            match validators
+                .last_modified
+                .as_deref()
+                .map(|text| jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(text.trim()))
+            {
+                Some(Ok(at)) if at.as_second() >= EARLIEST => Dated::Upstream(at.as_microsecond()),
+                _ => Dated::Undated,
+            },
+        )),
         Ok(None) => Ok(None),
         Err(error) => Err(status_error(app, error)),
     }
@@ -480,9 +603,17 @@ fn invalid(what: &'static str) -> ApiError {
 /// A revision's `time` as a publication time: absent or unparseable is no date (the unit then waits on first-seen, which is never
 /// earlier than the truth). Conan servers write `2024-12-11T16:57:24.862+0000`.
 pub fn dated_of(text: Option<&str>) -> Dated {
-    let Some(text) = text.map(str::trim).filter(|text| !text.is_empty() && text.len() <= 64) else { return Dated::Undated };
+    let Some(text) = text
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 64)
+    else {
+        return Dated::Undated;
+    };
     // `jiff` reads the offset as `+0000`, `+00:00` and `Z` alike; one with no offset at all is UTC.
-    let parsed = text.parse::<jiff::Timestamp>().ok().or_else(|| format!("{text}Z").parse::<jiff::Timestamp>().ok());
+    let parsed = text
+        .parse::<jiff::Timestamp>()
+        .ok()
+        .or_else(|| format!("{text}Z").parse::<jiff::Timestamp>().ok());
     match parsed {
         Some(at) if at.as_second() >= EARLIEST => Dated::Upstream(at.as_microsecond()),
         _ => Dated::Undated,
@@ -516,7 +647,11 @@ impl UnitRef {
     fn key(&self) -> String {
         match self {
             UnitRef::Recipe(recipe) => unit_key(&recipe.rref, &recipe.rrev, None),
-            UnitRef::Package(package) => unit_key(&package.package.recipe.rref, &package.package.recipe.rrev, Some((&package.package.pkgid, &package.prev))),
+            UnitRef::Package(package) => unit_key(
+                &package.package.recipe.rref,
+                &package.package.recipe.rrev,
+                Some((&package.package.pkgid, &package.prev)),
+            ),
         }
     }
 
@@ -539,7 +674,10 @@ impl UnitRef {
 fn unit_key(rref: &Rref, rrev: &str, package: Option<(&str, &str)>) -> String {
     match package {
         None => format!("r:{}/{}@{}#{rrev}", rref.user, rref.channel, rref.version),
-        Some((pkgid, prev)) => format!("p:{}/{}@{}#{rrev}:{pkgid}#{prev}", rref.user, rref.channel, rref.version),
+        Some((pkgid, prev)) => format!(
+            "p:{}/{}@{}#{rrev}:{pkgid}#{prev}",
+            rref.user, rref.channel, rref.version
+        ),
     }
 }
 
@@ -567,7 +705,11 @@ impl Parent {
             }
             Parent::Package(package) => {
                 let mut segments = coords::recipe_segments(&package.recipe);
-                segments.extend(["packages".to_owned(), package.pkgid.clone(), "revisions".to_owned()]);
+                segments.extend([
+                    "packages".to_owned(),
+                    package.pkgid.clone(),
+                    "revisions".to_owned(),
+                ]);
                 segments
             }
         };
@@ -576,21 +718,43 @@ impl Parent {
 
     fn key(&self) -> String {
         match self {
-            Parent::Recipe(rref) => format!("R:{}/{}/{}@{}", rref.name, rref.version, rref.user, rref.channel),
-            Parent::Package(package) => format!("P:{}/{}/{}@{}#{}:{}", package.recipe.rref.name, package.recipe.rref.version, package.recipe.rref.user, package.recipe.rref.channel, package.recipe.rrev, package.pkgid),
+            Parent::Recipe(rref) => format!(
+                "R:{}/{}/{}@{}",
+                rref.name, rref.version, rref.user, rref.channel
+            ),
+            Parent::Package(package) => format!(
+                "P:{}/{}/{}@{}#{}:{}",
+                package.recipe.rref.name,
+                package.recipe.rref.version,
+                package.recipe.rref.user,
+                package.recipe.rref.channel,
+                package.recipe.rrev,
+                package.pkgid
+            ),
         }
     }
 
     fn unit(&self, revision: &str) -> UnitRef {
         match self {
-            Parent::Recipe(rref) => UnitRef::Recipe(Recipe { rref: rref.clone(), rrev: revision.to_owned() }),
-            Parent::Package(package) => UnitRef::Package(PackageRev { package: package.clone(), prev: revision.to_owned() }),
+            Parent::Recipe(rref) => UnitRef::Recipe(Recipe {
+                rref: rref.clone(),
+                rrev: revision.to_owned(),
+            }),
+            Parent::Package(package) => UnitRef::Package(PackageRev {
+                package: package.clone(),
+                prev: revision.to_owned(),
+            }),
         }
     }
 }
 
 /// The reference of one file of a unit.
-fn reference_of(origins: &Origins, unit: &UnitRef, file: &str, registry_id: u64) -> Option<(ReferenceId, ArtifactReference)> {
+fn reference_of(
+    origins: &Origins,
+    unit: &UnitRef,
+    file: &str,
+    registry_id: u64,
+) -> Option<(ReferenceId, ArtifactReference)> {
     let below = unit.below();
     let mut under = below.clone();
     under.push("files".to_owned());
@@ -607,57 +771,139 @@ fn reference_of(origins: &Origins, unit: &UnitRef, file: &str, registry_id: u64)
         // the digests (SPEC §9, STATE-01).
         expected: Vec::new(),
     };
-    Some((ReferenceId::compute_in_registry(registry_id, &reference), reference))
+    Some((
+        ReferenceId::compute_in_registry(registry_id, &reference),
+        reference,
+    ))
 }
 
 // ------------------------------------------------------------------ policy
 
-fn check_policy(app: &App, principal: Option<&Principal>) -> Result<(Arc<crate::policy::CompiledPolicy>, i64), ApiError> {
+fn check_policy(
+    app: &App,
+    principal: Option<&Principal>,
+) -> Result<(Arc<crate::policy::CompiledPolicy>, i64), ApiError> {
     let now = app.clock.now_utc_micros();
-    let policy = app.policy_for(principal).ok_or(ApiError::PolicyUnavailable)?;
-    if !policy.snapshot.as_deref().is_some_and(|snapshot| snapshot.is_valid_at(now)) {
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    if !policy
+        .snapshot
+        .as_deref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     Ok((policy, now))
 }
 
-fn blocked_outright(policy: &crate::policy::CompiledPolicy, now: i64, name: &str, version: Option<&str>) -> Option<Decision> {
-    let candidate = Candidate { ecosystem: Ecosystem::Conan, name, version: version.unwrap_or(""), publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+fn blocked_outright(
+    policy: &crate::policy::CompiledPolicy,
+    now: i64,
+    name: &str,
+    version: Option<&str>,
+) -> Option<Decision> {
+    let candidate = Candidate {
+        ecosystem: Ecosystem::Conan,
+        name,
+        version: version.unwrap_or(""),
+        publication: PublicationTime::Unknown,
+        advertised_digests: &[],
+        pinned_digests: &[],
+    };
     match crate::policy::decide(policy, &candidate, now, false).decision {
-        decision @ Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion) => Some(decision),
+        decision @ Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion) => {
+            Some(decision)
+        }
         _ => None,
     }
 }
 
 /// A name or version a policy blocks outright is refused without asking upstream anything (PERF-01).
-fn locally_blocked(app: &App, principal: Option<&Principal>, name: &str, version: Option<&str>) -> Result<(), ApiError> {
+fn locally_blocked(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &str,
+    version: Option<&str>,
+) -> Result<(), ApiError> {
     let (policy, now) = check_policy(app, principal)?;
     if let Some(decision) = blocked_outright(&policy, now, name, version) {
         if let (Some(principal), Some(managed)) = (principal, app.managed()) {
-            let candidate = Candidate { ecosystem: Ecosystem::Conan, name, version: version.unwrap_or(""), publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
-            managed.record_refused(principal, &policy, now, &candidate, decision, version.is_some());
+            let candidate = Candidate {
+                ecosystem: Ecosystem::Conan,
+                name,
+                version: version.unwrap_or(""),
+                publication: PublicationTime::Unknown,
+                advertised_digests: &[],
+                pinned_digests: &[],
+            };
+            managed.record_refused(
+                principal,
+                &policy,
+                now,
+                &candidate,
+                decision,
+                version.is_some(),
+            );
         }
         return Err(crate::artifacts::decision_error(decision, now));
     }
     Ok(())
 }
 
-fn candidate<'a>(name: &'a str, version: &'a str, known: &Known, pinned: &'a [crate::policy::Digest]) -> Candidate<'a> {
-    Candidate { ecosystem: Ecosystem::Conan, name, version, publication: known.publication(), advertised_digests: &[], pinned_digests: pinned }
+fn candidate<'a>(
+    name: &'a str,
+    version: &'a str,
+    known: &Known,
+    pinned: &'a [crate::policy::Digest],
+) -> Candidate<'a> {
+    Candidate {
+        ecosystem: Ecosystem::Conan,
+        name,
+        version,
+        publication: known.publication(),
+        advertised_digests: &[],
+        pinned_digests: pinned,
+    }
 }
 
 /// The decision of one unit as the artifact pipeline will take it; anything but Allow is answered (and logged for a managed key) now.
 /// `exempt`: a document (a list, a file list) the caller's own credential uploaded the unit for is not held by its cooldown (a block still is).
-async fn refuse_unless_allowed(app: &App, principal: Option<&Principal>, registry_id: u64, unit: &UnitRef, known: &Known, exempt: bool) -> Result<(), ApiError> {
+async fn refuse_unless_allowed(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    unit: &UnitRef,
+    known: &Known,
+    exempt: bool,
+) -> Result<(), ApiError> {
     let rref = unit.rref();
     let name = pname(rref);
     let (policy, now) = check_policy(app, principal)?;
-    let decision = crate::osv::evaluate_scoped(&app.osv, &policy, now, &candidate(&name, &rref.version, known, &[]), app.osv_scope(registry_id)).await;
-    if matches!(decision, Decision::Allow) || (exempt && cooldown_only(&decision) && uploaded_by_caller(app, principal, registry_id, &unit.key())) {
+    let decision = crate::osv::evaluate_scoped(
+        &app.osv,
+        &policy,
+        now,
+        &candidate(&name, &rref.version, known, &[]),
+        app.osv_scope(registry_id),
+    )
+    .await;
+    if matches!(decision, Decision::Allow)
+        || (exempt
+            && cooldown_only(&decision)
+            && uploaded_by_caller(app, principal, registry_id, &unit.key()))
+    {
         return Ok(());
     }
     if let (Some(principal), Some(managed)) = (principal, app.managed()) {
-        managed.record_refused(principal, &policy, now, &candidate(&name, &rref.version, known, &[]), decision, true);
+        managed.record_refused(
+            principal,
+            &policy,
+            now,
+            &candidate(&name, &rref.version, known, &[]),
+            decision,
+            true,
+        );
     }
     Err(crate::artifacts::decision_error(decision, now))
 }
@@ -684,7 +930,11 @@ fn row_limit(app: &App) -> u64 {
 
 /// A project may hold at most `ROWS_FACTOR` times `max_references_per_project` reference rows: past it a new row is a 503.
 async fn within_row_bound(app: &App, registry_id: u64, name: &str) -> Result<(), ApiError> {
-    let rows = app.store().count_project_references_in(registry_id, Ecosystem::Conan, name).await.map_err(storage_error)?;
+    let rows = app
+        .store()
+        .count_project_references_in(registry_id, Ecosystem::Conan, name)
+        .await
+        .map_err(storage_error)?;
     if rows >= row_limit(app) {
         tracing::warn!(package = %name, rows, "a project is at its reference row bound: one more revision or file is refused");
         return Err(ApiError::Overloaded);
@@ -696,7 +946,14 @@ async fn within_row_bound(app: &App, registry_id: u64, name: &str) -> Result<(),
 /// `items`). A date can only get later (the later of what this process saw, what the row already holds (`stored`, read once for the
 /// project) and what the remote says now: a throwaway table of a credential-bearing read, an evicted table or a restart cannot make a unit
 /// look older). The unit table takes at most `MAX_UNITS` entries and is never cleared to make room.
-async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, stored: &HashMap<ReferenceId, i64>, items: &[(String, ReferenceId, ArtifactReference, Dated)]) -> Result<Vec<Known>, ApiError> {
+async fn record(
+    app: &App,
+    registry_id: u64,
+    name: &str,
+    cell: &Cell,
+    stored: &HashMap<ReferenceId, i64>,
+    items: &[(String, ReferenceId, ArtifactReference, Dated)],
+) -> Result<Vec<Known>, ApiError> {
     if items.is_empty() {
         return Ok(Vec::new());
     }
@@ -715,7 +972,11 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, stored: &H
                     Dated::Upstream(micros) => Some(*micros),
                     Dated::Undated => None,
                 };
-                match [remembered, stored.get(id).copied(), upstream].into_iter().flatten().max() {
+                match [remembered, stored.get(id).copied(), upstream]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                {
                     Some(micros) => Dated::Upstream(micros),
                     None => Dated::Undated,
                 }
@@ -740,14 +1001,27 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, stored: &H
         .store()
         .commit_request_references_in(
             registry_id,
-            ProjectRefresh { ecosystem: Ecosystem::Conan, name: name.to_owned(), payload: Arc::from(&[][..]), validators: UpstreamValidators::default(), validated_at_micros: now, fetched_at_micros: now, references },
+            ProjectRefresh {
+                ecosystem: Ecosystem::Conan,
+                name: name.to_owned(),
+                payload: Arc::from(&[][..]),
+                validators: UpstreamValidators::default(),
+                validated_at_micros: now,
+                fetched_at_micros: now,
+                references,
+            },
         )
         .await
         .map_err(storage_error)?;
     let mut units = lock(&cell.units);
     let mut learned = Vec::with_capacity(items.len());
     for ((key, id, ..), dated) in items.iter().zip(merged) {
-        let known = Known { time: dated, first_seen: committed.first_seen.get(id).copied(), rowless: false, checked: mono };
+        let known = Known {
+            time: dated,
+            first_seen: committed.first_seen.get(id).copied(),
+            rowless: false,
+            checked: mono,
+        };
         if units.len() < MAX_UNITS || units.contains_key(key) {
             units.insert(key.clone(), known);
         }
@@ -794,17 +1068,29 @@ fn read_revisions(body: &[u8], max: usize) -> Result<RevDoc, ()> {
     let mut seen = HashSet::with_capacity(raw.revisions.len());
     let mut entries = Vec::with_capacity(raw.revisions.len());
     for item in raw.revisions {
-        if !coords::id_ok(&item.revision) || !seen.insert(item.revision.clone()) || item.time.as_ref().is_some_and(|time| time.len() > 64) {
+        if !coords::id_ok(&item.revision)
+            || !seen.insert(item.revision.clone())
+            || item.time.as_ref().is_some_and(|time| time.len() > 64)
+        {
             return Err(());
         }
-        entries.push(Rev { dated: dated_of(item.time.as_deref()), revision: item.revision, time: item.time });
+        entries.push(Rev {
+            dated: dated_of(item.time.as_deref()),
+            revision: item.revision,
+            time: item.time,
+        });
     }
     let mut head: Vec<(String, String)> = raw
         .rest
         .into_iter()
         .filter_map(|(key, value)| match value {
             serde_json::Value::String(text)
-                if matches!(key.as_str(), "reference" | "packageReference") && text.len() <= 1024 && text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'.' | b'-' | b'@' | b'/' | b'#' | b':')) =>
+                if matches!(key.as_str(), "reference" | "packageReference")
+                    && text.len() <= 1024
+                    && text.bytes().all(|b| {
+                        b.is_ascii_alphanumeric()
+                            || matches!(b, b'_' | b'+' | b'.' | b'-' | b'@' | b'/' | b'#' | b':')
+                    }) =>
             {
                 Some((key, text))
             }
@@ -834,7 +1120,14 @@ struct Listing {
 }
 
 /// The revision list of `parent` as the remote wrote it, read strictly (a credential-free read shares it for `RAW_TTL`).
-async fn fetch_list(app: &App, principal: Option<&Principal>, registry_id: u64, origins: &Origins, parent: &Parent, judge: bool) -> Result<RevDoc, ApiError> {
+async fn fetch_list(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    origins: &Origins,
+    parent: &Parent,
+    judge: bool,
+) -> Result<RevDoc, ApiError> {
     let url = url_of(origins, &parent.list_segments())?;
     let cap = app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP);
     let raw_key: RawKey = (registry_id, origin_key(principal), url.to_string());
@@ -843,7 +1136,11 @@ async fn fetch_list(app: &App, principal: Option<&Principal>, registry_id: u64, 
         None => {
             // A judging fetch is already inside one of the registry's judging lanes (`compute_verdict`) and takes none of the fetch places.
             let fetched = {
-                let _places = if judge { None } else { Some(refresh_places(app, registry_id, principal).await?) };
+                let _places = if judge {
+                    None
+                } else {
+                    Some(refresh_places(app, registry_id, principal).await?)
+                };
                 fetch(app, principal, url, JSON, cap).await?
             };
             if let Some(body) = &fetched {
@@ -852,10 +1149,16 @@ async fn fetch_list(app: &App, principal: Option<&Principal>, registry_id: u64, 
             fetched
         }
     };
-    let Some(body) = body else { return Err(ApiError::NotFound) };
+    let Some(body) = body else {
+        return Err(ApiError::NotFound);
+    };
     // A big list is DECODED under one of a few process-wide permits (the parse is several times its size); the permit is dropped as soon as
     // the typed list exists, before any row, decision or wait.
-    let _decode = if body.len() > BIG_BODY { Some(big_permit(app).await?) } else { None };
+    let _decode = if body.len() > BIG_BODY {
+        Some(big_permit(app).await?)
+    } else {
+        None
+    };
     read_revisions(&body, MAX_ENTRIES).map_err(|()| invalid("a revision list"))
 }
 
@@ -868,8 +1171,17 @@ pub fn peak_big() -> usize {
 static PEAK_BIG: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 async fn big_permit(app: &App) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
-    let permit = tokio::time::timeout(REFRESH_WAIT, Arc::clone(&app.conan.big_decodes).acquire_owned()).await.map_err(|_| ApiError::UpstreamTimeout)?.map_err(|_| ApiError::InternalFailure)?;
-    PEAK_BIG.fetch_max(BIG_DECODES - app.conan.big_decodes.available_permits(), std::sync::atomic::Ordering::SeqCst);
+    let permit = tokio::time::timeout(
+        REFRESH_WAIT,
+        Arc::clone(&app.conan.big_decodes).acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiError::UpstreamTimeout)?
+    .map_err(|_| ApiError::InternalFailure)?;
+    PEAK_BIG.fetch_max(
+        BIG_DECODES - app.conan.big_decodes.available_permits(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
     Ok(permit)
 }
 
@@ -877,7 +1189,15 @@ async fn big_permit(app: &App) -> Result<tokio::sync::OwnedSemaphorePermit, ApiE
 /// room; one past it is withheld, fail closed), and each unit's decision is the one the artifact pipeline will take. The work is done in
 /// batches of `BATCH` units (one stored-date read per list, one commit per batch, decisions in groups), so the memory of a list is its
 /// entries and one small record per unit, whatever its size; nothing clears the unit table to make room.
-async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, origins: &Origins, cell: &Cell, parent: &Parent, judge_only: bool) -> Result<Listing, ApiError> {
+async fn list_units(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    origins: &Origins,
+    cell: &Cell,
+    parent: &Parent,
+    judge_only: bool,
+) -> Result<Listing, ApiError> {
     let doc = fetch_list(app, principal, registry_id, origins, parent, judge_only).await?;
     let n = doc.entries.len();
     let rref = parent.rref();
@@ -885,11 +1205,23 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
     let (policy, now) = check_policy(app, principal)?;
     let blocked = blocked_outright(&policy, now, &name, Some(&rref.version)).is_some();
     // After a restart or an eviction the table is empty but the store still holds every date it recorded: one read for the project.
-    let stored = app.store().list_project_publications_in(registry_id, Ecosystem::Conan, &name).await.map_err(storage_error)?;
+    let stored = app
+        .store()
+        .list_project_publications_in(registry_id, Ecosystem::Conan, &name)
+        .await
+        .map_err(storage_error)?;
     let mono = app.clock.now_monotonic();
     // A search judges a revision the remote does not date by the first-seen of its row, when it has one (a list or file request wrote it).
-    let firsts = if judge_only && doc.entries.iter().any(|entry| matches!(entry.dated, Dated::Undated)) {
-        app.store().list_project_first_seen_in(registry_id, Ecosystem::Conan, &name).await.map_err(storage_error)?
+    let firsts = if judge_only
+        && doc
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.dated, Dated::Undated))
+    {
+        app.store()
+            .list_project_first_seen_in(registry_id, Ecosystem::Conan, &name)
+            .await
+            .map_err(storage_error)?
     } else {
         HashMap::new()
     };
@@ -901,16 +1233,26 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
             let unit = parent.unit(&entry.revision);
             let key = unit.key();
             // A unit seen again is confirmed to exist now (so one expiry does not make every file request re-judge the list).
-            if let Some(mut held) = table.get(&key).copied().filter(|held| !stale(held, entry.dated) && (judge_only || !held.rowless)) {
+            if let Some(mut held) = table
+                .get(&key)
+                .copied()
+                .filter(|held| !stale(held, entry.dated) && (judge_only || !held.rowless))
+            {
                 held.checked = mono;
                 table.insert(key, held);
                 known[i] = Some(held);
                 continue;
             }
-            let stored_at = reference_of(origins, &unit, coords::ANCHOR, registry_id).and_then(|(id, _)| stored.get(&id).copied());
+            let stored_at = reference_of(origins, &unit, coords::ANCHOR, registry_id)
+                .and_then(|(id, _)| stored.get(&id).copied());
             match stored_at {
                 Some(micros) if !matches!(entry.dated, Dated::Upstream(says) if says > micros) => {
-                    let held = Known { time: Dated::Upstream(micros), first_seen: None, rowless: false, checked: mono };
+                    let held = Known {
+                        time: Dated::Upstream(micros),
+                        first_seen: None,
+                        rowless: false,
+                        checked: mono,
+                    };
                     if table.len() < MAX_UNITS {
                         table.insert(key, held);
                     }
@@ -922,8 +1264,18 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
                 // remembered, and neither kind is taken for a recorded unit by a list or file request, which writes the anchor row.
                 _ if judge_only => {
                     let upstream = matches!(entry.dated, Dated::Upstream(_));
-                    let row = reference_of(origins, &unit, coords::ANCHOR, registry_id).and_then(|(id, _)| firsts.get(&id).copied());
-                    let held = Known { time: entry.dated, first_seen: if upstream { None } else { Some(row.unwrap_or_else(|| app.clock.now_utc_micros())) }, rowless: row.is_none(), checked: mono };
+                    let row = reference_of(origins, &unit, coords::ANCHOR, registry_id)
+                        .and_then(|(id, _)| firsts.get(&id).copied());
+                    let held = Known {
+                        time: entry.dated,
+                        first_seen: if upstream {
+                            None
+                        } else {
+                            Some(row.unwrap_or_else(|| app.clock.now_utc_micros()))
+                        },
+                        rowless: row.is_none(),
+                        checked: mono,
+                    };
                     if upstream && table.len() < MAX_UNITS {
                         table.insert(key, held);
                     }
@@ -937,12 +1289,20 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
     if !blocked {
         for chunk in wanted.chunks(BATCH) {
             let _gate = row_gate(app, registry_id, &name).await;
-            let rows = app.store().count_project_references_in(registry_id, Ecosystem::Conan, &name).await.map_err(storage_error)?;
+            let rows = app
+                .store()
+                .count_project_references_in(registry_id, Ecosystem::Conan, &name)
+                .await
+                .map_err(storage_error)?;
             let mut room = row_limit(app).saturating_sub(rows) as usize;
             let (mut items, mut slots) = (Vec::new(), Vec::new());
             for &i in chunk {
                 let unit = parent.unit(&doc.entries[i].revision);
-                let Some((id, reference)) = reference_of(origins, &unit, coords::ANCHOR, registry_id) else { continue };
+                let Some((id, reference)) =
+                    reference_of(origins, &unit, coords::ANCHOR, registry_id)
+                else {
+                    continue;
+                };
                 // A unit that already has its row needs no room; a new one is taken only while the project has some.
                 if !stored.contains_key(&id) {
                     if room == 0 {
@@ -953,13 +1313,23 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
                 items.push((unit.key(), id, reference, doc.entries[i].dated));
                 slots.push(i);
             }
-            for (slot, learned) in slots.into_iter().zip(record(app, registry_id, &name, cell, &stored, &items).await?) {
+            for (slot, learned) in slots
+                .into_iter()
+                .zip(record(app, registry_id, &name, cell, &stored, &items).await?)
+            {
                 known[slot] = Some(learned);
             }
         }
     }
     // (A digest block is enforced when a file is delivered: a search's verdict is made without the pins.)
-    let pins = if judge_only { HashMap::new() } else { app.store().list_project_pins_in(registry_id, Ecosystem::Conan, &name).await.map_err(storage_error)? };
+    let pins = if judge_only {
+        HashMap::new()
+    } else {
+        app.store()
+            .list_project_pins_in(registry_id, Ecosystem::Conan, &name)
+            .await
+            .map_err(storage_error)?
+    };
     let scope = app.osv_scope(registry_id);
     let credentialed = credential_digest(principal).is_some();
     let mut decisions = Vec::with_capacity(n);
@@ -970,15 +1340,36 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
             async move {
                 let Some(known) = known[i] else {
                     // Undated and unrecorded: withheld, for the reason policy gives a version with no date (a blocked name or version says so).
-                    let undated = Candidate { ecosystem: Ecosystem::Conan, name, version: &rref.version, publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+                    let undated = Candidate {
+                        ecosystem: Ecosystem::Conan,
+                        name,
+                        version: &rref.version,
+                        publication: PublicationTime::Unknown,
+                        advertised_digests: &[],
+                        pinned_digests: &[],
+                    };
                     return crate::policy::decide(policy, &undated, now, false).decision;
                 };
                 let unit = parent.unit(&doc.entries[i].revision);
-                let pinned: Vec<crate::policy::Digest> = reference_of(origins, &unit, coords::ANCHOR, registry_id).iter().flat_map(|(id, _)| pins.get(id).into_iter().flatten().cloned()).collect();
-                let decision = crate::osv::evaluate_scoped(&app.osv, policy, now, &candidate(name, &rref.version, &known, &pinned), scope).await;
+                let pinned: Vec<crate::policy::Digest> =
+                    reference_of(origins, &unit, coords::ANCHOR, registry_id)
+                        .iter()
+                        .flat_map(|(id, _)| pins.get(id).into_iter().flatten().cloned())
+                        .collect();
+                let decision = crate::osv::evaluate_scoped(
+                    &app.osv,
+                    policy,
+                    now,
+                    &candidate(name, &rref.version, &known, &pinned),
+                    scope,
+                )
+                .await;
                 // The caller's own upload (same credential) keeps its existence checks working during the cooldown; a block, an OSV
                 // verdict or a digest block still wins.
-                if credentialed && cooldown_only(&decision) && uploaded_by_caller(app, principal, registry_id, &unit.key()) {
+                if credentialed
+                    && cooldown_only(&decision)
+                    && uploaded_by_caller(app, principal, registry_id, &unit.key())
+                {
                     return Decision::Allow;
                 }
                 decision
@@ -987,13 +1378,21 @@ async fn list_units(app: &App, principal: Option<&Principal>, registry_id: u64, 
         .await;
         decisions.extend(group);
     }
-    Ok(Listing { doc, decisions, known, now })
+    Ok(Listing {
+        doc,
+        decisions,
+        known,
+        now,
+    })
 }
 
 fn shared_raw(app: &App, key: &RawKey) -> Option<bytes::Bytes> {
     crate::http::credential_read::cache_token(app)?;
     let now = app.clock.now_monotonic();
-    lock(&app.conan.raw).get(key).filter(|(at, _)| now.saturating_duration_since(*at) < RAW_TTL).map(|(_, body)| body.clone())
+    lock(&app.conan.raw)
+        .get(key)
+        .filter(|(at, _)| now.saturating_duration_since(*at) < RAW_TTL)
+        .map(|(_, body)| body.clone())
 }
 
 fn remember_raw(app: &App, key: RawKey, body: &bytes::Bytes) {
@@ -1002,7 +1401,9 @@ fn remember_raw(app: &App, key: RawKey, body: &bytes::Bytes) {
     }
     let now = app.clock.now_monotonic();
     let mut raw = lock(&app.conan.raw);
-    let total = |raw: &HashMap<RawKey, (Instant, bytes::Bytes)>| raw.values().map(|(_, body)| body.len()).sum::<usize>();
+    let total = |raw: &HashMap<RawKey, (Instant, bytes::Bytes)>| {
+        raw.values().map(|(_, body)| body.len()).sum::<usize>()
+    };
     if raw.len() >= MAX_RAW || total(&raw) + body.len() > MAX_RAW_TOTAL {
         raw.retain(|_, (at, _)| now.saturating_duration_since(*at) < RAW_TTL);
         if raw.len() >= MAX_RAW || total(&raw) + body.len() > MAX_RAW_TOTAL {
@@ -1043,19 +1444,52 @@ fn newest_allowed(listing: &Listing) -> Option<usize> {
     best
 }
 
-fn record_refused_listing(app: &App, principal: Option<&Principal>, rref: &Rref, decisions: &[Decision]) {
-    let (Some(principal), Some(managed)) = (principal, app.managed()) else { return };
-    let Some(policy) = app.policy_for(Some(principal)) else { return };
+fn record_refused_listing(
+    app: &App,
+    principal: Option<&Principal>,
+    rref: &Rref,
+    decisions: &[Decision],
+) {
+    let (Some(principal), Some(managed)) = (principal, app.managed()) else {
+        return;
+    };
+    let Some(policy) = app.policy_for(Some(principal)) else {
+        return;
+    };
     let now = app.clock.now_utc_micros();
-    let Some(decision) = decisions.iter().find(|d| matches!(d, Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion | DenyReason::BlockedByOsv | DenyReason::BlockedDigest))) else { return };
+    let Some(decision) = decisions.iter().find(|d| {
+        matches!(
+            d,
+            Decision::Deny(
+                DenyReason::BlockedPackage
+                    | DenyReason::BlockedVersion
+                    | DenyReason::BlockedByOsv
+                    | DenyReason::BlockedDigest
+            )
+        )
+    }) else {
+        return;
+    };
     let name = pname(rref);
-    let candidate = Candidate { ecosystem: Ecosystem::Conan, name: &name, version: &rref.version, publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+    let candidate = Candidate {
+        ecosystem: Ecosystem::Conan,
+        name: &name,
+        version: &rref.version,
+        publication: PublicationTime::Unknown,
+        advertised_digests: &[],
+        pinned_digests: &[],
+    };
     let verdict = crate::managed::refused_verdict(&policy, now, &candidate, *decision);
     managed.record_decision(principal, Ecosystem::Conan, &name, None, &verdict);
 }
 
 /// The first unit's decision as the answer when nothing in a list is allowed (so the client is told why: the hold's deadline, the block).
-fn nothing_allowed(app: &App, principal: Option<&Principal>, listing: &Listing, rref: &Rref) -> ApiError {
+fn nothing_allowed(
+    app: &App,
+    principal: Option<&Principal>,
+    listing: &Listing,
+    rref: &Rref,
+) -> ApiError {
     record_refused_listing(app, principal, rref, &listing.decisions);
     match listing.decisions.first() {
         Some(decision) => crate::artifacts::decision_error(*decision, listing.now),
@@ -1068,7 +1502,13 @@ fn render(value: serde_json::Value) -> Result<Rendered, ApiError> {
 }
 
 fn render_with(value: serde_json::Value, withheld: usize) -> Result<Rendered, ApiError> {
-    serde_json::to_vec(&value).map(|body| Rendered { body: body.into(), content_type: JSON, withheld }).map_err(|_| ApiError::InternalFailure)
+    serde_json::to_vec(&value)
+        .map(|body| Rendered {
+            body: body.into(),
+            content_type: JSON,
+            withheld,
+        })
+        .map_err(|_| ApiError::InternalFailure)
 }
 
 fn listing_json(doc: &RevDoc, keep: &[usize]) -> serde_json::Value {
@@ -1076,14 +1516,30 @@ fn listing_json(doc: &RevDoc, keep: &[usize]) -> serde_json::Value {
     for (key, value) in &doc.head {
         object.insert(key.clone(), value.clone().into());
     }
-    object.insert("revisions".to_owned(), keep.iter().map(|&i| revision_json(&doc.entries[i])).collect::<Vec<_>>().into());
+    object.insert(
+        "revisions".to_owned(),
+        keep.iter()
+            .map(|&i| revision_json(&doc.entries[i]))
+            .collect::<Vec<_>>()
+            .into(),
+    );
     serde_json::Value::Object(object)
 }
 
 /// A package's own revisions are served only while its recipe revision passes too (a binary of a held recipe is not offered, and neither
 /// are its lists): the recipe's own gate, with the recipe's own date.
-async fn recipe_gate(app: &App, principal: Option<&Principal>, registry_id: u64, origins: &Origins, cell: &Cell, parent: &Parent, exempt: bool) -> Result<(), ApiError> {
-    let Parent::Package(package) = parent else { return Ok(()) };
+async fn recipe_gate(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    origins: &Origins,
+    cell: &Cell,
+    parent: &Parent,
+    exempt: bool,
+) -> Result<(), ApiError> {
+    let Parent::Package(package) = parent else {
+        return Ok(());
+    };
     let unit = UnitRef::Recipe(package.recipe.clone());
     let known = resolve(app, principal, registry_id, &unit, origins, cell).await?;
     refuse_unless_allowed(app, principal, registry_id, &unit, &known, exempt).await
@@ -1091,14 +1547,22 @@ async fn recipe_gate(app: &App, principal: Option<&Principal>, registry_id: u64,
 
 /// `revisions` and `latest` of a recipe or of one package id: only the revisions that pass are listed, and `latest` is the newest of
 /// them. When none passes the answer is the decision of the newest (403 with the hold's deadline, or the block).
-pub async fn serve_revisions(app: &App, principal: Option<&Principal>, registry_id: u64, parent: &Parent, latest: bool) -> Result<Rendered, ApiError> {
+pub async fn serve_revisions(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    parent: &Parent,
+    latest: bool,
+) -> Result<Rendered, ApiError> {
     let rref = parent.rref();
     locally_blocked(app, principal, &pname(rref), Some(&rref.version))?;
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &pname(rref));
     recipe_gate(app, principal, registry_id, &origins, &cell, parent, true).await?;
     let listing = list_units(app, principal, registry_id, &origins, &cell, parent, false).await?;
-    let keep: Vec<usize> = (0..listing.decisions.len()).filter(|&i| matches!(listing.decisions[i], Decision::Allow)).collect();
+    let keep: Vec<usize> = (0..listing.decisions.len())
+        .filter(|&i| matches!(listing.decisions[i], Decision::Allow))
+        .collect();
     if keep.is_empty() {
         if listing.decisions.is_empty() {
             return Err(ApiError::NotFound);
@@ -1115,7 +1579,14 @@ pub async fn serve_revisions(app: &App, principal: Option<&Principal>, registry_
 // ------------------------------------------------------------------ one unit
 
 /// The unit's table entry, confirmed to exist within the freshness window: from memory, else the list that names it.
-async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, unit: &UnitRef, origins: &Origins, cell: &Cell) -> Result<Known, ApiError> {
+async fn resolve(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    unit: &UnitRef,
+    origins: &Origins,
+    cell: &Cell,
+) -> Result<Known, ApiError> {
     let key = unit.key();
     let mono = app.clock.now_monotonic();
     if let Some(known) = lock(&cell.units).get(&key).copied()
@@ -1124,12 +1595,33 @@ async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, uni
         return Ok(known);
     }
     // The row bound is hard: a unit with no anchor row gets none past it.
-    let (id, _) = reference_of(origins, unit, coords::ANCHOR, registry_id).ok_or(ApiError::NotFound)?;
-    if app.store().get_reference(id).await.map_err(storage_error)?.is_none() {
+    let (id, _) =
+        reference_of(origins, unit, coords::ANCHOR, registry_id).ok_or(ApiError::NotFound)?;
+    if app
+        .store()
+        .get_reference(id)
+        .await
+        .map_err(storage_error)?
+        .is_none()
+    {
         within_row_bound(app, registry_id, &pname(unit.rref())).await?;
     }
-    let listing = list_units(app, principal, registry_id, origins, cell, &unit.parent(), false).await?;
-    let Some(at) = listing.doc.entries.iter().position(|entry| entry.revision == unit.revision()) else {
+    let listing = list_units(
+        app,
+        principal,
+        registry_id,
+        origins,
+        cell,
+        &unit.parent(),
+        false,
+    )
+    .await?;
+    let Some(at) = listing
+        .doc
+        .entries
+        .iter()
+        .position(|entry| entry.revision == unit.revision())
+    else {
         lock(&cell.units).remove(&key);
         return Err(ApiError::NotFound);
     };
@@ -1138,15 +1630,31 @@ async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, uni
 
 /// The reference a `GET .../files/{file}` names: the unit is dated (one list at most) and the file's own row committed before
 /// anything else is asked of upstream. A file that does not exist upstream makes no row.
-pub async fn reference_for_file(app: &App, principal: Option<&Principal>, unit: &UnitRef, file: &str, registry_id: u64) -> Result<(ReferenceId, String), ApiError> {
+pub async fn reference_for_file(
+    app: &App,
+    principal: Option<&Principal>,
+    unit: &UnitRef,
+    file: &str,
+    registry_id: u64,
+) -> Result<(ReferenceId, String), ApiError> {
     let rref = unit.rref();
     let name = pname(rref);
     locally_blocked(app, principal, &name, Some(&rref.version))?;
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &name);
-    let (id, reference) = reference_of(&origins, unit, file, registry_id).ok_or(ApiError::NotFound)?;
+    let (id, reference) =
+        reference_of(&origins, unit, file, registry_id).ok_or(ApiError::NotFound)?;
     // A binary is also gated by its recipe revision (the client reads the recipe first; asked for directly, a held recipe's binary is held).
-    recipe_gate(app, principal, registry_id, &origins, &cell, &unit.parent(), false).await?;
+    recipe_gate(
+        app,
+        principal,
+        registry_id,
+        &origins,
+        &cell,
+        &unit.parent(),
+        false,
+    )
+    .await?;
     let known = resolve(app, principal, registry_id, unit, &origins, &cell).await?;
     let existing = app.store().get_reference(id).await.map_err(storage_error)?;
     let unit_dated = match known.time {
@@ -1163,16 +1671,27 @@ pub async fn reference_for_file(app: &App, principal: Option<&Principal>, unit: 
         // A file other than the anchor is confirmed to exist before it gets a row (a made-up file name makes none), and brings its own
         // `Last-Modified`: a file added to an old revision later waits its own cooldown, never the revision's.
         if file != coords::ANCHOR {
-            let Some(file_dated) = probe(app, principal, registry_id, reference.upstream_url.clone()).await? else { return Err(ApiError::NotFound) };
+            let Some(file_dated) =
+                probe(app, principal, registry_id, reference.upstream_url.clone()).await?
+            else {
+                return Err(ApiError::NotFound);
+            };
             if let (Some(revision), Dated::Upstream(own)) = (unit_dated, file_dated)
                 && own > revision
             {
                 dated = Some(own);
-                let later = Known { time: Dated::Upstream(own), ..known };
+                let later = Known {
+                    time: Dated::Upstream(own),
+                    ..known
+                };
                 refuse_unless_allowed(app, principal, registry_id, unit, &later, false).await?;
             }
         }
-    } else if dated.is_none_or(|d| existing.as_ref().is_none_or(|row| row.publication_micros.is_some_and(|stored| stored >= d))) {
+    } else if dated.is_none_or(|d| {
+        existing
+            .as_ref()
+            .is_none_or(|row| row.publication_micros.is_some_and(|stored| stored >= d))
+    }) {
         // The row exists and holds a date at least as late as the unit's: nothing to write (a date only ever gets later).
         return Ok((id, filename));
     }
@@ -1188,14 +1707,27 @@ pub async fn reference_for_file(app: &App, principal: Option<&Principal>, unit: 
         validators: UpstreamValidators::default(),
         validated_at_micros: now,
         fetched_at_micros: now,
-        references: vec![ReferenceUpsert { id, reference, publication_micros: dated, first_seen_micros: Some(known.first_seen.unwrap_or(now)) }],
+        references: vec![ReferenceUpsert {
+            id,
+            reference,
+            publication_micros: dated,
+            first_seen_micros: Some(known.first_seen.unwrap_or(now)),
+        }],
     };
-    app.store().commit_request_references_in(registry_id, refresh).await.map_err(storage_error)?;
+    app.store()
+        .commit_request_references_in(registry_id, refresh)
+        .await
+        .map_err(storage_error)?;
     Ok((id, filename))
 }
 
 /// SPEC §9 membership: the file the reference names, if its unit still exists.
-pub async fn ensure_fresh_project_in(app: &App, reference: &ArtifactReference, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<Advertised>, ApiError> {
+pub async fn ensure_fresh_project_in(
+    app: &App,
+    reference: &ArtifactReference,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Arc<Advertised>, ApiError> {
     // (A row's `filename` starts with the remote's own spelling of the name and the version.)
     let path = format!("v2/conans/{}", reference.filename);
     let (unit, file) = match coords::parse(&path, None) {
@@ -1212,12 +1744,26 @@ pub async fn ensure_fresh_project_in(app: &App, reference: &ArtifactReference, r
 
 /// `.../revisions/{rrev}/files` and `.../revisions/{prev}/files`: the names of the files of a unit the policy allows, nothing else of
 /// the remote's document (so no location of the remote reaches a client).
-pub async fn serve_files(app: &App, principal: Option<&Principal>, registry_id: u64, unit: &UnitRef) -> Result<Rendered, ApiError> {
+pub async fn serve_files(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    unit: &UnitRef,
+) -> Result<Rendered, ApiError> {
     let rref = unit.rref();
     locally_blocked(app, principal, &pname(rref), Some(&rref.version))?;
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &pname(rref));
-    recipe_gate(app, principal, registry_id, &origins, &cell, &unit.parent(), true).await?;
+    recipe_gate(
+        app,
+        principal,
+        registry_id,
+        &origins,
+        &cell,
+        &unit.parent(),
+        true,
+    )
+    .await?;
     let known = resolve(app, principal, registry_id, unit, &origins, &cell).await?;
     refuse_unless_allowed(app, principal, registry_id, unit, &known, true).await?;
     let mut below = unit.below();
@@ -1225,16 +1771,34 @@ pub async fn serve_files(app: &App, principal: Option<&Principal>, registry_id: 
     let url = url_of(&origins, &coords::upstream_segments(&below))?;
     let body = {
         let _places = refresh_places(app, registry_id, principal).await?;
-        fetch(app, principal, url, JSON, app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP)).await?
+        fetch(
+            app,
+            principal,
+            url,
+            JSON,
+            app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP),
+        )
+        .await?
     };
-    let Some(body) = body else { return Err(ApiError::NotFound) };
-    let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| invalid("a file list"))?;
-    let serde_json::Value::Object(mut map) = value else { return Err(invalid("a file list")) };
-    let Some(serde_json::Value::Object(files)) = map.remove("files") else { return Err(invalid("a file list")) };
+    let Some(body) = body else {
+        return Err(ApiError::NotFound);
+    };
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| invalid("a file list"))?;
+    let serde_json::Value::Object(mut map) = value else {
+        return Err(invalid("a file list"));
+    };
+    let Some(serde_json::Value::Object(files)) = map.remove("files") else {
+        return Err(invalid("a file list"));
+    };
     if files.len() > MAX_ENTRIES {
         return Err(invalid("a file list"));
     }
-    let names: serde_json::Map<String, serde_json::Value> = files.into_iter().filter(|(name, _)| coords::file_ok(name)).map(|(name, _)| (name, serde_json::Value::Object(serde_json::Map::new()))).collect();
+    let names: serde_json::Map<String, serde_json::Value> = files
+        .into_iter()
+        .filter(|(name, _)| coords::file_ok(name))
+        .map(|(name, _)| (name, serde_json::Value::Object(serde_json::Map::new())))
+        .collect();
     render(serde_json::json!({ "files": names }))
 }
 
@@ -1245,7 +1809,10 @@ fn parse_result(text: &str) -> Option<Rref> {
     let (head, tail) = text.split_once('@').unwrap_or((text, "_/_"));
     let (name, version) = head.split_once('/')?;
     let (user, channel) = tail.split_once('/')?;
-    match coords::parse(&format!("v2/conans/{name}/{version}/{user}/{channel}/latest"), None) {
+    match coords::parse(
+        &format!("v2/conans/{name}/{version}/{user}/{channel}/latest"),
+        None,
+    ) {
         Some(Parsed::Latest(rref)) => Some(rref),
         _ => None,
     }
@@ -1275,7 +1842,9 @@ enum Verdict {
 /// attempts before it made, if it comes within the time.
 fn get_verdict(app: &App, registry_id: u64, key: &[u8; 16]) -> Option<Verdict> {
     let now = app.clock.now_monotonic();
-    let retrying = lock(&app.conan.unfinished).get(&registry_id).is_some_and(|until| *until > now);
+    let retrying = lock(&app.conan.unfinished)
+        .get(&registry_id)
+        .is_some_and(|until| *until > now);
     let mut verdicts = lock(&app.conan.verdicts);
     let (born, until, verdict) = verdicts.get_mut(key).filter(|(_, until, _)| *until > now)?;
     if retrying {
@@ -1291,7 +1860,10 @@ fn put_verdict(app: &App, key: [u8; 16], verdict: Verdict) {
     if verdicts.len() >= MAX_VERDICTS && !verdicts.contains_key(&key) {
         verdicts.retain(|_, (_, until, _)| *until > now);
         if verdicts.len() >= MAX_VERDICTS {
-            let mut ages: Vec<(Instant, [u8; 16])> = verdicts.iter().map(|(key, (born, ..))| (*born, *key)).collect();
+            let mut ages: Vec<(Instant, [u8; 16])> = verdicts
+                .iter()
+                .map(|(key, (born, ..))| (*born, *key))
+                .collect();
             ages.sort_unstable();
             for (_, old) in ages.into_iter().take(MAX_VERDICTS / 10) {
                 verdicts.remove(&old);
@@ -1313,17 +1885,30 @@ impl Drop for Flight<'_> {
     }
 }
 
-fn registry_semaphore(map: &std::sync::Mutex<HashMap<u64, Arc<tokio::sync::Semaphore>>>, registry_id: u64, permits: usize) -> Arc<tokio::sync::Semaphore> {
+fn registry_semaphore(
+    map: &std::sync::Mutex<HashMap<u64, Arc<tokio::sync::Semaphore>>>,
+    registry_id: u64,
+    permits: usize,
+) -> Arc<tokio::sync::Semaphore> {
     let mut map = lock(map);
     if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
         map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
     }
-    Arc::clone(map.entry(registry_id).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(permits))))
+    Arc::clone(
+        map.entry(registry_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(permits))),
+    )
 }
 
 /// Reads one list and says what it means for the search: at most `JUDGE_PLACES` of a registry's lists are judged at once (installs keep
 /// the other fetch places). A list that is gone or not one document is `Unreadable`; any other failure (the remote down, a timeout) fails.
-async fn compute_verdict(app: &App, principal: Option<&Principal>, registry_id: u64, owner: Option<u64>, parent: &Parent) -> Result<Verdict, ApiError> {
+async fn compute_verdict(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    owner: Option<u64>,
+    parent: &Parent,
+) -> Result<Verdict, ApiError> {
     // One owner holds at most `OWNER_LANES` judging lanes in all, whichever registries it reads: a caller with junk credentials, which cannot share
     // work, or with two registries of its own, still cannot keep every lane busy for everyone else.
     let _share = match owner {
@@ -1333,21 +1918,48 @@ async fn compute_verdict(app: &App, principal: Option<&Principal>, registry_id: 
                 if map.len() >= 1_024 && !map.contains_key(&owner) {
                     map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
                 }
-                Arc::clone(map.entry(owner).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(OWNER_LANES))))
+                Arc::clone(
+                    map.entry(owner)
+                        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(OWNER_LANES))),
+                )
             };
-            Some(tokio::time::timeout(REFRESH_WAIT, semaphore.acquire_owned()).await.map_err(|_| ApiError::UpstreamTimeout)?.map_err(|_| ApiError::InternalFailure)?)
+            Some(
+                tokio::time::timeout(REFRESH_WAIT, semaphore.acquire_owned())
+                    .await
+                    .map_err(|_| ApiError::UpstreamTimeout)?
+                    .map_err(|_| ApiError::InternalFailure)?,
+            )
         }
         None => None,
     };
-    let _place = tokio::time::timeout(REFRESH_WAIT, registry_semaphore(&app.conan.judging, registry_id, JUDGE_PLACES).acquire_owned())
-        .await
-        .map_err(|_| ApiError::UpstreamTimeout)?
-        .map_err(|_| ApiError::InternalFailure)?;
-    let _process = tokio::time::timeout(REFRESH_WAIT, Arc::clone(&app.conan.judging_total).acquire_owned()).await.map_err(|_| ApiError::UpstreamTimeout)?.map_err(|_| ApiError::InternalFailure)?;
+    let _place = tokio::time::timeout(
+        REFRESH_WAIT,
+        registry_semaphore(&app.conan.judging, registry_id, JUDGE_PLACES).acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiError::UpstreamTimeout)?
+    .map_err(|_| ApiError::InternalFailure)?;
+    let _process = tokio::time::timeout(
+        REFRESH_WAIT,
+        Arc::clone(&app.conan.judging_total).acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiError::UpstreamTimeout)?
+    .map_err(|_| ApiError::InternalFailure)?;
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &pname(parent.rref()));
     match list_units(app, principal, registry_id, &origins, &cell, parent, true).await {
-        Ok(listing) => Ok(if listing.decisions.iter().any(|decision| matches!(decision, Decision::Allow)) { Verdict::Allow } else { Verdict::Hold }),
+        Ok(listing) => Ok(
+            if listing
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, Decision::Allow))
+            {
+                Verdict::Allow
+            } else {
+                Verdict::Hold
+            },
+        ),
         Err(ApiError::NotFound | ApiError::UpstreamInvalid) => {
             tracing::warn!(reference = %parent.rref().display(), "a listed reference's revision list is unreadable: it is withheld from the search");
             Ok(Verdict::Unreadable)
@@ -1359,8 +1971,17 @@ async fn compute_verdict(app: &App, principal: Option<&Principal>, registry_id: 
 /// One verdict, shared: a verdict already made is used, one being made by another request is waited for (the work is done once, whoever
 /// asked), else this request makes it. A request that is dropped (its deadline, a client that left) drops its flights; a waiter then makes
 /// the verdict itself.
-async fn judge_one(app: &App, principal: Option<&Principal>, registry_id: u64, owner: Option<u64>, parent: &Parent, key: Option<[u8; 16]>) -> Result<Verdict, ApiError> {
-    let Some(key) = key else { return compute_verdict(app, principal, registry_id, owner, parent).await };
+async fn judge_one(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    owner: Option<u64>,
+    parent: &Parent,
+    key: Option<[u8; 16]>,
+) -> Result<Verdict, ApiError> {
+    let Some(key) = key else {
+        return compute_verdict(app, principal, registry_id, owner, parent).await;
+    };
     loop {
         if let Some(verdict) = get_verdict(app, registry_id, &key) {
             return Ok(verdict);
@@ -1452,12 +2073,18 @@ impl Drop for SearchSlots<'_> {
     }
 }
 
-fn search_slots(app: &App, registry_id: u64, owner: Option<u64>) -> Result<SearchSlots<'_>, ApiError> {
+fn search_slots(
+    app: &App,
+    registry_id: u64,
+    owner: Option<u64>,
+) -> Result<SearchSlots<'_>, ApiError> {
     if let Some(owner) = owner {
         // Taken first, given back by `Drop` of the slots (or at once when a later step refuses).
         let mut per = lock(&app.conan.owner_searches);
         let mut total = lock(&app.conan.owner_total);
-        if per.get(&(registry_id, owner)).copied().unwrap_or(0) >= OWNER_SEARCHES_PER_REGISTRY || total.get(&owner).copied().unwrap_or(0) >= OWNER_SEARCHES_TOTAL {
+        if per.get(&(registry_id, owner)).copied().unwrap_or(0) >= OWNER_SEARCHES_PER_REGISTRY
+            || total.get(&owner).copied().unwrap_or(0) >= OWNER_SEARCHES_TOTAL
+        {
             return Err(ApiError::Overloaded);
         }
         *per.entry((registry_id, owner)).or_default() += 1;
@@ -1485,33 +2112,59 @@ fn search_slots(app: &App, registry_id: u64, owner: Option<u64>) -> Result<Searc
         undo(owner);
         return Err(ApiError::Overloaded);
     };
-    let Ok(registry) = registry_semaphore(&app.conan.searches, registry_id, SEARCHES_PER_REGISTRY).try_acquire_owned() else {
+    let Ok(registry) = registry_semaphore(&app.conan.searches, registry_id, SEARCHES_PER_REGISTRY)
+        .try_acquire_owned()
+    else {
         undo(owner);
         return Err(ApiError::Overloaded);
     };
-    Ok(SearchSlots { app, registry_id, owner, _total: total, _registry: registry })
+    Ok(SearchSlots {
+        app,
+        registry_id,
+        owner,
+        _total: total,
+        _registry: registry,
+    })
 }
 
 /// Judges the parents of one batch (no cap below the document's own bound), a few at a time. Credential-free reads share verdicts and the
 /// work (verdicts kept two minutes from when they were made); a read with the caller's own credential judges alone and keeps nothing (C1028).
 /// All of it is the request's own work and ends with its deadline; what it made stays for the retry.
-async fn judge_parents(app: &Arc<App>, principal: Option<&Principal>, registry_id: u64, owner: Option<u64>, parents: &[Parent], deadline: tokio::time::Instant, _slots: &SearchSlots<'_>) -> Result<Vec<Verdict>, ApiError> {
+async fn judge_parents(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    owner: Option<u64>,
+    parents: &[Parent],
+    deadline: tokio::time::Instant,
+    _slots: &SearchSlots<'_>,
+) -> Result<Vec<Verdict>, ApiError> {
     use futures_util::TryStreamExt as _;
     let shared = crate::http::credential_read::cache_token(app).is_some();
     let prefix = if shared {
         let (policy, _) = check_policy(app, principal)?;
-        Some(digest_of(&[&registry_id.to_le_bytes(), origin_key(principal).unwrap_or_default().as_bytes(), format!("{:?}", policy.policy.fingerprint).as_bytes()]))
+        Some(digest_of(&[
+            &registry_id.to_le_bytes(),
+            origin_key(principal).unwrap_or_default().as_bytes(),
+            format!("{:?}", policy.policy.fingerprint).as_bytes(),
+        ]))
     } else {
         None
     };
     let judged = futures_util::stream::iter(0..parents.len())
         .map(|i| {
             let key = prefix.map(|prefix| digest_of(&[&prefix, parents[i].key().as_bytes()]));
-            async move { judge_one(app, principal, registry_id, owner, &parents[i], key).await.map(|verdict| (i, verdict)) }
+            async move {
+                judge_one(app, principal, registry_id, owner, &parents[i], key)
+                    .await
+                    .map(|verdict| (i, verdict))
+            }
         })
         .buffer_unordered(JUDGE_AHEAD)
         .try_collect::<Vec<_>>();
-    let judged = tokio::time::timeout_at(deadline, judged).await.map_err(|_| ApiError::UpstreamTimeout)??;
+    let judged = tokio::time::timeout_at(deadline, judged)
+        .await
+        .map_err(|_| ApiError::UpstreamTimeout)??;
     let mut out = vec![Verdict::Hold; parents.len()];
     for (i, verdict) in judged {
         out[i] = verdict;
@@ -1522,9 +2175,17 @@ async fn judge_parents(app: &Arc<App>, principal: Option<&Principal>, registry_i
 /// `v2/conans/search?q=`: the references a policy does not block and that have a revision that passes. The result strings are decoded typed
 /// (no `Value` tree, under a big-decode permit only while decoding) and judged in batches of `SEARCH_BATCH`, so what one search holds is its
 /// result strings and one batch, whatever the document's size.
-pub async fn serve_search(app: &Arc<App>, principal: Option<&Principal>, registry_id: u64, owner: Option<u64>, pattern: &str, ignorecase: Option<bool>) -> Result<Rendered, ApiError> {
+pub async fn serve_search(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    owner: Option<u64>,
+    pattern: &str,
+    ignorecase: Option<bool>,
+) -> Result<Rendered, ApiError> {
     let slots = search_slots(app, registry_id, owner)?;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(JUDGE_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_millis(JUDGE_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
     let origins = origins_for(app, principal)?;
     let mut url = url_of(&origins, &coords::upstream_segments(&["search".to_owned()]))?;
     {
@@ -1536,23 +2197,42 @@ pub async fn serve_search(app: &Arc<App>, principal: Option<&Principal>, registr
     }
     let body = {
         let _places = refresh_places(app, registry_id, principal).await?;
-        fetch(app, principal, url, JSON, app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP)).await?
+        fetch(
+            app,
+            principal,
+            url,
+            JSON,
+            app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP),
+        )
+        .await?
     };
-    let Some(body) = body else { return Err(ApiError::NotFound) };
+    let Some(body) = body else {
+        return Err(ApiError::NotFound);
+    };
     #[derive(serde::Deserialize)]
     struct RawSearch {
         results: Vec<String>,
     }
     let results = {
-        let _decode = if body.len() > BIG_BODY { Some(big_permit(app).await?) } else { None };
-        serde_json::from_slice::<RawSearch>(&body).map_err(|_| invalid("a search result"))?.results
+        let _decode = if body.len() > BIG_BODY {
+            Some(big_permit(app).await?)
+        } else {
+            None
+        };
+        serde_json::from_slice::<RawSearch>(&body)
+            .map_err(|_| invalid("a search result"))?
+            .results
     };
     drop(body);
     if results.len() > MAX_ENTRIES {
         return Err(invalid("a search result"));
     }
     // Judging starts here: only from now on does a search that stops leave the registry marked unfinished.
-    let mut attempt = Attempt { app, registry_id, done: false };
+    let mut attempt = Attempt {
+        app,
+        registry_id,
+        done: false,
+    };
     let mut seen: HashSet<u64> = HashSet::new();
     let (mut kept, mut withheld) = (Vec::new(), 0usize);
     for (batch_at, batch) in results.chunks(SEARCH_BATCH).enumerate() {
@@ -1562,17 +2242,38 @@ pub async fn serve_search(app: &Arc<App>, principal: Option<&Principal>, registr
             // A reference the layout cannot carry, one policy blocks outright, and a repeat are not listed.
             if let Some(rref) = parse_result(text)
                 && blocked_outright(&policy, now, &pname(&rref), Some(&rref.version)).is_none()
-                && seen.insert(u64::from_le_bytes(digest_of_text(&rref.display())[..8].try_into().expect("8 bytes")))
+                && seen.insert(u64::from_le_bytes(
+                    digest_of_text(&rref.display())[..8]
+                        .try_into()
+                        .expect("8 bytes"),
+                ))
             {
                 refs.push((batch_at * SEARCH_BATCH + i, rref));
             }
         }
-        let parents: Vec<Parent> = refs.iter().map(|(_, rref)| Parent::Recipe(rref.clone())).collect();
-        let verdicts = judge_parents(app, principal, registry_id, owner, &parents, deadline, &slots).await?;
+        let parents: Vec<Parent> = refs
+            .iter()
+            .map(|(_, rref)| Parent::Recipe(rref.clone()))
+            .collect();
+        let verdicts = judge_parents(
+            app,
+            principal,
+            registry_id,
+            owner,
+            &parents,
+            deadline,
+            &slots,
+        )
+        .await?;
         for ((at, rref), verdict) in refs.iter().zip(&verdicts) {
             match verdict {
                 Verdict::Unreadable => withheld += 1,
-                Verdict::Allow if blocked_outright(&policy, now, &pname(rref), Some(&rref.version)).is_none() => kept.push(*at),
+                Verdict::Allow
+                    if blocked_outright(&policy, now, &pname(rref), Some(&rref.version))
+                        .is_none() =>
+                {
+                    kept.push(*at)
+                }
                 _ => {}
             }
         }
@@ -1585,14 +2286,23 @@ pub async fn serve_search(app: &Arc<App>, principal: Option<&Principal>, registr
     let listed: Vec<&str> = kept
         .iter()
         .map(|&at| results[at].as_str())
-        .filter(|text| parse_result(text).is_some_and(|rref| blocked_outright(&policy, now, &pname(&rref), Some(&rref.version)).is_none()))
+        .filter(|text| {
+            parse_result(text).is_some_and(|rref| {
+                blocked_outright(&policy, now, &pname(&rref), Some(&rref.version)).is_none()
+            })
+        })
         .collect();
     #[derive(serde::Serialize)]
     struct Listed<'a> {
         results: Vec<&'a str>,
     }
-    let body = serde_json::to_vec(&Listed { results: listed }).map_err(|_| ApiError::InternalFailure)?;
-    Ok(Rendered { body: body.into(), content_type: JSON, withheld })
+    let body =
+        serde_json::to_vec(&Listed { results: listed }).map_err(|_| ApiError::InternalFailure)?;
+    Ok(Rendered {
+        body: body.into(),
+        content_type: JSON,
+        withheld,
+    })
 }
 
 /// One entry of a binary search as the remote wrote it, reduced to the members Conan reads: `settings` and `options` (objects of plain
@@ -1602,19 +2312,54 @@ fn plain_info(value: serde_json::Value) -> serde_json::Value {
     fn plain(value: &serde_json::Value, depth: usize) -> bool {
         match value {
             serde_json::Value::String(text) => text.len() <= 8192,
-            serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => true,
-            serde_json::Value::Array(items) => depth < 3 && items.len() <= 4096 && items.iter().all(|item| plain(item, depth + 1)),
-            serde_json::Value::Object(map) => depth < 3 && map.len() <= 4096 && map.iter().all(|(key, item)| key.len() <= 256 && plain(item, depth + 1)),
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => {
+                true
+            }
+            serde_json::Value::Array(items) => {
+                depth < 3 && items.len() <= 4096 && items.iter().all(|item| plain(item, depth + 1))
+            }
+            serde_json::Value::Object(map) => {
+                depth < 3
+                    && map.len() <= 4096
+                    && map
+                        .iter()
+                        .all(|(key, item)| key.len() <= 256 && plain(item, depth + 1))
+            }
         }
     }
-    let serde_json::Value::Object(map) = value else { return serde_json::json!({}) };
-    serde_json::Value::Object(map.into_iter().filter(|(key, item)| matches!(key.as_str(), "settings" | "options" | "requires" | "build_requires" | "python_requires" | "conf" | "recipe_hash" | "content") && plain(item, 0)).collect())
+    let serde_json::Value::Object(map) = value else {
+        return serde_json::json!({});
+    };
+    serde_json::Value::Object(
+        map.into_iter()
+            .filter(|(key, item)| {
+                matches!(
+                    key.as_str(),
+                    "settings"
+                        | "options"
+                        | "requires"
+                        | "build_requires"
+                        | "python_requires"
+                        | "conf"
+                        | "recipe_hash"
+                        | "content"
+                ) && plain(item, 0)
+            })
+            .collect(),
+    )
 }
 
 /// `.../revisions/{rrev}/search`: the binary packages of a recipe revision the policy allows, each with a package revision that passes.
-pub async fn serve_package_search(app: &Arc<App>, principal: Option<&Principal>, registry_id: u64, owner: Option<u64>, recipe: &Recipe) -> Result<Rendered, ApiError> {
+pub async fn serve_package_search(
+    app: &Arc<App>,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    owner: Option<u64>,
+    recipe: &Recipe,
+) -> Result<Rendered, ApiError> {
     let slots = search_slots(app, registry_id, owner)?;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(JUDGE_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_millis(JUDGE_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed));
     let unit = UnitRef::Recipe(recipe.clone());
     let rref = unit.rref();
     locally_blocked(app, principal, &pname(rref), Some(&rref.version))?;
@@ -1627,22 +2372,58 @@ pub async fn serve_package_search(app: &Arc<App>, principal: Option<&Principal>,
     let url = url_of(&origins, &coords::upstream_segments(&below))?;
     let body = {
         let _places = refresh_places(app, registry_id, principal).await?;
-        fetch(app, principal, url, JSON, app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP)).await?
+        fetch(
+            app,
+            principal,
+            url,
+            JSON,
+            app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP),
+        )
+        .await?
     };
-    let Some(body) = body else { return Err(ApiError::NotFound) };
+    let Some(body) = body else {
+        return Err(ApiError::NotFound);
+    };
     // Typed: the ids and each id's info as the text the remote wrote (no tree of the document); the info of a kept id is read and reduced when the
     // answer is written.
     let packages = {
         // (The permit is held for the decode only.)
-        let _decode = if body.len() > BIG_BODY { Some(big_permit(app).await?) } else { None };
-        serde_json::from_slice::<PackageDoc>(&body).map_err(|_| invalid("a package search"))?.0
+        let _decode = if body.len() > BIG_BODY {
+            Some(big_permit(app).await?)
+        } else {
+            None
+        };
+        serde_json::from_slice::<PackageDoc>(&body)
+            .map_err(|_| invalid("a package search"))?
+            .0
     };
     drop(body);
-    let mut attempt = Attempt { app, registry_id, done: false };
+    let mut attempt = Attempt {
+        app,
+        registry_id,
+        done: false,
+    };
     let (mut kept, mut withheld) = (Vec::new(), 0usize);
     for (batch_at, batch) in packages.chunks(SEARCH_BATCH).enumerate() {
-        let parents: Vec<Parent> = batch.iter().map(|(pkgid, _)| Parent::Package(Package { recipe: recipe.clone(), pkgid: pkgid.clone() })).collect();
-        let verdicts = judge_parents(app, principal, registry_id, owner, &parents, deadline, &slots).await?;
+        let parents: Vec<Parent> = batch
+            .iter()
+            .map(|(pkgid, _)| {
+                Parent::Package(Package {
+                    recipe: recipe.clone(),
+                    pkgid: pkgid.clone(),
+                })
+            })
+            .collect();
+        let verdicts = judge_parents(
+            app,
+            principal,
+            registry_id,
+            owner,
+            &parents,
+            deadline,
+            &slots,
+        )
+        .await?;
         for (i, verdict) in verdicts.iter().enumerate() {
             match verdict {
                 Verdict::Unreadable => withheld += 1,
@@ -1657,16 +2438,22 @@ pub async fn serve_package_search(app: &Arc<App>, principal: Option<&Principal>,
     body.push(b'{');
     for (n, &at) in kept.iter().enumerate() {
         let (id, info) = &packages[at];
-        let info: serde_json::Value = serde_json::from_str(info.get()).map_err(|_| ApiError::InternalFailure)?;
+        let info: serde_json::Value =
+            serde_json::from_str(info.get()).map_err(|_| ApiError::InternalFailure)?;
         if n > 0 {
             body.push(b',');
         }
         serde_json::to_writer(&mut body, id).map_err(|_| ApiError::InternalFailure)?;
         body.push(b':');
-        serde_json::to_writer(&mut body, &plain_info(info)).map_err(|_| ApiError::InternalFailure)?;
+        serde_json::to_writer(&mut body, &plain_info(info))
+            .map_err(|_| ApiError::InternalFailure)?;
     }
     body.push(b'}');
-    Ok(Rendered { body: body.into(), content_type: JSON, withheld })
+    Ok(Rendered {
+        body: body.into(),
+        content_type: JSON,
+        withheld,
+    })
 }
 
 /// A package search document: `{package id: info}`, read as the ids that are ids and each one's info as the text the remote wrote. More than
@@ -1681,7 +2468,10 @@ impl<'de> serde::Deserialize<'de> for PackageDoc {
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a package search")
             }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<PackageDoc, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<PackageDoc, A::Error> {
                 let (mut out, mut members, mut seen) = (Vec::new(), 0usize, HashSet::new());
                 while let Some(id) = map.next_key::<String>()? {
                     let info: Box<serde_json::value::RawValue> = map.next_value()?;
@@ -1689,7 +2479,11 @@ impl<'de> serde::Deserialize<'de> for PackageDoc {
                     if members > MAX_ENTRIES {
                         return Err(serde::de::Error::custom("too many package ids"));
                     }
-                    if coords::id_ok(&id) && seen.insert(u64::from_le_bytes(digest_of_text(&id)[..8].try_into().expect("8 bytes"))) {
+                    if coords::id_ok(&id)
+                        && seen.insert(u64::from_le_bytes(
+                            digest_of_text(&id)[..8].try_into().expect("8 bytes"),
+                        ))
+                    {
                         out.push((id, info));
                     }
                 }
@@ -1704,16 +2498,34 @@ impl<'de> serde::Deserialize<'de> for PackageDoc {
 
 /// `v2/users/authenticate` and `v2/users/check_credentials`: asked of the remote with the caller's own credential (the token a login
 /// returns is the remote's, relayed as text and never kept).
-pub async fn serve_auth(app: &App, principal: Option<&Principal>, registry_id: u64, authenticate: bool) -> Result<Rendered, ApiError> {
+pub async fn serve_auth(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    authenticate: bool,
+) -> Result<Rendered, ApiError> {
     let origins = origins_for(app, principal)?;
-    let segments = ["v2", "users", if authenticate { "authenticate" } else { "check_credentials" }].map(str::to_owned);
+    let segments = [
+        "v2",
+        "users",
+        if authenticate {
+            "authenticate"
+        } else {
+            "check_credentials"
+        },
+    ]
+    .map(str::to_owned);
     let url = url_of(&origins, &segments)?;
     let body = {
         let _places = refresh_places(app, registry_id, principal).await?;
         fetch(app, principal, url, "*/*", AUTH_CAP).await?
     };
     match body {
-        Some(body) => Ok(Rendered { body, content_type: TEXT, withheld: 0 }),
+        Some(body) => Ok(Rendered {
+            body,
+            content_type: TEXT,
+            withheld: 0,
+        }),
         None => Err(ApiError::NotFound),
     }
 }
@@ -1726,20 +2538,39 @@ pub struct PublishTarget {
     pub origin: Url,
 }
 
-pub fn publish_target(app: &App, principal: &Principal, segments: &[String]) -> Result<PublishTarget, ApiError> {
+pub fn publish_target(
+    app: &App,
+    principal: &Principal,
+    segments: &[String],
+) -> Result<PublishTarget, ApiError> {
     let parts: Vec<&str> = segments.iter().map(String::as_str).collect();
     match principal.registry_origin.as_ref() {
         Some(origin) => {
-            let set = OriginSet::selected_npm_with_private(origin.clone(), principal.registry_private_cidrs.clone()).map_err(|_| ApiError::NotFound)?;
-            let url = set.url_for(OriginKind::NpmMetadata, &parts).map_err(|_| ApiError::NotFound)?;
-            Ok(PublishTarget { url, origin: origin.clone() })
+            let set = OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.registry_private_cidrs.clone(),
+            )
+            .map_err(|_| ApiError::NotFound)?;
+            let url = set
+                .url_for(OriginKind::NpmMetadata, &parts)
+                .map_err(|_| ApiError::NotFound)?;
+            Ok(PublishTarget {
+                url,
+                origin: origin.clone(),
+            })
         }
         None => {
             if !app.origins.conan_publish_configured() {
                 return Err(ApiError::NotFound);
             }
-            let url = app.origins.url_for(OriginKind::ConanPublish, &parts).map_err(|_| ApiError::NotFound)?;
-            Ok(PublishTarget { url, origin: app.origins.origin(OriginKind::ConanPublish).clone() })
+            let url = app
+                .origins
+                .url_for(OriginKind::ConanPublish, &parts)
+                .map_err(|_| ApiError::NotFound)?;
+            Ok(PublishTarget {
+                url,
+                origin: app.origins.origin(OriginKind::ConanPublish).clone(),
+            })
         }
     }
 }
@@ -1750,12 +2581,33 @@ mod tests {
 
     #[test]
     fn a_revision_time_is_the_publication_time_and_nothing_else_is() {
-        assert_eq!(dated_of(Some("2024-12-11T16:57:24.862+0000")), Dated::Upstream(1_733_936_244_862_000));
-        assert_eq!(dated_of(Some("2024-12-11T16:57:24.862+00:00")), Dated::Upstream(1_733_936_244_862_000));
-        assert_eq!(dated_of(Some("2024-12-11T16:57:24Z")), Dated::Upstream(1_733_936_244_000_000));
-        assert_eq!(dated_of(Some("2024-12-11T18:57:24+0200")), Dated::Upstream(1_733_936_244_000_000));
-        assert_eq!(dated_of(Some("2024-12-11T16:57:24")), Dated::Upstream(1_733_936_244_000_000), "no offset is UTC");
-        for bad in ["", "not a date", "1970-01-01T00:00:00.000+0000", "2024-13-45T99:00:00Z"] {
+        assert_eq!(
+            dated_of(Some("2024-12-11T16:57:24.862+0000")),
+            Dated::Upstream(1_733_936_244_862_000)
+        );
+        assert_eq!(
+            dated_of(Some("2024-12-11T16:57:24.862+00:00")),
+            Dated::Upstream(1_733_936_244_862_000)
+        );
+        assert_eq!(
+            dated_of(Some("2024-12-11T16:57:24Z")),
+            Dated::Upstream(1_733_936_244_000_000)
+        );
+        assert_eq!(
+            dated_of(Some("2024-12-11T18:57:24+0200")),
+            Dated::Upstream(1_733_936_244_000_000)
+        );
+        assert_eq!(
+            dated_of(Some("2024-12-11T16:57:24")),
+            Dated::Upstream(1_733_936_244_000_000),
+            "no offset is UTC"
+        );
+        for bad in [
+            "",
+            "not a date",
+            "1970-01-01T00:00:00.000+0000",
+            "2024-13-45T99:00:00Z",
+        ] {
             assert_eq!(dated_of(Some(bad)), Dated::Undated, "{bad}");
         }
         assert_eq!(dated_of(None), Dated::Undated);
@@ -1765,7 +2617,10 @@ mod tests {
     fn a_revision_list_is_read_strictly() {
         let good = br#"{"reference":"zlib/1.3.1@_/_","revisions":[{"revision":"aaa","time":"2024-01-01T00:00:00.000+0000"},{"revision":"bbb"}]}"#;
         let doc = read_revisions(good, 10).unwrap();
-        assert_eq!(doc.head, vec![("reference".to_owned(), "zlib/1.3.1@_/_".to_owned())]);
+        assert_eq!(
+            doc.head,
+            vec![("reference".to_owned(), "zlib/1.3.1@_/_".to_owned())]
+        );
         assert_eq!(doc.entries.len(), 2);
         assert_eq!(doc.entries[1].dated, Dated::Undated);
         for bad in [
@@ -1778,16 +2633,33 @@ mod tests {
             br#"{"revisions":[{"revision":"aaa","time":5}]}"#,
             br#"not json"#,
         ] {
-            assert!(read_revisions(bad, 10).is_err(), "{}", String::from_utf8_lossy(bad));
+            assert!(
+                read_revisions(bad, 10).is_err(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
         }
-        assert!(read_revisions(br#"{"revisions":[{"revision":"a"},{"revision":"b"}]}"#, 1).is_err(), "too many entries");
+        assert!(
+            read_revisions(br#"{"revisions":[{"revision":"a"},{"revision":"b"}]}"#, 1).is_err(),
+            "too many entries"
+        );
     }
 
     /// R1: the uploader's exemption is for the cooldown (a hold) and nothing else.
     #[test]
     fn only_a_hold_is_exempt_for_an_uploader() {
-        assert!(cooldown_only(&Decision::Hold { eligible_at_micros: 1 }));
-        for decision in [Decision::Allow, Decision::Unavailable, Decision::Deny(DenyReason::BlockedByOsv), Decision::Deny(DenyReason::BlockedPackage), Decision::Deny(DenyReason::BlockedVersion), Decision::Deny(DenyReason::BlockedDigest), Decision::Deny(DenyReason::NoTimestamp)] {
+        assert!(cooldown_only(&Decision::Hold {
+            eligible_at_micros: 1
+        }));
+        for decision in [
+            Decision::Allow,
+            Decision::Unavailable,
+            Decision::Deny(DenyReason::BlockedByOsv),
+            Decision::Deny(DenyReason::BlockedPackage),
+            Decision::Deny(DenyReason::BlockedVersion),
+            Decision::Deny(DenyReason::BlockedDigest),
+            Decision::Deny(DenyReason::NoTimestamp),
+        ] {
             assert!(!cooldown_only(&decision), "{decision:?}");
         }
     }
@@ -1795,10 +2667,29 @@ mod tests {
     #[test]
     fn a_search_result_is_a_reference_or_nothing() {
         let r = parse_result("zlib/1.3.1@_/_").unwrap();
-        assert_eq!((r.name.as_str(), r.version.as_str(), r.user.as_str(), r.channel.as_str()), ("zlib", "1.3.1", "_", "_"));
+        assert_eq!(
+            (
+                r.name.as_str(),
+                r.version.as_str(),
+                r.user.as_str(),
+                r.channel.as_str()
+            ),
+            ("zlib", "1.3.1", "_", "_")
+        );
         assert_eq!(parse_result("zlib/1.3.1").unwrap().user, "_");
-        assert_eq!(parse_result("mylib/2.0@acme/stable").unwrap().channel, "stable");
-        for bad in ["", "zlib", "zlib/1.3.1@acme", "zlib/1.3.1@_/stable", "../x/1@_/_", "a b/1@_/_", "zlib/1.3.1@_/_/x"] {
+        assert_eq!(
+            parse_result("mylib/2.0@acme/stable").unwrap().channel,
+            "stable"
+        );
+        for bad in [
+            "",
+            "zlib",
+            "zlib/1.3.1@acme",
+            "zlib/1.3.1@_/stable",
+            "../x/1@_/_",
+            "a b/1@_/_",
+            "zlib/1.3.1@_/_/x",
+        ] {
             assert!(parse_result(bad).is_none(), "{bad}");
         }
     }

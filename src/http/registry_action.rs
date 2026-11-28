@@ -70,10 +70,22 @@ pub async fn forward_registry_action(
     }
     let cap = app.config.max_artifact_bytes.get();
     let revision_package = if request.method == Method::PUT {
-        request.path.split_once("/-rev/").map(|(package, _)| package.to_owned())
-    } else { None };
-    if revision_package.is_some() && request.headers.get(header::CONTENT_ENCODING).is_some_and(|value| value != "identity") {
-        return Err(ApiError::InvalidInput("revision content encoding must be identity"));
+        request
+            .path
+            .split_once("/-rev/")
+            .map(|(package, _)| package.to_owned())
+    } else {
+        None
+    };
+    if revision_package.is_some()
+        && request
+            .headers
+            .get(header::CONTENT_ENCODING)
+            .is_some_and(|value| value != "identity")
+    {
+        return Err(ApiError::InvalidInput(
+            "revision content encoding must be identity",
+        ));
     }
     if request
         .headers
@@ -87,7 +99,11 @@ pub async fn forward_registry_action(
     let super::spool::Spooled::Body(spool) = super::spool::spool(
         app,
         super::spool::owner_of(app, principal, &request.headers),
-        request.headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()),
+        request
+            .headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok()),
         cap,
         request.body,
     )
@@ -108,18 +124,28 @@ pub async fn forward_registry_action(
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
-        otp: None, api_key: None,
+        otp: None,
+        api_key: None,
         body: file,
         body_len,
         max_bytes: app.config.max_metadata_bytes.get(),
     };
     let result = if let Some(package) = revision_package {
-        unpublish_reference::forward_revision_put(app, principal, request.selected_registry, &package, action).await?
+        unpublish_reference::forward_revision_put(
+            app,
+            principal,
+            request.selected_registry,
+            &package,
+            action,
+        )
+        .await?
     } else {
-        send_action(app, action).await.map_err(|error| match error {
-            UpstreamError::Timeout => ApiError::UpstreamTimeout,
-            _ => ApiError::UpstreamFailure,
-        })?
+        send_action(app, action)
+            .await
+            .map_err(|error| match error {
+                UpstreamError::Timeout => ApiError::UpstreamTimeout,
+                _ => ApiError::UpstreamFailure,
+            })?
     };
     let mut body = result.body;
     if request.path == "-/v1/login" && result.status == 200 {
@@ -301,8 +327,7 @@ fn canonical_package_action(request: &RegistryActionRequest) -> bool {
             return false;
         }
         if let Some((package, filename)) = name.split_once("/-/") {
-            return request.method == Method::DELETE
-                && canonical_tarball(package, filename);
+            return request.method == Method::DELETE && canonical_tarball(package, filename);
         }
         return matches!(request.method, Method::PUT | Method::DELETE)
             && PackageName::parse_route(name).is_ok();

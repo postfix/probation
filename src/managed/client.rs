@@ -192,7 +192,10 @@ impl Pacer {
             .map_err(|_| CallError::Busy)?;
         loop {
             let now = tokio::time::Instant::now();
-            while sent.front().is_some_and(|at| now.duration_since(*at) >= self.window) {
+            while sent
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= self.window)
+            {
                 sent.pop_front();
             }
             if sent.len() < self.max_calls {
@@ -201,7 +204,8 @@ impl Pacer {
                 #[cfg(test)]
                 {
                     let busy = self.max_in_flight - self.in_flight.available_permits();
-                    self.peak_in_flight.fetch_max(busy, std::sync::atomic::Ordering::SeqCst);
+                    self.peak_in_flight
+                        .fetch_max(busy, std::sync::atomic::Ordering::SeqCst);
                     self.grants.lock().unwrap().push(now);
                 }
                 return Ok(permit);
@@ -250,15 +254,28 @@ pub(super) fn pacer_for(token: &FirewallToken) -> Arc<Pacer> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     token.expose().hash(&mut hasher);
     let key = hasher.finish();
-    let mut pacers = PACERS.get_or_init(Default::default).lock().expect("the pacer table is never poisoned");
+    let mut pacers = PACERS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("the pacer table is never poisoned");
     // An entry nobody holds goes only after a quiet window: a client created just after the last
     // one was dropped must not get a fresh window and burst past the server's rate.
     let now = tokio::time::Instant::now();
     pacers.retain(|_, pacer| {
         Arc::strong_count(pacer) > 1
-            || pacer.last_grant.lock().expect("never poisoned").is_some_and(|at| now.duration_since(at) < pacer.window)
+            || pacer
+                .last_grant
+                .lock()
+                .expect("never poisoned")
+                .is_some_and(|at| now.duration_since(at) < pacer.window)
     });
-    Arc::clone(pacers.entry(key).or_insert_with(|| Arc::new(Pacer::new(MAX_CALLS_PER_SECOND, MAX_IN_FLIGHT, Duration::from_secs(1)))))
+    Arc::clone(pacers.entry(key).or_insert_with(|| {
+        Arc::new(Pacer::new(
+            MAX_CALLS_PER_SECOND,
+            MAX_IN_FLIGHT,
+            Duration::from_secs(1),
+        ))
+    }))
 }
 
 /// The body, refused past `MAX_ANSWER_BYTES` however it is framed.
@@ -290,8 +307,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
-    use probation_policy::api::{CertificateAdmission, CertificateAdmissionRequest, RegistryId};
     use probation_policy::Ecosystem;
+    use probation_policy::api::{CertificateAdmission, CertificateAdmissionRequest, RegistryId};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -312,7 +329,10 @@ mod tests {
             .respond_with(move |_: &wiremock::Request| {
                 let now = Instant::now();
                 let mut window = window.lock().unwrap();
-                while window.front().is_some_and(|at| now.duration_since(*at).as_secs_f64() >= 1.0) {
+                while window
+                    .front()
+                    .is_some_and(|at| now.duration_since(*at).as_secs_f64() >= 1.0)
+                {
                     window.pop_front();
                 }
                 let mut seen = record.lock().unwrap();
@@ -332,7 +352,10 @@ mod tests {
     /// A client with a token of its own, so tests running side by side do not share a pacer.
     fn client(server: &MockServer, timeout_seconds: u64) -> Arc<SyncClient> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let token = format!("test-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+        let token = format!(
+            "test-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
         client_on(server, timeout_seconds, &token)
     }
 
@@ -351,7 +374,10 @@ mod tests {
         }))
     }
 
-    async fn burst(client: &Arc<SyncClient>, calls: usize) -> Vec<Result<CertificateAdmission, CallError>> {
+    async fn burst(
+        client: &Arc<SyncClient>,
+        calls: usize,
+    ) -> Vec<Result<CertificateAdmission, CallError>> {
         let tasks: Vec<_> = (0..calls)
             .map(|_| {
                 let client = Arc::clone(client);
@@ -382,11 +408,18 @@ mod tests {
         let (server, seen) = counting_server().await;
         let answers = burst(&client(&server, 20), 500).await;
         let (received, limited) = *seen.lock().unwrap();
-        assert_eq!(limited, 0, "the server answered 429 to {limited} of {received} calls");
-        assert!(answers.iter().all(|answer| matches!(answer, Ok(CertificateAdmission::Refused))), "every call is answered");
+        assert_eq!(
+            limited, 0,
+            "the server answered 429 to {limited} of {received} calls"
+        );
+        assert!(
+            answers
+                .iter()
+                .all(|answer| matches!(answer, Ok(CertificateAdmission::Refused))),
+            "every call is answered"
+        );
         assert_eq!(received, 500);
     }
-
 
     // ---- Pacer without a network (P3). tokio's `test-util` (paused time) is not enabled
     // for this crate, so these run on a short real window.
@@ -396,20 +429,45 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_wait_gives_back_its_permit_and_takes_no_slot() {
         let pacer = Arc::new(Pacer::new(2, 2, W));
-        drop(pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
-        drop(pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
+        drop(
+            pacer
+                .acquire(Tick::now() + Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
+        drop(
+            pacer
+                .acquire(Tick::now() + Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
         assert_eq!(pacer.window_len().await, 2);
         let waiting = {
             let pacer = Arc::clone(&pacer);
-            tokio::spawn(async move { pacer.acquire(Tick::now() + Duration::from_secs(5)).await.map(drop) })
+            tokio::spawn(async move {
+                pacer
+                    .acquire(Tick::now() + Duration::from_secs(5))
+                    .await
+                    .map(drop)
+            })
         };
         tokio::time::sleep(Duration::from_millis(50)).await;
         waiting.abort();
         assert!(waiting.await.unwrap_err().is_cancelled());
-        assert_eq!(pacer.available_flight(), 2, "the aborted wait returned its in-flight place");
+        assert_eq!(
+            pacer.available_flight(),
+            2,
+            "the aborted wait returned its in-flight place"
+        );
         assert_eq!(pacer.window_len().await, 2, "and recorded no send");
         tokio::time::sleep(W).await;
-        assert!(pacer.acquire(Tick::now() + Duration::from_millis(50)).await.is_ok(), "the window is usable again at once");
+        assert!(
+            pacer
+                .acquire(Tick::now() + Duration::from_millis(50))
+                .await
+                .is_ok(),
+            "the window is usable again at once"
+        );
     }
 
     #[tokio::test]
@@ -420,7 +478,11 @@ mod tests {
         for index in 0..10usize {
             let (pacer, tx) = (Arc::clone(&pacer), tx.clone());
             tokio::spawn(async move {
-                pacer.acquire(Tick::now() + Duration::from_secs(60)).await.map(drop).unwrap();
+                pacer
+                    .acquire(Tick::now() + Duration::from_secs(60))
+                    .await
+                    .map(drop)
+                    .unwrap();
                 tx.send((index, Tick::now() - start)).unwrap();
             });
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -430,12 +492,18 @@ mod tests {
         while let Some(row) = rx.recv().await {
             served.push(row);
         }
-        assert_eq!(served.iter().map(|(index, _)| *index).collect::<Vec<_>>(), (0..10).collect::<Vec<_>>(), "first come, first served");
+        assert_eq!(
+            served.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            (0..10).collect::<Vec<_>>(),
+            "first come, first served"
+        );
         for (index, at) in &served {
             let due = W * (*index as u32 / 3);
             // Never early; late only by scheduling noise, well under one more window.
-            assert!(*at + Duration::from_millis(5) >= due && *at <= due + W * 2,
-                "waiter {index} is served in its own window ({due:?}), got {at:?}");
+            assert!(
+                *at + Duration::from_millis(5) >= due && *at <= due + W * 2,
+                "waiter {index} is served in its own window ({due:?}), got {at:?}"
+            );
         }
     }
 
@@ -445,19 +513,46 @@ mod tests {
         let t0 = Tick::now();
         drop(pacer.acquire(t0 + Duration::from_secs(5)).await.unwrap());
         let freed = pacer.window_front().await.unwrap() + W;
-        assert_eq!(pacer.acquire(freed).await.unwrap_err(), CallError::Busy, "nothing would be left to send");
-        assert!(pacer.acquire(freed + Duration::from_millis(5)).await.is_ok(), "one tick later it is served");
+        assert_eq!(
+            pacer.acquire(freed).await.unwrap_err(),
+            CallError::Busy,
+            "nothing would be left to send"
+        );
+        assert!(
+            pacer
+                .acquire(freed + Duration::from_millis(5))
+                .await
+                .is_ok(),
+            "one tick later it is served"
+        );
         assert!(Tick::now() >= freed, "served when the slot freed");
     }
 
     #[tokio::test]
     async fn the_in_flight_bound_holds_until_a_call_ends() {
         let pacer = Arc::new(Pacer::new(1000, 2, W));
-        let first = pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap();
-        let _second = pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap();
-        assert_eq!(pacer.acquire(Tick::now() + Duration::from_millis(100)).await.unwrap_err(), CallError::Busy);
+        let first = pacer
+            .acquire(Tick::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _second = pacer
+            .acquire(Tick::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            pacer
+                .acquire(Tick::now() + Duration::from_millis(100))
+                .await
+                .unwrap_err(),
+            CallError::Busy
+        );
         drop(first);
-        assert!(pacer.acquire(Tick::now() + Duration::from_millis(100)).await.is_ok());
+        assert!(
+            pacer
+                .acquire(Tick::now() + Duration::from_millis(100))
+                .await
+                .is_ok()
+        );
     }
 
     /// P1: the wait for a slot is part of the request's one deadline, so a call never
@@ -468,7 +563,11 @@ mod tests {
         let slow = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/sync/certificate"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(2500)).set_body_json(CertificateAdmission::Refused))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(2500))
+                    .set_body_json(CertificateAdmission::Refused),
+            )
             .mount(&slow)
             .await;
         drop(server);
@@ -480,8 +579,14 @@ mod tests {
         let started = Instant::now();
         let answer = burst(&client, 1).await.pop().unwrap();
         let took = started.elapsed();
-        assert!(matches!(answer, Err(CallError::Unreachable)), "the exchange ran out of the one deadline: {answer:?}");
-        assert!(took < Duration::from_millis(3400), "total {took:?} exceeds request_timeout_seconds");
+        assert!(
+            matches!(answer, Err(CallError::Unreachable)),
+            "the exchange ran out of the one deadline: {answer:?}"
+        );
+        assert!(
+            took < Duration::from_millis(3400),
+            "total {took:?} exceeds request_timeout_seconds"
+        );
     }
 
     /// P2: two clients on one token share one limiter, so together they stay under the
@@ -489,11 +594,21 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn clients_on_one_token_share_the_limit() {
         let (server, seen) = counting_server().await;
-        let (a, b) = (client_on(&server, 20, "one-token"), client_on(&server, 20, "one-token"));
+        let (a, b) = (
+            client_on(&server, 20, "one-token"),
+            client_on(&server, 20, "one-token"),
+        );
         let (left, right) = tokio::join!(burst(&a, 250), burst(&b, 250));
         let (received, limited) = *seen.lock().unwrap();
-        assert_eq!(limited, 0, "the server answered 429 to {limited} of {received} calls");
-        assert!(left.iter().chain(right.iter()).all(|answer| matches!(answer, Ok(CertificateAdmission::Refused))));
+        assert_eq!(
+            limited, 0,
+            "the server answered 429 to {limited} of {received} calls"
+        );
+        assert!(
+            left.iter()
+                .chain(right.iter())
+                .all(|answer| matches!(answer, Ok(CertificateAdmission::Refused)))
+        );
     }
 
     /// Real overload is still refused, with no dependence on the scheduler: every wait
@@ -506,12 +621,18 @@ mod tests {
         let (mut granted, mut busy) = (0, 0);
         for _ in 0..600 {
             match pacer.acquire(give_up).await {
-                Ok(permit) => { drop(permit); granted += 1 }
+                Ok(permit) => {
+                    drop(permit);
+                    granted += 1
+                }
                 Err(CallError::Busy) => busy += 1,
                 Err(other) => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!((granted, busy), (MAX_CALLS_PER_SECOND, 600 - MAX_CALLS_PER_SECOND));
+        assert_eq!(
+            (granted, busy),
+            (MAX_CALLS_PER_SECOND, 600 - MAX_CALLS_PER_SECOND)
+        );
     }
 
     /// A raw HTTP server (the response headers go out at once, the body after `delay`) that
@@ -538,7 +659,9 @@ mod tests {
         let shared = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let state = Arc::clone(&shared);
                 tokio::spawn(async move {
                     let mut buffer = Vec::new();
@@ -547,7 +670,11 @@ mod tests {
                         let (head_end, length) = loop {
                             if let Some(end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
                                 let head = String::from_utf8_lossy(&buffer[..end]).to_lowercase();
-                                let length = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                                let length = head
+                                    .lines()
+                                    .find_map(|l| l.strip_prefix("content-length:"))
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                                    .unwrap_or(0);
                                 break (end + 4, length);
                             }
                             let mut chunk = [0u8; 4096];
@@ -563,12 +690,20 @@ mod tests {
                                 Ok(n) => buffer.extend_from_slice(&chunk[..n]),
                             }
                         }
-                        let request_line = String::from_utf8_lossy(&buffer[..head_end]).lines().next().unwrap_or("").to_owned();
+                        let request_line = String::from_utf8_lossy(&buffer[..head_end])
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .to_owned();
                         buffer.drain(..head_end + length);
                         let now = Instant::now();
                         let limited = {
                             let mut state = state.lock().unwrap();
-                            let recent = state.arrivals.iter().filter(|at| now.duration_since(**at).as_secs_f64() < 1.0).count();
+                            let recent = state
+                                .arrivals
+                                .iter()
+                                .filter(|at| now.duration_since(**at).as_secs_f64() < 1.0)
+                                .count();
                             state.arrivals.push(now);
                             if recent >= SERVER_RATE_PER_SECOND {
                                 state.limited += 1;
@@ -581,18 +716,34 @@ mod tests {
                             }
                         };
                         if limited {
-                            if socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\n\r\n").await.is_err() { return }
+                            if socket
+                                .write_all(
+                                    b"HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\n\r\n",
+                                )
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
                             continue;
                         }
                         let body = if request_line.contains("/lookup") {
-                            serde_json::to_vec(&probation_policy::api::KeyLookup::Unknown { revision: 1 })
+                            serde_json::to_vec(&probation_policy::api::KeyLookup::Unknown {
+                                revision: 1,
+                            })
                         } else if request_line.contains("/layers") {
-                            serde_json::to_vec(&probation_policy::api::LayersResponse { layers: vec![], revision: 1 })
+                            serde_json::to_vec(&probation_policy::api::LayersResponse {
+                                layers: vec![],
+                                revision: 1,
+                            })
                         } else {
                             serde_json::to_vec(&CertificateAdmission::Refused)
                         }
                         .unwrap();
-                        let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n", body.len());
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                            body.len()
+                        );
                         let wrote = async {
                             socket.write_all(head.as_bytes()).await?;
                             socket.flush().await?;
@@ -601,7 +752,9 @@ mod tests {
                         }
                         .await;
                         state.lock().unwrap().open -= 1;
-                        if wrote.is_err() { return }
+                        if wrote.is_err() {
+                            return;
+                        }
                     }
                 });
             }
@@ -611,7 +764,10 @@ mod tests {
 
     fn client_for(url: &str, timeout_seconds: u64) -> Arc<SyncClient> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let token = format!("slow-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+        let token = format!(
+            "slow-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
         Arc::new(SyncClient::new(&ManagementConfig {
             url: url.parse().unwrap(),
             token: FirewallToken::new(token),
@@ -632,10 +788,20 @@ mod tests {
         let mut tasks = Vec::new();
         for _ in 0..per_kind {
             let (a, b, c) = (Arc::clone(client), Arc::clone(client), Arc::clone(client));
-            tasks.push(tokio::spawn(async move { a.lookup(KeyHash([7; 32])).await.map(drop) }));
-            tasks.push(tokio::spawn(async move { b.layers(vec![]).await.map(drop) }));
             tasks.push(tokio::spawn(async move {
-                c.certificate(CertificateAdmissionRequest { registry: RegistryId(1), ecosystem: Ecosystem::Npm, chain: vec![vec![1]] }).await.map(drop)
+                a.lookup(KeyHash([7; 32])).await.map(drop)
+            }));
+            tasks.push(tokio::spawn(
+                async move { b.layers(vec![]).await.map(drop) },
+            ));
+            tasks.push(tokio::spawn(async move {
+                c.certificate(CertificateAdmissionRequest {
+                    registry: RegistryId(1),
+                    ecosystem: Ecosystem::Npm,
+                    chain: vec![vec![1]],
+                })
+                .await
+                .map(drop)
             }));
         }
         for task in tasks {
@@ -644,7 +810,16 @@ mod tests {
     }
 
     fn busiest_second(arrivals: &[Instant]) -> usize {
-        arrivals.iter().map(|a| arrivals.iter().filter(|b| **b >= *a && b.duration_since(*a).as_secs_f64() < 1.0).count()).max().unwrap_or(0)
+        arrivals
+            .iter()
+            .map(|a| {
+                arrivals
+                    .iter()
+                    .filter(|b| **b >= *a && b.duration_since(*a).as_secs_f64() < 1.0)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// C3/G6: the answer's headers arrive at once and its body 300 ms later. The permit is
@@ -657,13 +832,35 @@ mod tests {
         let client = client_for(&server.url, 60);
         mixed_burst(&client, 160).await;
         let state = server.state.lock().unwrap();
-        assert_eq!(state.limited, 0, "the server answered 429 {} times", state.limited);
-        assert!(state.peak_open <= 32, "the server had {} calls open together", state.peak_open);
-        let peak = client.pacer.peak_in_flight.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            state.limited, 0,
+            "the server answered 429 {} times",
+            state.limited
+        );
+        assert!(
+            state.peak_open <= 32,
+            "the server had {} calls open together",
+            state.peak_open
+        );
+        let peak = client
+            .pacer
+            .peak_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst);
         assert!(peak <= 32, "peak in flight {peak} exceeds 32");
-        let grants: Vec<Instant> = client.pacer.grants.lock().unwrap().iter().map(|t| t.into_std()).collect();
+        let grants: Vec<Instant> = client
+            .pacer
+            .grants
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.into_std())
+            .collect();
         assert_eq!(grants.len(), 480);
-        assert!(busiest_second(&grants) <= 150, "{} sends in one second", busiest_second(&grants));
+        assert!(
+            busiest_second(&grants) <= 150,
+            "{} sends in one second",
+            busiest_second(&grants)
+        );
     }
 
     /// G6: worst case for bunching — slow answers (900 ms) from a burst of 400 calls. No
@@ -681,7 +878,11 @@ mod tests {
         mixed_burst(&client, 134).await; // 402 calls
         let state = server.state.lock().unwrap();
         assert_eq!(state.limited, 0);
-        assert!(busiest_second(&state.arrivals) <= 182, "{} arrivals in one second", busiest_second(&state.arrivals));
+        assert!(
+            busiest_second(&state.arrivals) <= 182,
+            "{} arrivals in one second",
+            busiest_second(&state.arrivals)
+        );
     }
 
     /// G6 sensitivity of the send-rate cap: instant answers, so only the window limits the
@@ -692,17 +893,39 @@ mod tests {
         let client = client_for(&server.url, 60);
         mixed_burst(&client, 300).await; // 900 calls
         let state = server.state.lock().unwrap();
-        assert_eq!(state.limited, 0, "the server answered 429 {} times", state.limited);
-        assert!(busiest_second(&state.arrivals) <= 182, "{} arrivals in one second", busiest_second(&state.arrivals));
+        assert_eq!(
+            state.limited, 0,
+            "the server answered 429 {} times",
+            state.limited
+        );
+        assert!(
+            busiest_second(&state.arrivals) <= 182,
+            "{} arrivals in one second",
+            busiest_second(&state.arrivals)
+        );
     }
 
     /// D5: the constant the budget is written against is the server's.
     #[test]
     fn the_server_rate_constant_is_the_servers() {
         let server = include_str!("../../crates/probation-server/src/sync.rs");
-        let line = server.lines().find(|l| l.contains("pub const FIREWALL_TOKEN_RATE_PER_SECOND")).expect("the server constant exists");
-        let value: usize = line.split('=').nth(1).unwrap().trim().trim_end_matches(';').trim().parse().unwrap();
-        assert_eq!(value, SERVER_RATE_PER_SECOND, "update SERVER_RATE_PER_SECOND and re-check the pacer budget");
+        let line = server
+            .lines()
+            .find(|l| l.contains("pub const FIREWALL_TOKEN_RATE_PER_SECOND"))
+            .expect("the server constant exists");
+        let value: usize = line
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            value, SERVER_RATE_PER_SECOND,
+            "update SERVER_RATE_PER_SECOND and re-check the pacer budget"
+        );
     }
 
     /// G7/C8: one pacer per token, shared by every client of it. When the last client is dropped
@@ -711,19 +934,36 @@ mod tests {
     /// starts fresh.
     #[tokio::test]
     async fn pacers_are_per_token_and_outlive_their_last_client_by_one_window() {
-        let (a1, a2, b) = (FirewallToken::new("g7-a".into()), FirewallToken::new("g7-a".into()), FirewallToken::new("g7-b".into()));
+        let (a1, a2, b) = (
+            FirewallToken::new("g7-a".into()),
+            FirewallToken::new("g7-a".into()),
+            FirewallToken::new("g7-b".into()),
+        );
         let first = pacer_for(&a1);
-        assert!(Arc::ptr_eq(&first, &pacer_for(&a2)), "the same token shares one pacer");
-        assert!(!Arc::ptr_eq(&first, &pacer_for(&b)), "another token has its own");
+        assert!(
+            Arc::ptr_eq(&first, &pacer_for(&a2)),
+            "the same token shares one pacer"
+        );
+        assert!(
+            !Arc::ptr_eq(&first, &pacer_for(&b)),
+            "another token has its own"
+        );
         first.fill_window().await;
         assert!(first.window_len().await >= MAX_CALLS_PER_SECOND);
         drop(first);
         let again = pacer_for(&a1);
-        assert!(again.window_len().await >= MAX_CALLS_PER_SECOND, "a client created at once inherits the busy window");
+        assert!(
+            again.window_len().await >= MAX_CALLS_PER_SECOND,
+            "a client created at once inherits the busy window"
+        );
         again.fill_window().await; // refreshed: the last grant is now
         drop(again);
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert_eq!(pacer_for(&a1).window_len().await, 0, "after a quiet window a new client starts with a fresh window");
+        assert_eq!(
+            pacer_for(&a1).window_len().await,
+            0,
+            "after a quiet window a new client starts with a fresh window"
+        );
         assert!(Arc::strong_count(&pacer_for(&b)) >= 1);
     }
 
@@ -732,14 +972,23 @@ mod tests {
     #[tokio::test]
     async fn an_aborted_middle_waiter_does_not_block_the_queue_behind_it() {
         let pacer = Arc::new(Pacer::new(1, 10, W));
-        drop(pacer.acquire(Tick::now() + Duration::from_secs(30)).await.unwrap());
+        drop(
+            pacer
+                .acquire(Tick::now() + Duration::from_secs(30))
+                .await
+                .unwrap(),
+        );
         let start = Tick::now();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut handles = Vec::new();
         for index in 0..3usize {
             let (pacer, tx) = (Arc::clone(&pacer), tx.clone());
             handles.push(tokio::spawn(async move {
-                pacer.acquire(Tick::now() + Duration::from_secs(30)).await.map(drop).unwrap();
+                pacer
+                    .acquire(Tick::now() + Duration::from_secs(30))
+                    .await
+                    .map(drop)
+                    .unwrap();
                 tx.send((index, Tick::now() - start)).unwrap();
             }));
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -750,8 +999,15 @@ mod tests {
         while let Some(row) = rx.recv().await {
             served.push(row);
         }
-        assert_eq!(served.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 2], "the waiters around the aborted one are served in order");
-        assert!(served[1].1 >= served[0].1 + W - Duration::from_millis(10), "each still waits for its own window");
+        assert_eq!(
+            served.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 2],
+            "the waiters around the aborted one are served in order"
+        );
+        assert!(
+            served[1].1 >= served[0].1 + W - Duration::from_millis(10),
+            "each still waits for its own window"
+        );
         assert_eq!(pacer.available_flight(), 10, "every place is back");
     }
 
@@ -764,7 +1020,10 @@ mod tests {
         for index in 0..10usize {
             let (pacer, tx) = (Arc::clone(&pacer), tx.clone());
             tokio::spawn(async move {
-                let permit = pacer.acquire(Tick::now() + Duration::from_secs(60)).await.unwrap();
+                let permit = pacer
+                    .acquire(Tick::now() + Duration::from_secs(60))
+                    .await
+                    .unwrap();
                 tx.send(index).unwrap();
                 tokio::time::sleep(Duration::from_millis(30)).await; // the call is in flight
                 drop(permit);
@@ -785,15 +1044,32 @@ mod tests {
     #[tokio::test]
     async fn a_waiter_queued_on_the_lock_gives_up_at_its_own_deadline() {
         let pacer = Arc::new(Pacer::new(1, 10, W));
-        drop(pacer.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
+        drop(
+            pacer
+                .acquire(Tick::now() + Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
         let head = {
             let pacer = Arc::clone(&pacer);
-            tokio::spawn(async move { pacer.acquire(Tick::now() + Duration::from_secs(5)).await.map(drop) })
+            tokio::spawn(async move {
+                pacer
+                    .acquire(Tick::now() + Duration::from_secs(5))
+                    .await
+                    .map(drop)
+            })
         };
         tokio::time::sleep(Duration::from_millis(20)).await;
         let started = Tick::now();
-        assert_eq!(pacer.acquire(started + W / 2).await.unwrap_err(), CallError::Busy);
-        assert!(started.elapsed() < W * 3 / 4, "B overshot its deadline: {:?}", started.elapsed());
+        assert_eq!(
+            pacer.acquire(started + W / 2).await.unwrap_err(),
+            CallError::Busy
+        );
+        assert!(
+            started.elapsed() < W * 3 / 4,
+            "B overshot its deadline: {:?}",
+            started.elapsed()
+        );
         head.await.unwrap().unwrap();
     }
 
@@ -803,10 +1079,19 @@ mod tests {
     async fn a_real_acquire_keeps_the_pacer_for_a_quiet_window() {
         let token = FirewallToken::new("p16-token".into());
         let first = pacer_for(&token);
-        drop(first.acquire(Tick::now() + Duration::from_secs(5)).await.unwrap());
+        drop(
+            first
+                .acquire(Tick::now() + Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
         drop(first);
         let again = pacer_for(&token);
-        assert_eq!(again.window_len().await, 1, "the window survived its last client");
+        assert_eq!(
+            again.window_len().await,
+            1,
+            "the window survived its last client"
+        );
     }
 
     /// P18: a full window frees when its oldest send ages out (front + window), not a
@@ -831,18 +1116,30 @@ mod tests {
         let elsewhere = MockServer::start().await;
         let origin = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(307).insert_header("location", format!("{}/api/v1/sync/certificate", elsewhere.uri())))
+            .respond_with(ResponseTemplate::new(307).insert_header(
+                "location",
+                format!("{}/api/v1/sync/certificate", elsewhere.uri()),
+            ))
             .mount(&origin)
             .await;
         let answer = burst(&client(&origin, 5), 1).await.pop().unwrap();
         assert_eq!(answer, Err(CallError::Unreachable));
-        assert!(elsewhere.received_requests().await.unwrap().is_empty(), "the redirect was followed");
+        assert!(
+            elsewhere.received_requests().await.unwrap().is_empty(),
+            "the redirect was followed"
+        );
 
         let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         // SAFETY: only this test sets proxy variables; every client here builds with no_proxy.
         unsafe {
-            std::env::set_var("HTTP_PROXY", format!("http://{}", proxy.local_addr().unwrap()));
-            std::env::set_var("http_proxy", format!("http://{}", proxy.local_addr().unwrap()));
+            std::env::set_var(
+                "HTTP_PROXY",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            );
+            std::env::set_var(
+                "http_proxy",
+                format!("http://{}", proxy.local_addr().unwrap()),
+            );
         }
         // The variables live for the whole test process unless removed: other tests (osv) build default clients.
         struct Unset;
@@ -858,7 +1155,15 @@ mod tests {
         let _unset = Unset;
         let (server, _seen) = counting_server().await;
         let answer = burst(&client(&server, 5), 1).await.pop().unwrap();
-        assert!(matches!(answer, Ok(CertificateAdmission::Refused)), "{answer:?}");
-        assert!(tokio::time::timeout(Duration::from_millis(100), proxy.accept()).await.is_err(), "the call went through the proxy");
+        assert!(
+            matches!(answer, Ok(CertificateAdmission::Refused)),
+            "{answer:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), proxy.accept())
+                .await
+                .is_err(),
+            "the call went through the proxy"
+        );
     }
 }

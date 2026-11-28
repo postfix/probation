@@ -114,7 +114,9 @@ async fn send_selected_upstream_packument(
     ))
     .map_err(|_| ApiError::UpstreamInvalid)?;
     for entry in &entries {
-        if query == Some("write=true") { continue; }
+        if query == Some("write=true") {
+            continue;
+        }
         let segments: Vec<_> = name
             .as_str()
             .split('/')
@@ -139,9 +141,12 @@ async fn send_selected_upstream_packument(
         rendered["versions"][entry.version()]["dist"]["tarball"] = local.to_string().into();
     }
     let rendered = serde_json::to_vec(&rendered).map_err(|_| ApiError::UpstreamInvalid)?;
-    if rendered.len() as u64 > app.config.max_metadata_bytes.get() { return Err(ApiError::UpstreamInvalid); }
+    if rendered.len() as u64 > app.config.max_metadata_bytes.get() {
+        return Err(ApiError::UpstreamInvalid);
+    }
     if query == Some("write=true") {
-        unpublish_reference::prepare_leases(app, principal, registry, name.as_str(), &entries).await?;
+        unpublish_reference::prepare_leases(app, principal, registry, name.as_str(), &entries)
+            .await?;
     }
     Ok(npm::Rendered {
         body: rendered.into(),

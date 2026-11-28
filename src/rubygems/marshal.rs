@@ -39,9 +39,17 @@ pub struct Limits {
 
 impl Limits {
     /// Tuple indexes: depth 32, 20,000,000 nodes, 512 MiB (DEFAULT - confirm).
-    pub const TUPLE_INDEX: Limits = Limits { max_depth: 32, max_nodes: 20_000_000, memory_budget: 512 * 1024 * 1024 };
+    pub const TUPLE_INDEX: Limits = Limits {
+        max_depth: 32,
+        max_nodes: 20_000_000,
+        memory_budget: 512 * 1024 * 1024,
+    };
     /// Quick gemspecs: depth 32, 1,000,000 nodes, 64 MiB.
-    pub const GEMSPEC: Limits = Limits { max_depth: 32, max_nodes: 1_000_000, memory_budget: 64 * 1024 * 1024 };
+    pub const GEMSPEC: Limits = Limits {
+        max_depth: 32,
+        max_nodes: 1_000_000,
+        memory_budget: 64 * 1024 * 1024,
+    };
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -88,7 +96,9 @@ enum Kind {
 fn kind_of(class: &str) -> Option<Kind> {
     match class {
         "Gem::Specification" => Some(Kind::NestedStream),
-        "Gem::Version" | "Gem::Requirement" | "Gem::Dependency" | "Gem::Platform" => Some(Kind::InlineObject),
+        "Gem::Version" | "Gem::Requirement" | "Gem::Dependency" | "Gem::Platform" => {
+            Some(Kind::InlineObject)
+        }
         "Time" => Some(Kind::Binary8),
         _ => None,
     }
@@ -172,11 +182,24 @@ struct Parser<'a, 'b> {
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    fn new(input: &'a [u8], budget: &'b mut Budget, keep: bool, spec: bool) -> Result<Self, MarshalError> {
+    fn new(
+        input: &'a [u8],
+        budget: &'b mut Budget,
+        keep: bool,
+        spec: bool,
+    ) -> Result<Self, MarshalError> {
         if input.len() < 2 || input[0] != 4 || input[1] != 8 {
             return Err(MarshalError::BadHeader);
         }
-        Ok(Parser { input, pos: 2, budget, symbols: Vec::new(), objects: Vec::new(), keep, spec })
+        Ok(Parser {
+            input,
+            pos: 2,
+            budget,
+            symbols: Vec::new(),
+            objects: Vec::new(),
+            keep,
+            spec,
+        })
     }
 
     fn byte(&mut self) -> Result<u8, MarshalError> {
@@ -229,7 +252,9 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn length(&mut self, per_item: usize) -> Result<usize, MarshalError> {
         let n = self.long()?;
         let n = usize::try_from(n).map_err(|_| MarshalError::BadInteger)?;
-        if n.checked_mul(per_item).is_none_or(|need| need > self.remaining()) {
+        if n.checked_mul(per_item)
+            .is_none_or(|need| need > self.remaining())
+        {
             return Err(MarshalError::Truncated);
         }
         Ok(n)
@@ -257,8 +282,12 @@ impl<'a, 'b> Parser<'a, 'b> {
                 Ok(text)
             }
             b';' => {
-                let index = usize::try_from(self.long()?).map_err(|_| MarshalError::BadSymbolLink)?;
-                self.symbols.get(index).cloned().ok_or(MarshalError::BadSymbolLink)
+                let index =
+                    usize::try_from(self.long()?).map_err(|_| MarshalError::BadSymbolLink)?;
+                self.symbols
+                    .get(index)
+                    .cloned()
+                    .ok_or(MarshalError::BadSymbolLink)
             }
             other => Err(MarshalError::UnknownTypeTag(other)),
         }
@@ -310,7 +339,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                 // A tuple, a Gem::Version payload or a platform: nothing in an index is longer.
                 // Refused before one child is collected, so a hostile container never grows a Vec.
                 if self.keep && n > MAX_CONTAINER {
-                    return Err(MarshalError::Shape("a container too long for an index tuple"));
+                    return Err(MarshalError::Shape(
+                        "a container too long for an index tuple",
+                    ));
                 }
                 self.register(Slot::Marker)?;
                 let mut items = Vec::new();
@@ -320,12 +351,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                         items.push(item);
                     }
                 }
-                Ok(if self.keep { V::Array(items) } else { V::Opaque })
+                Ok(if self.keep {
+                    V::Array(items)
+                } else {
+                    V::Opaque
+                })
             }
             b'{' => {
                 let n = self.length(2)?;
                 if self.keep && n > MAX_CONTAINER {
-                    return Err(MarshalError::Shape("a container too long for an index tuple"));
+                    return Err(MarshalError::Shape(
+                        "a container too long for an index tuple",
+                    ));
                 }
                 self.register(Slot::Marker)?;
                 let mut pairs = Vec::new();
@@ -368,9 +405,24 @@ impl<'a, 'b> Parser<'a, 'b> {
         let n = self.length(1)?;
         let bytes = self.take(n)?;
         self.budget.charge(n as u64)?;
-        let rc = Rc::new(Str { bytes: if self.keep { bytes.to_vec() } else { Vec::new() }, enc });
-        let value = if self.keep { V::Str(Rc::clone(&rc)) } else { V::Opaque };
-        self.register(if self.keep { Slot::Leaf(value.clone()) } else { Slot::Marker })?;
+        let rc = Rc::new(Str {
+            bytes: if self.keep {
+                bytes.to_vec()
+            } else {
+                Vec::new()
+            },
+            enc,
+        });
+        let value = if self.keep {
+            V::Str(Rc::clone(&rc))
+        } else {
+            V::Opaque
+        };
+        self.register(if self.keep {
+            Slot::Leaf(value.clone())
+        } else {
+            Slot::Marker
+        })?;
         Ok(value)
     }
 
@@ -386,7 +438,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                 // The String is registered before its ivars, as Ruby numbers it.
                 self.register(Slot::Marker)?;
                 let enc = self.string_ivars(depth)?;
-                let rc = Rc::new(Str { bytes: if self.keep { bytes.to_vec() } else { Vec::new() }, enc });
+                let rc = Rc::new(Str {
+                    bytes: if self.keep {
+                        bytes.to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                    enc,
+                });
                 let value = if self.keep { V::Str(rc) } else { V::Opaque };
                 if self.keep {
                     self.objects[at] = Slot::Leaf(value.clone());
@@ -467,7 +526,9 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn object(&mut self, class: &str, depth: usize) -> Result<V, MarshalError> {
         match kind_of(class) {
             Some(Kind::InlineObject) if self.spec => {}
-            Some(Kind::InlineObject) | None => return Err(MarshalError::DisallowedClass(class.to_owned())),
+            Some(Kind::InlineObject) | None => {
+                return Err(MarshalError::DisallowedClass(class.to_owned()));
+            }
             Some(_) => return Err(MarshalError::WrongPayloadKind(class.to_owned())),
         }
         self.register(Slot::Marker)?;
@@ -477,7 +538,12 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     /// `u:` payloads: NestedStream (Gem::Specification) or Binary8 (Time). `ivars` is set
     /// when an `I` wrapper puts instance variables after the payload.
-    fn user_defined(&mut self, class: &str, depth: usize, ivars: Option<()>) -> Result<V, MarshalError> {
+    fn user_defined(
+        &mut self,
+        class: &str,
+        depth: usize,
+        ivars: Option<()>,
+    ) -> Result<V, MarshalError> {
         if !self.spec {
             return Err(MarshalError::DisallowedClass(class.to_owned()));
         }
@@ -521,7 +587,11 @@ impl<'a, 'b> Parser<'a, 'b> {
 /// recursion into nested streams and inline objects, cumulative depth, shared budgets.
 /// It re-renders nothing; the caller serves the original bytes after `Ok`.
 pub fn validate_gemspec(raw: &[u8], limits: Limits) -> Result<(), MarshalError> {
-    let mut budget = Budget { limits, nodes: 0, memory: 0 };
+    let mut budget = Budget {
+        limits,
+        nodes: 0,
+        memory: 0,
+    };
     let mut parser = Parser::new(raw, &mut budget, false, true)?;
     parser.value(0)?;
     if parser.pos != raw.len() {
@@ -546,7 +616,11 @@ pub fn filter_tuple_index(
     limits: Limits,
     mut keep: impl FnMut(&str, &str, &str) -> bool,
 ) -> Result<(Vec<u8>, FilterStats), MarshalError> {
-    let mut budget = Budget { limits, nodes: 0, memory: 0 };
+    let mut budget = Budget {
+        limits,
+        nodes: 0,
+        memory: 0,
+    };
     let mut parser = Parser::new(raw, &mut budget, true, false)?;
     parser.budget.node()?;
     if parser.byte()? != b'[' {
@@ -559,7 +633,11 @@ pub fn filter_tuple_index(
     for _ in 0..total {
         let tuple = parser.value(1)?;
         let (name, version, platform) = tuple_parts(&tuple)?;
-        let (n, v, p) = (text(name)?, text(version_string(version)?)?, text(platform)?);
+        let (n, v, p) = (
+            text(name)?,
+            text(version_string(version)?)?,
+            text(platform)?,
+        );
         if keep(n, v, p) {
             writer.tuple(name, version, platform);
             kept += 1;
@@ -575,12 +653,18 @@ pub fn filter_tuple_index(
     if parser.pos != raw.len() {
         return Err(MarshalError::TrailingData);
     }
-    let stats = FilterStats { tuples: total as u64, kept, nodes: parser.budget.nodes, charged_bytes: parser.budget.memory };
+    let stats = FilterStats {
+        tuples: total as u64,
+        kept,
+        nodes: parser.budget.nodes,
+        charged_bytes: parser.budget.memory,
+    };
     Ok((writer.finish(kept), stats))
 }
 
 fn text(s: &Str) -> Result<&str, MarshalError> {
-    std::str::from_utf8(&s.bytes).map_err(|_| MarshalError::Shape("a name, version or platform is not UTF-8"))
+    std::str::from_utf8(&s.bytes)
+        .map_err(|_| MarshalError::Shape("a name, version or platform is not UTF-8"))
 }
 
 fn version_string(v: &Rc<V>) -> Result<&Str, MarshalError> {
@@ -596,10 +680,14 @@ fn version_string(v: &Rc<V>) -> Result<&Str, MarshalError> {
 type TupleParts<'a> = (&'a Rc<Str>, &'a Rc<V>, &'a Rc<Str>);
 
 fn tuple_parts(tuple: &V) -> Result<TupleParts<'_>, MarshalError> {
-    let V::Array(items) = tuple else { return Err(MarshalError::Shape("an index entry is not an array")) };
+    let V::Array(items) = tuple else {
+        return Err(MarshalError::Shape("an index entry is not an array"));
+    };
     match items.as_slice() {
         [V::Str(name), V::Version(version), V::Str(platform)] => Ok((name, version, platform)),
-        _ => Err(MarshalError::Shape("an index entry is not [name, Gem::Version, platform]")),
+        _ => Err(MarshalError::Shape(
+            "an index entry is not [name, Gem::Version, platform]",
+        )),
     }
 }
 
@@ -615,7 +703,13 @@ struct Writer {
 
 impl Writer {
     fn new() -> Writer {
-        Writer { body: Vec::new(), charged: 0, symbols: HashMap::new(), objects: 1, written: HashMap::new() }
+        Writer {
+            body: Vec::new(),
+            charged: 0,
+            symbols: HashMap::new(),
+            objects: 1,
+            written: HashMap::new(),
+        }
     }
 
     fn long(out: &mut Vec<u8>, n: i64) {
@@ -635,7 +729,11 @@ impl Writer {
                         break;
                     }
                 }
-                out.push(if n < 0 { (-(len as i8)) as u8 } else { len as u8 });
+                out.push(if n < 0 {
+                    (-(len as i8)) as u8
+                } else {
+                    len as u8
+                });
                 out.extend_from_slice(&bytes[..len]);
             }
         }

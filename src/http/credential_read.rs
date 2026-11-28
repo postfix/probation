@@ -40,7 +40,9 @@ pub struct FamilyReadRules {
 pub fn cache_token(app: &crate::App) -> Option<CacheToken> {
     // Shared-service mode fails closed: with no request context there is no classification,
     // so no token (a background task cannot write a shared cache on a request's behalf).
-    if app.service_policy().is_some() && (!super::logging::in_request() || super::logging::request_scoped()) {
+    if app.service_policy().is_some()
+        && (!super::logging::in_request() || super::logging::request_scoped())
+    {
         None
     } else {
         Some(CacheToken(()))
@@ -50,50 +52,104 @@ pub fn cache_token(app: &crate::App) -> Option<CacheToken> {
 impl FamilyReadRules {
     /// npm clients' own non-secret headers (LS-F4).
     pub const NPM: FamilyReadRules = FamilyReadRules {
-        headers: &["npm-session", "npm-scope", "npm-command", "pacote-version", "pacote-req-type", "pacote-pkg-id", "referer"],
+        headers: &[
+            "npm-session",
+            "npm-scope",
+            "npm-command",
+            "pacote-version",
+            "pacote-req-type",
+            "pacote-pkg-id",
+            "referer",
+        ],
         query_keys: &[],
     };
     /// PyPI clients send only common headers.
-    pub const PYPI: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    pub const PYPI: FamilyReadRules = FamilyReadRules {
+        headers: &[],
+        query_keys: &[],
+    };
     /// RubyGems (`gem`, Bundler) sends only the common headers on a plain read; a credential
     /// travels as `Authorization` or URL userinfo, both request-scoped. No path or query token.
     /// Cargo's plain reads add `Cargo-Protocol: version=1` and, over plain http, libcurl's h2c
     /// upgrade pair `Upgrade` and `HTTP2-Settings` (all observed from cargo 1.96, tests/cargo_native.rs);
     /// none carries a credential. Its registry token travels as `Authorization`, a credential,
     /// and never in the path or query of this firewall's routes.
-    pub const CARGO: FamilyReadRules = FamilyReadRules { headers: &["cargo-protocol", "upgrade", "http2-settings"], query_keys: &[] };
+    pub const CARGO: FamilyReadRules = FamilyReadRules {
+        headers: &["cargo-protocol", "upgrade", "http2-settings"],
+        query_keys: &[],
+    };
     /// Go's `go` command sends only the common headers on a plain read (measured with go 1.26.0,
     /// tests/go_native.rs): a credential travels as `Authorization` (Basic from `.netrc` or the GOPROXY
     /// userinfo, or `GOAUTH`), both request-scoped. No route of this firewall takes a token in its
     /// path or query.
-    pub const GO: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    pub const GO: FamilyReadRules = FamilyReadRules {
+        headers: &[],
+        query_keys: &[],
+    };
     /// NuGet's search and autocomplete read carry only these non-secret query keys (the protocol's own);
     /// a credential travels as `Authorization` (Basic or Bearer), or as `X-NuGet-ApiKey` on a write, both
     /// request-scoped. No route takes a token in its path. The headers are the real client's own non-secret ones
     /// (measured with dotnet 8.0.416, tests/nuget_native.rs).
     pub const NUGET: FamilyReadRules = FamilyReadRules {
         headers: &["x-nuget-session-id", "x-nuget-client-version"],
-        query_keys: &["q", "id", "skip", "take", "prerelease", "semVerLevel", "packageType", "supportedFramework"],
+        query_keys: &[
+            "q",
+            "id",
+            "skip",
+            "take",
+            "prerelease",
+            "semVerLevel",
+            "packageType",
+            "supportedFramework",
+        ],
     };
     /// Maven reads carry no query and no non-secret header beyond the common ones (`mvn` sends `User-Agent`, `Accept`,
     /// `Accept-Encoding`, `Host` and conditional headers on a metadata read, all common); a credential travels as
     /// `Authorization` (Basic from `settings.xml`, or a bearer token), request-scoped, and no route takes one in its path.
-    pub const MAVEN: FamilyReadRules = FamilyReadRules { headers: &[], query_keys: &[] };
+    pub const MAVEN: FamilyReadRules = FamilyReadRules {
+        headers: &[],
+        query_keys: &[],
+    };
     /// Conan reads carry the search pattern (`q`, `ignorecase`) and, from the real client (conan 2.21.0, measured in tests/conan_native.rs),
     /// its own non-secret identification headers; a credential travels as `Authorization` (Basic on a login, then the Bearer token it
     /// returns), request-scoped, and no route takes one in its path.
-    pub const CONAN: FamilyReadRules = FamilyReadRules { headers: &["x-client-anonymous-id", "x-client-id", "x-conan-server-capabilities"], query_keys: &["q", "ignorecase"] };
+    pub const CONAN: FamilyReadRules = FamilyReadRules {
+        headers: &[
+            "x-client-anonymous-id",
+            "x-client-id",
+            "x-conan-server-capabilities",
+        ],
+        query_keys: &["q", "ignorecase"],
+    };
     /// OCI reads carry `ns` (the registry a mirror was asked for), the list parameters and the referrers filter; the daemon and
     /// containerd send the API version they speak. A credential travels as `Authorization` (a Basic login, or the Bearer token of the
     /// token flow) on almost every request, so those reads are request-scoped; anonymous reads stay cache-eligible.
-    pub const OCI: FamilyReadRules = FamilyReadRules { headers: &["docker-distribution-api-version"], query_keys: &["ns", "n", "last", "artifactType"] };
-    pub const RUBYGEMS: FamilyReadRules = FamilyReadRules { headers: &["keep-alive"], query_keys: &[] };
+    pub const OCI: FamilyReadRules = FamilyReadRules {
+        headers: &["docker-distribution-api-version"],
+        query_keys: &["ns", "n", "last", "artifactType"],
+    };
+    pub const RUBYGEMS: FamilyReadRules = FamilyReadRules {
+        headers: &["keep-alive"],
+        query_keys: &[],
+    };
 }
 
 /// Header names every family may send without credential meaning (LS-F4).
 const COMMON_HEADERS: &[&str] = &[
-    "host", "accept", "accept-encoding", "accept-language", "user-agent", "range", "if-range", "if-none-match",
-    "if-modified-since", "if-match", "if-unmodified-since", "cache-control", "pragma", "connection",
+    "host",
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "user-agent",
+    "range",
+    "if-range",
+    "if-none-match",
+    "if-modified-since",
+    "if-match",
+    "if-unmodified-since",
+    "cache-control",
+    "pragma",
+    "connection",
 ];
 
 /// `CacheEligible` only when there is no URL userinfo, every header instance (header names
@@ -101,16 +157,22 @@ const COMMON_HEADERS: &[&str] = &[
 /// allow-list, and no pseudo-header other than `:authority` is present. An unknown header
 /// costs cache hits only, never confidentiality.
 pub fn classify_read(parts: &RequestParts<'_>, rules: &FamilyReadRules) -> ReadClass {
-    let userinfo = parts.uri.authority().is_some_and(|authority| authority.as_str().contains('@'));
+    let userinfo = parts
+        .uri
+        .authority()
+        .is_some_and(|authority| authority.as_str().contains('@'));
     let headers_ok = parts.headers.keys().all(|name| {
         let name = name.as_str();
         COMMON_HEADERS.contains(&name) || rules.headers.contains(&name)
     });
     let query_ok = parts.uri.query().is_none_or(|query| {
-        query.split('&').filter(|pair| !pair.is_empty()).all(|pair| {
-            let key = pair.split_once('=').map_or(pair, |(key, _)| key);
-            rules.query_keys.contains(&key)
-        })
+        query
+            .split('&')
+            .filter(|pair| !pair.is_empty())
+            .all(|pair| {
+                let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+                rules.query_keys.contains(&key)
+            })
     });
     if userinfo || !headers_ok || !query_ok || !parts.extra_pseudo_headers.is_empty() {
         ReadClass::RequestScoped

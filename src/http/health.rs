@@ -42,20 +42,32 @@ pub async fn ready(State(app): State<Arc<App>>) -> axum::response::Response {
 
 /// Shared-service readiness: the status of the plain rule plus the state an operator needs
 /// to see (policy, gate, degraded registries, skipped rules, credential-read bytes).
-fn service_ready(app: &App, policy: &crate::managed::service_policy::ServicePolicy) -> axum::response::Response {
+fn service_ready(
+    app: &App,
+    policy: &crate::managed::service_policy::ServicePolicy,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
     let active = policy.snapshot().is_some();
     let poisoned = policy.publication_gate.is_poisoned();
     let ok = active && !poisoned && app.store().is_healthy();
-    let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
     // The status code is the orchestrator probe and stays the same for every peer. The detail
     // (registry ids, counters, temp bytes) is for peers the listener admits (S28-7).
-    let admitted = super::logging::peer()
-        .is_some_and(|peer| super::listener_admission::peer_admitted(peer, &app.config.allowed_peer_cidrs));
+    let admitted = super::logging::peer().is_some_and(|peer| {
+        super::listener_admission::peer_admitted(peer, &app.config.allowed_peer_cidrs)
+    });
     if !admitted {
         return status.into_response();
     }
-    let degraded: Vec<u64> = policy.unavailable_registries().iter().map(|id| id.0).collect();
+    let degraded: Vec<u64> = policy
+        .unavailable_registries()
+        .iter()
+        .map(|id| id.0)
+        .collect();
     (
         status,
         axum::Json(serde_json::json!({
@@ -90,7 +102,11 @@ async fn plain_ready(State(app): State<Arc<App>>) -> StatusCode {
         };
     }
     if let Some(policy) = app.service_policy() {
-        return if policy.snapshot().is_some() { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+        return if policy.snapshot().is_some() {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
     }
     let now = app.clock.now_utc_micros();
     match app.blocklist() {

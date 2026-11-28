@@ -242,7 +242,15 @@ async fn run() -> Vec<(String, bool)> {
     // OFFLINE client, and since slice 16 a failed lookup is never cached (C-S16-1), so every request that asks OSV would wait out the 10 ms
     // batch window: that is the cost of an OSV outage (docs/operations.md section 10), not the warm path SPEC §12 measures.
     let (osv_url, _osv) = common::osv_flagging(&[]).await;
-    let server = TestServer::start_with_upstream_and_osv(config, clock.shared(), registry, fake_origins(), reqwest::Client::new(), osv_url).await;
+    let server = TestServer::start_with_upstream_and_osv(
+        config,
+        clock.shared(),
+        registry,
+        fake_origins(),
+        reqwest::Client::new(),
+        osv_url,
+    )
+    .await;
 
     println!("SPEC §12 warm metadata and warm policy denial");
     println!(

@@ -23,7 +23,9 @@ use crate::managed::report::Call;
 use crate::policy::{Candidate, Decision, Ecosystem, PublicationTime};
 use crate::store;
 use crate::store::cache::{Advertised, CachedProject, ProjectKey};
-use crate::store::rows::{ArtifactReference, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert};
+use crate::store::rows::{
+    ArtifactReference, Generation, ProjectRefresh, ProjectRow, ReferenceId, ReferenceUpsert,
+};
 use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, OriginSet, UpstreamError};
 
 pub struct Rendered {
@@ -85,7 +87,8 @@ impl From<ConfigFailure> for ApiError {
     }
 }
 
-type ConfigCell = Arc<tokio::sync::Mutex<Option<(Instant, Result<Arc<UpstreamConfig>, ConfigFailure>)>>>;
+type ConfigCell =
+    Arc<tokio::sync::Mutex<Option<(Instant, Result<Arc<UpstreamConfig>, ConfigFailure>)>>>;
 
 /// The origin set a request reads through, and the kinds of the index and of the archives.
 struct Origins {
@@ -101,21 +104,37 @@ fn origins_for(app: &App, principal: Option<&Principal>) -> Result<Origins, ApiE
         // A selected registry's origin travels in the slot `selected_npm_with_private` fills; its
         // archives must live under the same origin and path.
         Some(origin) => Ok(Origins {
-            set: OriginSet::selected_npm_with_private(origin.clone(), principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone())).map_err(|_| ApiError::NotFound)?,
+            set: OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+            )
+            .map_err(|_| ApiError::NotFound)?,
             index: OriginKind::NpmMetadata,
             archives: OriginKind::NpmMetadata,
             archive_set: principal
                 .and_then(|p| p.registry_archive_origin.clone())
-                .map(|archive| OriginSet::selected_npm_with_private(archive, principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone())))
+                .map(|archive| {
+                    OriginSet::selected_npm_with_private(
+                        archive,
+                        principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+                    )
+                })
                 .transpose()
                 .map_err(|_| ApiError::NotFound)?,
         }),
-        None => Ok(Origins { set: app.origins.clone(), index: OriginKind::CargoIndex, archives: OriginKind::CargoArtifacts, archive_set: None }),
+        None => Ok(Origins {
+            set: app.origins.clone(),
+            index: OriginKind::CargoIndex,
+            archives: OriginKind::CargoArtifacts,
+            archive_set: None,
+        }),
     }
 }
 
 fn crate_name(raw: &str) -> Result<&str, ApiError> {
-    index::valid_crate_name(raw).then_some(raw).ok_or(ApiError::NotFound)
+    index::valid_crate_name(raw)
+        .then_some(raw)
+        .ok_or(ApiError::NotFound)
 }
 
 fn index_cap(app: &App) -> u64 {
@@ -125,13 +144,27 @@ fn index_cap(app: &App) -> u64 {
 /// `config.json` of the registry the request reads through: cached 60 s per (registry, origin)
 /// with one fetch at a time, and never read from or written to the cache by a credential-bearing
 /// read (C1028).
-async fn upstream_config(app: &App, principal: Option<&Principal>, registry_id: u64) -> Result<Arc<UpstreamConfig>, ApiError> {
+async fn upstream_config(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+) -> Result<Arc<UpstreamConfig>, ApiError> {
     let origins = origins_for(app, principal)?;
-    let url = origins.set.url_for(origins.index, &["config.json"]).map_err(|_| ApiError::NotFound)?;
+    let url = origins
+        .set
+        .url_for(origins.index, &["config.json"])
+        .map_err(|_| ApiError::NotFound)?;
     let cacheable = crate::http::credential_read::cache_token(app).is_some();
-    let key = (registry_id, principal.and_then(|p| p.registry_origin.as_ref()).map(|origin| origin.to_string()));
+    let key = (
+        registry_id,
+        principal
+            .and_then(|p| p.registry_origin.as_ref())
+            .map(|origin| origin.to_string()),
+    );
     let cell = if cacheable {
-        let Ok(mut map) = app.cargo.configs.lock() else { return Err(ApiError::InternalFailure) };
+        let Ok(mut map) = app.cargo.configs.lock() else {
+            return Err(ApiError::InternalFailure);
+        };
         if map.len() >= 64 {
             map.retain(|_, cell| Arc::strong_count(cell) > 1);
         }
@@ -144,7 +177,11 @@ async fn upstream_config(app: &App, principal: Option<&Principal>, registry_id: 
         None => None,
     };
     if let Some(Some((at, result))) = guard.as_deref() {
-        let ttl = if result.is_ok() { CONFIG_TTL } else { CONFIG_FAILURE_TTL };
+        let ttl = if result.is_ok() {
+            CONFIG_TTL
+        } else {
+            CONFIG_FAILURE_TTL
+        };
         if app.clock.now_monotonic().saturating_duration_since(*at) < ttl {
             return result.clone().map_err(ApiError::from);
         }
@@ -156,7 +193,11 @@ async fn upstream_config(app: &App, principal: Option<&Principal>, registry_id: 
     result.map_err(ApiError::from)
 }
 
-async fn fetch_config(app: &App, principal: Option<&Principal>, url: url::Url) -> Result<Arc<UpstreamConfig>, ConfigFailure> {
+async fn fetch_config(
+    app: &App,
+    principal: Option<&Principal>,
+    url: url::Url,
+) -> Result<Arc<UpstreamConfig>, ConfigFailure> {
     let fetched = app
         .transport
         .fetch_metadata(MetadataRequest {
@@ -171,13 +212,19 @@ async fn fetch_config(app: &App, principal: Option<&Principal>, url: url::Url) -
         .await;
     app.upstreams.record_upstream(Call::Cargo, &fetched);
     match fetched {
-        Ok(MetadataResponse::Fresh { body, .. }) => index::parse_config(&body).map(Arc::new).ok_or_else(|| {
-            tracing::warn!("the registry's config.json is not a Cargo config");
-            ConfigFailure::Invalid
-        }),
+        Ok(MetadataResponse::Fresh { body, .. }) => {
+            index::parse_config(&body).map(Arc::new).ok_or_else(|| {
+                tracing::warn!("the registry's config.json is not a Cargo config");
+                ConfigFailure::Invalid
+            })
+        }
         Ok(_) | Err(UpstreamError::Status(404)) => Err(ConfigFailure::Invalid),
-        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => Err(ConfigFailure::Unauthenticated),
-        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => Err(ConfigFailure::Denied),
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => {
+            Err(ConfigFailure::Unauthenticated)
+        }
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => {
+            Err(ConfigFailure::Denied)
+        }
         Err(UpstreamError::Timeout) => Err(ConfigFailure::Timeout),
         Err(_) => Err(ConfigFailure::Failed),
     }
@@ -185,9 +232,25 @@ async fn fetch_config(app: &App, principal: Option<&Principal>, url: url::Url) -
 
 /// The reference of one index line: the archive URL its registry's `dl` names, admitted against
 /// the archive origin (a `dl` on another host, port or path is not an origin this registry owns).
-fn reference_of(entry: &Entry, canonical: &str, config: &UpstreamConfig, origins: &Origins, registry_id: u64) -> Option<(ReferenceId, ArtifactReference)> {
-    let url = index::archive_url(&config.dl, &entry.name, &entry.vers, &hex::encode(entry.cksum))?;
-    origins.archive_set.as_ref().unwrap_or(&origins.set).admit(&url, origins.archives).ok()?;
+fn reference_of(
+    entry: &Entry,
+    canonical: &str,
+    config: &UpstreamConfig,
+    origins: &Origins,
+    registry_id: u64,
+) -> Option<(ReferenceId, ArtifactReference)> {
+    let url = index::archive_url(
+        &config.dl,
+        &entry.name,
+        &entry.vers,
+        &hex::encode(entry.cksum),
+    )?;
+    origins
+        .archive_set
+        .as_ref()
+        .unwrap_or(&origins.set)
+        .admit(&url, origins.archives)
+        .ok()?;
     let reference = ArtifactReference {
         ecosystem: Ecosystem::Cargo,
         name: canonical.to_owned(),
@@ -196,13 +259,21 @@ fn reference_of(entry: &Entry, canonical: &str, config: &UpstreamConfig, origins
         upstream_url: url,
         expected: entry.expected(),
     };
-    Some((ReferenceId::compute_in_registry(registry_id, &reference), reference))
+    Some((
+        ReferenceId::compute_in_registry(registry_id, &reference),
+        reference,
+    ))
 }
 
 fn publication_of(entry: &Entry, id: &ReferenceId, cached: &CachedProject) -> PublicationTime {
     match entry.published_micros {
         Some(micros) => PublicationTime::Upstream(micros),
-        None => cached.first_seen.get(id).map_or(PublicationTime::Unknown, |micros| PublicationTime::FirstSeen(*micros)),
+        None => cached
+            .first_seen
+            .get(id)
+            .map_or(PublicationTime::Unknown, |micros| {
+                PublicationTime::FirstSeen(*micros)
+            }),
     }
 }
 
@@ -214,11 +285,18 @@ fn payload_name(payload: &[u8]) -> Option<String> {
     }
     let text = std::str::from_utf8(payload).ok()?;
     let line = text.lines().find(|line| !line.trim().is_empty())?;
-    serde_json::from_str::<First>(line).ok().map(|first| first.name.to_ascii_lowercase())
+    serde_json::from_str::<First>(line)
+        .ok()
+        .map(|first| first.name.to_ascii_lowercase())
 }
 
 fn parse_entries(app: &App, lower: &str, payload: &[u8]) -> Result<Vec<Entry>, ApiError> {
-    index::parse_index(payload, lower, app.config.max_references_per_project.get() as usize).map_err(|error| {
+    index::parse_index(
+        payload,
+        lower,
+        app.config.max_references_per_project.get() as usize,
+    )
+    .map_err(|error| {
         tracing::warn!(crate_name = %lower, ?error, "the sparse index file is unusable");
         ApiError::UpstreamInvalid
     })
@@ -226,7 +304,12 @@ fn parse_entries(app: &App, lower: &str, payload: &[u8]) -> Result<Vec<Entry>, A
 
 /// The project snapshot a decision is made from (SPEC §10) for the crate whose exact lower-case
 /// spelling is `lower`: the cached one within its TTL, else a refreshed one.
-async fn current_project(app: &App, lower: &str, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<CachedProject>, ApiError> {
+async fn current_project(
+    app: &App,
+    lower: &str,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Arc<CachedProject>, ApiError> {
     let now = app.clock.now_utc_micros();
     let monotonic = app.clock.now_monotonic();
     let canonical = canonical_name(Ecosystem::Cargo, lower);
@@ -236,8 +319,14 @@ async fn current_project(app: &App, lower: &str, registry_id: u64, principal: Op
     // At most MAX_SPELLINGS case spellings of one crate are ever committed per registry: every
     // spelling is its own set of reference rows, never reclaimed.
     let spelled = {
-        let known = app.cargo.spellings.lock().map_err(|_| ApiError::InternalFailure)?;
-        let committed = known.get(&(registry_id, canonical.clone())).map_or(&[][..], Vec::as_slice);
+        let known = app
+            .cargo
+            .spellings
+            .lock()
+            .map_err(|_| ApiError::InternalFailure)?;
+        let committed = known
+            .get(&(registry_id, canonical.clone()))
+            .map_or(&[][..], Vec::as_slice);
         if !committed.iter().any(|spelling| spelling == lower) && committed.len() >= MAX_SPELLINGS {
             tracing::warn!(crate_name = %canonical, registry_id, "refusing a further spelling of a crate name");
             return Err(ApiError::NotFound);
@@ -245,7 +334,13 @@ async fn current_project(app: &App, lower: &str, registry_id: u64, principal: Op
         committed.iter().any(|spelling| spelling == lower)
     };
     if app.service_policy().is_some() {
-        let share_key = (registry_id, principal.and_then(|p| p.registry_origin.as_ref()).map(|origin| origin.to_string()), lower.to_owned());
+        let share_key = (
+            registry_id,
+            principal
+                .and_then(|p| p.registry_origin.as_ref())
+                .map(|origin| origin.to_string()),
+            lower.to_owned(),
+        );
         let shareable = crate::http::credential_read::cache_token(app).is_some();
         if shareable
             && let Ok(shared) = app.cargo.shared.lock()
@@ -275,29 +370,85 @@ async fn current_project(app: &App, lower: &str, registry_id: u64, principal: Op
     let (seen, cached) = caches.projects.get_with_seen(&key);
     let cached = match cached {
         Some(cached) => Some(cached),
-        None => load_project(app, &canonical, registry_id).await?.map(Arc::new),
+        None => load_project(app, &canonical, registry_id)
+            .await?
+            .map(Arc::new),
     };
     // The stored row is shared by every spelling that folds to one canonical name; a row that
     // belongs to another spelling is not this crate's index.
-    let cached = cached.filter(|cached| payload_name(&cached.row.payload).as_deref() == Some(lower));
-    let over_age = cached.as_ref().is_some_and(|c| store::is_over_age(&key, app.config.metadata_max_age_seconds, c.row.fetched_at_micros, now));
+    let cached =
+        cached.filter(|cached| payload_name(&cached.row.payload).as_deref() == Some(lower));
+    let over_age = cached.as_ref().is_some_and(|c| {
+        store::is_over_age(
+            &key,
+            app.config.metadata_max_age_seconds,
+            c.row.fetched_at_micros,
+            now,
+        )
+    });
     let cached = match cached {
-        Some(cached) if !over_age && spelled && now < cached.row.validated_at_micros.saturating_add(ttl_micros) => cached,
-        stale => refresh(app, lower, &key, &absent_key, now, over_age, stale, principal).await?,
+        Some(cached)
+            if !over_age
+                && spelled
+                && now < cached.row.validated_at_micros.saturating_add(ttl_micros) =>
+        {
+            cached
+        }
+        stale => {
+            refresh(
+                app,
+                lower,
+                &key,
+                &absent_key,
+                now,
+                over_age,
+                stale,
+                principal,
+            )
+            .await?
+        }
     };
     if let Some(token) = crate::http::credential_read::cache_token(app) {
-        caches.projects.insert_if_current(&token, key, Arc::clone(&cached), cached.approximate_bytes(), seen);
+        caches.projects.insert_if_current(
+            &token,
+            key,
+            Arc::clone(&cached),
+            cached.approximate_bytes(),
+            seen,
+        );
     }
     Ok(cached)
 }
 
-async fn load_project(app: &App, canonical: &str, registry_id: u64) -> Result<Option<CachedProject>, ApiError> {
-    let Some(row) = app.store().get_project_in(registry_id, Ecosystem::Cargo, canonical).await.map_err(storage_error)? else {
+async fn load_project(
+    app: &App,
+    canonical: &str,
+    registry_id: u64,
+) -> Result<Option<CachedProject>, ApiError> {
+    let Some(row) = app
+        .store()
+        .get_project_in(registry_id, Ecosystem::Cargo, canonical)
+        .await
+        .map_err(storage_error)?
+    else {
         return Ok(None);
     };
-    let first_seen = app.store().list_project_first_seen_in(registry_id, Ecosystem::Cargo, canonical).await.map_err(storage_error)?;
-    let pins = app.store().list_project_pins_in(registry_id, Ecosystem::Cargo, canonical).await.map_err(storage_error)?;
-    Ok(Some(CachedProject { row, first_seen, pins, advertised: OnceLock::new() }))
+    let first_seen = app
+        .store()
+        .list_project_first_seen_in(registry_id, Ecosystem::Cargo, canonical)
+        .await
+        .map_err(storage_error)?;
+    let pins = app
+        .store()
+        .list_project_pins_in(registry_id, Ecosystem::Cargo, canonical)
+        .await
+        .map_err(storage_error)?;
+    Ok(Some(CachedProject {
+        row,
+        first_seen,
+        pins,
+        advertised: OnceLock::new(),
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,10 +465,13 @@ async fn refresh(
     let origins = origins_for(app, principal)?;
     let segments = index::index_segments(lower);
     let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
-    let url = origins.set.url_for(origins.index, &segments).map_err(|rejection| {
-        tracing::warn!(crate_name = %lower, %rejection, "refused to build an upstream URL");
-        ApiError::NotFound
-    })?;
+    let url = origins
+        .set
+        .url_for(origins.index, &segments)
+        .map_err(|rejection| {
+            tracing::warn!(crate_name = %lower, %rejection, "refused to build an upstream URL");
+            ApiError::NotFound
+        })?;
     let fetched = app
         .transport
         .fetch_metadata(MetadataRequest {
@@ -327,29 +481,57 @@ async fn refresh(
             read_authorization: principal.and_then(|p| p.registry_read_authorization.clone()),
             accept: "text/plain",
             validators: (!over_age)
-                .then(|| stale.as_ref().map(|c| c.row.validators.clone()).filter(|v| !v.is_empty()))
+                .then(|| {
+                    stale
+                        .as_ref()
+                        .map(|c| c.row.validators.clone())
+                        .filter(|v| !v.is_empty())
+                })
                 .flatten(),
             max_bytes: index_cap(app),
         })
         .await;
     app.upstreams.record_upstream(Call::Cargo, &fetched);
     let (payload, validators, fetched_at_micros): (Arc<[u8]>, _, i64) = match fetched {
-        Ok(MetadataResponse::Fresh { body, validators }) => (Arc::from(body.as_ref()), validators, now),
+        Ok(MetadataResponse::Fresh { body, validators }) => {
+            (Arc::from(body.as_ref()), validators, now)
+        }
         Ok(MetadataResponse::NotModified { validators }) => match &stale {
             Some(cached) if !over_age => {
-                let validators = if validators.is_empty() { cached.row.validators.clone() } else { validators };
-                (Arc::clone(&cached.row.payload), validators, cached.row.fetched_at_micros)
+                let validators = if validators.is_empty() {
+                    cached.row.validators.clone()
+                } else {
+                    validators
+                };
+                (
+                    Arc::clone(&cached.row.payload),
+                    validators,
+                    cached.row.fetched_at_micros,
+                )
             }
             _ => return Err(ApiError::UpstreamInvalid),
         },
         Ok(MetadataResponse::Missing) => {
-            if let Some(token) = crate::http::credential_read::cache_token(app).filter(|_| app.service_policy().is_none()) {
-                app.store().caches().absent.insert(&token, absent_key.clone(), Arc::new(store::cache::AbsentMark { observed_monotonic: app.clock.now_monotonic() }), 128);
+            if let Some(token) = crate::http::credential_read::cache_token(app)
+                .filter(|_| app.service_policy().is_none())
+            {
+                app.store().caches().absent.insert(
+                    &token,
+                    absent_key.clone(),
+                    Arc::new(store::cache::AbsentMark {
+                        observed_monotonic: app.clock.now_monotonic(),
+                    }),
+                    128,
+                );
             }
             return Err(ApiError::NotFound);
         }
-        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::UpstreamUnauthenticated),
-        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::UpstreamDenied),
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamUnauthenticated);
+        }
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamDenied);
+        }
         Err(UpstreamError::Timeout) => return Err(ApiError::UpstreamTimeout),
         Err(err) => {
             tracing::warn!(crate_name = %lower, error = %err, "the upstream fetch failed");
@@ -361,7 +543,9 @@ async fn refresh(
     let config = upstream_config(app, principal, key.registry_id).await?;
     let mut references = Vec::with_capacity(entries.len());
     for entry in &entries {
-        let Some((id, reference)) = reference_of(entry, &canonical, &config, &origins, key.registry_id) else {
+        let Some((id, reference)) =
+            reference_of(entry, &canonical, &config, &origins, key.registry_id)
+        else {
             tracing::warn!(crate_name = %lower, "the registry's dl names an archive outside the registry's own origin");
             return Err(ApiError::UpstreamInvalid);
         };
@@ -382,19 +566,29 @@ async fn refresh(
         references,
     };
     let committed = if app.service_policy().is_some() {
-        app.store().commit_request_references_in(key.registry_id, refresh).await
+        app.store()
+            .commit_request_references_in(key.registry_id, refresh)
+            .await
     } else {
-        app.store().commit_project_refresh_in(key.registry_id, refresh).await
+        app.store()
+            .commit_project_refresh_in(key.registry_id, refresh)
+            .await
     }
     .map_err(storage_error)?;
-    let pins = app.store().list_project_pins_in(key.registry_id, Ecosystem::Cargo, &canonical).await.map_err(storage_error)?;
+    let pins = app
+        .store()
+        .list_project_pins_in(key.registry_id, Ecosystem::Cargo, &canonical)
+        .await
+        .map_err(storage_error)?;
     if let Ok(mut known) = app.cargo.spellings.lock() {
         // ponytail: forgotten when 4096 crates are tracked and after a restart, and not shared
         // between instances; a persisted per-crate count if that matters.
         if known.len() >= 4096 {
             known.clear();
         }
-        let committed = known.entry((key.registry_id, canonical.clone())).or_default();
+        let committed = known
+            .entry((key.registry_id, canonical.clone()))
+            .or_default();
         if !committed.iter().any(|spelling| spelling == lower) {
             committed.push(lower.to_owned());
         }
@@ -423,14 +617,29 @@ fn etag_of(body: &[u8]) -> String {
 
 /// `GET {root}/config.json`: the registry's own `config.json` with `dl` and `api` pointing at
 /// this firewall (`root` is its public base for the registry the request selects).
-pub async fn serve_config(app: &App, principal: Option<&Principal>, registry_id: u64, root: &url::Url) -> Result<Rendered, ApiError> {
+pub async fn serve_config(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    root: &url::Url,
+) -> Result<Rendered, ApiError> {
     let config = upstream_config(app, principal, registry_id).await?;
     let join = |tail: &str| root.join(tail).map_err(|_| ApiError::InternalFailure);
     let mut document = serde_json::Map::new();
     // Cargo appends `/{crate}/{version}/download` to a `dl` that has no markers.
-    document.insert("dl".to_owned(), join("crates")?.to_string().trim_end_matches('/').to_owned().into());
+    document.insert(
+        "dl".to_owned(),
+        join("crates")?
+            .to_string()
+            .trim_end_matches('/')
+            .to_owned()
+            .into(),
+    );
     if config.api.is_some() {
-        document.insert("api".to_owned(), root.to_string().trim_end_matches('/').to_owned().into());
+        document.insert(
+            "api".to_owned(),
+            root.to_string().trim_end_matches('/').to_owned().into(),
+        );
     }
     // A managed firewall on the key route authenticates every read, so Cargo must be told to send
     // its token (it sends one only to a registry whose `config.json` says `auth-required`).
@@ -438,16 +647,31 @@ pub async fn serve_config(app: &App, principal: Option<&Principal>, registry_id:
         document.insert("auth-required".to_owned(), true.into());
     }
     let body = serde_json::to_vec(&document).map_err(|_| ApiError::InternalFailure)?;
-    Ok(Rendered { etag: Some(etag_of(&body)), body: Arc::from(body), content_type: JSON })
+    Ok(Rendered {
+        etag: Some(etag_of(&body)),
+        body: Arc::from(body),
+        content_type: JSON,
+    })
 }
 
 /// `GET {root}/{prefix}/{name}`: the index file of one crate with every version the policy
 /// refuses removed and every other line unchanged.
-pub async fn serve_index(app: &App, principal: Option<&Principal>, lower: &str, registry_id: u64) -> Result<Rendered, ApiError> {
+pub async fn serve_index(
+    app: &App,
+    principal: Option<&Principal>,
+    lower: &str,
+    registry_id: u64,
+) -> Result<Rendered, ApiError> {
     let lower = crate_name(lower)?;
     let now = app.clock.now_utc_micros();
-    let policy = app.policy_for(principal).ok_or(ApiError::PolicyUnavailable)?;
-    if !policy.snapshot.as_deref().is_some_and(|snapshot| snapshot.is_valid_at(now)) {
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    if !policy
+        .snapshot
+        .as_deref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     let cached = current_project(app, lower, registry_id, principal).await?;
@@ -457,9 +681,14 @@ pub async fn serve_index(app: &App, principal: Option<&Principal>, lower: &str, 
     let canonical = canonical_name(Ecosystem::Cargo, lower);
     let scope = app.osv_scope(registry_id);
     let judged = futures_util::future::join_all(entries.iter().map(|entry| {
-        let (cached, policy, origins, config, canonical) = (Arc::clone(&cached), &policy, &origins, &config, &canonical);
+        let (cached, policy, origins, config, canonical) =
+            (Arc::clone(&cached), &policy, &origins, &config, &canonical);
         async move {
-            let Some((id, reference)) = reference_of(entry, canonical, config, origins, registry_id) else { return Decision::Allow };
+            let Some((id, reference)) =
+                reference_of(entry, canonical, config, origins, registry_id)
+            else {
+                return Decision::Allow;
+            };
             let version = entry.policy_version();
             let candidate = Candidate {
                 ecosystem: Ecosystem::Cargo,
@@ -476,20 +705,34 @@ pub async fn serve_index(app: &App, principal: Option<&Principal>, lower: &str, 
     logging::record_cache(logging::CacheStatus::Miss);
     // A reference this firewall cannot build (a `dl` outside the registry's origin) is never
     // listed: the `Allow` above is only a placeholder for the id-less case, so it is dropped here.
-    let buildable: Vec<bool> = entries.iter().map(|entry| reference_of(entry, &canonical, &config, &origins, registry_id).is_some()).collect();
+    let buildable: Vec<bool> = entries
+        .iter()
+        .map(|entry| reference_of(entry, &canonical, &config, &origins, registry_id).is_some())
+        .collect();
     if let (Some(principal), Some(managed)) = (principal, app.managed())
         && !entries.is_empty()
-        && !judged.iter().zip(&buildable).any(|(decision, ok)| *ok && matches!(decision, Decision::Allow))
+        && !judged
+            .iter()
+            .zip(&buildable)
+            .any(|(decision, ok)| *ok && matches!(decision, Decision::Allow))
     {
-        let blocked = judged.iter().position(|decision| matches!(decision, Decision::Deny(_)));
+        let blocked = judged
+            .iter()
+            .position(|decision| matches!(decision, Decision::Deny(_)));
         let held = || {
-            judged.iter().enumerate().filter_map(|(i, d)| match d {
-                Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, i)),
-                _ => None,
-            }).min().map(|(_, i)| i)
+            judged
+                .iter()
+                .enumerate()
+                .filter_map(|(i, d)| match d {
+                    Decision::Hold { eligible_at_micros } => Some((*eligible_at_micros, i)),
+                    _ => None,
+                })
+                .min()
+                .map(|(_, i)| i)
         };
         if let Some(index) = blocked.or_else(held)
-            && let Some((id, reference)) = reference_of(&entries[index], &canonical, &config, &origins, registry_id)
+            && let Some((id, reference)) =
+                reference_of(&entries[index], &canonical, &config, &origins, registry_id)
         {
             let version = entries[index].policy_version();
             let candidate = Candidate {
@@ -504,16 +747,31 @@ pub async fn serve_index(app: &App, principal: Option<&Principal>, lower: &str, 
             managed.record_decision(principal, Ecosystem::Cargo, &canonical, None, &verdict);
         }
     }
-    let kept = entries.iter().zip(&judged).zip(&buildable).filter(|((_, decision), ok)| **ok && matches!(decision, Decision::Allow)).map(|((entry, _), _)| entry);
+    let kept = entries
+        .iter()
+        .zip(&judged)
+        .zip(&buildable)
+        .filter(|((_, decision), ok)| **ok && matches!(decision, Decision::Allow))
+        .map(|((entry, _), _)| entry);
     let body = index::render_index(kept);
-    Ok(Rendered { etag: Some(etag_of(&body)), body: Arc::from(body), content_type: TEXT })
+    Ok(Rendered {
+        etag: Some(etag_of(&body)),
+        body: Arc::from(body),
+        content_type: TEXT,
+    })
 }
 
 /// The reference a `GET /crates/{crate}/{version}/download` names, against the current index.
 /// The crate name and version are the line's exact spellings (the archive's file name is exact
 /// upstream), so a different case or a version the index does not list is not found; one index
 /// is fetched at most, and that before anything else is asked of upstream.
-pub async fn reference_for_download(app: &App, principal: Option<&Principal>, name: &str, version: &str, registry_id: u64) -> Result<ReferenceId, ApiError> {
+pub async fn reference_for_download(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &str,
+    version: &str,
+    registry_id: u64,
+) -> Result<ReferenceId, ApiError> {
     let name = crate_name(name)?;
     if version.len() > MAX_VERSION || semver::Version::parse(version).is_err() {
         return Err(ApiError::NotFound);
@@ -543,8 +801,15 @@ fn exact_name_of(reference: &ArtifactReference) -> Option<&str> {
 }
 
 /// SPEC §9 membership: the ids the current snapshot advertises (artifact path).
-pub async fn ensure_fresh_project_in(app: &App, reference: &ArtifactReference, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<Advertised>, ApiError> {
-    let name = exact_name_of(reference).filter(|name| index::valid_crate_name(name)).ok_or(ApiError::NotFound)?;
+pub async fn ensure_fresh_project_in(
+    app: &App,
+    reference: &ArtifactReference,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Arc<Advertised>, ApiError> {
+    let name = exact_name_of(reference)
+        .filter(|name| index::valid_crate_name(name))
+        .ok_or(ApiError::NotFound)?;
     let lower = name.to_ascii_lowercase();
     let cached = current_project(app, &lower, registry_id, principal).await?;
     if let Some(advertised) = cached.advertised.get() {
@@ -556,9 +821,14 @@ pub async fn ensure_fresh_project_in(app: &App, reference: &ArtifactReference, r
     let canonical = canonical_name(Ecosystem::Cargo, &lower);
     let refs: Vec<(ReferenceId, String)> = entries
         .iter()
-        .filter_map(|entry| reference_of(entry, &canonical, &config, &origins, registry_id).map(|(id, r)| (id, r.filename)))
+        .filter_map(|entry| {
+            reference_of(entry, &canonical, &config, &origins, registry_id)
+                .map(|(id, r)| (id, r.filename))
+        })
         .collect();
-    let advertised = Arc::new(Advertised::new(refs.iter().map(|(id, filename)| (*id, filename.as_str()))));
+    let advertised = Arc::new(Advertised::new(
+        refs.iter().map(|(id, filename)| (*id, filename.as_str())),
+    ));
     let _ = cached.advertised.set(Arc::clone(&advertised));
     Ok(advertised)
 }

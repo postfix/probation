@@ -72,7 +72,13 @@ impl Target {
         if let Ok(mut segments) = url.path_segments_mut() {
             segments.pop_if_empty().extend(["v1", "querybatch"]);
         }
-        Target { url, central: Some(Central { origin, credential: target.credential.into() }) }
+        Target {
+            url,
+            central: Some(Central {
+                origin,
+                credential: target.credential.into(),
+            }),
+        }
     }
 }
 
@@ -228,7 +234,17 @@ async fn flush(
     };
 
     if let Some(central) = &target.central {
-        flush_central(&client, &target, central, keys, waiters, request_timeout, &cache, &upstreams).await;
+        flush_central(
+            &client,
+            &target,
+            central,
+            keys,
+            waiters,
+            request_timeout,
+            &cache,
+            &upstreams,
+        )
+        .await;
         return;
     }
     let url = &target.url;
@@ -238,7 +254,9 @@ async fn flush(
         Ok(Ok(_) | Err(SendError::Decode(_))) => true,
         Ok(Err(SendError::Transport(err))) => err.status().is_some_and(|s| !s.is_server_error()),
         // Central-mode errors never reach this direct-mode path.
-        Ok(Err(SendError::Status(_) | SendError::Oversize | SendError::Credential)) | Err(_) => false,
+        Ok(Err(SendError::Status(_) | SendError::Oversize | SendError::Credential)) | Err(_) => {
+            false
+        }
     };
     upstreams.record(Call::Osv, reached);
 
@@ -310,7 +328,10 @@ async fn flush_central(
             .map(|i| {
                 let (ecosystem, name, version) = &keys[*i];
                 Query {
-                    package: Package { name: name.clone(), ecosystem: osv_ecosystem(*ecosystem).unwrap_or("") },
+                    package: Package {
+                        name: name.clone(),
+                        ecosystem: osv_ecosystem(*ecosystem).unwrap_or(""),
+                    },
                     version: version.clone(),
                 }
             })
@@ -320,20 +341,33 @@ async fn flush_central(
     if m < n {
         // A key the shared function refuses is never sent; it is counted so it is visible.
         upstreams.add_osv_keys_refused((n - m) as u64);
-        tracing::warn!(refused = n - m, "OSV keys refused by the key function were not asked about");
+        tracing::warn!(
+            refused = n - m,
+            "OSV keys refused by the key function were not asked about"
+        );
     }
     let sent = if m == 0 {
         // Nothing to ask: no call, and nothing is recorded about the server.
         Ok(Ok(Vec::new()))
     } else {
-        tokio::time::timeout(request_timeout, send_central(client, target, central, &body, m * 8192 + 4096)).await
+        tokio::time::timeout(
+            request_timeout,
+            send_central(client, target, central, &body, m * 8192 + 4096),
+        )
+        .await
     };
     let answer = match sent {
-        Ok(Ok(_)) if m == 0 => Some(probation_policy::osv_wire::CentralAnswer { upstream_ok: true, outcomes: Vec::new() }),
+        Ok(Ok(_)) if m == 0 => Some(probation_policy::osv_wire::CentralAnswer {
+            upstream_ok: true,
+            outcomes: Vec::new(),
+        }),
         Ok(Ok(bytes)) => match parse_central(&bytes, m) {
             Ok(answer) => Some(answer),
             Err(err) => {
-                tracing::warn!(?err, "the OSV server's answer was not usable; failing the batch open");
+                tracing::warn!(
+                    ?err,
+                    "the OSV server's answer was not usable; failing the batch open"
+                );
                 None
             }
         },
@@ -359,7 +393,10 @@ async fn flush_central(
             outcomes[*i] = outcome;
         }
     }
-    let degraded = outcomes.iter().filter(|o| **o == OsvOutcome::Degraded).count();
+    let degraded = outcomes
+        .iter()
+        .filter(|o| **o == OsvOutcome::Degraded)
+        .count();
     upstreams.record_osv_results(n as u64, degraded as u64);
 
     let mut replies = Vec::with_capacity(n);
@@ -395,10 +432,14 @@ async fn send_central(
     read_cap: usize,
 ) -> Result<Vec<u8>, SendError> {
     let body = serde_json::to_vec(body).expect("a struct of strings always serializes");
-    let mut request = client.post(target.url.clone()).header(CONTENT_TYPE, "application/json").body(body);
+    let mut request = client
+        .post(target.url.clone())
+        .header(CONTENT_TYPE, "application/json")
+        .body(body);
     // Decided against the configured origin, not the URL a redirect might have named.
     if target.url.origin() == central.origin {
-        let mut value = HeaderValue::from_str(&format!("Bearer {}", central.credential)).map_err(|_| SendError::Credential)?;
+        let mut value = HeaderValue::from_str(&format!("Bearer {}", central.credential))
+            .map_err(|_| SendError::Credential)?;
         value.set_sensitive(true);
         request = request.header(AUTHORIZATION, value);
     }
@@ -513,12 +554,19 @@ mod tests {
         const SERVER_BODY_CAP: usize = 1 << 20;
         let queries: Vec<Query> = (0..OSV_BATCH_RECORDS)
             .map(|i| Query {
-                package: Package { name: format!("{i:04}{}", "n".repeat(1020)), ecosystem: "PyPI" },
+                package: Package {
+                    name: format!("{i:04}{}", "n".repeat(1020)),
+                    ecosystem: "PyPI",
+                },
                 version: "1".repeat(1024),
             })
             .collect();
         let body = serde_json::to_vec(&QueryBatchRequest { queries }).unwrap();
-        assert!(body.len() < SERVER_BODY_CAP / 2 + SERVER_BODY_CAP / 8, "{} bytes", body.len());
+        assert!(
+            body.len() < SERVER_BODY_CAP / 2 + SERVER_BODY_CAP / 8,
+            "{} bytes",
+            body.len()
+        );
     }
 
     #[tokio::test]

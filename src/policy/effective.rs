@@ -109,7 +109,11 @@ fn apply_exceptions(
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.without(&own.lifted_blocks)),
-        cooldown_seconds: if compiled.skip_freeze { 0 } else { own.freeze_seconds },
+        cooldown_seconds: if compiled.skip_freeze {
+            0
+        } else {
+            own.freeze_seconds
+        },
         osv_matched: osv_matched && own.osv == OsvSetting::On,
         would_block: osv_matched && own.osv == OsvSetting::LogOnly,
         own,

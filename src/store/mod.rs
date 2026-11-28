@@ -11,11 +11,11 @@
 //! transaction" is implemented: the bias is checked between commands, never inside
 //! one.
 
-pub mod cache;
 pub mod action_leases;
+pub mod cache;
 pub mod lock;
-pub mod rows;
 pub mod registry_state;
+pub mod rows;
 pub mod schema;
 pub mod startup;
 
@@ -58,10 +58,10 @@ const SELECT_PROJECT: &str = "SELECT ecosystem, name, payload, etag, last_modifi
 
 /// SPEC §7's known-project index: the projects *this instance* has fetched, in a
 /// stable order so two renderings of one index are byte-identical.
-const SELECT_KNOWN_PROJECTS: &str = "SELECT name FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 ORDER BY name";
+const SELECT_KNOWN_PROJECTS: &str =
+    "SELECT name FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 ORDER BY name";
 
-const SELECT_PROJECT_GENERATIONS: &str =
-    "SELECT generation, digest_generation FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3";
+const SELECT_PROJECT_GENERATIONS: &str = "SELECT generation, digest_generation FROM projects WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3";
 
 /// The only statement that writes `fetched_at_micros`. It is a full-row upsert, so
 /// the value has to be threaded through the caller's per-branch choice of payload
@@ -230,11 +230,43 @@ enum Channels {
 }
 
 enum StoreCommand {
-    CommitActionLeases { registry_id: u64, member_id: u32, package: String, leases: Vec<action_leases::ActionLease>, now: i64, reply: oneshot::Sender<StoreResult<()>> },
-    GetActionLease { registry_id: u64, member_id: u32, id: ReferenceId, now: i64, reply: oneshot::Sender<StoreResult<Option<action_leases::ActionLease>>> },
-    ListActionLeases { registry_id: u64, member_id: u32, package: String, now: i64, reply: oneshot::Sender<StoreResult<Vec<action_leases::ActionLease>>> },
-    MarkRemovedLeases { registry_id: u64, member_id: u32, removed: Vec<ReferenceId>, revision: String, reply: oneshot::Sender<StoreResult<()>> },
-    ConsumeActionMarker { registry_id: u64, member_id: u32, id: ReferenceId, revision: String, now: i64, reply: oneshot::Sender<StoreResult<bool>> },
+    CommitActionLeases {
+        registry_id: u64,
+        member_id: u32,
+        package: String,
+        leases: Vec<action_leases::ActionLease>,
+        now: i64,
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
+    GetActionLease {
+        registry_id: u64,
+        member_id: u32,
+        id: ReferenceId,
+        now: i64,
+        reply: oneshot::Sender<StoreResult<Option<action_leases::ActionLease>>>,
+    },
+    ListActionLeases {
+        registry_id: u64,
+        member_id: u32,
+        package: String,
+        now: i64,
+        reply: oneshot::Sender<StoreResult<Vec<action_leases::ActionLease>>>,
+    },
+    MarkRemovedLeases {
+        registry_id: u64,
+        member_id: u32,
+        removed: Vec<ReferenceId>,
+        revision: String,
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
+    ConsumeActionMarker {
+        registry_id: u64,
+        member_id: u32,
+        id: ReferenceId,
+        revision: String,
+        now: i64,
+        reply: oneshot::Sender<StoreResult<bool>>,
+    },
     /// The whole accepted snapshot in one transaction, before it is published.
     CommitBlocklist {
         snapshot: Arc<BlocklistSnapshot>,
@@ -343,24 +375,93 @@ enum StoreCommand {
 }
 
 impl StoreHandle {
-    pub async fn commit_action_leases(&self, registry_id: u64, member_id: u32, package: &str, leases: Vec<action_leases::ActionLease>, now: i64) -> StoreResult<()> {
-        self.critical(|reply| StoreCommand::CommitActionLeases { registry_id, member_id, package: package.to_owned(), leases, now, reply }).await
+    pub async fn commit_action_leases(
+        &self,
+        registry_id: u64,
+        member_id: u32,
+        package: &str,
+        leases: Vec<action_leases::ActionLease>,
+        now: i64,
+    ) -> StoreResult<()> {
+        self.critical(|reply| StoreCommand::CommitActionLeases {
+            registry_id,
+            member_id,
+            package: package.to_owned(),
+            leases,
+            now,
+            reply,
+        })
+        .await
     }
 
-    pub async fn get_action_lease(&self, registry_id: u64, member_id: u32, id: ReferenceId, now: i64) -> StoreResult<Option<action_leases::ActionLease>> {
-        self.critical(|reply| StoreCommand::GetActionLease { registry_id, member_id, id, now, reply }).await
+    pub async fn get_action_lease(
+        &self,
+        registry_id: u64,
+        member_id: u32,
+        id: ReferenceId,
+        now: i64,
+    ) -> StoreResult<Option<action_leases::ActionLease>> {
+        self.critical(|reply| StoreCommand::GetActionLease {
+            registry_id,
+            member_id,
+            id,
+            now,
+            reply,
+        })
+        .await
     }
 
-    pub async fn list_action_leases(&self, registry_id: u64, member_id: u32, package: &str, now: i64) -> StoreResult<Vec<action_leases::ActionLease>> {
-        self.critical(|reply| StoreCommand::ListActionLeases { registry_id, member_id, package: package.to_owned(), now, reply }).await
+    pub async fn list_action_leases(
+        &self,
+        registry_id: u64,
+        member_id: u32,
+        package: &str,
+        now: i64,
+    ) -> StoreResult<Vec<action_leases::ActionLease>> {
+        self.critical(|reply| StoreCommand::ListActionLeases {
+            registry_id,
+            member_id,
+            package: package.to_owned(),
+            now,
+            reply,
+        })
+        .await
     }
 
-    pub async fn mark_removed_leases(&self, registry_id: u64, member_id: u32, removed: Vec<ReferenceId>, revision: String) -> StoreResult<()> {
-        self.critical(|reply| StoreCommand::MarkRemovedLeases { registry_id, member_id, removed, revision, reply }).await
+    pub async fn mark_removed_leases(
+        &self,
+        registry_id: u64,
+        member_id: u32,
+        removed: Vec<ReferenceId>,
+        revision: String,
+    ) -> StoreResult<()> {
+        self.critical(|reply| StoreCommand::MarkRemovedLeases {
+            registry_id,
+            member_id,
+            removed,
+            revision,
+            reply,
+        })
+        .await
     }
 
-    pub async fn consume_action_marker(&self, registry_id: u64, member_id: u32, id: ReferenceId, revision: String, now: i64) -> StoreResult<bool> {
-        self.critical(|reply| StoreCommand::ConsumeActionMarker { registry_id, member_id, id, revision, now, reply }).await
+    pub async fn consume_action_marker(
+        &self,
+        registry_id: u64,
+        member_id: u32,
+        id: ReferenceId,
+        revision: String,
+        now: i64,
+    ) -> StoreResult<bool> {
+        self.critical(|reply| StoreCommand::ConsumeActionMarker {
+            registry_id,
+            member_id,
+            id,
+            revision,
+            now,
+            reply,
+        })
+        .await
     }
     /// A handle whose database never opened. Named rather than defaulted so a
     /// caller cannot produce one by accident.
@@ -435,8 +536,13 @@ impl StoreHandle {
         refresh: ProjectRefresh,
     ) -> StoreResult<CommittedProject> {
         let refresh = Box::new(refresh);
-        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata: true, reply })
-            .await
+        self.critical(|reply| StoreCommand::CommitProjectRefresh {
+            registry_id,
+            refresh,
+            persist_metadata: true,
+            reply,
+        })
+        .await
     }
 
     /// Persist reference identity, first-seen times and pins without retaining a
@@ -447,7 +553,13 @@ impl StoreHandle {
         refresh: ProjectRefresh,
     ) -> StoreResult<CommittedProject> {
         let refresh = Box::new(refresh);
-        self.critical(|reply| StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata: false, reply }).await
+        self.critical(|reply| StoreCommand::CommitProjectRefresh {
+            registry_id,
+            refresh,
+            persist_metadata: false,
+            reply,
+        })
+        .await
     }
 
     pub async fn get_reference(&self, id: ReferenceId) -> StoreResult<Option<ReferenceRow>> {
@@ -483,21 +595,52 @@ impl StoreHandle {
     }
 
     /// How many reference rows one project has (a NuGet project's lazily made rows are bounded by it).
-    pub async fn count_project_references_in(&self, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<u64> {
+    pub async fn count_project_references_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<u64> {
         let name = name.to_owned();
-        self.critical(|reply| StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply }).await
+        self.critical(|reply| StoreCommand::CountProjectReferences {
+            registry_id,
+            ecosystem,
+            name,
+            reply,
+        })
+        .await
     }
 
     /// How many distinct projects (OCI: repositories) have rows in one registry.
-    pub async fn count_registry_projects_in(&self, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<u64> {
-        self.critical(|reply| StoreCommand::CountRegistryProjects { registry_id, ecosystem, reply }).await
+    pub async fn count_registry_projects_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+    ) -> StoreResult<u64> {
+        self.critical(|reply| StoreCommand::CountRegistryProjects {
+            registry_id,
+            ecosystem,
+            reply,
+        })
+        .await
     }
 
     /// The upstream publication time of every reference of one project that has one, in one query (a Go list seeds
     /// its in-memory table from it after a restart or an eviction).
-    pub async fn list_project_publications_in(&self, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<HashMap<ReferenceId, i64>> {
+    pub async fn list_project_publications_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+        name: &str,
+    ) -> StoreResult<HashMap<ReferenceId, i64>> {
         let name = name.to_owned();
-        self.critical(|reply| StoreCommand::ListProjectPublications { registry_id, ecosystem, name, reply }).await
+        self.critical(|reply| StoreCommand::ListProjectPublications {
+            registry_id,
+            ecosystem,
+            name,
+            reply,
+        })
+        .await
     }
 
     /// The permanently pinned digests of every reference of one project, in one
@@ -535,9 +678,17 @@ impl StoreHandle {
         self.list_known_projects_in(0, ecosystem).await
     }
 
-    pub async fn list_known_projects_in(&self, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<Vec<String>> {
-        self.critical(|reply| StoreCommand::ListKnownProjects { registry_id, ecosystem, reply })
-            .await
+    pub async fn list_known_projects_in(
+        &self,
+        registry_id: u64,
+        ecosystem: Ecosystem,
+    ) -> StoreResult<Vec<String>> {
+        self.critical(|reply| StoreCommand::ListKnownProjects {
+            registry_id,
+            ecosystem,
+            reply,
+        })
+        .await
     }
 
     /// Persists the accepted snapshot. SPEC §10: "Persist a new blocklist before
@@ -838,11 +989,70 @@ async fn run(
 /// caller hears the answer.
 async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &AtomicBool) {
     match command {
-        StoreCommand::CommitActionLeases { registry_id, member_id, package, leases, now, reply } => answer(healthy, WRITE, reply, action_leases::commit(connection, registry_id, member_id, &package, &leases, now).await),
-        StoreCommand::GetActionLease { registry_id, member_id, id, now, reply } => answer(healthy, READ, reply, action_leases::get(connection, registry_id, member_id, id, now).await),
-        StoreCommand::ListActionLeases { registry_id, member_id, package, now, reply } => answer(healthy, READ, reply, action_leases::list_package(connection, registry_id, member_id, &package, now).await),
-        StoreCommand::MarkRemovedLeases { registry_id, member_id, removed, revision, reply } => answer(healthy, WRITE, reply, action_leases::mark_removed(connection, registry_id, member_id, &removed, &revision).await),
-        StoreCommand::ConsumeActionMarker { registry_id, member_id, id, revision, now, reply } => answer(healthy, WRITE, reply, action_leases::consume_marker(connection, registry_id, member_id, id, &revision, now).await),
+        StoreCommand::CommitActionLeases {
+            registry_id,
+            member_id,
+            package,
+            leases,
+            now,
+            reply,
+        } => answer(
+            healthy,
+            WRITE,
+            reply,
+            action_leases::commit(connection, registry_id, member_id, &package, &leases, now).await,
+        ),
+        StoreCommand::GetActionLease {
+            registry_id,
+            member_id,
+            id,
+            now,
+            reply,
+        } => answer(
+            healthy,
+            READ,
+            reply,
+            action_leases::get(connection, registry_id, member_id, id, now).await,
+        ),
+        StoreCommand::ListActionLeases {
+            registry_id,
+            member_id,
+            package,
+            now,
+            reply,
+        } => answer(
+            healthy,
+            READ,
+            reply,
+            action_leases::list_package(connection, registry_id, member_id, &package, now).await,
+        ),
+        StoreCommand::MarkRemovedLeases {
+            registry_id,
+            member_id,
+            removed,
+            revision,
+            reply,
+        } => answer(
+            healthy,
+            WRITE,
+            reply,
+            action_leases::mark_removed(connection, registry_id, member_id, &removed, &revision)
+                .await,
+        ),
+        StoreCommand::ConsumeActionMarker {
+            registry_id,
+            member_id,
+            id,
+            revision,
+            now,
+            reply,
+        } => answer(
+            healthy,
+            WRITE,
+            reply,
+            action_leases::consume_marker(connection, registry_id, member_id, id, &revision, now)
+                .await,
+        ),
         StoreCommand::CommitBlocklist { snapshot, reply } => {
             let result = commit_blocklist(connection, &snapshot).await;
             answer(healthy, WRITE, reply, result);
@@ -859,8 +1069,14 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = get_project(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::CommitProjectRefresh { registry_id, refresh, persist_metadata, reply } => {
-            let result = commit_project_refresh(connection, registry_id, &refresh, persist_metadata).await;
+        StoreCommand::CommitProjectRefresh {
+            registry_id,
+            refresh,
+            persist_metadata,
+            reply,
+        } => {
+            let result =
+                commit_project_refresh(connection, registry_id, &refresh, persist_metadata).await;
             answer(healthy, WRITE, reply, result);
         }
         StoreCommand::GetReference { id, reply } => {
@@ -875,19 +1091,37 @@ async fn execute(connection: &mut Connection, command: StoreCommand, healthy: &A
             let result = list_project_first_seen(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::CountRegistryProjects { registry_id, ecosystem, reply } => {
+        StoreCommand::CountRegistryProjects {
+            registry_id,
+            ecosystem,
+            reply,
+        } => {
             let result = count_registry_projects(connection, registry_id, ecosystem).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::CountProjectReferences { registry_id, ecosystem, name, reply } => {
+        StoreCommand::CountProjectReferences {
+            registry_id,
+            ecosystem,
+            name,
+            reply,
+        } => {
             let result = count_project_references(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::ListProjectPublications { registry_id, ecosystem, name, reply } => {
+        StoreCommand::ListProjectPublications {
+            registry_id,
+            ecosystem,
+            name,
+            reply,
+        } => {
             let result = list_project_publications(connection, registry_id, ecosystem, &name).await;
             answer(healthy, READ, reply, result);
         }
-        StoreCommand::ListKnownProjects { registry_id, ecosystem, reply } => {
+        StoreCommand::ListKnownProjects {
+            registry_id,
+            ecosystem,
+            reply,
+        } => {
             let result = list_known_projects(connection, registry_id, ecosystem).await;
             answer(healthy, READ, reply, result);
         }
@@ -990,7 +1224,10 @@ async fn get_project(
     name: &str,
 ) -> StoreResult<Option<ProjectRow>> {
     let mut rows = connection
-        .query(SELECT_PROJECT, (registry_id as i64, ecosystem.as_tag(), name))
+        .query(
+            SELECT_PROJECT,
+            (registry_id as i64, ecosystem.as_tag(), name),
+        )
         .await?;
     match rows.next().await? {
         Some(row) => ProjectRow::from_row(&row).map(Some),
@@ -1011,7 +1248,11 @@ async fn get_reference(
     }
 }
 
-async fn count_registry_projects(connection: &mut Connection, registry_id: u64, ecosystem: Ecosystem) -> StoreResult<u64> {
+async fn count_registry_projects(
+    connection: &mut Connection,
+    registry_id: u64,
+    ecosystem: Ecosystem,
+) -> StoreResult<u64> {
     let mut rows = connection
         .query("SELECT COUNT(DISTINCT name) FROM artifact_references WHERE registry_id = ?1 AND ecosystem = ?2", (registry_id as i64, ecosystem.as_tag()))
         .await?;
@@ -1021,7 +1262,12 @@ async fn count_registry_projects(connection: &mut Connection, registry_id: u64, 
     }
 }
 
-async fn count_project_references(connection: &mut Connection, registry_id: u64, ecosystem: Ecosystem, name: &str) -> StoreResult<u64> {
+async fn count_project_references(
+    connection: &mut Connection,
+    registry_id: u64,
+    ecosystem: Ecosystem,
+    name: &str,
+) -> StoreResult<u64> {
     let mut rows = connection
         .query("SELECT COUNT(*) FROM artifact_references WHERE registry_id = ?1 AND ecosystem = ?2 AND name = ?3", (registry_id as i64, ecosystem.as_tag(), name))
         .await?;
@@ -1037,11 +1283,19 @@ async fn list_project_publications(
     ecosystem: Ecosystem,
     name: &str,
 ) -> StoreResult<HashMap<ReferenceId, i64>> {
-    let mut rows = connection.query(SELECT_PROJECT_PUBLICATIONS, (registry_id as i64, ecosystem.as_tag(), name)).await?;
+    let mut rows = connection
+        .query(
+            SELECT_PROJECT_PUBLICATIONS,
+            (registry_id as i64, ecosystem.as_tag(), name),
+        )
+        .await?;
     let mut found = HashMap::new();
     while let Some(row) = rows.next().await? {
         let id = digest(&row, 0, "artifact_references.id")?;
-        found.insert(ReferenceId::from_bytes(id), integer(&row, 1, "artifact_references.publication_micros")?);
+        found.insert(
+            ReferenceId::from_bytes(id),
+            integer(&row, 1, "artifact_references.publication_micros")?,
+        );
     }
     Ok(found)
 }
@@ -1053,7 +1307,10 @@ async fn list_project_first_seen(
     name: &str,
 ) -> StoreResult<HashMap<ReferenceId, i64>> {
     let mut rows = connection
-        .query(SELECT_PROJECT_FIRST_SEEN, (registry_id as i64, ecosystem.as_tag(), name))
+        .query(
+            SELECT_PROJECT_FIRST_SEEN,
+            (registry_id as i64, ecosystem.as_tag(), name),
+        )
         .await?;
     let mut first_seen = HashMap::new();
     while let Some(row) = rows.next().await? {
@@ -1071,7 +1328,10 @@ async fn list_project_pins(
     name: &str,
 ) -> StoreResult<HashMap<ReferenceId, Vec<Digest>>> {
     let mut rows = connection
-        .query(SELECT_PROJECT_PINS, (registry_id as i64, ecosystem.as_tag(), name))
+        .query(
+            SELECT_PROJECT_PINS,
+            (registry_id as i64, ecosystem.as_tag(), name),
+        )
         .await?;
     let mut pins = HashMap::new();
     while let Some(row) = rows.next().await? {
@@ -1097,7 +1357,10 @@ async fn list_known_projects(
     ecosystem: Ecosystem,
 ) -> StoreResult<Vec<String>> {
     let mut rows = connection
-        .query(SELECT_KNOWN_PROJECTS, (registry_id as i64, ecosystem.as_tag()))
+        .query(
+            SELECT_KNOWN_PROJECTS,
+            (registry_id as i64, ecosystem.as_tag()),
+        )
         .await?;
     let mut names = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -1172,7 +1435,11 @@ async fn refresh_in(
         let mut rows = transaction
             .query(
                 SELECT_PROJECT_GENERATIONS,
-                (registry_id as i64, refresh.ecosystem.as_tag(), refresh.name.as_str()),
+                (
+                    registry_id as i64,
+                    refresh.ecosystem.as_tag(),
+                    refresh.name.as_str(),
+                ),
             )
             .await?;
         match rows.next().await? {
@@ -1190,23 +1457,25 @@ async fn refresh_in(
     // Read back from an `INTEGER` column and never incremented here, so it fits.
     let digest_generation_column = digest_generation.cast_signed();
 
-    if persist_metadata { transaction
-        .execute(
-            REPLACE_PROJECT,
-            (
-                registry_id as i64,
-                refresh.ecosystem.as_tag(),
-                refresh.name.as_str(),
-                refresh.payload.to_vec(),
-                refresh.validators.etag.clone(),
-                refresh.validators.last_modified.clone(),
-                refresh.validated_at_micros,
-                refresh.fetched_at_micros,
-                generation_column,
-                digest_generation_column,
-            ),
-        )
-        .await?; }
+    if persist_metadata {
+        transaction
+            .execute(
+                REPLACE_PROJECT,
+                (
+                    registry_id as i64,
+                    refresh.ecosystem.as_tag(),
+                    refresh.name.as_str(),
+                    refresh.payload.to_vec(),
+                    refresh.validators.etag.clone(),
+                    refresh.validators.last_modified.clone(),
+                    refresh.validated_at_micros,
+                    refresh.fetched_at_micros,
+                    generation_column,
+                    digest_generation_column,
+                ),
+            )
+            .await?;
+    }
 
     let mut committed_first_seen = HashMap::new();
     for upsert in &refresh.references {
@@ -1290,10 +1559,24 @@ async fn carried_forward(
         pinned_size: optional_unsigned(&row, 3, "artifact_references.pinned_size")?
             .map(|size| size as i64),
         content_key: optional_digest(&row, 4, "artifact_references.content_key")?,
-        publication_micros: if matches!(upsert.reference.ecosystem, crate::policy::Ecosystem::Go | crate::policy::Ecosystem::Maven | crate::policy::Ecosystem::Conan | crate::policy::Ecosystem::Oci) {
+        publication_micros: if matches!(
+            upsert.reference.ecosystem,
+            crate::policy::Ecosystem::Go
+                | crate::policy::Ecosystem::Maven
+                | crate::policy::Ecosystem::Conan
+                | crate::policy::Ecosystem::Oci
+        ) {
             // A Go date only gets later: the larger of the stored and the new one (the store task commits one
             // transaction at a time, so reading it here is the whole race).
-            upsert.publication_micros.into_iter().chain(optional_integer(&row, 5, "artifact_references.publication_micros")?).max()
+            upsert
+                .publication_micros
+                .into_iter()
+                .chain(optional_integer(
+                    &row,
+                    5,
+                    "artifact_references.publication_micros",
+                )?)
+                .max()
         } else {
             upsert.publication_micros
         },
@@ -1424,7 +1707,10 @@ async fn bump_digest_generation(
     name: &str,
 ) -> StoreResult<()> {
     connection
-        .execute(BUMP_DIGEST_GENERATION, (registry_id as i64, ecosystem.as_tag(), name))
+        .execute(
+            BUMP_DIGEST_GENERATION,
+            (registry_id as i64, ecosystem.as_tag(), name),
+        )
         .await?;
     Ok(())
 }

@@ -137,7 +137,10 @@ impl ContentStore {
     /// waits for the second before it removes the file. Returns `(reached, release)`.
     #[cfg(feature = "test-support")]
     pub fn hold_next_eviction(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        let handles = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let handles = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
         *self.evict_hold.lock().expect("the eviction hold") = Some(handles.clone());
         handles
     }
@@ -581,12 +584,25 @@ pub struct PinnedFile {
 impl PinnedFile {
     /// A verified body held in a request-owned temporary file (C1028). It is not in the
     /// shared content store, so nothing can evict, share or reuse it.
-    pub fn request_scoped(completed: crate::http::credential_temp::CompletedTemp, size: u64) -> PinnedFile {
+    pub fn request_scoped(
+        completed: crate::http::credential_temp::CompletedTemp,
+        size: u64,
+    ) -> PinnedFile {
         use std::io::Seek;
         let mut handle = &completed.file;
-        handle.seek(std::io::SeekFrom::Start(0)).expect("rewind the request-owned file");
-        let std_file = completed.file.try_clone().expect("duplicate the request-owned file handle");
-        PinnedFile { file: tokio::fs::File::from_std(std_file), size, _pin: None, _scoped: Some(completed) }
+        handle
+            .seek(std::io::SeekFrom::Start(0))
+            .expect("rewind the request-owned file");
+        let std_file = completed
+            .file
+            .try_clone()
+            .expect("duplicate the request-owned file handle");
+        PinnedFile {
+            file: tokio::fs::File::from_std(std_file),
+            size,
+            _pin: None,
+            _scoped: Some(completed),
+        }
     }
 
     pub fn size(&self) -> u64 {

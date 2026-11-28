@@ -36,8 +36,17 @@ pub enum TargetError {
 
 /// Loopback, unspecified and "this network", link-local, and the cloud metadata addresses.
 const BUILTIN: &[&str] = &[
-    "127.0.0.0/8", "::1/128", "0.0.0.0/8", "::/128", "169.254.0.0/16", "fe80::/10",
-    "169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128", "100.100.100.200/32", "192.0.0.192/32",
+    "127.0.0.0/8",
+    "::1/128",
+    "0.0.0.0/8",
+    "::/128",
+    "169.254.0.0/16",
+    "fe80::/10",
+    "169.254.169.254/32",
+    "169.254.170.2/32",
+    "fd00:ec2::254/128",
+    "100.100.100.200/32",
+    "192.0.0.192/32",
     // Teredo hides its address, so it is denied outright rather than unwrapped.
     "2001::/32",
 ];
@@ -46,14 +55,21 @@ impl Denylist {
     pub fn new(listener: Option<SocketAddr>, control_plane_cidrs: Vec<IpNet>) -> Denylist {
         // The `test-support` build has one more field; a release build (and `cargo clippy --lib`) has none to default.
         #[allow(clippy::needless_update)]
-        Denylist { listener, control_plane_cidrs, ..Denylist::default() }
+        Denylist {
+            listener,
+            control_plane_cidrs,
+            ..Denylist::default()
+        }
     }
 
     /// Test seam: only `ranges` are denied (no built-in ranges), so a loopback fake can be
     /// reached while one chosen address stays denied.
     #[cfg(feature = "test-support")]
     pub fn only(ranges: Vec<IpNet>) -> Denylist {
-        Denylist { builtin_override: Some(ranges), ..Denylist::default() }
+        Denylist {
+            builtin_override: Some(ranges),
+            ..Denylist::default()
+        }
     }
 
     /// Whether `ip`, or any IPv4 address it embeds, is denied.
@@ -83,7 +99,9 @@ impl Denylist {
     }
 
     fn is_own_listener(&self, ip: IpAddr, port: u16) -> bool {
-        let Some(listener) = self.listener else { return false };
+        let Some(listener) = self.listener else {
+            return false;
+        };
         if listener.port() != port {
             return false;
         }
@@ -111,9 +129,14 @@ impl Denylist {
     fn denies_literal(&self, ip: IpAddr) -> bool {
         #[cfg(feature = "test-support")]
         if let Some(ranges) = &self.builtin_override {
-            return ranges.iter().chain(&self.control_plane_cidrs).any(|net| net.contains(&ip));
+            return ranges
+                .iter()
+                .chain(&self.control_plane_cidrs)
+                .any(|net| net.contains(&ip));
         }
-        BUILTIN.iter().any(|net| net.parse::<IpNet>().is_ok_and(|net| net.contains(&ip)))
+        BUILTIN
+            .iter()
+            .any(|net| net.parse::<IpNet>().is_ok_and(|net| net.contains(&ip)))
             || self.control_plane_cidrs.iter().any(|net| net.contains(&ip))
     }
 }
@@ -167,7 +190,10 @@ pub fn check_target(url: &Url, deny: &Denylist) -> Result<(), TargetError> {
     if deny.denies(ip) {
         return Err(TargetError::Denied(ip));
     }
-    if url.port_or_known_default().is_some_and(|port| deny.is_own_listener(ip, port)) {
+    if url
+        .port_or_known_default()
+        .is_some_and(|port| deny.is_own_listener(ip, port))
+    {
         return Err(TargetError::Denied(ip));
     }
     Ok(())

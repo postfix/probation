@@ -17,8 +17,8 @@ finish() {
   # cluster of their own with a keep-flag, or a `kind` that fails to delete, must not be left with an open ingress).
   [ -z "${POLICIES_LIFTED:-}" ] || restore_policies >/dev/null 2>&1 || true
   kind export logs "$WORK_DIR/logs/kind" --name "$CLUSTER" >/dev/null 2>&1 || true
-  # the policy server's compose stack (LANE=cluster, pull_through_service), if it got that far
-  [ -z "${POLICY_STACK:-}" ] || node "$ROOT/tests/e2e/cluster/policy-server.mjs" down --work "$POLICY_STACK" >/dev/null 2>&1 || true
+  # the policy server's compose stack (LANE=cluster, pull_through_service), if it got that far; its logs go with the lane's
+  [ -z "${POLICY_STACK:-}" ] || node "$ROOT/tests/e2e/cluster/policy-server.mjs" down --work "$POLICY_STACK" --logs "$WORK_DIR/logs/policy-stack" >/dev/null 2>&1 || true
   # the lane's private registry container, if it got that far
   docker rm -f "$CLUSTER-private-registry" >/dev/null 2>&1 || true
   kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true

@@ -5,30 +5,30 @@
 //! the production implementations are named.
 
 pub mod artifacts;
+pub mod cargo_registry;
 pub mod clock;
+pub mod conan;
 pub mod concurrency;
 pub mod config;
 /// Where a decision record goes once it exists. Crate-internal: this feature adds no
 /// public Rust surface.
 pub(crate) mod delivery;
+pub mod go_modules;
 pub mod http;
 pub mod key_acl;
 pub mod lifecycle;
-pub mod service_failure;
-pub(crate) mod service_share;
-pub mod service_log;
 pub mod managed;
+pub mod maven;
 pub mod npm;
+pub mod nuget;
+pub mod oci;
 pub mod osv;
 pub mod policy;
 pub mod pypi;
 pub mod rubygems;
-pub mod cargo_registry;
-pub mod go_modules;
-pub mod nuget;
-pub mod maven;
-pub mod conan;
-pub mod oci;
+pub mod service_failure;
+pub mod service_log;
+pub(crate) mod service_share;
 pub mod store;
 pub mod tasks;
 pub mod upstream;
@@ -292,9 +292,13 @@ impl App {
             .as_ref()
             .and_then(|policy| policy.snapshot())
             .and_then(|snapshot| {
-                snapshot.registries.iter().find(|r| r.registry.0 == registry_id).map(|r| {
-                    osv::effective_scope(r.ecosystem, r.target_url.as_deref(), r.osv_scope)
-                })
+                snapshot
+                    .registries
+                    .iter()
+                    .find(|r| r.registry.0 == registry_id)
+                    .map(|r| {
+                        osv::effective_scope(r.ecosystem, r.target_url.as_deref(), r.osv_scope)
+                    })
             })
             .unwrap_or(probation_policy::api::OsvScope::Public)
     }
@@ -337,8 +341,11 @@ impl App {
     /// be recovered is not a reason to refuse to start — it is a reason to start with
     /// readiness false, which is the only way to say so.
     pub async fn start(deps: AppDeps) -> Result<Running, StartupError> {
-        store::lock::refuse_network_filesystem(&deps.config.data_dir, deps.config.allow_network_data_dir)
-            .map_err(|err| StartupError::DataDir(store::startup::StartupError::Lock(err)))?;
+        store::lock::refuse_network_filesystem(
+            &deps.config.data_dir,
+            deps.config.allow_network_data_dir,
+        )
+        .map_err(|err| StartupError::DataDir(store::startup::StartupError::Lock(err)))?;
         let opened = store::startup::open_and_recover(&deps.config.data_dir)
             .await
             .map_err(StartupError::DataDir)?;
@@ -397,7 +404,9 @@ impl App {
                     allow_http,
                     cache_ttl: osv_cache_ttl,
                     request_timeout: osv_request_timeout,
-                    stale_window: std::time::Duration::from_secs(deps.config.osv_stale_match_seconds),
+                    stale_window: std::time::Duration::from_secs(
+                        deps.config.osv_stale_match_seconds,
+                    ),
                     matches_path: Some(deps.config.data_dir.join("osv-matches")),
                 },
                 drain.clone(),
@@ -429,20 +438,37 @@ impl App {
                 &deps.config.data_dir,
             )
         });
-        let service_policy = deps.config.service_policy.as_ref().map(|config|
-            managed::service_policy::ServicePolicy::load_with_clock(config, &deps.config.data_dir, Arc::clone(&deps.clock)).with_listener(deps.config.listen).with_control_plane(deps.config.control_plane_cidrs.clone()).with_health(Arc::clone(&upstreams)));
-        let credential_temp = if service_policy.is_some() {
-            Some(http::credential_temp::CredentialTemp::open(
+        let service_policy = deps.config.service_policy.as_ref().map(|config| {
+            managed::service_policy::ServicePolicy::load_with_clock(
+                config,
                 &deps.config.data_dir,
-                http::credential_temp::Limits {
-                    max_request_bytes: deps.config.credential_temp_max_request_bytes,
-                    max_total_bytes: deps.config.credential_temp_max_total_bytes,
-                },
-            ).map_err(|_| StartupError::Delivery("the credential-reads directory is unsafe or cannot be created"))?)
+                Arc::clone(&deps.clock),
+            )
+            .with_listener(deps.config.listen)
+            .with_control_plane(deps.config.control_plane_cidrs.clone())
+            .with_health(Arc::clone(&upstreams))
+        });
+        let credential_temp = if service_policy.is_some() {
+            Some(
+                http::credential_temp::CredentialTemp::open(
+                    &deps.config.data_dir,
+                    http::credential_temp::Limits {
+                        max_request_bytes: deps.config.credential_temp_max_request_bytes,
+                        max_total_bytes: deps.config.credential_temp_max_total_bytes,
+                    },
+                )
+                .map_err(|_| {
+                    StartupError::Delivery(
+                        "the credential-reads directory is unsafe or cannot be created",
+                    )
+                })?,
+            )
         } else {
             None
         };
-        if let Some(policy) = &service_policy { let _ = policy.sync_once().await; }
+        if let Some(policy) = &service_policy {
+            let _ = policy.sync_once().await;
+        }
         let app = Arc::new(App {
             // SPEC §4's `max_upstream_requests`, around whichever transport was
             // injected. Ahead of `config`, which the next field moves.
@@ -533,8 +559,9 @@ impl App {
                 // variable. The peer address is offered to the router only when an
                 // operator has asked for it to be recorded, or managed mode counts
                 // lookups against it.
-                let connect_info =
-                    app.config.log_consumer_identification || app.config.management.is_some() || app.config.service_policy.is_some();
+                let connect_info = app.config.log_consumer_identification
+                    || app.config.management.is_some()
+                    || app.config.service_policy.is_some();
                 let router = http::router(app);
                 match tls {
                     Some(tls_config) => {

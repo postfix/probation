@@ -40,13 +40,20 @@ fn changes_body(since: u64, activity: Vec<ActivityEvent>, dropped: Vec<DroppedCo
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+                osv: Reachability::Ok,
+                rubygems: None,
+                cargo: None,
+                go: None,
+                nuget: None,
+                maven: None,
+                conan: None,
+                oci: None,
             },
         },
         effective_period_seconds: 55,
         version: "0.2.2".to_owned(),
         failed_revision: None,
-            osv: None,
+        osv: None,
     };
     serde_json::to_vec(&ChangesRequest {
         since,

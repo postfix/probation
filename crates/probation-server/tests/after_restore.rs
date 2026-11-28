@@ -241,13 +241,20 @@ async fn changes_reporting(
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+                osv: Reachability::Ok,
+                rubygems: None,
+                cargo: None,
+                go: None,
+                nuget: None,
+                maven: None,
+                conan: None,
+                oci: None,
             },
         },
         effective_period_seconds: 2,
         version: "0.2.2".to_owned(),
         failed_revision: None,
-            osv: None,
+        osv: None,
     };
     let body = serde_json::to_vec(&ChangesRequest {
         since,

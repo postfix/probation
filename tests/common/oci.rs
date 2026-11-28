@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use probation::oci::coords::{Algorithm, Digest};
-use probation::upstream::{ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, OciRequest, OciResponse, Transport, UpstreamError};
+use probation::upstream::{
+    ArtifactBody, ArtifactRequest, MetadataRequest, MetadataResponse, OciRequest, OciResponse,
+    Transport, UpstreamError,
+};
 
 pub const REGISTRY: &str = "https://oci.invalid";
 pub const CDN: &str = "https://cdn.invalid";
@@ -41,12 +44,22 @@ pub fn image(seed: &str, layers: &[&[u8]]) -> Image {
         "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": config.len()},
         "layers": descriptors,
     })).unwrap();
-    Image { digest: sha256(&manifest), manifest, config, config_digest, layers: layers.iter().map(|layer| layer.to_vec()).collect(), layer_digests }
+    Image {
+        digest: sha256(&manifest),
+        manifest,
+        config,
+        config_digest,
+        layers: layers.iter().map(|layer| layer.to_vec()).collect(),
+        layer_digests,
+    }
 }
 
 pub fn index_of(images: &[&Image]) -> (Vec<u8>, String) {
     let manifests: Vec<serde_json::Value> = images.iter().map(|image| serde_json::json!({"mediaType": OCI_MANIFEST, "digest": image.digest, "size": image.manifest.len(), "platform": {"architecture": "amd64", "os": "linux"}})).collect();
-    let body = serde_json::to_vec(&serde_json::json!({"schemaVersion": 2, "mediaType": OCI_INDEX, "manifests": manifests})).unwrap();
+    let body = serde_json::to_vec(
+        &serde_json::json!({"schemaVersion": 2, "mediaType": OCI_INDEX, "manifests": manifests}),
+    )
+    .unwrap();
     let digest = sha256(&body);
     (body, digest)
 }
@@ -106,44 +119,75 @@ impl FakeOci {
     pub fn put_image(&self, repo: &str, tag: Option<&str>, image: &Image) {
         self.with(|s| {
             if let Some(tag) = tag {
-                s.manifests.insert((repo.to_owned(), tag.to_owned()), (image.manifest.clone(), OCI_MANIFEST.to_owned()));
+                s.manifests.insert(
+                    (repo.to_owned(), tag.to_owned()),
+                    (image.manifest.clone(), OCI_MANIFEST.to_owned()),
+                );
             }
-            s.manifests.insert((repo.to_owned(), image.digest.clone()), (image.manifest.clone(), OCI_MANIFEST.to_owned()));
-            s.blobs.insert((repo.to_owned(), image.config_digest.clone()), image.config.clone());
+            s.manifests.insert(
+                (repo.to_owned(), image.digest.clone()),
+                (image.manifest.clone(), OCI_MANIFEST.to_owned()),
+            );
+            s.blobs.insert(
+                (repo.to_owned(), image.config_digest.clone()),
+                image.config.clone(),
+            );
             for (digest, bytes) in image.layer_digests.iter().zip(&image.layers) {
-                s.blobs.insert((repo.to_owned(), digest.clone()), bytes.clone());
+                s.blobs
+                    .insert((repo.to_owned(), digest.clone()), bytes.clone());
             }
         });
     }
 
     pub fn put_manifest(&self, repo: &str, reference: &str, body: &[u8], media: &str) {
         self.with(|s| {
-            s.manifests.insert((repo.to_owned(), reference.to_owned()), (body.to_vec(), media.to_owned()));
+            s.manifests.insert(
+                (repo.to_owned(), reference.to_owned()),
+                (body.to_vec(), media.to_owned()),
+            );
         });
     }
 
     pub fn put_blob(&self, repo: &str, digest: &str, bytes: &[u8]) {
         self.with(|s| {
-            s.blobs.insert((repo.to_owned(), digest.to_owned()), bytes.to_vec());
+            s.blobs
+                .insert((repo.to_owned(), digest.to_owned()), bytes.to_vec());
         });
     }
 
     pub fn put_tags(&self, repo: &str, tags: &[&str], link: Option<&str>) {
         self.with(|s| {
-            s.tags.insert(repo.to_owned(), (tags.iter().map(|t| (*t).to_owned()).collect(), link.map(str::to_owned)));
+            s.tags.insert(
+                repo.to_owned(),
+                (
+                    tags.iter().map(|t| (*t).to_owned()).collect(),
+                    link.map(str::to_owned),
+                ),
+            );
         });
     }
 
     pub fn put_referrers(&self, repo: &str, digest: &str, body: &str) {
         self.with(|s| {
-            s.referrers.insert((repo.to_owned(), digest.to_owned()), body.to_owned());
+            s.referrers
+                .insert((repo.to_owned(), digest.to_owned()), body.to_owned());
         });
     }
 
     /// A paged referrers list: the page that follows `last` (the first page is `""`), and the `Link` it carries.
-    pub fn put_referrer_page(&self, repo: &str, digest: &str, last: &str, body: &str, link: Option<&str>) {
+    pub fn put_referrer_page(
+        &self,
+        repo: &str,
+        digest: &str,
+        last: &str,
+        body: &str,
+        link: Option<&str>,
+    ) {
         self.with(|s| {
-            s.referrer_pages.insert((repo.to_owned(), digest.to_owned(), last.to_owned()), (body.to_owned(), link.map(str::to_owned)));
+            s.referrer_pages.insert(
+                (repo.to_owned(), digest.to_owned(), last.to_owned()),
+                (body.to_owned(), link.map(str::to_owned)),
+            );
         });
     }
 
@@ -216,7 +260,10 @@ impl FakeOci {
     /// The next registry blob download opens and then never delivers a byte: the returned pair is (`entered`, `dropped`). `entered` is
     /// notified once the download is open, `dropped` when the transfer lets go of its body (cancelled, or finished with it). No timing.
     pub fn hold_next_blob(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        let pair = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let pair = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
         self.with(|s| s.hold = Some(pair.clone()));
         pair
     }
@@ -237,7 +284,10 @@ impl FakeOci {
     }
 
     pub fn seen_matching(&self, needle: &str) -> Vec<Seen> {
-        self.seen().into_iter().filter(|call| call.path.contains(needle)).collect()
+        self.seen()
+            .into_iter()
+            .filter(|call| call.path.contains(needle))
+            .collect()
     }
 
     pub fn count(&self, needle: &str) -> usize {
@@ -253,8 +303,16 @@ impl FakeOci {
     }
 }
 
-fn answer(status: u16, headers: &[(&'static str, String)], body: impl Into<Bytes>) -> Result<OciResponse, UpstreamError> {
-    Ok(OciResponse { status, headers: headers.to_vec(), body: body.into() })
+fn answer(
+    status: u16,
+    headers: &[(&'static str, String)],
+    body: impl Into<Bytes>,
+) -> Result<OciResponse, UpstreamError> {
+    Ok(OciResponse {
+        status,
+        headers: headers.to_vec(),
+        body: body.into(),
+    })
 }
 
 struct InFlight<'a>(&'a FakeOci);
@@ -267,7 +325,10 @@ impl Drop for InFlight<'_> {
 
 #[async_trait]
 impl Transport for FakeOci {
-    async fn fetch_metadata(&self, _req: MetadataRequest) -> Result<MetadataResponse, UpstreamError> {
+    async fn fetch_metadata(
+        &self,
+        _req: MetadataRequest,
+    ) -> Result<MetadataResponse, UpstreamError> {
         Ok(MetadataResponse::Missing)
     }
 
@@ -287,7 +348,10 @@ impl Transport for FakeOci {
         let _guard = counted.then(|| InFlight(self));
         let full_path = req.url.path().to_owned();
         let prefix = self.state.lock().unwrap().prefix.clone();
-        let path = full_path.strip_prefix(&prefix).unwrap_or(&full_path).to_owned();
+        let path = full_path
+            .strip_prefix(&prefix)
+            .unwrap_or(&full_path)
+            .to_owned();
         let body_len = match req.body.as_mut() {
             Some((file, length)) => {
                 use tokio::io::AsyncReadExt;
@@ -299,49 +363,152 @@ impl Transport for FakeOci {
             None => 0,
         };
         let mut state = self.state.lock().unwrap();
-        state.seen.push(Seen { method: req.method.to_string(), path: full_path.clone(), query: req.url.query().map(str::to_owned), authorization: req.authorization.clone() });
+        state.seen.push(Seen {
+            method: req.method.to_string(),
+            path: full_path.clone(),
+            query: req.url.query().map(str::to_owned),
+            authorization: req.authorization.clone(),
+        });
         if state.offline {
             return Err(UpstreamError::Transport("offline".into()));
         }
         let origin = format!("{}://{}", req.url.scheme(), req.url.host_str().unwrap());
         if path == "/token" || path == "/jwt/auth" {
-            if state.deny_anonymous && !req.authorization.as_deref().is_some_and(|a| a.starts_with("Basic ")) {
+            if state.deny_anonymous
+                && !req
+                    .authorization
+                    .as_deref()
+                    .is_some_and(|a| a.starts_with("Basic "))
+            {
                 return answer(401, &[], "{}");
             }
-            let token = if req.authorization.as_deref().is_some_and(|a| a.starts_with("Basic ")) { "tok-user" } else { "tok-anon" };
-            return answer(200, &[("content-type", "application/json".into())], format!(r#"{{"token":"{token}","expires_in":300}}"#));
+            let token = if req
+                .authorization
+                .as_deref()
+                .is_some_and(|a| a.starts_with("Basic "))
+            {
+                "tok-user"
+            } else {
+                "tok-anon"
+            };
+            return answer(
+                200,
+                &[("content-type", "application/json".into())],
+                format!(r#"{{"token":"{token}","expires_in":300}}"#),
+            );
         }
-        let tokened = req.authorization.as_deref().is_some_and(|a| a.starts_with("Bearer tok-"));
-        let basic_ok = state.basic_only && req.authorization.as_deref().is_some_and(|a| a.starts_with("Basic "));
+        let tokened = req
+            .authorization
+            .as_deref()
+            .is_some_and(|a| a.starts_with("Bearer tok-"));
+        let basic_ok = state.basic_only
+            && req
+                .authorization
+                .as_deref()
+                .is_some_and(|a| a.starts_with("Basic "));
         if state.require_token && !tokened && !basic_ok {
-            let challenge = if state.basic_only { "Basic realm=\"fake\"".to_owned() } else { format!("Bearer realm=\"{}\",service=\"fake\"", state.foreign_realm.clone().unwrap_or(format!("{origin}{}/token", state.prefix))) };
+            let challenge = if state.basic_only {
+                "Basic realm=\"fake\"".to_owned()
+            } else {
+                format!(
+                    "Bearer realm=\"{}\",service=\"fake\"",
+                    state
+                        .foreign_realm
+                        .clone()
+                        .unwrap_or(format!("{origin}{}/token", state.prefix))
+                )
+            };
             return answer(401, &[("www-authenticate", challenge)], "{}");
         }
-        let Some(rest) = path.strip_prefix("/v2/").or(if path == "/v2" { Some("") } else { None }) else { return answer(404, &[], "") };
+        let Some(rest) = path
+            .strip_prefix("/v2/")
+            .or(if path == "/v2" { Some("") } else { None })
+        else {
+            return answer(404, &[], "");
+        };
         use probation::oci::coords::{Parsed, parse};
-        let Some(parsed) = parse(rest) else { return answer(404, &[], "") };
-        let write = !matches!(req.method.as_str(), "GET" | "HEAD") || matches!(parsed, Parsed::Upload { .. });
+        let Some(parsed) = parse(rest) else {
+            return answer(404, &[], "");
+        };
+        let write = !matches!(req.method.as_str(), "GET" | "HEAD")
+            || matches!(parsed, Parsed::Upload { .. });
         if write {
             let name = match &parsed {
-                Parsed::UploadStart { name } | Parsed::Upload { name, .. } | Parsed::Manifest { name, .. } | Parsed::Blob { name, .. } => name.clone(),
+                Parsed::UploadStart { name }
+                | Parsed::Upload { name, .. }
+                | Parsed::Manifest { name, .. }
+                | Parsed::Blob { name, .. } => name.clone(),
                 _ => return answer(404, &[], ""),
             };
-            state.writes.push((req.method.to_string(), format!("{}{}", full_path, req.url.query().map(|q| format!("?{q}")).unwrap_or_default()), body_len));
-            let location = state.location.clone().unwrap_or_else(|| format!("{}/v2/{name}/blobs/uploads/uuid-1?_state=opaque", state.prefix));
+            state.writes.push((
+                req.method.to_string(),
+                format!(
+                    "{}{}",
+                    full_path,
+                    req.url.query().map(|q| format!("?{q}")).unwrap_or_default()
+                ),
+                body_len,
+            ));
+            let location = state.location.clone().unwrap_or_else(|| {
+                format!(
+                    "{}/v2/{name}/blobs/uploads/uuid-1?_state=opaque",
+                    state.prefix
+                )
+            });
             return match (req.method.as_str(), &parsed) {
-                ("POST", Parsed::UploadStart { .. }) => answer(202, &[("location", location), ("docker-upload-uuid", "uuid-1".into()), ("range", "0-0".into())], ""),
-                ("PATCH", _) => answer(202, &[("location", location), ("docker-upload-uuid", "uuid-1".into()), ("range", format!("0-{}", body_len.saturating_sub(1)))], ""),
-                ("PUT", Parsed::Upload { .. }) => answer(201, &[("location", format!("{}/v2/{name}/blobs/sha256:{}", state.prefix, "0".repeat(64))), ("docker-content-digest", format!("sha256:{}", "0".repeat(64)))], ""),
+                ("POST", Parsed::UploadStart { .. }) => answer(
+                    202,
+                    &[
+                        ("location", location),
+                        ("docker-upload-uuid", "uuid-1".into()),
+                        ("range", "0-0".into()),
+                    ],
+                    "",
+                ),
+                ("PATCH", _) => answer(
+                    202,
+                    &[
+                        ("location", location),
+                        ("docker-upload-uuid", "uuid-1".into()),
+                        ("range", format!("0-{}", body_len.saturating_sub(1))),
+                    ],
+                    "",
+                ),
+                ("PUT", Parsed::Upload { .. }) => answer(
+                    201,
+                    &[
+                        (
+                            "location",
+                            format!("{}/v2/{name}/blobs/sha256:{}", state.prefix, "0".repeat(64)),
+                        ),
+                        (
+                            "docker-content-digest",
+                            format!("sha256:{}", "0".repeat(64)),
+                        ),
+                    ],
+                    "",
+                ),
                 ("PUT", Parsed::Manifest { .. }) => {
                     // A registry with the referrers API says so when a manifest names a subject.
-                    let mut headers = vec![("location", format!("{}/v2/{name}/manifests/x", state.prefix))];
+                    let mut headers = vec![(
+                        "location",
+                        format!("{}/v2/{name}/manifests/x", state.prefix),
+                    )];
                     if state.subject_answers {
                         headers.push(("oci-subject", format!("sha256:{}", "5".repeat(64))));
                     }
                     answer(201, &headers, "")
                 }
                 ("DELETE", _) => answer(202, &[], ""),
-                ("GET", Parsed::Upload { .. }) => answer(204, &[("location", location), ("docker-upload-uuid", "uuid-1".into()), ("range", "0-99".into())], ""),
+                ("GET", Parsed::Upload { .. }) => answer(
+                    204,
+                    &[
+                        ("location", location),
+                        ("docker-upload-uuid", "uuid-1".into()),
+                        ("range", "0-99".into()),
+                    ],
+                    "",
+                ),
                 _ => answer(405, &[], ""),
             };
         }
@@ -351,21 +518,43 @@ impl Transport for FakeOci {
                 let key = (name, reference.text());
                 match state.manifests.get(&key).cloned() {
                     Some((body, media)) => {
-                        let digest = state.claimed_digest.clone().unwrap_or_else(|| sha256(&body));
-                        let mut headers = vec![("content-type", media), ("docker-content-digest", digest)];
+                        let digest = state
+                            .claimed_digest
+                            .clone()
+                            .unwrap_or_else(|| sha256(&body));
+                        let mut headers =
+                            vec![("content-type", media), ("docker-content-digest", digest)];
                         headers.push(("content-length", body.len().to_string()));
-                        answer(200, &headers, if req.method.as_str() == "HEAD" { Vec::new() } else { body })
+                        answer(
+                            200,
+                            &headers,
+                            if req.method.as_str() == "HEAD" {
+                                Vec::new()
+                            } else {
+                                body
+                            },
+                        )
                     }
                     None => answer(404, &[], r#"{"errors":[{"code":"MANIFEST_UNKNOWN"}]}"#),
                 }
             }
             Parsed::Blob { name, digest } => match state.blobs.get(&(name, digest.to_string())) {
-                Some(bytes) => answer(200, &[("content-length", bytes.len().to_string())], Vec::new()),
+                Some(bytes) => answer(
+                    200,
+                    &[("content-length", bytes.len().to_string())],
+                    Vec::new(),
+                ),
                 None => answer(404, &[], ""),
             },
             Parsed::Tags { name } if state.big_tags > 0 => {
-                let tags: Vec<String> = (0..state.big_tags).map(|n| format!("tag-{n:012}")).collect();
-                answer(200, &[("content-type", "application/json".to_owned())], serde_json::json!({"name": name, "tags": tags}).to_string())
+                let tags: Vec<String> = (0..state.big_tags)
+                    .map(|n| format!("tag-{n:012}"))
+                    .collect();
+                answer(
+                    200,
+                    &[("content-type", "application/json".to_owned())],
+                    serde_json::json!({"name": name, "tags": tags}).to_string(),
+                )
             }
             Parsed::Tags { name } => match state.tags.get(&name).cloned() {
                 Some((tags, link)) => {
@@ -373,13 +562,26 @@ impl Transport for FakeOci {
                     if let Some(link) = link {
                         headers.push(("link", link));
                     }
-                    answer(200, &headers, serde_json::json!({"name": name, "tags": tags}).to_string())
+                    answer(
+                        200,
+                        &headers,
+                        serde_json::json!({"name": name, "tags": tags}).to_string(),
+                    )
                 }
                 None => answer(404, &[], ""),
             },
             Parsed::Referrers { name, digest } if !state.referrer_pages.is_empty() => {
-                let last = req.url.query_pairs().find(|(k, _)| k == "last").map(|(_, v)| v.into_owned()).unwrap_or_default();
-                match state.referrer_pages.get(&(name, digest.to_string(), last)).cloned() {
+                let last = req
+                    .url
+                    .query_pairs()
+                    .find(|(k, _)| k == "last")
+                    .map(|(_, v)| v.into_owned())
+                    .unwrap_or_default();
+                match state
+                    .referrer_pages
+                    .get(&(name, digest.to_string(), last))
+                    .cloned()
+                {
                     Some((body, link)) => {
                         let mut headers = vec![("content-type", OCI_INDEX.to_owned())];
                         if let Some(link) = link {
@@ -390,12 +592,18 @@ impl Transport for FakeOci {
                     None => answer(404, &[], ""),
                 }
             }
-            Parsed::Referrers { name, digest } => match state.referrers.get(&(name, digest.to_string())).cloned() {
-                Some(body) => answer(200, &[("content-type", OCI_INDEX.into())], body),
-                None => answer(404, &[], ""),
-            },
+            Parsed::Referrers { name, digest } => {
+                match state.referrers.get(&(name, digest.to_string())).cloned() {
+                    Some(body) => answer(200, &[("content-type", OCI_INDEX.into())], body),
+                    None => answer(404, &[], ""),
+                }
+            }
             Parsed::Catalog => match state.catalog.clone() {
-                Some((body, link)) => answer(200, &link.map(|l| vec![("link", l)]).unwrap_or_default(), body),
+                Some((body, link)) => answer(
+                    200,
+                    &link.map(|l| vec![("link", l)]).unwrap_or_default(),
+                    body,
+                ),
                 None => answer(404, &[], ""),
             },
             _ => answer(404, &[], ""),
@@ -408,28 +616,71 @@ impl Transport for FakeOci {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
         let mut state = self.state.lock().unwrap();
-        state.artifacts.push((req.url.path().to_owned(), req.read_authorization.clone(), req.archive_origin.clone(), req.allow_archive_redirect));
-        state.seen.push(Seen { method: "GET".into(), path: req.url.path().to_owned(), query: None, authorization: req.read_authorization.clone() });
+        state.artifacts.push((
+            req.url.path().to_owned(),
+            req.read_authorization.clone(),
+            req.archive_origin.clone(),
+            req.allow_archive_redirect,
+        ));
+        state.seen.push(Seen {
+            method: "GET".into(),
+            path: req.url.path().to_owned(),
+            query: None,
+            authorization: req.read_authorization.clone(),
+        });
         if state.offline {
             return Err(UpstreamError::Transport("offline".into()));
         }
         if let Some(bytes) = state.foreign.get(req.url.as_str()).cloned() {
             let declared = bytes.len() as u64;
-            return Ok(ArtifactBody { declared_length: Some(declared), stream: probation::upstream::capped(Box::pin(futures_util::stream::once(async move { Ok(Bytes::from(bytes)) })), req.max_bytes) });
+            return Ok(ArtifactBody {
+                declared_length: Some(declared),
+                stream: probation::upstream::capped(
+                    Box::pin(futures_util::stream::once(
+                        async move { Ok(Bytes::from(bytes)) },
+                    )),
+                    req.max_bytes,
+                ),
+            });
         }
-        if state.require_token && !req.read_authorization.as_deref().is_some_and(|a| a.starts_with("Bearer tok-") || (state.basic_only && a.starts_with("Basic "))) {
+        if state.require_token
+            && !req.read_authorization.as_deref().is_some_and(|a| {
+                a.starts_with("Bearer tok-") || (state.basic_only && a.starts_with("Basic "))
+            })
+        {
             return Err(UpstreamError::Status(401));
         }
         use probation::oci::coords::{Parsed, parse};
-        let stripped = req.url.path().strip_prefix(state.prefix.as_str()).unwrap_or(req.url.path()).to_owned();
-        let Some(Parsed::Blob { name, digest }) = stripped.strip_prefix("/v2/").and_then(parse) else { return Err(UpstreamError::Status(404)) };
-        let Some(bytes) = state.blobs.get(&(name, digest.to_string())).cloned() else { return Err(UpstreamError::Status(404)) };
+        let stripped = req
+            .url
+            .path()
+            .strip_prefix(state.prefix.as_str())
+            .unwrap_or(req.url.path())
+            .to_owned();
+        let Some(Parsed::Blob { name, digest }) = stripped.strip_prefix("/v2/").and_then(parse)
+        else {
+            return Err(UpstreamError::Status(404));
+        };
+        let Some(bytes) = state.blobs.get(&(name, digest.to_string())).cloned() else {
+            return Err(UpstreamError::Status(404));
+        };
         let declared = bytes.len() as u64;
         if let Some((entered, dropped)) = state.hold.take() {
             entered.notify_one();
-            return Ok(ArtifactBody { declared_length: Some(declared), stream: probation::upstream::capped(Box::pin(Held(dropped)), req.max_bytes) });
+            return Ok(ArtifactBody {
+                declared_length: Some(declared),
+                stream: probation::upstream::capped(Box::pin(Held(dropped)), req.max_bytes),
+            });
         }
-        Ok(ArtifactBody { declared_length: Some(declared), stream: probation::upstream::capped(Box::pin(futures_util::stream::once(async move { Ok(Bytes::from(bytes)) })), req.max_bytes) })
+        Ok(ArtifactBody {
+            declared_length: Some(declared),
+            stream: probation::upstream::capped(
+                Box::pin(futures_util::stream::once(
+                    async move { Ok(Bytes::from(bytes)) },
+                )),
+                req.max_bytes,
+            ),
+        })
     }
 }
 
@@ -438,7 +689,10 @@ struct Held(Arc<tokio::sync::Notify>);
 
 impl futures_util::Stream for Held {
     type Item = Result<Bytes, UpstreamError>;
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         std::task::Poll::Pending
     }
 }

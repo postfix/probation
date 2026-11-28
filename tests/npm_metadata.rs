@@ -2107,10 +2107,13 @@ async fn a_computed_digest_block_hides_the_version_at_the_next_resolution_under_
     {
         let app = server.app();
         let bytes = read.approximate_bytes();
-        app.store()
-            .caches()
-            .projects
-            .insert_if_current(&probation::http::credential_read::CacheToken::for_test_support(), key, read, bytes, seen);
+        app.store().caches().projects.insert_if_current(
+            &probation::http::credential_read::CacheToken::for_test_support(),
+            key,
+            read,
+            bytes,
+            seen,
+        );
     }
 
     publish_blocklist(

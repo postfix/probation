@@ -3359,25 +3359,34 @@ async fn t_cross_tenant_routes_accounts() {
     let before = state(&fx.db).await;
     for (method, path) in routes {
         let (param, globex_id) = ids.iter().find(|(param, _)| path.contains(*param)).unwrap();
-        let with_id = |id: i32| path.replace(param, &id.to_string()).replace("{registry}", "999999");
+        let with_id = |id: i32| {
+            path.replace(param, &id.to_string())
+                .replace("{registry}", "999999")
+        };
         let csrf = ana.get("/account").await.csrf();
         let mut answers = Vec::new();
         for id in [*globex_id, 999_999] {
             let page = match method {
                 "GET" => ana.get(&with_id(id)).await,
-                _ => ana.post_raw(&with_id(id), &[
-                    ("csrf", &csrf),
-                    ("identity_field", "uri_san_membership_uuid"),
-                    ("expected_ocsp_url", "https://ocsp.example.test/status"),
-                    ("root_pem", "forged"),
-                    ("chain_pem", "forged"),
-                    ("phase", "good"),
-                    ("name", "forged"),
-                    ("ecosystem", "npm"),
-                    ("target_url", "https://registry.npmjs.org/"),
-                    ("purpose", "registry"),
-                    ("cidr", "10.0.0.0/24"),
-                ]).await,
+                _ => {
+                    ana.post_raw(
+                        &with_id(id),
+                        &[
+                            ("csrf", &csrf),
+                            ("identity_field", "uri_san_membership_uuid"),
+                            ("expected_ocsp_url", "https://ocsp.example.test/status"),
+                            ("root_pem", "forged"),
+                            ("chain_pem", "forged"),
+                            ("phase", "good"),
+                            ("name", "forged"),
+                            ("ecosystem", "npm"),
+                            ("target_url", "https://registry.npmjs.org/"),
+                            ("purpose", "registry"),
+                            ("cidr", "10.0.0.0/24"),
+                        ],
+                    )
+                    .await
+                }
             };
             answers.push((page.status, page.body));
         }

@@ -139,9 +139,14 @@ pub(crate) async fn lookup_certificate(
     };
     let next_url = if certificates.len() > 50 {
         certificates.truncate(50);
-        let before = certificates.last().expect("page contains 50 certificates").0;
+        let before = certificates
+            .last()
+            .expect("page contains 50 certificates")
+            .0;
         let encoded: String = url::form_urlencoded::byte_serialize(email.as_bytes()).collect();
-        Some(format!("/org/{org}/certificates/lookup?email={encoded}&before={before}"))
+        Some(format!(
+            "/org/{org}/certificates/lookup?email={encoded}&before={before}"
+        ))
     } else {
         None
     };

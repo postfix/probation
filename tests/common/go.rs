@@ -18,7 +18,11 @@ pub fn crc32(data: &[u8]) -> u32 {
     for byte in data {
         crc ^= u32::from(*byte);
         for _ in 0..8 {
-            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -43,7 +47,9 @@ pub fn module_zip(module: &str, version: &str, source: &str) -> Vec<u8> {
         out.extend_from_slice(&[0, 0]);
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(data);
-        central.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0]);
+        central.extend_from_slice(&[
+            0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0,
+        ]);
         central.extend_from_slice(&crc.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());

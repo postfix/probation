@@ -13,8 +13,8 @@ use axum::{
 use probation_policy::{
     Ecosystem,
     api::{
-        KeyHash, KeyLookup, OsvScope, PlaceLayer, RegistryDeletionScope, RegistryDescriptor, RegistryId,
-        ServicePolicySnapshot,
+        KeyHash, KeyLookup, OsvScope, PlaceLayer, RegistryDeletionScope, RegistryDescriptor,
+        RegistryId, ServicePolicySnapshot,
     },
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -55,7 +55,10 @@ async fn snapshot(
     let scope = match require_live_service_scope(&mut tx, key).await? {
         Ok(scope) => scope,
         // Only a live key passes the guard, so this is always the refusal.
-        Err(standing) => return Err(crate::order_guards::snapshot_order(standing, true).expect_err("a live key is not a refusal")),
+        Err(standing) => {
+            return Err(crate::order_guards::snapshot_order(standing, true)
+                .expect_err("a live key is not a refusal"));
+        }
     };
     {
         let now = Instant::now();
@@ -148,14 +151,33 @@ async fn load_policy_snapshot(
             revision,
         });
     }
-    type Row = (i64, String, Option<String>, bool, Option<String>, Option<String>, Option<String>, Option<String>);
+    type Row = (
+        i64,
+        String,
+        Option<String>,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT id, ecosystem, target_url, trusted, osv_scope, archive_origin, resource_path_prefix, token_origin FROM registries WHERE org_id = $1 AND removed_at IS NULL ORDER BY id LIMIT 257"
     ).bind(snapshot.org.0 as i32).fetch_all(&mut **tx).await.map_err(unavailable)?;
     if rows.len() > 256 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    for (id, tag, target_url, trusted, osv_scope, archive_origin, resource_path_prefix, token_origin) in rows {
+    for (
+        id,
+        tag,
+        target_url,
+        trusted,
+        osv_scope,
+        archive_origin,
+        resource_path_prefix,
+        token_origin,
+    ) in rows
+    {
         let ecosystem = match tag.as_str() {
             "npm" => Ecosystem::Npm,
             "pypi" => Ecosystem::PyPi,
@@ -215,12 +237,14 @@ pub async fn set_osv_scope(
         OsvScope::Public => "public",
         OsvScope::Private => "private",
     });
-    let done = sqlx::query("UPDATE registries SET osv_scope = $1 WHERE id = $2 AND org_id = $3 AND removed_at IS NULL")
-        .bind(column)
-        .bind(registry)
-        .bind(org)
-        .execute(executor)
-        .await?;
+    let done = sqlx::query(
+        "UPDATE registries SET osv_scope = $1 WHERE id = $2 AND org_id = $3 AND removed_at IS NULL",
+    )
+    .bind(column)
+    .bind(registry)
+    .bind(org)
+    .execute(executor)
+    .await?;
     Ok(done.rows_affected() == 1)
 }
 
@@ -270,7 +294,12 @@ pub fn valid_token_origin(text: &str) -> Option<url::Url> {
 
 /// Sets (`Some`) or clears (`None`) an OCI registry's token origin. False when the registry is not this organisation's live OCI
 /// registry with a target.
-pub async fn set_token_origin(executor: impl sqlx::PgExecutor<'_>, org: i32, registry: i64, origin: Option<&str>) -> Result<bool, sqlx::Error> {
+pub async fn set_token_origin(
+    executor: impl sqlx::PgExecutor<'_>,
+    org: i32,
+    registry: i64,
+    origin: Option<&str>,
+) -> Result<bool, sqlx::Error> {
     let done = sqlx::query("UPDATE registries SET token_origin = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'oci' AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(origin)
         .bind(registry)
@@ -282,7 +311,12 @@ pub async fn set_token_origin(executor: impl sqlx::PgExecutor<'_>, org: i32, reg
 
 /// Sets (`Some`) or clears (`None`) a NuGet registry's resource path prefix. False when the registry is not this
 /// organisation's live NuGet registry with a target.
-pub async fn set_resource_prefix(executor: impl sqlx::PgExecutor<'_>, org: i32, registry: i64, prefix: Option<&str>) -> Result<bool, sqlx::Error> {
+pub async fn set_resource_prefix(
+    executor: impl sqlx::PgExecutor<'_>,
+    org: i32,
+    registry: i64,
+    prefix: Option<&str>,
+) -> Result<bool, sqlx::Error> {
     let done = sqlx::query("UPDATE registries SET resource_path_prefix = $1 WHERE id = $2 AND org_id = $3 AND ecosystem = 'nuget' AND target_url IS NOT NULL AND removed_at IS NULL")
         .bind(prefix)
         .bind(registry)
@@ -294,8 +328,14 @@ pub async fn set_resource_prefix(executor: impl sqlx::PgExecutor<'_>, org: i32, 
 
 /// The id of a live service-kind key (`prb_`, not revoked), for the OSV route's closed
 /// credential set. User-kind, firewall-kind, revoked and unknown keys are `None`.
-pub(crate) async fn live_service_key_id(pool: &PgPool, key: &str) -> Result<Option<(i64, String, Option<i32>)>, sqlx::Error> {
-    if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|b| b.is_ascii_alphanumeric()) {
+pub(crate) async fn live_service_key_id(
+    pool: &PgPool,
+    key: &str,
+) -> Result<Option<(i64, String, Option<i32>)>, sqlx::Error> {
+    if key.len() != 36
+        || !key.starts_with("prb_")
+        || !key[4..].bytes().all(|b| b.is_ascii_alphanumeric())
+    {
         return Ok(None);
     }
     sqlx::query_as("SELECT id::bigint, place_kind,

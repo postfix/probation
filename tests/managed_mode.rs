@@ -886,12 +886,24 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 Ecosystem::Npm => h.server.url("/npm/racy-widget"),
                 Ecosystem::PyPi => h.server.url("/pypi/simple/racy-alpha/"),
                 Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
-                Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-                Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-                Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-                Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-                Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-                Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+                Ecosystem::Cargo => unreachable!(
+                    "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+                ),
+                Ecosystem::Go => unreachable!(
+                    "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+                ),
+                Ecosystem::NuGet => unreachable!(
+                    "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+                ),
+                Ecosystem::Maven => unreachable!(
+                    "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+                ),
+                Ecosystem::Conan => unreachable!(
+                    "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+                ),
+                Ecosystem::Oci => unreachable!(
+                    "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+                ),
             };
             client
                 .get(url)
@@ -932,23 +944,47 @@ async fn refresh_never_carries_pins_older_than_its_generation() {
                 pypi(&key_a()).await
             }
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
-            Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-            Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-            Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-            Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+            Ecosystem::Cargo => unreachable!(
+                "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+            ),
+            Ecosystem::Go => unreachable!(
+                "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+            ),
+            Ecosystem::NuGet => unreachable!(
+                "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+            ),
+            Ecosystem::Maven => unreachable!(
+                "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+            ),
+            Ecosystem::Conan => unreachable!(
+                "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+            ),
+            Ecosystem::Oci => unreachable!(
+                "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+            ),
         };
         match ecosystem {
             Ecosystem::Npm => assert_eq!(versions_of(&again), [NEW], "and the next one"),
             Ecosystem::PyPi => assert_eq!(listed(&again).len(), 1, "and the next one"),
             Ecosystem::RubyGems => unreachable!("this race loops npm and PyPI only"),
-            Ecosystem::Cargo => unreachable!("this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"),
-            Ecosystem::Go => unreachable!("this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"),
-            Ecosystem::NuGet => unreachable!("this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"),
-            Ecosystem::Maven => unreachable!("this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"),
-            Ecosystem::Conan => unreachable!("this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"),
-            Ecosystem::Oci => unreachable!("this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"),
+            Ecosystem::Cargo => unreachable!(
+                "this matrix loops npm and PyPI only; Cargo is covered in tests/cargo_registry.rs"
+            ),
+            Ecosystem::Go => unreachable!(
+                "this matrix loops npm and PyPI only; Go is covered in tests/go_modules.rs"
+            ),
+            Ecosystem::NuGet => unreachable!(
+                "this matrix loops npm and PyPI only; NuGet is covered in tests/nuget_registry.rs"
+            ),
+            Ecosystem::Maven => unreachable!(
+                "this matrix loops npm and PyPI only; Maven is covered in tests/maven_registry.rs"
+            ),
+            Ecosystem::Conan => unreachable!(
+                "this matrix loops npm and PyPI only; Conan is covered in tests/conan_registry.rs"
+            ),
+            Ecosystem::Oci => unreachable!(
+                "this matrix loops npm and PyPI only; OCI is covered in tests/oci_registry.rs"
+            ),
         }
     }
 }
@@ -1179,22 +1215,54 @@ async fn t_pypi_root_index_empty() {
 async fn rubygems_fully_refused_listing_records_one_decision() {
     let gem = "gemx";
     let h = harness(
-        vec![Block::Package { ecosystem: Ecosystem::RubyGems, name: gem.to_owned(), reason: None }],
+        vec![Block::Package {
+            ecosystem: Ecosystem::RubyGems,
+            name: gem.to_owned(),
+            reason: None,
+        }],
         |_| {},
     )
     .await;
-    let path = fake_origins().url_for(probation::upstream::OriginKind::RubygemsMetadata, &["info", gem]).unwrap().path().to_owned();
-    h.registry.answer(&path, FakeAnswer::Body(format!("---\n1.0.0 |checksum:{},created_at:2025-01-01T00:00:00Z\n", "ab".repeat(32))));
+    let path = fake_origins()
+        .url_for(
+            probation::upstream::OriginKind::RubygemsMetadata,
+            &["info", gem],
+        )
+        .unwrap()
+        .path()
+        .to_owned();
+    h.registry.answer(
+        &path,
+        FakeAnswer::Body(format!(
+            "---\n1.0.0 |checksum:{},created_at:2025-01-01T00:00:00Z\n",
+            "ab".repeat(32)
+        )),
+    );
     let refused = h.get(&format!("/rubygems/info/{gem}"), &key_a()).await;
     assert_eq!(refused.status(), StatusCode::OK);
-    assert_eq!(refused.text().await.unwrap(), "---\n", "Globex blocks the gem");
+    assert_eq!(
+        refused.text().await.unwrap(),
+        "---\n",
+        "Globex blocks the gem"
+    );
     let served = h.get(&format!("/rubygems/info/{gem}"), &key_b()).await;
-    assert!(served.text().await.unwrap().contains("1.0.0"), "Acme's policy keeps the line");
+    assert!(
+        served.text().await.unwrap().contains("1.0.0"),
+        "Acme's policy keeps the line"
+    );
     // The queue is read directly: no sync round is needed to see what the request recorded.
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::RubyGems)).collect();
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::RubyGems))
+        .collect();
     assert_eq!(events.len(), 1, "{events:#?}");
-    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(gem), None));
+    assert_eq!(
+        (events[0].package.as_deref(), events[0].version.as_deref()),
+        (Some(gem), None)
+    );
     h.server.shutdown().await;
 }
 
@@ -1204,20 +1272,54 @@ async fn rubygems_fully_refused_listing_records_one_decision() {
 #[tokio::test]
 async fn cargo_key_route_challenges_and_advertises_auth_required() {
     let h = harness(vec![], |_| {}).await;
-    let path = |segments: &[&str]| fake_origins().url_for(probation::upstream::OriginKind::CargoIndex, segments).unwrap().path().to_owned();
-    h.registry.answer(&path(&["config.json"]), FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()));
+    let path = |segments: &[&str]| {
+        fake_origins()
+            .url_for(probation::upstream::OriginKind::CargoIndex, segments)
+            .unwrap()
+            .path()
+            .to_owned()
+    };
+    h.registry.answer(
+        &path(&["config.json"]),
+        FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()),
+    );
     let anonymous = h.server.get("/cargo/config.json").await;
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
-    let challenges: Vec<String> = anonymous.headers().get_all("www-authenticate").iter().map(|v| v.to_str().unwrap().to_owned()).collect();
-    assert!(challenges.iter().any(|c| c.starts_with("Basic ")) && challenges.iter().any(|c| c.starts_with("Cargo login_url=\"")), "{challenges:?}");
+    let challenges: Vec<String> = anonymous
+        .headers()
+        .get_all("www-authenticate")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        challenges.iter().any(|c| c.starts_with("Basic "))
+            && challenges
+                .iter()
+                .any(|c| c.starts_with("Cargo login_url=\"")),
+        "{challenges:?}"
+    );
     let download = h.server.get("/cargo/crates/demo/1.0.0/download").await;
     assert_eq!(download.status(), StatusCode::UNAUTHORIZED);
-    assert!(download.headers().get_all("www-authenticate").iter().any(|v| v.to_str().unwrap().starts_with("Cargo ")));
+    assert!(
+        download
+            .headers()
+            .get_all("www-authenticate")
+            .iter()
+            .any(|v| v.to_str().unwrap().starts_with("Cargo "))
+    );
     let served = h.get("/cargo/config.json", &key_a()).await;
     assert_eq!(served.status(), StatusCode::OK);
     let config: Value = serde_json::from_slice(&served.bytes().await.unwrap()).unwrap();
-    assert_eq!(config["auth-required"], true, "cargo sends its token only to a registry that says so");
-    assert_eq!(h.get("/cargo/config.json", "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        config["auth-required"], true,
+        "cargo sends its token only to a registry that says so"
+    );
+    assert_eq!(
+        h.get("/cargo/config.json", "prb_not_a_known_key_0123456789ab")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
     h.server.shutdown().await;
 }
 
@@ -1228,23 +1330,54 @@ async fn cargo_key_route_challenges_and_advertises_auth_required() {
 async fn cargo_fully_refused_listing_records_one_decision() {
     let krate = "cratex";
     let h = harness(
-        vec![Block::Package { ecosystem: Ecosystem::Cargo, name: krate.to_owned(), reason: None }],
+        vec![Block::Package {
+            ecosystem: Ecosystem::Cargo,
+            name: krate.to_owned(),
+            reason: None,
+        }],
         |_| {},
     )
     .await;
-    let path = |segments: &[&str]| fake_origins().url_for(probation::upstream::OriginKind::CargoIndex, segments).unwrap().path().to_owned();
-    h.registry.answer(&path(&["config.json"]), FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()));
-    let line = format!(r#"{{"name":"{krate}","vers":"1.0.0","deps":[],"cksum":"{}","features":{{}},"yanked":false,"pubtime":"2025-01-01T00:00:00Z"}}"#, "ab".repeat(32));
-    h.registry.answer(&path(&["cr", "at", krate]), FakeAnswer::Body(format!("{line}\n")));
+    let path = |segments: &[&str]| {
+        fake_origins()
+            .url_for(probation::upstream::OriginKind::CargoIndex, segments)
+            .unwrap()
+            .path()
+            .to_owned()
+    };
+    h.registry.answer(
+        &path(&["config.json"]),
+        FakeAnswer::Body(r#"{"dl":"https://static.crates.io/crates"}"#.to_owned()),
+    );
+    let line = format!(
+        r#"{{"name":"{krate}","vers":"1.0.0","deps":[],"cksum":"{}","features":{{}},"yanked":false,"pubtime":"2025-01-01T00:00:00Z"}}"#,
+        "ab".repeat(32)
+    );
+    h.registry.answer(
+        &path(&["cr", "at", krate]),
+        FakeAnswer::Body(format!("{line}\n")),
+    );
     let refused = h.get(&format!("/cargo/cr/at/{krate}"), &key_a()).await;
     assert_eq!(refused.status(), StatusCode::OK);
     assert_eq!(refused.text().await.unwrap(), "", "Globex blocks the crate");
     let served = h.get(&format!("/cargo/cr/at/{krate}"), &key_b()).await;
-    assert_eq!(served.text().await.unwrap(), format!("{line}\n"), "Acme's policy keeps the line");
+    assert_eq!(
+        served.text().await.unwrap(),
+        format!("{line}\n"),
+        "Acme's policy keeps the line"
+    );
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Cargo)).collect();
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::Cargo))
+        .collect();
     assert_eq!(events.len(), 1, "{events:#?}");
-    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(krate), None));
+    assert_eq!(
+        (events[0].package.as_deref(), events[0].version.as_deref()),
+        (Some(krate), None)
+    );
     h.server.shutdown().await;
 }
 
@@ -1255,29 +1388,75 @@ async fn cargo_fully_refused_listing_records_one_decision() {
 #[tokio::test]
 async fn go_key_route_authenticates_every_read_and_refuses_a_blocked_module_locally() {
     let module = "example.com/gox";
-    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Go, name: module.to_owned(), reason: None }], |_| {}).await;
+    let h = harness(
+        vec![Block::Package {
+            ecosystem: Ecosystem::Go,
+            name: module.to_owned(),
+            reason: None,
+        }],
+        |_| {},
+    )
+    .await;
     let path = |tail: &str| {
         let mut segments: Vec<&str> = module.split('/').collect();
         segments.extend(tail.split('/'));
-        fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &segments).unwrap().path().to_owned()
+        fake_origins()
+            .url_for(probation::upstream::OriginKind::GoProxy, &segments)
+            .unwrap()
+            .path()
+            .to_owned()
     };
-    h.registry.answer(&path("@v/list"), FakeAnswer::Body("v1.0.0\n".to_owned()));
-    h.registry.answer(&path("@v/v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
+    h.registry
+        .answer(&path("@v/list"), FakeAnswer::Body("v1.0.0\n".to_owned()));
+    h.registry.answer(
+        &path("@v/v1.0.0.info"),
+        FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()),
+    );
     for tail in ["@v/list", "@latest", "@v/v1.0.0.info", "@v/v1.0.0.zip"] {
         let anonymous = h.server.get(&format!("/go/{module}/{tail}")).await;
         assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{tail}");
     }
-    assert_eq!(h.get(&format!("/go/{module}/@v/list"), "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
-    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    assert_eq!(
+        h.get(
+            &format!("/go/{module}/@v/list"),
+            "prb_not_a_known_key_0123456789ab"
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "no upstream call before authentication"
+    );
     let refused = h.get(&format!("/go/{module}/@v/list"), &key_a()).await;
-    assert_eq!(refused.status(), StatusCode::FORBIDDEN, "Globex blocks the module");
-    assert!(h.registry.calls().is_empty(), "a blocked module reaches no upstream call");
+    assert_eq!(
+        refused.status(),
+        StatusCode::FORBIDDEN,
+        "Globex blocks the module"
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "a blocked module reaches no upstream call"
+    );
     let served = h.get(&format!("/go/{module}/@v/list"), &key_b()).await;
-    assert_eq!(served.text().await.unwrap(), "v1.0.0\n", "Acme's policy keeps the version");
+    assert_eq!(
+        served.text().await.unwrap(),
+        "v1.0.0\n",
+        "Acme's policy keeps the version"
+    );
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Go)).collect();
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::Go))
+        .collect();
     assert_eq!(events.len(), 1, "{events:#?}");
-    assert_eq!((events[0].package.as_deref(), events[0].version.as_deref()), (Some(module), None));
+    assert_eq!(
+        (events[0].package.as_deref(), events[0].version.as_deref()),
+        (Some(module), None)
+    );
     h.server.shutdown().await;
 }
 
@@ -1287,32 +1466,120 @@ async fn go_key_route_authenticates_every_read_and_refuses_a_blocked_module_loca
 /// local (no upstream call) and leaves one decision record.
 #[tokio::test]
 async fn nuget_key_route_authenticates_every_read_and_refuses_a_blocked_package_locally() {
-    let h = harness(vec![Block::Package { ecosystem: Ecosystem::NuGet, name: "Evil.Pkg".to_owned(), reason: None }], |_| {}).await;
+    let h = harness(
+        vec![Block::Package {
+            ecosystem: Ecosystem::NuGet,
+            name: "Evil.Pkg".to_owned(),
+            reason: None,
+        }],
+        |_| {},
+    )
+    .await;
     let index = serde_json::json!({"version": "3.0.0", "resources": [
         {"@id": "https://api.nuget.org/v3-flatcontainer/", "@type": "PackageBaseAddress/3.0.0"},
         {"@id": "https://api.nuget.org/v3/registration5-gz-semver2/", "@type": "RegistrationsBaseUrl/Versioned"},
     ]});
-    h.registry.answer("/v3/index.json", FakeAnswer::Body(index.to_string()));
-    h.registry.answer("/v3-flatcontainer/evil.pkg/index.json", FakeAnswer::Body(r#"{"versions":["1.0.0"]}"#.to_owned()));
-    let (registration, _) = common::nuget::registration("evil.pkg", &[vec![common::nuget::leaf("evil.pkg", "1.0.0", Some("2025-01-01T00:00:00.000+00:00"), true)]], &[]);
-    h.registry.answer("/v3/registration5-gz-semver2/evil.pkg/index.json", FakeAnswer::Body(registration));
-    for path in ["/nuget/v3/index.json", "/nuget/v3-flatcontainer/evil.pkg/index.json", "/nuget/v3/registration/evil.pkg/index.json", "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg", "/nuget/v3/query?q=x"] {
-        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+    h.registry
+        .answer("/v3/index.json", FakeAnswer::Body(index.to_string()));
+    h.registry.answer(
+        "/v3-flatcontainer/evil.pkg/index.json",
+        FakeAnswer::Body(r#"{"versions":["1.0.0"]}"#.to_owned()),
+    );
+    let (registration, _) = common::nuget::registration(
+        "evil.pkg",
+        &[vec![common::nuget::leaf(
+            "evil.pkg",
+            "1.0.0",
+            Some("2025-01-01T00:00:00.000+00:00"),
+            true,
+        )]],
+        &[],
+    );
+    h.registry.answer(
+        "/v3/registration5-gz-semver2/evil.pkg/index.json",
+        FakeAnswer::Body(registration),
+    );
+    for path in [
+        "/nuget/v3/index.json",
+        "/nuget/v3-flatcontainer/evil.pkg/index.json",
+        "/nuget/v3/registration/evil.pkg/index.json",
+        "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg",
+        "/nuget/v3/query?q=x",
+    ] {
+        assert_eq!(
+            h.server.get(path).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
     }
-    assert_eq!(h.get("/nuget/v3-flatcontainer/evil.pkg/index.json", "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
-    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
-    for path in ["/nuget/v3-flatcontainer/evil.pkg/index.json", "/nuget/v3/registration/evil.pkg/index.json", "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg"] {
-        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the id: {path}");
+    assert_eq!(
+        h.get(
+            "/nuget/v3-flatcontainer/evil.pkg/index.json",
+            "prb_not_a_known_key_0123456789ab"
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "no upstream call before authentication"
+    );
+    for path in [
+        "/nuget/v3-flatcontainer/evil.pkg/index.json",
+        "/nuget/v3/registration/evil.pkg/index.json",
+        "/nuget/v3-flatcontainer/evil.pkg/1.0.0/evil.pkg.1.0.0.nupkg",
+    ] {
+        assert_eq!(
+            h.get(path, &key_a()).await.status(),
+            StatusCode::FORBIDDEN,
+            "Globex blocks the id: {path}"
+        );
     }
-    assert!(h.registry.calls().is_empty(), "a blocked id reaches no upstream call");
-    assert_eq!(h.get("/nuget/v3-flatcontainer/evil.pkg/index.json", &key_b()).await.text().await.unwrap(), r#"{"versions":["1.0.0"]}"#, "Acme's policy keeps the version");
+    assert!(
+        h.registry.calls().is_empty(),
+        "a blocked id reaches no upstream call"
+    );
+    assert_eq!(
+        h.get("/nuget/v3-flatcontainer/evil.pkg/index.json", &key_b())
+            .await
+            .text()
+            .await
+            .unwrap(),
+        r#"{"versions":["1.0.0"]}"#,
+        "Acme's policy keeps the version"
+    );
     // The key route serves no publish endpoint: a managed firewall forwards no writes.
-    let put = reqwest::Client::new().put(h.server.url("/nuget/api/v2/package")).header("x-nuget-apikey", "k").body("x").send().await.unwrap();
-    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    let put = reqwest::Client::new()
+        .put(h.server.url("/nuget/api/v2/package"))
+        .header("x-nuget-apikey", "k")
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        matches!(put.status().as_u16(), 404 | 405),
+        "{}",
+        put.status()
+    );
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::NuGet)).collect();
-    assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
-    assert!(events.iter().all(|e| e.package.as_deref() == Some("evil.pkg")), "{events:#?}");
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::NuGet))
+        .collect();
+    assert_eq!(
+        events.len(),
+        3,
+        "one decision record per refusal: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e.package.as_deref() == Some("evil.pkg")),
+        "{events:#?}"
+    );
     h.server.shutdown().await;
 }
 
@@ -1322,30 +1589,124 @@ async fn nuget_key_route_authenticates_every_read_and_refuses_a_blocked_package_
 /// decision record per refusal; the key route serves no deploy endpoint.
 #[tokio::test]
 async fn maven_key_route_authenticates_every_read_and_refuses_a_blocked_coordinate_locally() {
-    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Maven, name: "org.evil:Bad".to_owned(), reason: None }], |_| {}).await;
-    h.registry.answer("/maven2/org/evil/Bad/maven-metadata.xml", FakeAnswer::Body(common::maven::metadata("org.evil", "Bad", "1.0", "1.0", &["1.0"])));
-    h.registry.answer("/maven2/org/evil/Bad/1.0/Bad-1.0.pom", FakeAnswer::Dated { body: common::maven::pom("org.evil", "Bad", "1.0").into_bytes(), last_modified: common::maven::http_date("2025-01-01T00:00:00Z") });
-    h.registry.answer("/maven2/org/evil/Bad/1.0/Bad-1.0.jar", FakeAnswer::Dated { body: common::maven::jar("Bad", "1.0"), last_modified: common::maven::http_date("2025-01-01T00:00:00Z") });
-    let paths = ["/maven/org/evil/Bad/maven-metadata.xml", "/maven/org/evil/Bad/maven-metadata.xml.sha1", "/maven/org/evil/Bad/1.0/Bad-1.0.jar", "/maven/org/evil/Bad/1.0/Bad-1.0.pom.sha1"];
+    let h = harness(
+        vec![Block::Package {
+            ecosystem: Ecosystem::Maven,
+            name: "org.evil:Bad".to_owned(),
+            reason: None,
+        }],
+        |_| {},
+    )
+    .await;
+    h.registry.answer(
+        "/maven2/org/evil/Bad/maven-metadata.xml",
+        FakeAnswer::Body(common::maven::metadata(
+            "org.evil",
+            "Bad",
+            "1.0",
+            "1.0",
+            &["1.0"],
+        )),
+    );
+    h.registry.answer(
+        "/maven2/org/evil/Bad/1.0/Bad-1.0.pom",
+        FakeAnswer::Dated {
+            body: common::maven::pom("org.evil", "Bad", "1.0").into_bytes(),
+            last_modified: common::maven::http_date("2025-01-01T00:00:00Z"),
+        },
+    );
+    h.registry.answer(
+        "/maven2/org/evil/Bad/1.0/Bad-1.0.jar",
+        FakeAnswer::Dated {
+            body: common::maven::jar("Bad", "1.0"),
+            last_modified: common::maven::http_date("2025-01-01T00:00:00Z"),
+        },
+    );
+    let paths = [
+        "/maven/org/evil/Bad/maven-metadata.xml",
+        "/maven/org/evil/Bad/maven-metadata.xml.sha1",
+        "/maven/org/evil/Bad/1.0/Bad-1.0.jar",
+        "/maven/org/evil/Bad/1.0/Bad-1.0.pom.sha1",
+    ];
     for path in paths {
-        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(
+            h.server.get(path).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
     }
-    assert_eq!(h.get(paths[0], "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
-    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    assert_eq!(
+        h.get(paths[0], "prb_not_a_known_key_0123456789ab")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "no upstream call before authentication"
+    );
     for path in paths {
-        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the coordinate: {path}");
+        assert_eq!(
+            h.get(path, &key_a()).await.status(),
+            StatusCode::FORBIDDEN,
+            "Globex blocks the coordinate: {path}"
+        );
     }
-    assert!(h.registry.calls().is_empty(), "a blocked coordinate reaches no upstream call");
-    let served = h.get("/maven/org/evil/Bad/maven-metadata.xml", &key_b()).await;
-    assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps the version");
-    assert!(served.text().await.unwrap().contains("<version>1.0</version>"));
-    assert_eq!(h.get("/maven/org/evil/Bad/1.0/Bad-1.0.jar", &key_b()).await.status(), StatusCode::OK);
-    let put = reqwest::Client::new().put(h.server.url("/maven/org/evil/Bad/1.0/Bad-1.0.jar")).header("authorization", "Basic dTpw").body("x").send().await.unwrap();
-    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    assert!(
+        h.registry.calls().is_empty(),
+        "a blocked coordinate reaches no upstream call"
+    );
+    let served = h
+        .get("/maven/org/evil/Bad/maven-metadata.xml", &key_b())
+        .await;
+    assert_eq!(
+        served.status(),
+        StatusCode::OK,
+        "Acme's policy keeps the version"
+    );
+    assert!(
+        served
+            .text()
+            .await
+            .unwrap()
+            .contains("<version>1.0</version>")
+    );
+    assert_eq!(
+        h.get("/maven/org/evil/Bad/1.0/Bad-1.0.jar", &key_b())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let put = reqwest::Client::new()
+        .put(h.server.url("/maven/org/evil/Bad/1.0/Bad-1.0.jar"))
+        .header("authorization", "Basic dTpw")
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        matches!(put.status().as_u16(), 404 | 405),
+        "{}",
+        put.status()
+    );
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Maven)).collect();
-    assert_eq!(events.len(), 4, "one decision record per refusal: {events:#?}");
-    assert!(events.iter().all(|e| e.package.as_deref() == Some("org.evil:Bad")), "{events:#?}");
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::Maven))
+        .collect();
+    assert_eq!(
+        events.len(),
+        4,
+        "one decision record per refusal: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e.package.as_deref() == Some("org.evil:Bad")),
+        "{events:#?}"
+    );
     h.server.shutdown().await;
 }
 
@@ -1356,26 +1717,50 @@ async fn maven_key_route_authenticates_every_read_and_refuses_a_blocked_coordina
 #[tokio::test]
 async fn go_request_released_across_a_policy_publication_is_admitted_again() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    for (publications, expected) in [(0usize, StatusCode::OK), (1, StatusCode::OK), (2, StatusCode::OK), (3, StatusCode::SERVICE_UNAVAILABLE)] {
+    for (publications, expected) in [
+        (0usize, StatusCode::OK),
+        (1, StatusCode::OK),
+        (2, StatusCode::OK),
+        (3, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
         let h = harness(vec![], |_| {}).await;
         let path = |tail: &str| {
             let mut segments: Vec<&str> = "example.com/rt".split('/').collect();
             segments.extend(tail.split('/'));
-            fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &segments).unwrap().path().to_owned()
+            fake_origins()
+                .url_for(probation::upstream::OriginKind::GoProxy, &segments)
+                .unwrap()
+                .path()
+                .to_owned()
         };
-        h.registry.answer(&path("@v/v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
-        h.registry.answer(&path("@v/v1.0.0.mod"), FakeAnswer::Body("module example.com/rt\n".to_owned()));
+        h.registry.answer(
+            &path("@v/v1.0.0.info"),
+            FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()),
+        );
+        h.registry.answer(
+            &path("@v/v1.0.0.mod"),
+            FakeAnswer::Body("module example.com/rt\n".to_owned()),
+        );
         let gate = Arc::clone(h.server.app().managed().unwrap().publication_gate());
         let left = Arc::new(AtomicUsize::new(publications));
         let (writer, counter) = (Arc::clone(&gate), Arc::clone(&left));
         gate.set_barrier(Arc::new(move || {
-            if counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+            if counter
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
                 let writer = Arc::clone(&writer);
-                std::thread::spawn(move || writer.publish(|| ()).unwrap()).join().unwrap();
+                std::thread::spawn(move || writer.publish(|| ()).unwrap())
+                    .join()
+                    .unwrap();
             }
         }));
         let answer = h.get("/go/example.com/rt/@v/v1.0.0.mod", &key_b()).await;
-        assert_eq!(answer.status(), expected, "{publications} publications landing between authorisation and release");
+        assert_eq!(
+            answer.status(),
+            expected,
+            "{publications} publications landing between authorisation and release"
+        );
         if expected == StatusCode::OK {
             assert_eq!(answer.text().await.unwrap(), "module example.com/rt\n");
         }
@@ -1393,15 +1778,31 @@ async fn go_revision_queries_are_bounded_per_key_and_junk_cannot_block_another_k
         async move { h.get(&path, &key).await.status() }
     };
     for n in 0..32 {
-        assert_ne!(status(format!("/go/example.com/rv/@v/junk{n}.info"), key_a()).await, StatusCode::TOO_MANY_REQUESTS, "{n}");
+        assert_ne!(
+            status(format!("/go/example.com/rv/@v/junk{n}.info"), key_a()).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{n}"
+        );
     }
-    assert_eq!(status("/go/example.com/rv/@v/junk32.info".to_owned(), key_a()).await, StatusCode::TOO_MANY_REQUESTS, "the 33rd distinct token of one key");
-    assert_ne!(status("/go/example.com/rv/@v/main.info".to_owned(), key_b()).await, StatusCode::TOO_MANY_REQUESTS, "another key still resolves");
+    assert_eq!(
+        status("/go/example.com/rv/@v/junk32.info".to_owned(), key_a()).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the 33rd distinct token of one key"
+    );
+    assert_ne!(
+        status("/go/example.com/rv/@v/main.info".to_owned(), key_b()).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "another key still resolves"
+    );
     // A thousand junk module names from one key fill no table another key needs.
     for n in 0..1100 {
         let _ = status(format!("/go/junk{n}.example.com/m/@v/a.info"), key_a()).await;
     }
-    assert_ne!(status("/go/example.com/other/@v/main.info".to_owned(), key_b()).await, StatusCode::TOO_MANY_REQUESTS, "the table is not full for everyone");
+    assert_ne!(
+        status("/go/example.com/other/@v/main.info".to_owned(), key_b()).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the table is not full for everyone"
+    );
     h.server.shutdown().await;
 }
 
@@ -1416,14 +1817,22 @@ async fn go_block_published_while_the_request_is_in_flight_wins() {
     }
     #[async_trait::async_trait]
     impl Transport for Held {
-        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
-            if request.url.path().contains("/mid.example/") && request.url.path().ends_with(".info") {
+        async fn fetch_metadata(
+            &self,
+            request: probation::upstream::MetadataRequest,
+        ) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError>
+        {
+            if request.url.path().contains("/mid.example/") && request.url.path().ends_with(".info")
+            {
                 self.arrived.notify_one();
                 self.release.notified().await;
             }
             self.inner.fetch_metadata(request).await
         }
-        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+        async fn open_artifact(
+            &self,
+            request: probation::upstream::ArtifactRequest,
+        ) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
             self.inner.open_artifact(request).await
         }
     }
@@ -1432,31 +1841,75 @@ async fn go_block_published_while_the_request_is_in_flight_wins() {
     sync.layer(org(ACME), org_blocking(Vec::new()));
     sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
     let registry = FakeRegistry::new();
-    let path_of = |tail: &str| fake_origins().url_for(probation::upstream::OriginKind::GoProxy, &["mid.example", "m", "@v", tail]).unwrap().path().to_owned();
-    registry.answer(&path_of("v1.0.0.info"), FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()));
-    registry.answer(&path_of("v1.0.0.mod"), FakeAnswer::Body("module mid.example/m // before the block\n".to_owned()));
-    let held = Arc::new(Held { inner: registry, arrived: Default::default(), release: Default::default() });
+    let path_of = |tail: &str| {
+        fake_origins()
+            .url_for(
+                probation::upstream::OriginKind::GoProxy,
+                &["mid.example", "m", "@v", tail],
+            )
+            .unwrap()
+            .path()
+            .to_owned()
+    };
+    registry.answer(
+        &path_of("v1.0.0.info"),
+        FakeAnswer::Body(r#"{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}"#.to_owned()),
+    );
+    registry.answer(
+        &path_of("v1.0.0.mod"),
+        FakeAnswer::Body("module mid.example/m // before the block\n".to_owned()),
+    );
+    let held = Arc::new(Held {
+        inner: registry,
+        arrived: Default::default(),
+        release: Default::default(),
+    });
     let dir = tempfile::tempdir().unwrap();
     let mut config = sync.managed(config_with_open_blocklist(dir.path()));
     config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
     let clock = TestClock::at_rfc3339(NOW);
-    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, fake_origins()).await);
+    let server = Arc::new(
+        TestServer::start_with_upstream(
+            config,
+            clock.shared(),
+            Arc::clone(&held) as Arc<dyn Transport>,
+            fake_origins(),
+        )
+        .await,
+    );
     let fetch = {
         let (server, key) = (Arc::clone(&server), key_b());
         tokio::spawn(async move {
-            let response = reqwest::Client::new().get(server.url("/go/mid.example/m/@v/v1.0.0.mod")).header("authorization", bearer(&key)).send().await.unwrap();
+            let response = reqwest::Client::new()
+                .get(server.url("/go/mid.example/m/@v/v1.0.0.mod"))
+                .header("authorization", bearer(&key))
+                .send()
+                .await
+                .unwrap();
             (response.status().as_u16(), response.text().await.unwrap())
         })
     };
     held.arrived.notified().await;
-    let revision = sync.edit_layer(org(ACME), org_blocking(vec![Block::Package { ecosystem: Ecosystem::Go, name: "mid.example/m".to_owned(), reason: None }]));
+    let revision = sync.edit_layer(
+        org(ACME),
+        org_blocking(vec![Block::Package {
+            ecosystem: Ecosystem::Go,
+            name: "mid.example/m".to_owned(),
+            reason: None,
+        }]),
+    );
     clock.advance_seconds(70);
     sync.applied(revision).await;
     // Wait until the new policy is the one the firewall serves (a second request of the same key is refused locally),
     // while the first is still in flight; only then let it go on.
     let mut applied = false;
     for _ in 0..200 {
-        let probe = reqwest::Client::new().get(server.url("/go/mid.example/m/@v/list")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        let probe = reqwest::Client::new()
+            .get(server.url("/go/mid.example/m/@v/list"))
+            .header("authorization", bearer(&key_b()))
+            .send()
+            .await
+            .unwrap();
         if probe.status() == StatusCode::FORBIDDEN {
             applied = true;
             break;
@@ -1482,14 +1935,23 @@ async fn a_conan_search_does_not_list_what_a_layer_published_mid_search_holds() 
     }
     #[async_trait::async_trait]
     impl Transport for Held {
-        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
-            if request.url.path().contains("/slowmid/") && request.url.path().ends_with("/revisions") {
+        async fn fetch_metadata(
+            &self,
+            request: probation::upstream::MetadataRequest,
+        ) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError>
+        {
+            if request.url.path().contains("/slowmid/")
+                && request.url.path().ends_with("/revisions")
+            {
                 self.arrived.notify_one();
                 self.release.notified().await;
             }
             self.inner.fetch_metadata(request).await
         }
-        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+        async fn open_artifact(
+            &self,
+            request: probation::upstream::ArtifactRequest,
+        ) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
             self.inner.open_artifact(request).await
         }
     }
@@ -1500,31 +1962,74 @@ async fn a_conan_search_does_not_list_what_a_layer_published_mid_search_holds() 
     let registry = FakeRegistry::new();
     let day_old = "2026-04-05T12:00:00Z";
     for name in ["slowmid", "fastmid"] {
-        registry.answer(&common::conan::at(&format!("{}/revisions", common::conan::base(name, "1.0"))), FakeAnswer::Body(common::conan::revisions_doc(("reference", &format!("{name}/1.0@_/_")), &[("aaaa0000000000000000000000000001", Some(day_old))])));
+        registry.answer(
+            &common::conan::at(&format!("{}/revisions", common::conan::base(name, "1.0"))),
+            FakeAnswer::Body(common::conan::revisions_doc(
+                ("reference", &format!("{name}/1.0@_/_")),
+                &[("aaaa0000000000000000000000000001", Some(day_old))],
+            )),
+        );
     }
-    registry.answer(&common::conan::at("v2/conans/search"), FakeAnswer::Body(common::conan::search_doc(&["slowmid/1.0@_/_", "fastmid/1.0@_/_"])));
-    let held = Arc::new(Held { inner: registry, arrived: Default::default(), release: Default::default() });
+    registry.answer(
+        &common::conan::at("v2/conans/search"),
+        FakeAnswer::Body(common::conan::search_doc(&[
+            "slowmid/1.0@_/_",
+            "fastmid/1.0@_/_",
+        ])),
+    );
+    let held = Arc::new(Held {
+        inner: registry,
+        arrived: Default::default(),
+        release: Default::default(),
+    });
     let dir = tempfile::tempdir().unwrap();
     let mut config = sync.managed(config_with_open_blocklist(dir.path()));
     config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
     let clock = TestClock::at_rfc3339(NOW);
-    let origins = fake_origins().with_conan(url::Url::parse(common::conan::REMOTE).unwrap(), url::Url::parse(common::conan::PUBLISH).unwrap());
-    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, origins).await);
+    let origins = fake_origins().with_conan(
+        url::Url::parse(common::conan::REMOTE).unwrap(),
+        url::Url::parse(common::conan::PUBLISH).unwrap(),
+    );
+    let server = Arc::new(
+        TestServer::start_with_upstream(
+            config,
+            clock.shared(),
+            Arc::clone(&held) as Arc<dyn Transport>,
+            origins,
+        )
+        .await,
+    );
     let search = {
         let (server, key) = (Arc::clone(&server), key_b());
         tokio::spawn(async move {
-            let response = reqwest::Client::new().get(server.url("/conan/v2/conans/search?q=*")).header("authorization", bearer(&key)).send().await.unwrap();
+            let response = reqwest::Client::new()
+                .get(server.url("/conan/v2/conans/search?q=*"))
+                .header("authorization", bearer(&key))
+                .send()
+                .await
+                .unwrap();
             (response.status().as_u16(), response.text().await.unwrap())
         })
     };
     held.arrived.notified().await;
-    let revision = sync.edit_layer(org(ACME), Layer { freeze_seconds: Some(7 * 86_400), ..org_blocking(Vec::new()) });
+    let revision = sync.edit_layer(
+        org(ACME),
+        Layer {
+            freeze_seconds: Some(7 * 86_400),
+            ..org_blocking(Vec::new())
+        },
+    );
     clock.advance_seconds(70);
     sync.applied(revision).await;
     // The new layer is the one the firewall serves once a fresh read of the day-old reference is held.
     let mut applied = false;
     for _ in 0..200 {
-        let probe = reqwest::Client::new().get(server.url("/conan/v2/conans/fastmid/1.0/_/_/latest")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        let probe = reqwest::Client::new()
+            .get(server.url("/conan/v2/conans/fastmid/1.0/_/_/latest"))
+            .header("authorization", bearer(&key_b()))
+            .send()
+            .await
+            .unwrap();
         if probe.status() == StatusCode::FORBIDDEN {
             applied = true;
             break;
@@ -1534,7 +2039,10 @@ async fn a_conan_search_does_not_list_what_a_layer_published_mid_search_holds() 
     assert!(applied, "the layer reached the firewall");
     held.release.notify_one();
     let (status, body) = search.await.unwrap();
-    assert!(!body.contains("fastmid") && !body.contains("slowmid"), "nothing judged under the old layer is listed under the new one: {status} {body}");
+    assert!(
+        !body.contains("fastmid") && !body.contains("slowmid"),
+        "nothing judged under the old layer is listed under the new one: {status} {body}"
+    );
 }
 
 /// Recheck-5 R5-1: a Conan search re-reads the key's policy when it is done, and that costs the account no second token of its rate limit.
@@ -1545,19 +2053,61 @@ async fn a_conan_search_costs_one_rate_token() {
     sync.layer(org(ACME), org_blocking(Vec::new()));
     sync.known_key_limited(&key_b(), &[PLATFORM, org(ACME)], Some(2));
     let registry = FakeRegistry::new();
-    registry.answer(&common::conan::at("v2/conans/search"), FakeAnswer::Body(common::conan::search_doc(&["tok/1.0@_/_"])));
-    registry.answer(&common::conan::at(&format!("{}/revisions", common::conan::base("tok", "1.0"))), FakeAnswer::Body(common::conan::revisions_doc(("reference", "tok/1.0@_/_"), &[("aaaa0000000000000000000000000001", Some("2025-01-01T00:00:00Z"))])));
+    registry.answer(
+        &common::conan::at("v2/conans/search"),
+        FakeAnswer::Body(common::conan::search_doc(&["tok/1.0@_/_"])),
+    );
+    registry.answer(
+        &common::conan::at(&format!("{}/revisions", common::conan::base("tok", "1.0"))),
+        FakeAnswer::Body(common::conan::revisions_doc(
+            ("reference", "tok/1.0@_/_"),
+            &[(
+                "aaaa0000000000000000000000000001",
+                Some("2025-01-01T00:00:00Z"),
+            )],
+        )),
+    );
     let dir = tempfile::tempdir().unwrap();
     let config = sync.managed(config_with_open_blocklist(dir.path()));
-    let origins = fake_origins().with_conan(url::Url::parse(common::conan::REMOTE).unwrap(), url::Url::parse(common::conan::PUBLISH).unwrap());
-    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), registry as Arc<dyn Transport>, origins).await;
+    let origins = fake_origins().with_conan(
+        url::Url::parse(common::conan::REMOTE).unwrap(),
+        url::Url::parse(common::conan::PUBLISH).unwrap(),
+    );
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        registry as Arc<dyn Transport>,
+        origins,
+    )
+    .await;
     let get = |path: &'static str| {
         let (url, key) = (server.url(path), key_b());
-        async move { reqwest::Client::new().get(url).header("authorization", bearer(&key)).send().await.unwrap().status().as_u16() }
+        async move {
+            reqwest::Client::new()
+                .get(url)
+                .header("authorization", bearer(&key))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
     };
-    assert_eq!(get("/conan/v2/conans/search?q=*").await, 200, "the first token");
-    assert_eq!(get("/conan/v2/users/check_credentials").await, 200, "the second token: the search did not take two");
-    assert_eq!(get("/conan/v2/users/check_credentials").await, 429, "the bucket of two is empty");
+    assert_eq!(
+        get("/conan/v2/conans/search?q=*").await,
+        200,
+        "the first token"
+    );
+    assert_eq!(
+        get("/conan/v2/users/check_credentials").await,
+        200,
+        "the second token: the search did not take two"
+    );
+    assert_eq!(
+        get("/conan/v2/users/check_credentials").await,
+        429,
+        "the bucket of two is empty"
+    );
 }
 
 /// Row 23: a managed firewall authenticates every Conan read with the key (the password of `conan remote login`, which this firewall
@@ -1566,36 +2116,119 @@ async fn a_conan_search_costs_one_rate_token() {
 /// upstream call) and leaves one decision record per refusal; the key route serves no upload endpoint.
 #[tokio::test]
 async fn conan_key_route_authenticates_every_read_and_refuses_a_blocked_package_locally() {
-    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Conan, name: "evil".to_owned(), reason: None }], |_| {}).await;
+    let h = harness(
+        vec![Block::Package {
+            ecosystem: Ecosystem::Conan,
+            name: "evil".to_owned(),
+            reason: None,
+        }],
+        |_| {},
+    )
+    .await;
     let rev = "aaaa0000000000000000000000000001";
-    h.registry.answer("/v2/conans/evil/1.0/_/_/revisions", FakeAnswer::Body(common::conan::revisions_doc(("reference", "evil/1.0@_/_"), &[(rev, Some("2025-01-01T00:00:00Z"))])));
-    h.registry.answer(&format!("/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt"), FakeAnswer::Body(common::conan::manifest(rev)));
-    let paths = ["/conan/v2/conans/evil/1.0/_/_/revisions", "/conan/v2/conans/evil/1.0/_/_/latest", "/conan/v2/users/authenticate", &format!("/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt")];
+    h.registry.answer(
+        "/v2/conans/evil/1.0/_/_/revisions",
+        FakeAnswer::Body(common::conan::revisions_doc(
+            ("reference", "evil/1.0@_/_"),
+            &[(rev, Some("2025-01-01T00:00:00Z"))],
+        )),
+    );
+    h.registry.answer(
+        &format!("/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt"),
+        FakeAnswer::Body(common::conan::manifest(rev)),
+    );
+    let paths = [
+        "/conan/v2/conans/evil/1.0/_/_/revisions",
+        "/conan/v2/conans/evil/1.0/_/_/latest",
+        "/conan/v2/users/authenticate",
+        &format!("/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanmanifest.txt"),
+    ];
     for path in paths {
-        assert_eq!(h.server.get(path).await.status(), StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(
+            h.server.get(path).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
     }
-    assert_eq!(h.get(paths[0], "prb_not_a_known_key_0123456789ab").await.status(), StatusCode::UNAUTHORIZED);
-    assert!(h.registry.calls().is_empty(), "no upstream call before authentication");
+    assert_eq!(
+        h.get(paths[0], "prb_not_a_known_key_0123456789ab")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "no upstream call before authentication"
+    );
     // The login: the key as the Basic password comes back as the token (and a check of it is its admission).
     let basic = format!("Basic {}", base64(format!("user:{}", key_b())));
-    let login = h.server.get_with_headers("/conan/v2/users/authenticate", &[("authorization", &basic)]).await;
-    assert_eq!((login.status(), login.text().await.unwrap()), (StatusCode::OK, key_b()));
-    assert_eq!(h.get("/conan/v2/users/check_credentials", &key_b()).await.status(), StatusCode::OK);
+    let login = h
+        .server
+        .get_with_headers("/conan/v2/users/authenticate", &[("authorization", &basic)])
+        .await;
+    assert_eq!(
+        (login.status(), login.text().await.unwrap()),
+        (StatusCode::OK, key_b())
+    );
+    assert_eq!(
+        h.get("/conan/v2/users/check_credentials", &key_b())
+            .await
+            .status(),
+        StatusCode::OK
+    );
     for path in &paths[..2] {
-        assert_eq!(h.get(path, &key_a()).await.status(), StatusCode::FORBIDDEN, "Globex blocks the package: {path}");
+        assert_eq!(
+            h.get(path, &key_a()).await.status(),
+            StatusCode::FORBIDDEN,
+            "Globex blocks the package: {path}"
+        );
     }
-    assert_eq!(h.get(paths[3], &key_a()).await.status(), StatusCode::FORBIDDEN);
-    assert!(h.registry.calls().is_empty(), "a blocked package reaches no upstream call");
+    assert_eq!(
+        h.get(paths[3], &key_a()).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        h.registry.calls().is_empty(),
+        "a blocked package reaches no upstream call"
+    );
     let served = h.get(paths[0], &key_b()).await;
-    assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps the package");
+    assert_eq!(
+        served.status(),
+        StatusCode::OK,
+        "Acme's policy keeps the package"
+    );
     assert!(served.text().await.unwrap().contains(rev));
     assert_eq!(h.get(paths[3], &key_b()).await.status(), StatusCode::OK);
-    let put = reqwest::Client::new().put(h.server.url(&format!("/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanfile.py"))).header("authorization", "Basic dTpw").body("x").send().await.unwrap();
-    assert!(matches!(put.status().as_u16(), 404 | 405), "{}", put.status());
+    let put = reqwest::Client::new()
+        .put(h.server.url(&format!(
+            "/conan/v2/conans/evil/1.0/_/_/revisions/{rev}/files/conanfile.py"
+        )))
+        .header("authorization", "Basic dTpw")
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        matches!(put.status().as_u16(), 404 | 405),
+        "{}",
+        put.status()
+    );
     let batch = h.server.app().managed().unwrap().activity().take_batch();
-    let events: Vec<_> = batch.events.iter().map(|q| &q.event).filter(|e| e.ecosystem == Some(Ecosystem::Conan)).collect();
-    assert_eq!(events.len(), 3, "one decision record per refusal: {events:#?}");
-    assert!(events.iter().all(|e| e.package.as_deref() == Some("evil")), "{events:#?}");
+    let events: Vec<_> = batch
+        .events
+        .iter()
+        .map(|q| &q.event)
+        .filter(|e| e.ecosystem == Some(Ecosystem::Conan))
+        .collect();
+    assert_eq!(
+        events.len(),
+        3,
+        "one decision record per refusal: {events:#?}"
+    );
+    assert!(
+        events.iter().all(|e| e.package.as_deref() == Some("evil")),
+        "{events:#?}"
+    );
     h.server.shutdown().await;
 }
 
@@ -1604,11 +2237,17 @@ async fn conan_key_route_authenticates_every_read_and_refuses_a_blocked_package_
 /// An organisation layer that releases an image as soon as it is first seen (the age of an image starts then): so these tests are about
 /// who decides, not about the cooldown.
 fn oci_org(blocks: Vec<Block>) -> Layer {
-    Layer { freeze_seconds: Some(0), ..org_blocking(blocks) }
+    Layer {
+        freeze_seconds: Some(0),
+        ..org_blocking(blocks)
+    }
 }
 
 fn oci_origins() -> probation::upstream::OriginSet {
-    fake_origins().with_oci(url::Url::parse(common::oci::REGISTRY).unwrap(), url::Url::parse(common::oci::CDN).unwrap())
+    fake_origins().with_oci(
+        url::Url::parse(common::oci::REGISTRY).unwrap(),
+        url::Url::parse(common::oci::CDN).unwrap(),
+    )
 }
 
 /// Row 24: a managed firewall admits every OCI read by the key a client's own `docker login` carries (the password of the token request,
@@ -1616,8 +2255,17 @@ fn oci_origins() -> probation::upstream::OriginSet {
 /// registry's own challenge (a Bearer realm that is this firewall's `/v2/token`), and the key's policy decides: a blocked repository is
 /// refused locally, with no registry call; a write has no route on this firewall.
 #[tokio::test]
-async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_blocked_repository_locally() {
-    let h = harness(vec![Block::Package { ecosystem: Ecosystem::Oci, name: "evil/app".to_owned(), reason: None }], |_| {}).await;
+async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_blocked_repository_locally()
+ {
+    let h = harness(
+        vec![Block::Package {
+            ecosystem: Ecosystem::Oci,
+            name: "evil/app".to_owned(),
+            reason: None,
+        }],
+        |_| {},
+    )
+    .await;
     let oci = common::oci::FakeOci::new();
     let app = common::oci::image("a", &[b"layer"]);
     oci.put_image("evil/app", Some("v1"), &app);
@@ -1626,12 +2274,25 @@ async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_
     let sync = FakeSyncServer::start().await;
     sync.layer(PLATFORM, platform_layer());
     sync.layer(org(ACME), oci_org(Vec::new()));
-    sync.layer(org(GLOBEX), oci_org(vec![Block::Package { ecosystem: Ecosystem::Oci, name: "evil/app".to_owned(), reason: None }]));
+    sync.layer(
+        org(GLOBEX),
+        oci_org(vec![Block::Package {
+            ecosystem: Ecosystem::Oci,
+            name: "evil/app".to_owned(),
+            reason: None,
+        }]),
+    );
     sync.known_key(&key_a(), &[PLATFORM, org(GLOBEX)]);
     sync.known_key(&key_b(), &[PLATFORM, org(ACME)]);
     let dir = tempfile::tempdir().unwrap();
     let config = sync.managed(config_with_open_blocklist(dir.path()));
-    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&oci) as Arc<dyn Transport>, oci_origins()).await;
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        Arc::clone(&oci) as Arc<dyn Transport>,
+        oci_origins(),
+    )
+    .await;
     let get = |path: &str, key: Option<&str>| {
         let url = server.url(path);
         let key = key.map(bearer);
@@ -1646,27 +2307,79 @@ async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_
     // No key: the challenge names this firewall's token endpoint, and nothing was asked of the registry.
     let challenge = get("/v2/", None).await;
     assert_eq!(challenge.status(), StatusCode::UNAUTHORIZED);
-    assert!(challenge.headers().get("www-authenticate").unwrap().to_str().unwrap().starts_with("Bearer realm=\""), "{:?}", challenge.headers());
-    assert_eq!(get("/v2/good/app/manifests/v1", Some("prb_not_a_known_key_0123456789ab")).await.status(), StatusCode::UNAUTHORIZED);
-    assert!(oci.seen().is_empty(), "no registry call before authentication");
+    assert!(
+        challenge
+            .headers()
+            .get("www-authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("Bearer realm=\""),
+        "{:?}",
+        challenge.headers()
+    );
+    assert_eq!(
+        get(
+            "/v2/good/app/manifests/v1",
+            Some("prb_not_a_known_key_0123456789ab")
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        oci.seen().is_empty(),
+        "no registry call before authentication"
+    );
     // The token request: the key as the Basic password comes back as the token (docker login's own flow), and the token is admitted.
     let basic = format!("Basic {}", base64(format!("user:{}", key_b())));
-    let token = reqwest::Client::new().get(server.url("/v2/token?service=probation&scope=repository:good/app:pull")).header("authorization", &basic).send().await.unwrap();
+    let token = reqwest::Client::new()
+        .get(server.url("/v2/token?service=probation&scope=repository:good/app:pull"))
+        .header("authorization", &basic)
+        .send()
+        .await
+        .unwrap();
     let doc: serde_json::Value = serde_json::from_str(&token.text().await.unwrap()).unwrap();
     assert_eq!(doc["token"], key_b(), "{doc}");
     assert_eq!(get("/v2/", Some(&key_b())).await.status(), StatusCode::OK);
     // The key's policy decides.
-    assert_eq!(get("/v2/evil/app/manifests/v1", Some(&key_a())).await.status(), StatusCode::FORBIDDEN, "Globex blocks the repository");
-    assert!(oci.seen().is_empty(), "a blocked repository reaches no registry call: {:?}", oci.seen());
+    assert_eq!(
+        get("/v2/evil/app/manifests/v1", Some(&key_a()))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "Globex blocks the repository"
+    );
+    assert!(
+        oci.seen().is_empty(),
+        "a blocked repository reaches no registry call: {:?}",
+        oci.seen()
+    );
     let served = get("/v2/evil/app/manifests/v1", Some(&key_b())).await;
     assert_eq!(served.status(), StatusCode::OK, "Acme's policy keeps it");
     assert_eq!(served.bytes().await.unwrap().to_vec(), app.manifest);
-    let blob = get(&format!("/v2/evil/app/blobs/{}", app.layer_digests[0]), Some(&key_b())).await;
+    let blob = get(
+        &format!("/v2/evil/app/blobs/{}", app.layer_digests[0]),
+        Some(&key_b()),
+    )
+    .await;
     assert_eq!(blob.status(), StatusCode::OK);
     // The registry never saw a firewall key.
-    assert!(oci.seen().iter().all(|call| call.authorization.as_deref().is_none_or(|auth| !auth.contains("prb_"))), "{:?}", oci.seen());
+    assert!(
+        oci.seen().iter().all(|call| call
+            .authorization
+            .as_deref()
+            .is_none_or(|auth| !auth.contains("prb_"))),
+        "{:?}",
+        oci.seen()
+    );
     // A write has no route on a key route.
-    let post = reqwest::Client::new().post(server.url("/v2/good/app/blobs/uploads/")).header("authorization", bearer(&key_b())).send().await.unwrap();
+    let post = reqwest::Client::new()
+        .post(server.url("/v2/good/app/blobs/uploads/"))
+        .header("authorization", bearer(&key_b()))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     server.shutdown().await;
 }
@@ -1674,11 +2387,18 @@ async fn oci_key_route_runs_the_registrys_token_flow_with_the_key_and_refuses_a_
 /// R2: a registry that challenges with a token service on another host works on the key route when `oci_token_url` names that host.
 #[tokio::test]
 async fn oci_key_route_follows_a_token_service_on_another_host_only_when_named() {
-    for (named, expected) in [(None, StatusCode::BAD_GATEWAY), (Some("https://gitlab.example"), StatusCode::OK)] {
+    for (named, expected) in [
+        (None, StatusCode::BAD_GATEWAY),
+        (Some("https://gitlab.example"), StatusCode::OK),
+    ] {
         let oci = common::oci::FakeOci::new();
         oci.require_token();
         oci.foreign_realm("https://gitlab.example/jwt/auth");
-        oci.put_image("good/app", Some("v1"), &common::oci::image("a", &[b"layer"]));
+        oci.put_image(
+            "good/app",
+            Some("v1"),
+            &common::oci::image("a", &[b"layer"]),
+        );
         let sync = FakeSyncServer::start().await;
         sync.layer(PLATFORM, platform_layer());
         sync.layer(org(ACME), oci_org(Vec::new()));
@@ -1686,8 +2406,19 @@ async fn oci_key_route_follows_a_token_service_on_another_host_only_when_named()
         let dir = tempfile::tempdir().unwrap();
         let mut config = sync.managed(config_with_open_blocklist(dir.path()));
         config.oci_token_url = named.map(|text| url::Url::parse(text).unwrap());
-        let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&oci) as Arc<dyn Transport>, oci_origins()).await;
-        let response = reqwest::Client::new().get(server.url("/v2/good/app/manifests/v1")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        let server = TestServer::start_with_upstream(
+            config,
+            TestClock::at_rfc3339(NOW).shared(),
+            Arc::clone(&oci) as Arc<dyn Transport>,
+            oci_origins(),
+        )
+        .await;
+        let response = reqwest::Client::new()
+            .get(server.url("/v2/good/app/manifests/v1"))
+            .header("authorization", bearer(&key_b()))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), expected, "named {named:?}");
         server.shutdown().await;
     }
@@ -1704,14 +2435,37 @@ async fn an_oci_read_costs_one_rate_token() {
     oci.put_image("app", Some("v1"), &common::oci::image("a", &[b"layer"]));
     let dir = tempfile::tempdir().unwrap();
     let config = sync.managed(config_with_open_blocklist(dir.path()));
-    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), oci as Arc<dyn Transport>, oci_origins()).await;
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        oci as Arc<dyn Transport>,
+        oci_origins(),
+    )
+    .await;
     let get = |path: &'static str| {
         let (url, key) = (server.url(path), key_b());
-        async move { reqwest::Client::new().get(url).header("authorization", bearer(&key)).send().await.unwrap().status().as_u16() }
+        async move {
+            reqwest::Client::new()
+                .get(url)
+                .header("authorization", bearer(&key))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
     };
     assert_eq!(get("/v2/app/manifests/v1").await, 200, "the first token");
-    assert_eq!(get("/v2/app/tags/list").await, 404, "the second token: the manifest did not take two (the registry has no tag list: its 404)");
-    assert_eq!(get("/v2/app/manifests/v1").await, 429, "the bucket of two is empty");
+    assert_eq!(
+        get("/v2/app/tags/list").await,
+        404,
+        "the second token: the manifest did not take two (the registry has no tag list: its 404)"
+    );
+    assert_eq!(
+        get("/v2/app/manifests/v1").await,
+        429,
+        "the bucket of two is empty"
+    );
     server.shutdown().await;
 }
 
@@ -1728,12 +2482,20 @@ async fn an_oci_manifest_is_not_served_under_a_layer_that_a_publication_replaced
     }
     #[async_trait::async_trait]
     impl Transport for Held {
-        async fn fetch_metadata(&self, request: probation::upstream::MetadataRequest) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError> {
+        async fn fetch_metadata(
+            &self,
+            request: probation::upstream::MetadataRequest,
+        ) -> Result<probation::upstream::MetadataResponse, probation::upstream::UpstreamError>
+        {
             self.inner.fetch_metadata(request).await
         }
-        async fn fetch_oci(&self, request: probation::upstream::OciRequest) -> Result<probation::upstream::OciResponse, probation::upstream::UpstreamError> {
+        async fn fetch_oci(
+            &self,
+            request: probation::upstream::OciRequest,
+        ) -> Result<probation::upstream::OciResponse, probation::upstream::UpstreamError> {
             // Only the first fetch of the slow manifest is held: the re-admitted request must not wait for a second release.
-            let gated = request.url.path().contains("/slow/manifests/") && !self.once.swap(true, std::sync::atomic::Ordering::SeqCst);
+            let gated = request.url.path().contains("/slow/manifests/")
+                && !self.once.swap(true, std::sync::atomic::Ordering::SeqCst);
             let answer = self.inner.fetch_oci(request).await;
             if gated {
                 self.arrived.notify_one();
@@ -1741,7 +2503,10 @@ async fn an_oci_manifest_is_not_served_under_a_layer_that_a_publication_replaced
             }
             answer
         }
-        async fn open_artifact(&self, request: probation::upstream::ArtifactRequest) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
+        async fn open_artifact(
+            &self,
+            request: probation::upstream::ArtifactRequest,
+        ) -> Result<probation::upstream::ArtifactBody, probation::upstream::UpstreamError> {
             self.inner.open_artifact(request).await
         }
     }
@@ -1753,26 +2518,58 @@ async fn an_oci_manifest_is_not_served_under_a_layer_that_a_publication_replaced
     let app = common::oci::image("a", &[b"layer"]);
     oci.put_image("slow", Some("v1"), &app);
     oci.put_image("fast", Some("v1"), &app);
-    let held = Arc::new(Held { inner: oci, arrived: Default::default(), release: Default::default(), once: Default::default() });
+    let held = Arc::new(Held {
+        inner: oci,
+        arrived: Default::default(),
+        release: Default::default(),
+        once: Default::default(),
+    });
     let dir = tempfile::tempdir().unwrap();
     let mut config = sync.managed(config_with_open_blocklist(dir.path()));
     config.sync_interval_seconds = std::num::NonZeroU64::new(1).unwrap();
     let clock = TestClock::at_rfc3339(NOW);
-    let server = Arc::new(TestServer::start_with_upstream(config, clock.shared(), Arc::clone(&held) as Arc<dyn Transport>, oci_origins()).await);
+    let server = Arc::new(
+        TestServer::start_with_upstream(
+            config,
+            clock.shared(),
+            Arc::clone(&held) as Arc<dyn Transport>,
+            oci_origins(),
+        )
+        .await,
+    );
     let read = {
         let (server, key) = (Arc::clone(&server), key_b());
         tokio::spawn(async move {
-            let response = reqwest::Client::new().get(server.url("/v2/slow/manifests/v1")).header("authorization", bearer(&key)).send().await.unwrap();
-            (response.status().as_u16(), response.bytes().await.unwrap().to_vec())
+            let response = reqwest::Client::new()
+                .get(server.url("/v2/slow/manifests/v1"))
+                .header("authorization", bearer(&key))
+                .send()
+                .await
+                .unwrap();
+            (
+                response.status().as_u16(),
+                response.bytes().await.unwrap().to_vec(),
+            )
         })
     };
     held.arrived.notified().await;
-    let revision = sync.edit_layer(org(ACME), Layer { freeze_seconds: Some(7 * 86_400), ..org_blocking(Vec::new()) });
+    let revision = sync.edit_layer(
+        org(ACME),
+        Layer {
+            freeze_seconds: Some(7 * 86_400),
+            ..org_blocking(Vec::new())
+        },
+    );
     clock.advance_seconds(70);
     sync.applied(revision).await;
     let mut applied = false;
     for _ in 0..200 {
-        let probe = reqwest::Client::new().get(server.url("/v2/fast/manifests/v1")).header("authorization", bearer(&key_b())).send().await.unwrap();
+        let probe = reqwest::Client::new()
+            .get(server.url("/v2/fast/manifests/v1"))
+            .header("authorization", bearer(&key_b()))
+            .send()
+            .await
+            .unwrap();
         if probe.status() == StatusCode::FORBIDDEN {
             applied = true;
             break;
@@ -1782,6 +2579,12 @@ async fn an_oci_manifest_is_not_served_under_a_layer_that_a_publication_replaced
     assert!(applied, "the layer reached the firewall");
     held.release.notify_one();
     let (status, body) = read.await.unwrap();
-    assert!(body != app.manifest, "nothing decided under the old layer is served under the new one: {status}");
-    assert_eq!(status, 403, "the request is admitted again under the new layer, which holds it");
+    assert!(
+        body != app.manifest,
+        "nothing decided under the old layer is served under the new one: {status}"
+    );
+    assert_eq!(
+        status, 403,
+        "the request is admitted again under the new layer, which holds it"
+    );
 }

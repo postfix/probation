@@ -10,7 +10,9 @@ fn open(dir: &Path, limits: Limits) -> CredentialTemp {
 }
 
 fn files_under(dir: &Path) -> usize {
-    walk(dir).filter(|path| path.is_file() && path.file_name().is_some_and(|n| n != "lock")).count()
+    walk(dir)
+        .filter(|path| path.is_file() && path.file_name().is_some_and(|n| n != "lock"))
+        .count()
 }
 
 fn walk(dir: &Path) -> impl Iterator<Item = std::path::PathBuf> {
@@ -35,12 +37,20 @@ fn backdate(dir: &Path, age: std::time::Duration) {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES};
-        options.access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        options
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     }
     #[cfg(not(windows))]
     options.read(true);
-    options.open(dir).unwrap().set_modified(std::time::SystemTime::now() - age).unwrap();
+    options
+        .open(dir)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - age)
+        .unwrap();
 }
 
 /// The service's own `credential-reads` folder as a first start leaves it (protected ACL on Windows, 0700 on unix), released, so a
@@ -65,22 +75,44 @@ fn credential_temp_no_default_request_cap_streams_large_body() {
 #[test]
 fn credential_temp_optional_request_cap_refuses_413_without_retry_after() {
     let data = tempfile::tempdir().unwrap();
-    let temp = open(data.path(), Limits { max_request_bytes: Some(1024), max_total_bytes: None });
-    let error = temp.begin(Some(2048)).err().expect("a known length over the cap is refused up front");
+    let temp = open(
+        data.path(),
+        Limits {
+            max_request_bytes: Some(1024),
+            max_total_bytes: None,
+        },
+    );
+    let error = temp
+        .begin(Some(2048))
+        .err()
+        .expect("a known length over the cap is refused up front");
     assert_eq!((error.status(), error.retry_after()), (413, false));
     let mut file = temp.begin(None).unwrap();
     file.write(&[0; 1024]).unwrap();
     let error = file.write(&[0; 1]).unwrap_err();
-    assert_eq!((error.status(), error.retry_after()), (413, false), "an unknown length is refused as soon as it passes the cap");
+    assert_eq!(
+        (error.status(), error.retry_after()),
+        (413, false),
+        "an unknown length is refused as soon as it passes the cap"
+    );
 }
 
 #[test]
 fn credential_temp_total_cap_refuses_503_with_retry_after() {
     let data = tempfile::tempdir().unwrap();
-    let temp = open(data.path(), Limits { max_request_bytes: None, max_total_bytes: Some(1000) });
+    let temp = open(
+        data.path(),
+        Limits {
+            max_request_bytes: None,
+            max_total_bytes: Some(1000),
+        },
+    );
     let mut held = temp.begin(Some(600)).unwrap();
     held.write(&[0; 600]).unwrap();
-    let error = temp.begin(Some(600)).err().expect("fits alone, not beside the bytes in use");
+    let error = temp
+        .begin(Some(600))
+        .err()
+        .expect("fits alone, not beside the bytes in use");
     assert_eq!((error.status(), error.retry_after()), (503, true));
     drop(held);
     temp.begin(Some(600)).expect("the bytes were released");
@@ -89,12 +121,22 @@ fn credential_temp_total_cap_refuses_503_with_retry_after() {
 #[test]
 fn credential_temp_single_request_over_total_refuses_413_without_retry_after() {
     let data = tempfile::tempdir().unwrap();
-    let temp = open(data.path(), Limits { max_request_bytes: None, max_total_bytes: Some(1000) });
+    let temp = open(
+        data.path(),
+        Limits {
+            max_request_bytes: None,
+            max_total_bytes: Some(1000),
+        },
+    );
     let error = temp.begin(Some(1500)).err().unwrap();
     assert_eq!((error.status(), error.retry_after()), (413, false));
     let mut file = temp.begin(None).unwrap();
     let error = file.write(&[0; 1001]).unwrap_err();
-    assert_eq!((error.status(), error.retry_after()), (413, false), "its own bytes passed the total");
+    assert_eq!(
+        (error.status(), error.retry_after()),
+        (413, false),
+        "its own bytes passed the total"
+    );
 }
 
 #[test]
@@ -110,7 +152,10 @@ fn credential_temp_startup_sweep_skips_locked_subdirectories() {
     let first = open(data.path(), Limits::default());
     let live = first.dir().to_owned();
     let second = open(data.path(), Limits::default());
-    assert!(live.exists(), "an overlapping process keeps its live directory");
+    assert!(
+        live.exists(),
+        "an overlapping process keeps its live directory"
+    );
     assert_ne!(live, second.dir(), "each process has its own subdirectory");
 }
 
@@ -122,7 +167,10 @@ fn credential_temp_startup_sweep_removes_orphans() {
     std::fs::write(orphan.join("lock"), b"").unwrap();
     std::fs::write(orphan.join("leftover"), b"secret body").unwrap();
     let _temp = open(data.path(), Limits::default());
-    assert!(!orphan.exists(), "a subdirectory whose lock can be acquired is removed");
+    assert!(
+        !orphan.exists(),
+        "a subdirectory whose lock can be acquired is removed"
+    );
 }
 
 #[test]
@@ -131,14 +179,20 @@ fn credential_temp_symlinked_parent_refused() {
     let data = tempfile::tempdir().unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(elsewhere.path(), data.path().join("credential-reads")).unwrap();
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent)
+    );
 }
 
 #[test]
 fn credential_temp_parent_that_is_a_regular_file_refused() {
     let data = tempfile::tempdir().unwrap();
     std::fs::write(data.path().join("credential-reads"), b"not a directory").unwrap();
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent)
+    );
 }
 
 #[test]
@@ -163,8 +217,17 @@ fn credential_temp_removed_on_abort_and_on_completion() {
 #[test]
 fn credential_temp_refusal_happens_before_first_body_byte() {
     let data = tempfile::tempdir().unwrap();
-    let temp = open(data.path(), Limits { max_request_bytes: Some(10), max_total_bytes: None });
-    assert!(temp.begin(Some(11)).is_err(), "no TempFile exists to write a first byte to");
+    let temp = open(
+        data.path(),
+        Limits {
+            max_request_bytes: Some(10),
+            max_total_bytes: None,
+        },
+    );
+    assert!(
+        temp.begin(Some(11)).is_err(),
+        "no TempFile exists to write a first byte to"
+    );
     assert_eq!(files_under(data.path()), 0);
 }
 
@@ -180,7 +243,11 @@ fn credential_temp_loose_parent_is_tightened() {
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
     let _temp = open(data.path(), Limits::default());
     let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode & 0o077, 0, "an existing group/other-accessible parent is tightened, got {mode:o}");
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "an existing group/other-accessible parent is tightened, got {mode:o}"
+    );
 }
 
 #[test]
@@ -194,8 +261,15 @@ fn credential_temp_sweep_does_not_follow_a_symlinked_lock() {
     std::fs::create_dir_all(&planted).unwrap();
     std::os::unix::fs::symlink(&victim, planted.join("lock")).unwrap();
     let _temp = open(data.path(), Limits::default());
-    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me", "the symlink target is untouched");
-    assert!(planted.exists(), "a directory whose lock is a symlink is skipped, not swept");
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"keep me",
+        "the symlink target is untouched"
+    );
+    assert!(
+        planted.exists(),
+        "a directory whose lock is a symlink is skipped, not swept"
+    );
 }
 
 #[test]
@@ -208,8 +282,14 @@ fn credential_temp_sweep_removes_old_lockless_directory_and_keeps_a_fresh_one() 
     std::fs::create_dir(&fresh).unwrap();
     backdate(&old, std::time::Duration::from_secs(3600));
     let _temp = open(data.path(), Limits::default());
-    assert!(!old.exists(), "a crash between create_dir and the lock leaves a directory the sweep removes");
-    assert!(fresh.exists(), "a directory younger than a minute may belong to a starting process");
+    assert!(
+        !old.exists(),
+        "a crash between create_dir and the lock leaves a directory the sweep removes"
+    );
+    assert!(
+        fresh.exists(),
+        "a directory younger than a minute may belong to a starting process"
+    );
 }
 
 // ---- credential-temp-owner: the folder must belong to the service user, not to the data directory's owner ----
@@ -226,19 +306,40 @@ fn in_foreign_owner_namespace(test: &str, body: impl FnOnce(&Path)) {
     if let Ok(dir) = std::env::var("PROBATION_NS_DIR") {
         return body(Path::new(&dir));
     }
-    if !Command::new("unshare").args(NS).arg("true").status().is_ok_and(|s| s.success()) {
-        panic!("{test}: this host cannot create a user namespace with a subuid map (unshare --user --map-root-user --map-auto)");
+    if !Command::new("unshare")
+        .args(NS)
+        .arg("true")
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        panic!(
+            "{test}: this host cannot create a user namespace with a subuid map (unshare --user --map-root-user --map-auto)"
+        );
     }
     let data = tempfile::tempdir().unwrap();
     let output = Command::new("unshare")
         .args(NS)
         .arg(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", test, "--nocapture", "--test-threads=1"])
+        .args([
+            "--ignored",
+            "--exact",
+            test,
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("PROBATION_NS_DIR", data.path())
         .output()
         .unwrap();
-    assert!(output.status.success(), "{test} failed in the namespace:\n{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"), "{test} did not run in the namespace");
+    assert!(
+        output.status.success(),
+        "{test} failed in the namespace:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{test} did not run in the namespace"
+    );
 }
 
 /// Hands `path` to uid 999 for the test's duration and back to the namespace root (the caller) afterwards, so
@@ -265,27 +366,37 @@ impl Drop for Owned<'_> {
 #[cfg(unix)]
 #[ignore = "needs unprivileged user namespaces with a subuid map (unshare --map-auto)"]
 fn credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user() {
-    in_foreign_owner_namespace("credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user", |data| {
-        // The volume root belongs to uid 999; the service process (uid 0 here) creates the folder, then restarts.
-        let _root = Owned::new(data);
-        let first = open(data, Limits::default());
-        drop(first);
-        CredentialTemp::open(data, Limits::default()).expect("a restart finds the folder its own user created");
-    });
+    in_foreign_owner_namespace(
+        "credential_temp_reopens_after_restart_when_data_dir_belongs_to_another_user",
+        |data| {
+            // The volume root belongs to uid 999; the service process (uid 0 here) creates the folder, then restarts.
+            let _root = Owned::new(data);
+            let first = open(data, Limits::default());
+            drop(first);
+            CredentialTemp::open(data, Limits::default())
+                .expect("a restart finds the folder its own user created");
+        },
+    );
 }
 
 #[test]
 #[cfg(unix)]
 #[ignore = "needs unprivileged user namespaces with a subuid map (unshare --map-auto)"]
 fn credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir() {
-    in_foreign_owner_namespace("credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir", |data| {
-        // Another user (999) owns both the data directory and the folder; this process (uid 0) is neither.
-        let parent = data.join("credential-reads");
-        std::fs::create_dir(&parent).unwrap();
-        let _root = Owned::new(data);
-        let _folder = Owned::new(&parent);
-        assert_eq!(CredentialTemp::open(data, Limits::default()).err(), Some(TempError::UnsafeParent));
-    });
+    in_foreign_owner_namespace(
+        "credential_temp_folder_owned_by_another_user_is_refused_even_if_it_matches_the_data_dir",
+        |data| {
+            // Another user (999) owns both the data directory and the folder; this process (uid 0) is neither.
+            let parent = data.join("credential-reads");
+            std::fs::create_dir(&parent).unwrap();
+            let _root = Owned::new(data);
+            let _folder = Owned::new(&parent);
+            assert_eq!(
+                CredentialTemp::open(data, Limits::default()).err(),
+                Some(TempError::UnsafeParent)
+            );
+        },
+    );
 }
 
 // ---- Windows: the folder's owner SID must be the process user, SYSTEM, Administrators or the service account (decision logic, any host) ----
@@ -298,14 +409,32 @@ fn credential_temp_windows_owner_must_be_a_trusted_sid() {
     let allowed = [USER];
     let spelled = |t: &str| Some(t.to_owned());
     let sddl = |owner: &str| format!("O:{owner}G:{owner}D:PAI(A;OICI;FA;;;{OTHER})");
-    assert!(owner_trusted(&sddl(USER), &allowed, &spelled), "the process user owns it");
-    assert!(owner_trusted(&sddl("BA"), &allowed, &spelled), "Administrators");
+    assert!(
+        owner_trusted(&sddl(USER), &allowed, &spelled),
+        "the process user owns it"
+    );
+    assert!(
+        owner_trusted(&sddl("BA"), &allowed, &spelled),
+        "Administrators"
+    );
     assert!(owner_trusted(&sddl("SY"), &allowed, &spelled), "SYSTEM");
-    assert!(!owner_trusted(&sddl(OTHER), &allowed, &spelled), "another user, even one the DACL grants");
-    assert!(!owner_trusted("D:PAI(A;OICI;FA;;;SY)", &allowed, &spelled), "no owner is not trusted");
+    assert!(
+        !owner_trusted(&sddl(OTHER), &allowed, &spelled),
+        "another user, even one the DACL grants"
+    );
+    assert!(
+        !owner_trusted("D:PAI(A;OICI;FA;;;SY)", &allowed, &spelled),
+        "no owner is not trusted"
+    );
     let alias = |t: &str| (t == "LA").then(|| USER.to_owned());
-    assert!(owner_trusted(&sddl("LA"), &allowed, &alias), "an alias is judged by the SID it resolves to");
-    assert!(!owner_trusted(&sddl("LG"), &allowed, &alias), "an owner the OS cannot resolve is refused");
+    assert!(
+        owner_trusted(&sddl("LA"), &allowed, &alias),
+        "an alias is judged by the SID it resolves to"
+    );
+    assert!(
+        !owner_trusted(&sddl("LG"), &allowed, &alias),
+        "an owner the OS cannot resolve is refused"
+    );
 }
 
 // ---- security-1-1: the folder is used through the descriptor that was checked, not through its path again ----
@@ -320,11 +449,20 @@ fn credential_temp_folder_swapped_for_a_symlink_after_open_is_not_followed() {
     // Another process swaps the checked folder for a symlink to a directory of its own.
     std::fs::rename(&parent, data.path().join("moved")).unwrap();
     std::os::unix::fs::symlink(elsewhere.path(), &parent).unwrap();
-    let mut file = temp.begin(None).expect("the body goes into the folder that was checked");
+    let mut file = temp
+        .begin(None)
+        .expect("the body goes into the folder that was checked");
     file.write(b"secret").unwrap();
-    assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0, "nothing is created through the symlink");
+    assert_eq!(
+        std::fs::read_dir(elsewhere.path()).unwrap().count(),
+        0,
+        "nothing is created through the symlink"
+    );
     // A restart refuses the symlink outright.
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent)
+    );
 }
 
 #[test]
@@ -332,27 +470,56 @@ fn credential_temp_folder_swapped_for_a_symlink_after_open_is_not_followed() {
 fn credential_temp_body_file_never_has_a_name() {
     let data = tempfile::tempdir().unwrap();
     let temp = open(data.path(), Limits::default());
-    let names = |dir: &Path| -> Vec<String> { std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect() };
+    let names = |dir: &Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
     let mut file = temp.begin(None).unwrap();
     file.write(b"secret").unwrap();
-    assert_eq!(names(temp.dir()), ["lock"], "the folder lists no body file while one is open");
+    assert_eq!(
+        names(temp.dir()),
+        ["lock"],
+        "the folder lists no body file while one is open"
+    );
     // The body file is O_TMPFILE only where the folder's filesystem supports it (overlayfs before 6.6 and NFS do not): the
     // probe decides which branch ran, so this test never fails on, or skips, an unsupported filesystem. The fallback itself is
     // covered by the unit test `named_fallback_file_is_unlinked_and_usable`.
-    let dir = rustix::fs::openat(rustix::fs::CWD, temp.dir(), rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY, rustix::fs::Mode::empty()).unwrap();
-    match rustix::fs::openat(&dir, ".", rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::RDWR, rustix::fs::Mode::RUSR) {
+    let dir = rustix::fs::openat(
+        rustix::fs::CWD,
+        temp.dir(),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    match rustix::fs::openat(
+        &dir,
+        ".",
+        rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::RDWR,
+        rustix::fs::Mode::RUSR,
+    ) {
         Ok(_) => {}
-        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::ISDIR | rustix::io::Errno::NOENT) => return,
+        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::ISDIR | rustix::io::Errno::NOENT) => {
+            return;
+        }
         Err(errno) => panic!("O_TMPFILE probe failed unexpectedly: {errno}"),
     }
     // An O_TMPFILE file was never linked; a file created by name and unlinked at once still shows the name it had.
     let named: Vec<_> = std::fs::read_dir("/proc/self/fd")
         .unwrap()
         .filter_map(|e| std::fs::read_link(e.unwrap().path()).ok())
-        .filter(|target| target.starts_with(temp.dir()) && target != temp.dir() && target.file_name().is_some_and(|n| n != "lock"))
+        .filter(|target| {
+            target.starts_with(temp.dir())
+                && target != temp.dir()
+                && target.file_name().is_some_and(|n| n != "lock")
+        })
         .filter(|target| !target.to_string_lossy().contains("/#"))
         .collect();
-    assert!(named.is_empty(), "a body file had a name in the folder: {named:?}");
+    assert!(
+        named.is_empty(),
+        "a body file had a name in the folder: {named:?}"
+    );
 }
 
 #[test]
@@ -363,9 +530,16 @@ fn credential_temp_sweep_removes_non_utf8_entries() {
     let dead = data.path().join("credential-reads").join("1-dead");
     std::fs::create_dir_all(&dead).unwrap();
     std::fs::write(dead.join("lock"), b"").unwrap();
-    std::fs::write(dead.join(std::ffi::OsStr::from_bytes(b"\xff")), b"secret body").unwrap();
+    std::fs::write(
+        dead.join(std::ffi::OsStr::from_bytes(b"\xff")),
+        b"secret body",
+    )
+    .unwrap();
     let _temp = open(data.path(), Limits::default());
-    assert!(!dead.exists(), "a dead folder is removed even when it holds a name that is not UTF-8");
+    assert!(
+        !dead.exists(),
+        "a dead folder is removed even when it holds a name that is not UTF-8"
+    );
 }
 
 // ---- security-2-1 / security-2-2 (Windows): the folders are held as opened, and are private. These run only on a Windows host:
@@ -375,7 +549,12 @@ fn credential_temp_sweep_removes_non_utf8_entries() {
 #[cfg(windows)]
 fn run(command: &mut std::process::Command) {
     let output = command.output().unwrap();
-    assert!(output.status.success(), "{command:?} failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{command:?} failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -383,9 +562,19 @@ fn run(command: &mut std::process::Command) {
 fn credential_temp_windows_junction_parent_refused() {
     let data = tempfile::tempdir().unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
-    run(std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(data.path().join("credential-reads")).arg(elsewhere.path()));
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent));
-    assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0, "nothing is created through the junction");
+    run(std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(data.path().join("credential-reads"))
+        .arg(elsewhere.path()));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent)
+    );
+    assert_eq!(
+        std::fs::read_dir(elsewhere.path()).unwrap().count(),
+        0,
+        "nothing is created through the junction"
+    );
 }
 
 #[test]
@@ -394,8 +583,14 @@ fn credential_temp_windows_parent_cannot_be_renamed_while_open() {
     let data = tempfile::tempdir().unwrap();
     let temp = open(data.path(), Limits::default());
     let parent = data.path().join("credential-reads");
-    assert!(std::fs::rename(&parent, data.path().join("moved")).is_err(), "the folder that was checked cannot be swapped out");
-    assert!(std::fs::rename(temp.dir(), parent.join("moved")).is_err(), "nor can this process's own folder");
+    assert!(
+        std::fs::rename(&parent, data.path().join("moved")).is_err(),
+        "the folder that was checked cannot be swapped out"
+    );
+    assert!(
+        std::fs::rename(temp.dir(), parent.join("moved")).is_err(),
+        "nor can this process's own folder"
+    );
 }
 
 #[test]
@@ -403,9 +598,17 @@ fn credential_temp_windows_parent_cannot_be_renamed_while_open() {
 fn credential_temp_windows_shared_parent_refused() {
     let data = tempfile::tempdir().unwrap();
     let parent = service_folder(data.path()); // protected: opening it again succeeds
-    run(std::process::Command::new("icacls").arg(&parent).args(["/grant", "*S-1-5-32-545:(OI)(CI)M"]));
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent), "Users may write there");
-    run(std::process::Command::new("icacls").arg(&parent).args(["/remove:g", "*S-1-5-32-545"]));
+    run(std::process::Command::new("icacls")
+        .arg(&parent)
+        .args(["/grant", "*S-1-5-32-545:(OI)(CI)M"]));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent),
+        "Users may write there"
+    );
+    run(std::process::Command::new("icacls")
+        .arg(&parent)
+        .args(["/remove:g", "*S-1-5-32-545"]));
     open(data.path(), Limits::default()); // the grant was the only reason for the refusal
 }
 
@@ -414,9 +617,17 @@ fn credential_temp_windows_shared_parent_refused() {
 fn credential_temp_windows_folder_owned_by_users_refused() {
     let data = tempfile::tempdir().unwrap();
     let parent = service_folder(data.path());
-    run(std::process::Command::new("icacls").arg(&parent).args(["/setowner", "*S-1-5-32-545"]));
-    assert_eq!(CredentialTemp::open(data.path(), Limits::default()).err(), Some(TempError::UnsafeParent), "the ACL is still private: the owner alone refuses it");
-    run(std::process::Command::new("icacls").arg(&parent).args(["/setowner", "*S-1-5-32-544"]));
+    run(std::process::Command::new("icacls")
+        .arg(&parent)
+        .args(["/setowner", "*S-1-5-32-545"]));
+    assert_eq!(
+        CredentialTemp::open(data.path(), Limits::default()).err(),
+        Some(TempError::UnsafeParent),
+        "the ACL is still private: the owner alone refuses it"
+    );
+    run(std::process::Command::new("icacls")
+        .arg(&parent)
+        .args(["/setowner", "*S-1-5-32-544"]));
     open(data.path(), Limits::default()); // Administrators own it again: accepted
 }
 
@@ -426,7 +637,10 @@ fn credential_temp_windows_created_folders_are_private() {
     use probation::key_acl::is_shared;
     let data = tempfile::tempdir().unwrap();
     let temp = open(data.path(), Limits::default());
-    assert!(!is_shared(&data.path().join("credential-reads")), "the folder the service created grants only SYSTEM, Administrators and its user");
+    assert!(
+        !is_shared(&data.path().join("credential-reads")),
+        "the folder the service created grants only SYSTEM, Administrators and its user"
+    );
     assert!(!is_shared(temp.dir()), "so does this process's folder");
     drop(temp);
     open(data.path(), Limits::default());

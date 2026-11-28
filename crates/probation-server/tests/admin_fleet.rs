@@ -657,13 +657,20 @@ fn report(settings_revision: u64, error: Option<&str>, period: u64) -> FirewallR
             upstreams: Upstreams {
                 npm: Reachability::Ok,
                 pypi: Reachability::Ok,
-                osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+                osv: Reachability::Ok,
+                rubygems: None,
+                cargo: None,
+                go: None,
+                nuget: None,
+                maven: None,
+                conan: None,
+                oci: None,
             },
         },
         effective_period_seconds: period,
         version: "9.9.9".to_owned(),
         failed_revision: None,
-            osv: None,
+        osv: None,
     }
 }
 
@@ -1668,7 +1675,9 @@ async fn t_sync_limits_change() {
     let state = Arc::new(probation_server::sync::SyncState::new(
         fx.db.app.clone(),
         Vec::new(),
-        Some(probation_server::accounts::SecretBox::new(common::SECRET_KEY)),
+        Some(probation_server::accounts::SecretBox::new(
+            common::SECRET_KEY,
+        )),
     ));
     let router = probation_server::build_router(state).layer(axum::middleware::from_fn(
         move |incoming: axum::extract::Request, next: axum::middleware::Next| {
@@ -2311,7 +2320,7 @@ async fn t_fleet_push_staggered() {
     // earlier revision, does not fail the step; an error naming this one does.
     let stale = |failed: i32| FirewallReport {
         failed_revision: Some(failed as u64),
-            osv: None,
+        osv: None,
         ..report(0, Some("refused"), 60)
     };
     for _ in 0..2 {

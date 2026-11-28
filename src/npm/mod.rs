@@ -82,7 +82,16 @@ pub async fn serve_registry(
 ) -> Result<Rendered, ApiError> {
     let mut url = app.config.public_url.clone();
     url.set_path(&format!("/registry/npm/{registry}/"));
-    serve_with_url(app, Some(principal), name, representation, &url, false, registry).await
+    serve_with_url(
+        app,
+        Some(principal),
+        name,
+        representation,
+        &url,
+        false,
+        registry,
+    )
+    .await
 }
 
 async fn serve_with_url(
@@ -141,7 +150,19 @@ async fn serve_with_url(
     }
     logging::record_cache(logging::CacheStatus::Miss);
 
-    let resolved = resolve(app, name, &policy, snapshot, now, monotonic, registry_id, principal.and_then(|p| p.registry_origin.as_ref()), principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice()), principal.and_then(|p| p.registry_read_authorization.as_deref())).await?;
+    let resolved = resolve(
+        app,
+        name,
+        &policy,
+        snapshot,
+        now,
+        monotonic,
+        registry_id,
+        principal.and_then(|p| p.registry_origin.as_ref()),
+        principal.map_or(&[][..], |p| p.registry_private_cidrs.as_slice()),
+        principal.and_then(|p| p.registry_read_authorization.as_deref()),
+    )
+    .await?;
     let (body, content_type) = match render(&resolved, &representation, public_url, now) {
         Ok(rendered) => rendered,
         Err(refused) => {
@@ -173,7 +194,8 @@ async fn serve_with_url(
     };
     let body: Arc<[u8]> = Arc::from(body);
 
-    if reusable && resolved.deadline_utc_micros > now
+    if reusable
+        && resolved.deadline_utc_micros > now
         && let Some(token) = crate::http::credential_read::cache_token(app)
     {
         caches.rendered.insert(
@@ -248,12 +270,47 @@ async fn current_project(
         // A credential-bearing read must be accepted upstream before any shared bytes are used, so it neither reads
         // nor fills the share; an ARTIFACT request always revalidates upstream (never reads or fills it); a
         // credential-free metadata read shares one fetch (single flight) for `service_share::TTL`.
-        let shareable = metadata && read_authorization.is_none() && crate::http::credential_read::cache_token(app).is_some();
+        let shareable = metadata
+            && read_authorization.is_none()
+            && crate::http::credential_read::cache_token(app).is_some();
         if shareable {
-            let share = ("npm", registry_id, origin.map(ToString::to_string), name.as_str().to_owned());
-            return app.service_share.get_or_fetch(share, monotonic, || refresh(app, name, &key, now, monotonic, true, None, origin, private_cidrs, read_authorization)).await;
+            let share = (
+                "npm",
+                registry_id,
+                origin.map(ToString::to_string),
+                name.as_str().to_owned(),
+            );
+            return app
+                .service_share
+                .get_or_fetch(share, monotonic, || {
+                    refresh(
+                        app,
+                        name,
+                        &key,
+                        now,
+                        monotonic,
+                        true,
+                        None,
+                        origin,
+                        private_cidrs,
+                        read_authorization,
+                    )
+                })
+                .await;
         }
-        return refresh(app, name, &key, now, monotonic, true, None, origin, private_cidrs, read_authorization).await;
+        return refresh(
+            app,
+            name,
+            &key,
+            now,
+            monotonic,
+            true,
+            None,
+            origin,
+            private_cidrs,
+            read_authorization,
+        )
+        .await;
     }
     let caches = app.store().caches();
     let ttl = Duration::from_secs(app.config.metadata_ttl_seconds);
@@ -305,13 +362,31 @@ async fn current_project(
         // The expired snapshot travels with the refresh rather than being dropped
         // here: its validators are what make that revalidation conditional — unless
         // it is over-age, in which case the refresh sends none at all.
-        stale => refresh_coalesced(app, name, &key, now, monotonic, over_age, stale, origin, private_cidrs, read_authorization).await?,
+        stale => {
+            refresh_coalesced(
+                app,
+                name,
+                &key,
+                now,
+                monotonic,
+                over_age,
+                stale,
+                origin,
+                private_cidrs,
+                read_authorization,
+            )
+            .await?
+        }
     };
 
     if let Some(token) = crate::http::credential_read::cache_token(app) {
-        caches
-            .projects
-            .insert_if_current(&token, key, Arc::clone(&cached), cached.approximate_bytes(), seen);
+        caches.projects.insert_if_current(
+            &token,
+            key,
+            Arc::clone(&cached),
+            cached.approximate_bytes(),
+            seen,
+        );
     }
     Ok(cached)
 }
@@ -471,7 +546,18 @@ async fn resolve(
     private_cidrs: &[ipnet::IpNet],
     read_authorization: Option<&str>,
 ) -> Result<Resolved, ApiError> {
-    let cached = current_project(app, name, now, monotonic, registry_id, origin, private_cidrs, read_authorization, true).await?;
+    let cached = current_project(
+        app,
+        name,
+        now,
+        monotonic,
+        registry_id,
+        origin,
+        private_cidrs,
+        read_authorization,
+        true,
+    )
+    .await?;
     let ttl_micros =
         i64::try_from(Duration::from_secs(app.config.metadata_ttl_seconds).as_micros())
             .unwrap_or(i64::MAX);
@@ -574,10 +660,19 @@ fn publication_of(entry: &VersionEntry, first_seen: &HashMap<ReferenceId, i64>) 
     }
 }
 
-async fn load_project(app: &App, name: &PackageName, registry_id: u64) -> Result<Option<CachedProject>, ApiError> {
+async fn load_project(
+    app: &App,
+    name: &PackageName,
+    registry_id: u64,
+) -> Result<Option<CachedProject>, ApiError> {
     let row = crate::store::registry_state::apply_registry_state(
-        app.store(), registry_id, name.as_str(), None,
-    ).await.map_err(storage_error)?;
+        app.store(),
+        registry_id,
+        name.as_str(),
+        None,
+    )
+    .await
+    .map_err(storage_error)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -661,7 +756,19 @@ async fn refresh_coalesced(
         Err(ApiError::InternalFailure),
         name.as_str().to_owned(),
     );
-    let refreshed = refresh(app, name, key, now, monotonic, over_age, stale, origin, private_cidrs, read_authorization).await;
+    let refreshed = refresh(
+        app,
+        name,
+        key,
+        now,
+        monotonic,
+        over_age,
+        stale,
+        origin,
+        private_cidrs,
+        read_authorization,
+    )
+    .await;
     resolution.answer(refreshed.clone());
     refreshed
 }
@@ -690,9 +797,18 @@ async fn refresh(
 ) -> Result<Arc<CachedProject>, ApiError> {
     // Built by cloning the origin and pushing one segment, never joined or
     // formatted; `url_for` re-admits the finished URL before handing it back.
-    let selected = origin.map(|origin| crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), private_cidrs.to_vec()))
-        .transpose().map_err(|_| ApiError::NotFound)?;
-    let url = selected.as_ref().unwrap_or(&app.origins)
+    let selected = origin
+        .map(|origin| {
+            crate::upstream::OriginSet::selected_npm_with_private(
+                origin.clone(),
+                private_cidrs.to_vec(),
+            )
+        })
+        .transpose()
+        .map_err(|_| ApiError::NotFound)?;
+    let url = selected
+        .as_ref()
+        .unwrap_or(&app.origins)
         .url_for(OriginKind::NpmMetadata, &[name.upstream_segment()])
         .map_err(|rejection| {
             tracing::warn!(package = %name, %rejection, "refused to build an upstream URL");
@@ -765,20 +881,26 @@ async fn refresh(
         },
         Ok(MetadataResponse::Missing) => {
             // C1028: a service-mode refusal is never cached (it was decided under one caller's credential).
-            if let Some(token) = crate::http::credential_read::cache_token(app).filter(|_| app.service_policy().is_none()) {
-            app.store().caches().absent.insert(
-                &token,
-                key.clone(),
-                Arc::new(AbsentMark {
-                    observed_monotonic: monotonic,
-                }),
-                128,
-            );
+            if let Some(token) = crate::http::credential_read::cache_token(app)
+                .filter(|_| app.service_policy().is_none())
+            {
+                app.store().caches().absent.insert(
+                    &token,
+                    key.clone(),
+                    Arc::new(AbsentMark {
+                        observed_monotonic: monotonic,
+                    }),
+                    128,
+                );
             }
             return Err(ApiError::NotFound);
         }
-        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => return Err(ApiError::UpstreamUnauthenticated),
-        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => return Err(ApiError::UpstreamDenied),
+        Err(UpstreamError::Status(401)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamUnauthenticated);
+        }
+        Err(UpstreamError::Status(403)) if app.service_policy().is_some() => {
+            return Err(ApiError::UpstreamDenied);
+        }
         Err(UpstreamError::Timeout) => {
             tracing::warn!(package = %name, "the upstream registry did not answer in time");
             return Err(ApiError::UpstreamTimeout);
@@ -830,10 +952,15 @@ async fn refresh(
         references,
     };
     let committed = if app.service_policy().is_some() {
-        app.store().commit_request_references_in(key.registry_id, refresh).await
+        app.store()
+            .commit_request_references_in(key.registry_id, refresh)
+            .await
     } else {
-        app.store().commit_project_refresh_in(key.registry_id, refresh).await
-    }.map_err(storage_error)?;
+        app.store()
+            .commit_project_refresh_in(key.registry_id, refresh)
+            .await
+    }
+    .map_err(storage_error)?;
 
     // A refresh does not change a pin — `commit_project_refresh` carries them
     // forward — but it does replace the cached project, so they are read back with it.

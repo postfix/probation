@@ -475,6 +475,9 @@ if len(verify_at) == 1:
     need("if" not in verify_step, f"native-service.yml `{VERIFY_STEP}` must run on a cache hit too: no `if`")
     verify_run = str(verify_step.get("run", ""))
     need(re.search(r"seed-m2", verify_run) is not None and re.search(r"\|\s*diff - tests/e2e/compose/clients/maven-seed\.sha256\s*$", verify_run.strip()) is not None, f"native-service.yml `{VERIFY_STEP}` must diff the seed's checksums against tests/e2e/compose/clients/maven-seed.sha256")
+    # Hosted run 46132783086: Git for Windows' sha256sum prints `<hash> *<path>` (binary-mode marker) where the manifest has two spaces, so every
+    # line differed on Windows. The sums are normalised to the two-space form before the diff; hashing itself stays binary.
+    need("xargs $sum | sed -E 's/^([0-9a-f]{64}) \\*/\\1  /')" in verify_run, f"native-service.yml `{VERIFY_STEP}` must rewrite the `<hash> *<path>` binary-mode marker of sha256sum to two spaces (sed -E 's/^([0-9a-f]{{64}}) \\*/\\1  /') before the diff, so Windows enforces the same manifest")
 # Recheck 1 (RC1-2): the static OpenSSL of the Windows release is vcpkg's x64-windows-static-md (static libraries, dynamic CRT = rustc's
 # default /MD). The plain x64-windows-static triplet links the static CRT, which the Rust binary does not use. Every Windows and macOS
 # release or gate build turns the feature on, so the default dev build is the only one without it.
@@ -519,6 +522,15 @@ for attest, build, lifecycle in (("attest-macos", "service-macos-build", "servic
     # security-1-2: the lane pins the commit it was built from, so an attestation of another branch's run is refused by the installer.
     signing = [step for step in (service_jobs.get(lifecycle) or {}).get("steps", []) if "E2E_SERVICE_SIGNER_WORKFLOW" in (step.get("env") or {})]
     need(len(signing) == 1 and signing[0]["env"].get("E2E_SERVICE_SOURCE_DIGEST") == "${{ github.sha }}", f"native-service.yml job {lifecycle} must run the lifecycle once with E2E_SERVICE_SIGNER_WORKFLOW and E2E_SERVICE_SOURCE_DIGEST: ${{{{ github.sha }}}}")
+# Hosted run 46132783086: attest-macos found no subject because the build job uploaded the binary by glob (the artifact then keeps the package
+# directory). Each build job names the binary's exact path in the output `binary` of its step `pkg` and uploads that one file as ci-binary-*,
+# which the artifact stores at its root: the attest job's subject (ci-binary-*/probation[.exe]) is the file the installer verifies.
+for build, binary_name in (("service-macos-build", "probation"), ("service-windows-build", "probation.exe")):
+    build_steps = (service_jobs.get(build) or {}).get("steps") or []
+    pkg_steps = [st for st in build_steps if st.get("id") == "pkg"]
+    need(len(pkg_steps) == 1 and re.search(r'echo "binary=[^"\n]*' + re.escape(binary_name) + r'" >> "\$GITHUB_OUTPUT"', str(pkg_steps[0].get("run", ""))) is not None, f"native-service.yml job {build} must have one step with id pkg that writes binary=<path of {binary_name}> to $GITHUB_OUTPUT")
+    binary_uploads = [st for st in build_steps if str(st.get("uses", "")).startswith("actions/upload-artifact@") and str((st.get("with") or {}).get("name", "")).startswith("ci-binary-")]
+    need(len(binary_uploads) == 1 and (binary_uploads[0].get("with") or {}).get("path") == "${{ steps.pkg.outputs.binary }}", f"native-service.yml job {build} must upload its ci-binary-* artifact from `${{{{ steps.pkg.outputs.binary }}}}` (one named file, no glob), so the artifact root holds {binary_name}")
 need("UNATTESTED" not in service_text and "--no-verify" not in service_text and "-NoVerify" not in service_text and "allow-unverified" not in service_text, "native-service.yml must not switch the installer's verification off (D28)")
 
 # Every scenario ID the workflow names exists: in the scenario files, and (where the harness

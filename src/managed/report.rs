@@ -78,11 +78,13 @@ const OSV_ALERT_WINDOW: std::time::Duration = std::time::Duration::from_secs(300
 
 impl UpstreamHealth {
     pub fn set_policy_rules_skipped_unknown_ecosystem(&self, count: u64) {
-        self.policy_rules_skipped_unknown_ecosystem.store(count, Ordering::Relaxed);
+        self.policy_rules_skipped_unknown_ecosystem
+            .store(count, Ordering::Relaxed);
     }
 
     pub fn policy_rules_skipped_unknown_ecosystem(&self) -> u64 {
-        self.policy_rules_skipped_unknown_ecosystem.load(Ordering::Relaxed)
+        self.policy_rules_skipped_unknown_ecosystem
+            .load(Ordering::Relaxed)
     }
 
     /// The counters as the sync report carries them (LS-F7, C1031).
@@ -109,25 +111,33 @@ impl UpstreamHealth {
         self.osv.matches_file_degraded.load(Ordering::Relaxed)
     }
     pub fn add_osv_matches_file_degraded(&self, count: u64) {
-        self.osv.matches_file_degraded.fetch_add(count, Ordering::Relaxed);
+        self.osv
+            .matches_file_degraded
+            .fetch_add(count, Ordering::Relaxed);
     }
     pub fn osv_stale_matches_expired(&self) -> u64 {
         self.osv.stale_matches_expired.load(Ordering::Relaxed)
     }
     pub fn add_osv_stale_matches_expired(&self, count: u64) {
-        self.osv.stale_matches_expired.fetch_add(count, Ordering::Relaxed);
+        self.osv
+            .stale_matches_expired
+            .fetch_add(count, Ordering::Relaxed);
     }
     pub fn osv_server_unreached(&self) -> u64 {
         self.osv.server_unreached.load(Ordering::Relaxed)
     }
     pub fn add_osv_server_unreached(&self, count: u64) {
-        self.osv.server_unreached.fetch_add(count, Ordering::Relaxed);
+        self.osv
+            .server_unreached
+            .fetch_add(count, Ordering::Relaxed);
     }
     pub fn osv_matches_records_skipped(&self) -> u64 {
         self.osv.matches_records_skipped.load(Ordering::Relaxed)
     }
     pub fn add_osv_matches_records_skipped(&self, count: u64) {
-        self.osv.matches_records_skipped.fetch_add(count, Ordering::Relaxed);
+        self.osv
+            .matches_records_skipped
+            .fetch_add(count, Ordering::Relaxed);
     }
     pub fn osv_results_total(&self) -> u64 {
         self.osv.results_total.load(Ordering::Relaxed)
@@ -144,10 +154,15 @@ impl UpstreamHealth {
 
     pub fn record_osv_results_at(&self, now: std::time::Instant, total: u64, degraded: u64) {
         self.osv.results_total.fetch_add(total, Ordering::Relaxed);
-        self.osv.results_degraded.fetch_add(degraded, Ordering::Relaxed);
+        self.osv
+            .results_degraded
+            .fetch_add(degraded, Ordering::Relaxed);
         let mut window = self.osv.window.lock().expect("the OSV window");
         window.push_back((now, total, degraded));
-        while window.front().is_some_and(|(at, ..)| now.saturating_duration_since(*at) >= OSV_ALERT_WINDOW) {
+        while window
+            .front()
+            .is_some_and(|(at, ..)| now.saturating_duration_since(*at) >= OSV_ALERT_WINDOW)
+        {
             window.pop_front();
         }
     }
@@ -165,7 +180,9 @@ impl UpstreamHealth {
 
     /// One call's outcome: one atomic update.
     pub fn record(&self, call: Call, answered: bool) {
-        self.trackers[call as usize].touched.store(true, Ordering::Release);
+        self.trackers[call as usize]
+            .touched
+            .store(true, Ordering::Release);
         let bit = if answered { ANSWERED } else { FAILED };
         self.trackers[call as usize]
             .period
@@ -187,7 +204,19 @@ impl UpstreamHealth {
     /// Closes the period and reports it. `pypi` is unreachable when either of its
     /// trackers is, so a files outage shows even while metadata refreshes succeed.
     pub fn take_period(&self) -> Upstreams {
-        let [npm, metadata, artifacts, osv, rubygems, cargo, go, nuget, maven, conan, oci] = &self.trackers;
+        let [
+            npm,
+            metadata,
+            artifacts,
+            osv,
+            rubygems,
+            cargo,
+            go,
+            nuget,
+            maven,
+            conan,
+            oci,
+        ] = &self.trackers;
         // Reported only once RubyGems has been called, so a firewall that serves none never names it.
         let rubygems_down = rubygems.close_period();
         let cargo_down = cargo.close_period();
@@ -208,12 +237,27 @@ impl UpstreamHealth {
             npm: state(npm.close_period()),
             pypi: state(pypi),
             osv: state(osv.close_period()),
-            rubygems: rubygems.touched.load(Ordering::Acquire).then(|| state(rubygems_down)),
-            cargo: cargo.touched.load(Ordering::Acquire).then(|| state(cargo_down)),
+            rubygems: rubygems
+                .touched
+                .load(Ordering::Acquire)
+                .then(|| state(rubygems_down)),
+            cargo: cargo
+                .touched
+                .load(Ordering::Acquire)
+                .then(|| state(cargo_down)),
             go: go.touched.load(Ordering::Acquire).then(|| state(go_down)),
-            nuget: nuget.touched.load(Ordering::Acquire).then(|| state(nuget_down)),
-            maven: maven.touched.load(Ordering::Acquire).then(|| state(maven_down)),
-            conan: conan.touched.load(Ordering::Acquire).then(|| state(conan_down)),
+            nuget: nuget
+                .touched
+                .load(Ordering::Acquire)
+                .then(|| state(nuget_down)),
+            maven: maven
+                .touched
+                .load(Ordering::Acquire)
+                .then(|| state(maven_down)),
+            conan: conan
+                .touched
+                .load(Ordering::Acquire)
+                .then(|| state(conan_down)),
             oci: oci.touched.load(Ordering::Acquire).then(|| state(oci_down)),
         }
     }
@@ -229,7 +273,14 @@ mod tests {
         let ok = Upstreams {
             npm: Reachability::Ok,
             pypi: Reachability::Ok,
-            osv: Reachability::Ok, rubygems: None, cargo: None, go: None, nuget: None, maven: None, conan: None, oci: None,
+            osv: Reachability::Ok,
+            rubygems: None,
+            cargo: None,
+            go: None,
+            nuget: None,
+            maven: None,
+            conan: None,
+            oci: None,
         };
         assert_eq!(health.take_period(), ok, "no calls yet");
         health.record_upstream::<()>(Call::Npm, &Err(UpstreamError::Status(503)));
@@ -257,10 +308,22 @@ mod tests {
         assert_eq!(health.take_period().maven, None, "no call, no entry");
         health.record_upstream::<()>(Call::Maven, &Err(UpstreamError::Status(503)));
         assert_eq!(health.take_period().maven, Some(Reachability::Unreachable));
-        assert_eq!(health.take_period().maven, Some(Reachability::Unreachable), "a period with no calls keeps it");
+        assert_eq!(
+            health.take_period().maven,
+            Some(Reachability::Unreachable),
+            "a period with no calls keeps it"
+        );
         health.record_upstream::<()>(Call::Maven, &Err(UpstreamError::Status(404)));
-        assert_eq!(health.take_period().maven, Some(Reachability::Ok), "a 404 means the repository answered");
-        assert_eq!(health.take_period().nuget, None, "another family's entry stays absent");
+        assert_eq!(
+            health.take_period().maven,
+            Some(Reachability::Ok),
+            "a 404 means the repository answered"
+        );
+        assert_eq!(
+            health.take_period().nuget,
+            None,
+            "another family's entry stays absent"
+        );
     }
 
     /// Row 20: NuGet is reported only once a NuGet call was made (a firewall that serves none never names it),
@@ -271,9 +334,21 @@ mod tests {
         assert_eq!(health.take_period().nuget, None, "no call, no entry");
         health.record_upstream::<()>(Call::Nuget, &Err(UpstreamError::Status(503)));
         assert_eq!(health.take_period().nuget, Some(Reachability::Unreachable));
-        assert_eq!(health.take_period().nuget, Some(Reachability::Unreachable), "a period with no calls keeps it");
+        assert_eq!(
+            health.take_period().nuget,
+            Some(Reachability::Unreachable),
+            "a period with no calls keeps it"
+        );
         health.record_upstream::<()>(Call::Nuget, &Err(UpstreamError::Status(404)));
-        assert_eq!(health.take_period().nuget, Some(Reachability::Ok), "a 404 means the registry answered");
-        assert_eq!(health.take_period().go, None, "another family's entry stays absent");
+        assert_eq!(
+            health.take_period().nuget,
+            Some(Reachability::Ok),
+            "a 404 means the registry answered"
+        );
+        assert_eq!(
+            health.take_period().go,
+            None,
+            "another family's entry stays absent"
+        );
     }
 }

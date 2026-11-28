@@ -6,15 +6,15 @@
 //! a report or a log line.
 
 pub mod activity;
-mod order_guards;
-pub mod publication_gate;
-pub mod service_policy;
 mod cache;
 pub mod certificates;
-pub mod enterprise_certificate;
 pub mod client;
+pub mod enterprise_certificate;
 mod lock;
+mod order_guards;
+pub mod publication_gate;
 pub mod report;
+pub mod service_policy;
 pub mod sync;
 
 use std::collections::HashMap;
@@ -232,7 +232,10 @@ impl Managed {
             .await
             .map_err(|error| {
                 // The kind only: never the chain or any key material.
-                tracing::warn!(?error, "the certificate admission call failed; answering busy");
+                tracing::warn!(
+                    ?error,
+                    "the certificate admission call failed; answering busy"
+                );
                 Refusal::Busy
             })?;
         let CertificateAdmission::Granted {
@@ -256,22 +259,41 @@ impl Managed {
         };
         if let Some(status) = enterprise_status.as_ref() {
             enterprise_certificate::resolve_enterprise_certificate(
-                &enterprise_certificate::EnterprisePeer { chain: peer, status },
-            ).await.map_err(|error| {
+                &enterprise_certificate::EnterprisePeer {
+                    chain: peer,
+                    status,
+                },
+            )
+            .await
+            .map_err(|error| {
                 // The refusal kind only (invalid answer, nonce or signature mismatch, unavailable responder), never the chain.
-                tracing::warn!(?error, "the organization issuer's live status check refused the certificate");
+                tracing::warn!(
+                    ?error,
+                    "the organization issuer's live status check refused the certificate"
+                );
                 Refusal::Unauthenticated
             })?;
         }
-        let registry_private_cidrs = registry_private_cidrs.iter()
-            .map(|cidr| cidr.parse::<ipnet::IpNet>().map_err(|_| Refusal::Unauthenticated))
+        let registry_private_cidrs = registry_private_cidrs
+            .iter()
+            .map(|cidr| {
+                cidr.parse::<ipnet::IpNet>()
+                    .map_err(|_| Refusal::Unauthenticated)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         // The declared token origin of an OCI registry: an https origin without a path (a malformed one refuses the admission, fail closed).
         let registry_token_origin = token_origin
             .as_deref()
             .map(|text| {
                 let url = Url::parse(text).map_err(|_| Refusal::Unauthenticated)?;
-                if url.scheme() != "https" || !(url.path() == "/" || url.path().is_empty()) || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() || url.host_str().is_none() {
+                if url.scheme() != "https"
+                    || !(url.path() == "/" || url.path().is_empty())
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.host_str().is_none()
+                {
                     return Err(Refusal::Unauthenticated);
                 }
                 Ok(url)
@@ -281,8 +303,11 @@ impl Managed {
             .as_deref()
             .map(|target| {
                 let url = Url::parse(target).map_err(|_| Refusal::Unauthenticated)?;
-                crate::upstream::OriginSet::selected_npm_with_private(url.clone(), registry_private_cidrs.clone())
-                    .map_err(|_| Refusal::Unauthenticated)?;
+                crate::upstream::OriginSet::selected_npm_with_private(
+                    url.clone(),
+                    registry_private_cidrs.clone(),
+                )
+                .map_err(|_| Refusal::Unauthenticated)?;
                 Ok(url)
             })
             .transpose()?;
@@ -323,7 +348,10 @@ impl Managed {
         // shortcut: certificate activity has no key row; add a separate certificate
         // activity identity when the activity schema supports it.
         let principal = Principal {
-            authority: Some(service_policy::AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation)),
+            authority: Some(service_policy::AuthorityReceipt::new(
+                Arc::clone(&self.publication_gate),
+                generation,
+            )),
             place,
             key_id: KeyId(0),
             policy: Arc::new(policy),
@@ -334,7 +362,8 @@ impl Managed {
             chain,
             registry_origin,
             registry_archive_origin: None,
-            registry_resource_prefix: None, registry_token_origin,
+            registry_resource_prefix: None,
+            registry_token_origin,
             registry_read_authorization: read_authorization,
             registry_trusted: trusted,
             registry_private_cidrs,
@@ -385,7 +414,10 @@ impl Managed {
                         rate_limit_source: key.rate_limit_source,
                         org: key.org,
                         chain: key.chain.into(),
-                        registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
+                        registry_origin: None,
+                        registry_archive_origin: None,
+                        registry_resource_prefix: None,
+                        registry_token_origin: None,
                         registry_read_authorization: None,
                         registry_trusted: false,
                         registry_private_cidrs: Vec::new(),
@@ -533,26 +565,42 @@ impl Managed {
             .client(peer, headers)
             .ok_or(Refusal::Network(peer.to_canonical()))?;
         // Freshness and its authority generation are one protected observation.
-        let (observed_generation, fresh) = self.publication_gate.read(|generation| {
-            (generation, self.cache.fresh(&hash))
-        }).map_err(|_| Refusal::Busy)?;
+        let (observed_generation, fresh) = self
+            .publication_gate
+            .read(|generation| (generation, self.cache.fresh(&hash)))
+            .map_err(|_| Refusal::Busy)?;
         #[cfg(test)]
-        if let Some(checkpoint) = lock(&self.admission_checkpoint).take() { checkpoint(); }
+        if let Some(checkpoint) = lock(&self.admission_checkpoint).take() {
+            checkpoint();
+        }
         let (generation, mut principal) = if let Some(principal) = fresh {
             (observed_generation, principal)
         } else {
             self.look_up(&hash, client).await?;
-            self.publication_gate.read(|generation| {
-            if self.retired.load(Ordering::Acquire) { return Err(Refusal::Unauthenticated); }
-            // C19: an unreadable/unreachable layer refresh keeps its last known
-            // policy, but a publication during lookup must not bless an old entry.
-            let current = self.cache.fresh(&hash).or_else(|| {
-                (generation == observed_generation).then(|| self.cache.stale(&hash)).flatten()
-            }).ok_or(Refusal::Busy)?;
-            Ok((generation, current))
-            }).map_err(|_| Refusal::Busy)??
+            self.publication_gate
+                .read(|generation| {
+                    if self.retired.load(Ordering::Acquire) {
+                        return Err(Refusal::Unauthenticated);
+                    }
+                    // C19: an unreadable/unreachable layer refresh keeps its last known
+                    // policy, but a publication during lookup must not bless an old entry.
+                    let current = self
+                        .cache
+                        .fresh(&hash)
+                        .or_else(|| {
+                            (generation == observed_generation)
+                                .then(|| self.cache.stale(&hash))
+                                .flatten()
+                        })
+                        .ok_or(Refusal::Busy)?;
+                    Ok((generation, current))
+                })
+                .map_err(|_| Refusal::Busy)??
         };
-        principal.authority = Some(service_policy::AuthorityReceipt::new(Arc::clone(&self.publication_gate), generation));
+        principal.authority = Some(service_policy::AuthorityReceipt::new(
+            Arc::clone(&self.publication_gate),
+            generation,
+        ));
         if charge_rate {
             self.admit(&principal, client)?;
         } else {
@@ -707,8 +755,10 @@ impl Managed {
                 rate_limit_source,
             ),
             KeyLookup::Unknown { .. } => {
-                let _ = self.publication_gate.publish(|| self.cache
-                    .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch));
+                let _ = self.publication_gate.publish(|| {
+                    self.cache
+                        .refuse_current(*hash, Some(UNKNOWN_FOR), None, &read, epoch)
+                });
                 return Err(Failed::Refused(Refusal::Unauthenticated));
             }
             KeyLookup::Revoked {
@@ -732,8 +782,13 @@ impl Managed {
                     chain,
                     suspended,
                 };
-                if !self.publication_gate.publish(|| self.cache
-                    .refuse_current(*hash, None, Some(known.clone()), &read, epoch)).unwrap_or(false)
+                if !self
+                    .publication_gate
+                    .publish(|| {
+                        self.cache
+                            .refuse_current(*hash, None, Some(known.clone()), &read, epoch)
+                    })
+                    .unwrap_or(false)
                 {
                     // A `key` or `place` row since may have restored it: asked again.
                     return Err(Failed::Busy);
@@ -756,14 +811,22 @@ impl Managed {
             rate_limit_source,
             org,
             chain: chain.iter().map(|link| link.place).collect(),
-            registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
+            registry_origin: None,
+            registry_archive_origin: None,
+            registry_resource_prefix: None,
+            registry_token_origin: None,
             registry_read_authorization: None,
             registry_trusted: false,
             registry_private_cidrs: Vec::new(),
             deletion_scopes: Vec::new(),
         };
-        match self.publication_gate.publish(|| self.cache
-            .insert_current(*hash, found.clone(), &read, epoch)).map_err(|_| Failed::Busy)?
+        match self
+            .publication_gate
+            .publish(|| {
+                self.cache
+                    .insert_current(*hash, found.clone(), &read, epoch)
+            })
+            .map_err(|_| Failed::Busy)?
         {
             Insert::Done => {}
             // Invalidated while its layers were fetched (H6), or the cache is full while
@@ -902,21 +965,23 @@ impl Managed {
     /// shared layer's edit that arrives with another key's lookup reaches every key now,
     /// not at its cache TTL; the next sync's `layer` row finds it current (E2E-013).
     fn store_layers(&self, answer: LayersResponse, epoch: u64) -> bool {
-        self.publication_gate.publish(|| {
-        let floor = self.cache.floor();
-        let mut replaced = Vec::new();
-        let current = self.cache.in_epoch(epoch, || {
-            let (current, newer) = self.policies.store(answer, floor);
-            replaced = newer;
-            current
-        });
-        if !replaced.is_empty() {
-            let policies = &self.policies;
-            self.cache
-                .rebuild(&replaced, |chain| policies.compile_places(chain));
-        }
-        current
-        }).unwrap_or(false)
+        self.publication_gate
+            .publish(|| {
+                let floor = self.cache.floor();
+                let mut replaced = Vec::new();
+                let current = self.cache.in_epoch(epoch, || {
+                    let (current, newer) = self.policies.store(answer, floor);
+                    replaced = newer;
+                    current
+                });
+                if !replaced.is_empty() {
+                    let policies = &self.policies;
+                    self.cache
+                        .rebuild(&replaced, |chain| policies.compile_places(chain));
+                }
+                current
+            })
+            .unwrap_or(false)
     }
 
     /// What a failed call to the server means for this firewall.
@@ -1336,19 +1401,47 @@ mod tests {
             sync_margin_seconds: 1.try_into().unwrap(),
             trusted_proxies: vec![],
         };
-        let managed = Arc::new(Managed::new(&config, Duration::from_secs(60), Arc::new(crate::clock::SystemClock), dir.path()));
-        let platform = PlaceRef { kind: LayerKind::Platform, id: 1 };
-        let place = PlaceRef { kind: LayerKind::Org, id: 10 };
+        let managed = Arc::new(Managed::new(
+            &config,
+            Duration::from_secs(60),
+            Arc::new(crate::clock::SystemClock),
+            dir.path(),
+        ));
+        let platform = PlaceRef {
+            kind: LayerKind::Platform,
+            id: 1,
+        };
+        let place = PlaceRef {
+            kind: LayerKind::Org,
+            id: 10,
+        };
         let principal = Principal {
-            authority: None, place, key_id: KeyId(1),
-            policy: Arc::new(CompiledPolicy::managed(probation_policy::resolve(&[Layer::empty(LayerKind::Platform), Layer::empty(LayerKind::Org)]))),
-            account: place, rate_limit: None, rate_limit_source: LimitSource::Default,
-            org: Some(OrgId(10)), chain: Arc::from([platform, place]), registry_origin: None, registry_archive_origin: None, registry_resource_prefix: None, registry_token_origin: None,
-            registry_read_authorization: None, registry_trusted: false,
-            registry_private_cidrs: vec![], deletion_scopes: vec![],
+            authority: None,
+            place,
+            key_id: KeyId(1),
+            policy: Arc::new(CompiledPolicy::managed(probation_policy::resolve(&[
+                Layer::empty(LayerKind::Platform),
+                Layer::empty(LayerKind::Org),
+            ]))),
+            account: place,
+            rate_limit: None,
+            rate_limit_source: LimitSource::Default,
+            org: Some(OrgId(10)),
+            chain: Arc::from([platform, place]),
+            registry_origin: None,
+            registry_archive_origin: None,
+            registry_resource_prefix: None,
+            registry_token_origin: None,
+            registry_read_authorization: None,
+            registry_trusted: false,
+            registry_private_cidrs: vec![],
+            deletion_scopes: vec![],
         };
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer prb_01234567890123456789012345678901"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer prb_01234567890123456789012345678901"),
+        );
         let hash = key_hash(headers.get(AUTHORIZATION).unwrap()).unwrap();
         assert!(managed.cache.insert(hash, principal));
         let (reached, wait) = tokio::sync::oneshot::channel();
@@ -1358,13 +1451,23 @@ mod tests {
             paused.recv().unwrap();
         }));
         let request_managed = Arc::clone(&managed);
-        let request = tokio::spawn(async move { request_managed.authenticate(&headers, "127.0.0.1".parse().unwrap()).await });
+        let request = tokio::spawn(async move {
+            request_managed
+                .authenticate(&headers, "127.0.0.1".parse().unwrap())
+                .await
+        });
         wait.await.unwrap();
-        managed.publication_gate.publish(|| managed.cache.expire_places(&[place], 2)).unwrap();
+        managed
+            .publication_gate
+            .publish(|| managed.cache.expire_places(&[place], 2))
+            .unwrap();
         resume.send(()).unwrap();
         if let Ok(principal) = request.await.unwrap() {
-            assert_ne!(principal.authority.unwrap().generation, managed.publication_gate.generation(),
-                "a place-invalidated old principal must not acquire the new publication generation");
+            assert_ne!(
+                principal.authority.unwrap().generation,
+                managed.publication_gate.generation(),
+                "a place-invalidated old principal must not acquire the new publication generation"
+            );
         }
     }
 
@@ -1375,7 +1478,12 @@ mod tests {
         publish_on: &'static [usize],
         grant: bool,
         rate_limit: Option<u32>,
-    ) -> (Arc<Managed>, Arc<std::sync::atomic::AtomicUsize>, wiremock::MockServer, tempfile::TempDir) {
+    ) -> (
+        Arc<Managed>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        wiremock::MockServer,
+        tempfile::TempDir,
+    ) {
         certificate_fixture_with(publish_on, grant, rate_limit, None).await
     }
 
@@ -1384,7 +1492,12 @@ mod tests {
         grant: bool,
         rate_limit: Option<u32>,
         token_origin: Option<&str>,
-    ) -> (Arc<Managed>, Arc<std::sync::atomic::AtomicUsize>, wiremock::MockServer, tempfile::TempDir) {
+    ) -> (
+        Arc<Managed>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        wiremock::MockServer,
+        tempfile::TempDir,
+    ) {
         use probation_policy::api::{MemberCertificateId, PlaceLayer};
         use probation_policy::{Layer, LayerKind};
         use wiremock::matchers::{method, path};
@@ -1403,10 +1516,21 @@ mod tests {
             sync_margin_seconds: 1.try_into().unwrap(),
             trusted_proxies: vec![],
         };
-        let managed = Arc::new(Managed::new(&config, Duration::from_secs(60), Arc::new(crate::clock::SystemClock), dir.path()));
+        let managed = Arc::new(Managed::new(
+            &config,
+            Duration::from_secs(60),
+            Arc::new(crate::clock::SystemClock),
+            dir.path(),
+        ));
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let platform = PlaceRef { kind: LayerKind::Platform, id: 1 };
-        let place = PlaceRef { kind: LayerKind::Org, id: 10 };
+        let platform = PlaceRef {
+            kind: LayerKind::Platform,
+            id: 1,
+        };
+        let place = PlaceRef {
+            kind: LayerKind::Org,
+            id: 10,
+        };
         let granted = serde_json::to_value(CertificateAdmission::Granted {
             registry: RegistryId(4),
             target_url: None,
@@ -1419,8 +1543,16 @@ mod tests {
             member: MemberCertificateId("member".into()),
             place,
             layers: vec![
-                PlaceLayer { place: platform, layer: Layer::empty(LayerKind::Platform), revision: 1 },
-                PlaceLayer { place, layer: Layer::empty(LayerKind::Org), revision: 1 },
+                PlaceLayer {
+                    place: platform,
+                    layer: Layer::empty(LayerKind::Platform),
+                    revision: 1,
+                },
+                PlaceLayer {
+                    place,
+                    layer: Layer::empty(LayerKind::Org),
+                    revision: 1,
+                },
             ],
             rate_limit: rate_limit.map(|limit| limit.try_into().unwrap()),
             token_origin: token_origin.map(str::to_owned),
@@ -1448,38 +1580,78 @@ mod tests {
     }
 
     async fn admit_one(managed: &Managed) -> Result<Principal, Refusal> {
-        let peer = VerifiedPeer { chain: Arc::from(vec![vec![1u8]]) };
+        let peer = VerifiedPeer {
+            chain: Arc::from(vec![vec![1u8]]),
+        };
         managed
-            .admit_certificate(&peer, RegistryId(4), Ecosystem::Npm, "127.0.0.1".parse().unwrap(), &HeaderMap::new(), true)
+            .admit_certificate(
+                &peer,
+                RegistryId(4),
+                Ecosystem::Npm,
+                "127.0.0.1".parse().unwrap(),
+                &HeaderMap::new(),
+                true,
+            )
             .await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_publication_during_admission_is_asked_again_and_charged_once() {
         let (managed, hits, _server, _dir) = certificate_fixture(&[1], true, Some(1)).await;
-        let principal = admit_one(&managed).await.expect("the second answer is current");
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "one voided answer, one current answer");
+        let principal = admit_one(&managed)
+            .await
+            .expect("the second answer is current");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "one voided answer, one current answer"
+        );
         assert_eq!(
             principal.authority.unwrap().generation,
             managed.publication_gate.generation(),
             "the admitted principal carries the generation it was checked against"
         );
         // One request consumed the account's single token exactly once.
-        assert!(matches!(admit_one(&managed).await, Err(Refusal::RateLimited)));
+        assert!(matches!(
+            admit_one(&managed).await,
+            Err(Refusal::RateLimited)
+        ));
     }
 
     /// R2: the registry's declared token-service origin is part of a certificate admission, so a GitLab-style realm on another host
     /// works in a certificate-managed firewall as it does in a shared service; a malformed one refuses the admission (fail closed).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_certificate_admission_carries_the_registrys_token_origin() {
-        let (managed, _hits, _server, _dir) = certificate_fixture_with(&[], true, None, Some("https://gitlab.example")).await;
+        let (managed, _hits, _server, _dir) =
+            certificate_fixture_with(&[], true, None, Some("https://gitlab.example")).await;
         let principal = admit_one(&managed).await.expect("admitted");
-        assert_eq!(principal.registry_token_origin.as_ref().map(url::Url::as_str), Some("https://gitlab.example/"));
+        assert_eq!(
+            principal
+                .registry_token_origin
+                .as_ref()
+                .map(url::Url::as_str),
+            Some("https://gitlab.example/")
+        );
         let (managed, _hits, _server, _dir) = certificate_fixture(&[], true, None).await;
-        assert!(admit_one(&managed).await.expect("admitted").registry_token_origin.is_none());
-        for bad in ["http://gitlab.example", "https://gitlab.example/jwt/auth", "https://u:p@gitlab.example", "not a url"] {
-            let (managed, _hits, _server, _dir) = certificate_fixture_with(&[], true, None, Some(bad)).await;
-            assert!(matches!(admit_one(&managed).await, Err(Refusal::Unauthenticated)), "{bad}");
+        assert!(
+            admit_one(&managed)
+                .await
+                .expect("admitted")
+                .registry_token_origin
+                .is_none()
+        );
+        for bad in [
+            "http://gitlab.example",
+            "https://gitlab.example/jwt/auth",
+            "https://u:p@gitlab.example",
+            "not a url",
+        ] {
+            let (managed, _hits, _server, _dir) =
+                certificate_fixture_with(&[], true, None, Some(bad)).await;
+            assert!(
+                matches!(admit_one(&managed).await, Err(Refusal::Unauthenticated)),
+                "{bad}"
+            );
         }
     }
 
@@ -1494,7 +1666,11 @@ mod tests {
     async fn a_busy_management_server_is_not_asked_again_even_when_a_publication_lands() {
         let (managed, hits, _server, _dir) = certificate_fixture(&[1, 2, 3, 4], false, None).await;
         assert!(matches!(admit_one(&managed).await, Err(Refusal::Busy)));
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "a failed call is not a superseded answer");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a failed call is not a superseded answer"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

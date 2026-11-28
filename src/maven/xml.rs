@@ -36,11 +36,26 @@ pub enum XmlError {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// `<name ...>`; `end` is the byte after `>`. A self-closing tag is a `Start` (self_closing) then its `End`.
-    Start { name: &'a str, start: usize, end: usize, self_closing: bool, depth: usize },
+    Start {
+        name: &'a str,
+        start: usize,
+        end: usize,
+        self_closing: bool,
+        depth: usize,
+    },
     /// `</name>` (or the synthetic end of a self-closing tag, whose `start == end`); `end` is the byte after `>`.
-    End { name: &'a str, start: usize, end: usize, depth: usize },
+    End {
+        name: &'a str,
+        start: usize,
+        end: usize,
+        depth: usize,
+    },
     /// Character data (CDATA sections included, entity references not yet decoded): the raw bytes `start..end`.
-    Text { start: usize, end: usize, depth: usize },
+    Text {
+        start: usize,
+        end: usize,
+        depth: usize,
+    },
 }
 
 /// The document as UTF-8 text: a UTF-8 document as it is, a document that declares ISO-8859-1 (and is not UTF-8) transcoded
@@ -56,13 +71,19 @@ pub fn to_utf8(doc: &[u8]) -> Result<Cow<'_, [u8]>, XmlError> {
         .and_then(|rest| rest.split("?>").next())
         .and_then(|declaration| {
             let at = declaration.find("encoding")? + "encoding".len();
-            let rest = declaration[at..].trim_start().strip_prefix('=')?.trim_start();
+            let rest = declaration[at..]
+                .trim_start()
+                .strip_prefix('=')?
+                .trim_start();
             let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
             let value = rest[1..].split(quote).next()?;
             Some(value.to_owned())
         })
         .ok_or(XmlError::NotUtf8)?;
-    if !matches!(declared.to_ascii_lowercase().as_str(), "iso-8859-1" | "iso_8859-1" | "latin1" | "latin-1" | "l1") {
+    if !matches!(
+        declared.to_ascii_lowercase().as_str(),
+        "iso-8859-1" | "iso_8859-1" | "latin1" | "latin-1" | "l1"
+    ) {
         return Err(XmlError::NotUtf8);
     }
     let mut text: String = doc.iter().map(|b| char::from(*b)).collect();
@@ -115,8 +136,15 @@ fn entity(name: &str) -> Option<char> {
         _ => {
             let digits = name.strip_prefix('#')?;
             let code = match digits.strip_prefix(['x', 'X']) {
-                Some(hex) if !hex.is_empty() && hex.len() <= 6 => u32::from_str_radix(hex, 16).ok()?,
-                None if !digits.is_empty() && digits.len() <= 7 && digits.bytes().all(|b| b.is_ascii_digit()) => digits.parse().ok()?,
+                Some(hex) if !hex.is_empty() && hex.len() <= 6 => {
+                    u32::from_str_radix(hex, 16).ok()?
+                }
+                None if !digits.is_empty()
+                    && digits.len() <= 7
+                    && digits.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    digits.parse().ok()?
+                }
                 _ => return None,
             };
             char::from_u32(code).filter(|c| xml_char(*c))
@@ -149,14 +177,24 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
     while i < bytes.len() {
         if bytes[i] != b'<' {
             // Character data up to the next tag.
-            let end = bytes[i..].iter().position(|b| *b == b'<').map_or(bytes.len(), |p| i + p);
+            let end = bytes[i..]
+                .iter()
+                .position(|b| *b == b'<')
+                .map_or(bytes.len(), |p| i + p);
             check_text(&bytes[i..end])?;
             if stack.is_empty() {
-                if !bytes[i..end].iter().all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n')) {
+                if !bytes[i..end]
+                    .iter()
+                    .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+                {
                     return Err(XmlError::Root);
                 }
             } else {
-                visit(Event::Text { start: i, end, depth: stack.len() });
+                visit(Event::Text {
+                    start: i,
+                    end,
+                    depth: stack.len(),
+                });
             }
             i = end;
             first = false;
@@ -167,7 +205,9 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
             // Only the XML declaration, only at the very start (after a byte-order mark).
             let at_start = first && (i == 0 || i == 3);
             let close = rest.find("?>").ok_or(XmlError::Malformed)?;
-            let declaration = instruction.strip_prefix("xml").is_some_and(|r| r.starts_with([' ', '\t', '\r', '\n', '?']));
+            let declaration = instruction
+                .strip_prefix("xml")
+                .is_some_and(|r| r.starts_with([' ', '\t', '\r', '\n', '?']));
             if !(at_start && declaration) {
                 return Err(XmlError::Instruction);
             }
@@ -190,7 +230,11 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
             }
             let close = rest.find("]]>").ok_or(XmlError::Malformed)?;
             check_text_raw(&bytes[i + 9..i + close])?;
-            visit(Event::Text { start: i, end: i + close + 3, depth: stack.len() });
+            visit(Event::Text {
+                start: i,
+                end: i + close + 3,
+                depth: stack.len(),
+            });
             i += close + 3;
             continue;
         }
@@ -205,7 +249,12 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
                 return Err(XmlError::Mismatch);
             }
             let end = i + 2 + close + 1;
-            visit(Event::End { name: open, start: i, end, depth: stack.len() + 1 });
+            visit(Event::End {
+                name: open,
+                start: i,
+                end,
+                depth: stack.len() + 1,
+            });
             i = end;
             continue;
         }
@@ -235,7 +284,10 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
                     break;
                 }
                 Some(c) if name_start(*c) => {
-                    let len = bytes[j..].iter().position(|c| !name_char(*c)).unwrap_or(bytes.len() - j);
+                    let len = bytes[j..]
+                        .iter()
+                        .position(|c| !name_char(*c))
+                        .unwrap_or(bytes.len() - j);
                     let attribute = &text[j..j + len];
                     if seen.contains(&attribute) || seen.len() >= 32 {
                         return Err(XmlError::Malformed);
@@ -252,8 +304,14 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
                     while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\r' | b'\n') {
                         j += 1;
                     }
-                    let quote = *bytes.get(j).filter(|q| matches!(q, b'"' | b'\'')).ok_or(XmlError::Malformed)?;
-                    let close = bytes[j + 1..].iter().position(|c| *c == quote).ok_or(XmlError::Malformed)?;
+                    let quote = *bytes
+                        .get(j)
+                        .filter(|q| matches!(q, b'"' | b'\''))
+                        .ok_or(XmlError::Malformed)?;
+                    let close = bytes[j + 1..]
+                        .iter()
+                        .position(|c| *c == quote)
+                        .ok_or(XmlError::Malformed)?;
                     let value = &bytes[j + 1..j + 1 + close];
                     if value.contains(&b'<') {
                         return Err(XmlError::Malformed);
@@ -274,10 +332,21 @@ pub fn scan<'a>(doc: &'a [u8], mut visit: impl FnMut(Event<'a>)) -> Result<(), X
             return Err(XmlError::TooDeep);
         }
         stack.push(name);
-        visit(Event::Start { name, start: i, end: j, self_closing, depth: stack.len() });
+        visit(Event::Start {
+            name,
+            start: i,
+            end: j,
+            self_closing,
+            depth: stack.len(),
+        });
         if self_closing {
             stack.pop();
-            visit(Event::End { name, start: j, end: j, depth: stack.len() + 1 });
+            visit(Event::End {
+                name,
+                start: j,
+                end: j,
+                depth: stack.len() + 1,
+            });
         }
         i = j;
     }
@@ -294,7 +363,10 @@ fn check_text(raw: &[u8]) -> Result<(), XmlError> {
     let mut rest = text;
     while let Some(i) = rest.find('&') {
         let tail = &rest[i + 1..];
-        let end = tail.find(';').filter(|e| *e <= 10).ok_or(XmlError::Entity)?;
+        let end = tail
+            .find(';')
+            .filter(|e| *e <= 10)
+            .ok_or(XmlError::Entity)?;
         entity(&tail[..end]).ok_or(XmlError::Entity)?;
         rest = &tail[end + 1..];
     }
@@ -302,7 +374,10 @@ fn check_text(raw: &[u8]) -> Result<(), XmlError> {
 }
 
 fn check_text_raw(raw: &[u8]) -> Result<(), XmlError> {
-    if raw.iter().any(|b| *b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r')) {
+    if raw
+        .iter()
+        .any(|b| *b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r'))
+    {
         return Err(XmlError::Control);
     }
     Ok(())
@@ -331,13 +406,20 @@ mod tests {
         assert!(got.contains(&"t:1&2".to_owned()), "{got:?}");
         assert!(got.contains(&"t:<k>".to_owned()), "{got:?}");
         assert_eq!(got.iter().filter(|e| e.starts_with("<w>")).count(), 1);
-        assert_eq!(got.iter().filter(|e| e.starts_with("</w>")).count(), 1, "a self-closing tag has its end");
+        assert_eq!(
+            got.iter().filter(|e| e.starts_with("</w>")).count(),
+            1,
+            "a self-closing tag has its end"
+        );
     }
 
     #[test]
     fn declarations_entities_and_instructions_are_refused() {
         for (doc, error) in [
-            ("<!DOCTYPE m [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><m>&x;</m>", XmlError::Declaration),
+            (
+                "<!DOCTYPE m [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><m>&x;</m>",
+                XmlError::Declaration,
+            ),
             ("<m>&x;</m>", XmlError::Entity),
             ("<m>&amp</m>", XmlError::Entity),
             ("<m>&#xD800;</m>", XmlError::Entity),
@@ -366,7 +448,11 @@ mod tests {
     fn nesting_is_bounded_without_recursion() {
         let ok = format!("{}{}", "<a>".repeat(MAX_DEPTH), "</a>".repeat(MAX_DEPTH));
         assert!(events(&ok).is_ok());
-        let deep = format!("{}{}", "<a>".repeat(MAX_DEPTH + 1), "</a>".repeat(MAX_DEPTH + 1));
+        let deep = format!(
+            "{}{}",
+            "<a>".repeat(MAX_DEPTH + 1),
+            "</a>".repeat(MAX_DEPTH + 1)
+        );
         assert_eq!(events(&deep).err(), Some(XmlError::TooDeep));
         let huge = "<a>".repeat(1_000_000);
         assert_eq!(events(&huge).err(), Some(XmlError::TooDeep));
@@ -375,14 +461,31 @@ mod tests {
     #[test]
     fn a_comment_may_hold_an_ampersand_and_latin1_documents_are_transcoded() {
         assert!(events("<m><!-- R&D --><v>1</v></m>").is_ok());
-        assert_eq!(events("<m>a&b</m>").err(), Some(XmlError::Entity), "character data still may not");
+        assert_eq!(
+            events("<m>a&b</m>").err(),
+            Some(XmlError::Entity),
+            "character data still may not"
+        );
         let latin1 = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<m><d>caf\xe9</d></m>";
-        assert_eq!(scan(latin1, |_| {}), Err(XmlError::NotUtf8), "the scanner itself takes UTF-8 only");
+        assert_eq!(
+            scan(latin1, |_| {}),
+            Err(XmlError::NotUtf8),
+            "the scanner itself takes UTF-8 only"
+        );
         let utf8 = to_utf8(latin1).unwrap();
-        assert_eq!(std::str::from_utf8(&utf8).unwrap(), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<m><d>caf\u{e9}</d></m>");
+        assert_eq!(
+            std::str::from_utf8(&utf8).unwrap(),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<m><d>caf\u{e9}</d></m>"
+        );
         assert!(scan(&utf8, |_| {}).is_ok());
-        assert!(matches!(to_utf8(b"<?xml version=\"1.0\" encoding=\"UTF-16\"?><m>\xff</m>"), Err(XmlError::NotUtf8)));
-        assert!(matches!(to_utf8(b"<m>\xe9</m>"), Err(XmlError::NotUtf8)), "undeclared");
+        assert!(matches!(
+            to_utf8(b"<?xml version=\"1.0\" encoding=\"UTF-16\"?><m>\xff</m>"),
+            Err(XmlError::NotUtf8)
+        ));
+        assert!(
+            matches!(to_utf8(b"<m>\xe9</m>"), Err(XmlError::NotUtf8)),
+            "undeclared"
+        );
         assert!(matches!(to_utf8(b"<m>ok</m>"), Ok(Cow::Borrowed(_))));
     }
 

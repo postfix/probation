@@ -7,18 +7,39 @@ use probation::lifecycle::{ExitPlan, RESTART_FOR_SETTINGS, StopOutcome, exit_pla
 
 #[test]
 fn an_explicit_stop_exits_zero_and_is_reported_stopped() {
-    assert_eq!(exit_plan(StopOutcome::Stopped), ExitPlan { code: 0, report_stopped: true });
+    assert_eq!(
+        exit_plan(StopOutcome::Stopped),
+        ExitPlan {
+            code: 0,
+            report_stopped: true
+        }
+    );
 }
 
 #[test]
 fn a_settings_restart_exits_75_without_reporting_stopped() {
-    assert_eq!(RESTART_FOR_SETTINGS, 75, "EX_TEMPFAIL, the code docs/operations.md and deploy/probation.service name");
-    assert_eq!(exit_plan(StopOutcome::SettingsRestart), ExitPlan { code: 75, report_stopped: false });
+    assert_eq!(
+        RESTART_FOR_SETTINGS, 75,
+        "EX_TEMPFAIL, the code docs/operations.md and deploy/probation.service name"
+    );
+    assert_eq!(
+        exit_plan(StopOutcome::SettingsRestart),
+        ExitPlan {
+            code: 75,
+            report_stopped: false
+        }
+    );
 }
 
 #[test]
 fn a_failure_exits_one_without_reporting_stopped() {
-    assert_eq!(exit_plan(StopOutcome::Failed), ExitPlan { code: 1, report_stopped: false });
+    assert_eq!(
+        exit_plan(StopOutcome::Failed),
+        ExitPlan {
+            code: 1,
+            report_stopped: false
+        }
+    );
 }
 
 /// An unclean shutdown after an operator's stop is still a stop: the exit code says it was not clean, but the service is reported
@@ -26,9 +47,27 @@ fn a_failure_exits_one_without_reporting_stopped() {
 /// settings restart or a startup failure stays a failure.
 #[test]
 fn an_unclean_shutdown_after_an_operator_stop_is_still_reported_stopped() {
-    assert_eq!(exit_plan(StopOutcome::StoppedUnclean), ExitPlan { code: 1, report_stopped: true });
-    assert_eq!(probation::lifecycle::after_shutdown(StopOutcome::Stopped, false), StopOutcome::StoppedUnclean);
-    assert_eq!(probation::lifecycle::after_shutdown(StopOutcome::Stopped, true), StopOutcome::Stopped);
-    assert_eq!(probation::lifecycle::after_shutdown(StopOutcome::SettingsRestart, false), StopOutcome::Failed);
-    assert_eq!(probation::lifecycle::after_shutdown(StopOutcome::SettingsRestart, true), StopOutcome::SettingsRestart);
+    assert_eq!(
+        exit_plan(StopOutcome::StoppedUnclean),
+        ExitPlan {
+            code: 1,
+            report_stopped: true
+        }
+    );
+    assert_eq!(
+        probation::lifecycle::after_shutdown(StopOutcome::Stopped, false),
+        StopOutcome::StoppedUnclean
+    );
+    assert_eq!(
+        probation::lifecycle::after_shutdown(StopOutcome::Stopped, true),
+        StopOutcome::Stopped
+    );
+    assert_eq!(
+        probation::lifecycle::after_shutdown(StopOutcome::SettingsRestart, false),
+        StopOutcome::Failed
+    );
+    assert_eq!(
+        probation::lifecycle::after_shutdown(StopOutcome::SettingsRestart, true),
+        StopOutcome::SettingsRestart
+    );
 }

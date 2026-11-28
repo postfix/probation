@@ -113,12 +113,18 @@ impl KeySync {
             Err(_) => return Err(Unreachable),
         };
         self.mark_reachable();
-        if matches!(answer, Answer::Rejected) { return Ok(Synced::BatchRejected); }
+        if matches!(answer, Answer::Rejected) {
+            return Ok(Synced::BatchRejected);
+        }
         let changed = match &answer {
-            Answer::Changes(delta) => delta.revision != self.cursor()
-                || delta.network_lock.is_some() || !delta.changed_layers.is_empty()
-                || !delta.changed_limits.is_empty() || !delta.changed_keys.is_empty()
-                || !delta.changed_places.is_empty(),
+            Answer::Changes(delta) => {
+                delta.revision != self.cursor()
+                    || delta.network_lock.is_some()
+                    || !delta.changed_layers.is_empty()
+                    || !delta.changed_limits.is_empty()
+                    || !delta.changed_keys.is_empty()
+                    || !delta.changed_places.is_empty()
+            }
             Answer::Reset(_) | Answer::Retired => true,
             Answer::Rejected => false,
         };
@@ -132,10 +138,12 @@ impl KeySync {
                 self.offer(full.settings);
             }
             Answer::Retired => self.stop_serving(),
-            Answer::Rejected => {},
+            Answer::Rejected => {}
         };
         if changed {
-            self.publication_gate.publish(apply).map_err(|_| Unreadable)?
+            self.publication_gate
+                .publish(apply)
+                .map_err(|_| Unreadable)?
         } else {
             apply()
         };

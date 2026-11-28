@@ -12,8 +12,8 @@
 //! match and nothing else, so the server stores and returns exactly that.
 
 use std::collections::{HashMap, VecDeque};
-use std::num::NonZeroUsize;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -193,7 +193,10 @@ impl Cache {
 
     fn put(&mut self, key: OsvKey, answer: Answer, expires: Instant, limits: &OsvLimits) {
         let refs = match &answer {
-            Answer::Matched(refs) => refs.iter().map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len)).sum(),
+            Answer::Matched(refs) => refs
+                .iter()
+                .map(|(a, b)| a.len() + b.as_ref().map_or(0, String::len))
+                .sum(),
             _ => 0,
         };
         let size = key.name.len() + key.version.len() + refs + 96;
@@ -206,11 +209,21 @@ impl Cache {
             }
         }
         let target = if is_match { matched } else { clean };
-        target.put(key, Held { answer, expires, size });
+        target.put(
+            key,
+            Held {
+                answer,
+                expires,
+                size,
+            },
+        );
         self.bytes = self.bytes - freed + size;
         // Entries first leave the clean list; a match goes last (garbage cannot evict one).
         while {
-            let (m, c) = (self.matched.as_ref().map_or(0, LruCache::len), self.clean.as_ref().map_or(0, LruCache::len));
+            let (m, c) = (
+                self.matched.as_ref().map_or(0, LruCache::len),
+                self.clean.as_ref().map_or(0, LruCache::len),
+            );
             m + c > limits.cache_entries || self.bytes > limits.cache_bytes
         } {
             let (matched, clean) = self.lrus();
@@ -289,7 +302,9 @@ impl OsvState {
             permits: Arc::new(Semaphore::new(limits.upstream_concurrency)),
             auth_permits: Semaphore::new(limits.auth_concurrency),
             parse_permits: Semaphore::new(limits.parse_concurrency),
-            preauth: Mutex::new(LruCache::new(NonZeroUsize::new(limits.preauth_table.max(1)).expect("non-zero"))),
+            preauth: Mutex::new(LruCache::new(
+                NonZeroUsize::new(limits.preauth_table.max(1)).expect("non-zero"),
+            )),
             rescue_permits: Arc::new(Semaphore::new(limits.rescue_permits.max(1))),
             limits,
             clock: Arc::new(Instant::now),
@@ -317,7 +332,10 @@ impl OsvState {
     /// The shipped server: the fixed upstream and `key_rate_per_minute` from config.
     pub fn production(sync: Arc<SyncState>, key_rate_per_minute: u32) -> OsvState {
         let url = url::Url::parse(UPSTREAM_URL).expect("a fixed, valid URL");
-        OsvState::new(sync, url).with_limits(OsvLimits { key_rate_per_minute, ..OsvLimits::default() })
+        OsvState::new(sync, url).with_limits(OsvLimits {
+            key_rate_per_minute,
+            ..OsvLimits::default()
+        })
     }
 
     pub fn with_limits(mut self, limits: OsvLimits) -> OsvState {
@@ -355,7 +373,10 @@ impl OsvState {
     /// The OSV ecosystem spellings the route accepts: exactly the families for which
     /// the shared mapping is `Some`.
     pub fn allowlist() -> Vec<&'static str> {
-        Ecosystem::ALL.into_iter().filter_map(probation::osv::osv_ecosystem).collect()
+        Ecosystem::ALL
+            .into_iter()
+            .filter_map(probation::osv::osv_ecosystem)
+            .collect()
     }
 
     fn now(&self) -> Instant {
@@ -370,8 +391,13 @@ impl OsvState {
 
     fn preauth_blocked(&self, source: IpAddr, now: Instant) -> bool {
         let mut table = self.preauth.lock().expect("the throttle");
-        let Some(window) = table.get_mut(&source) else { return false };
-        while window.front().is_some_and(|at| now.saturating_duration_since(*at) >= Duration::from_secs(60)) {
+        let Some(window) = table.get_mut(&source) else {
+            return false;
+        };
+        while window
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) >= Duration::from_secs(60))
+        {
             window.pop_front();
         }
         window.len() >= self.limits.preauth_failures_per_minute
@@ -409,12 +435,23 @@ impl OsvState {
         ok
     }
 
-    fn take_from(&self, map: &Mutex<HashMap<OsvCaller, Bucket>>, caller: OsvCaller, now: Instant, rate_per_sec: f64, burst: f64, cost: f64) -> bool {
+    fn take_from(
+        &self,
+        map: &Mutex<HashMap<OsvCaller, Bucket>>,
+        caller: OsvCaller,
+        now: Instant,
+        rate_per_sec: f64,
+        burst: f64,
+        cost: f64,
+    ) -> bool {
         let mut table = map.lock().expect("the budgets");
         if table.len() > 10_000 {
             table.retain(|_, b| b.tokens < burst);
         }
-        let bucket = table.entry(caller).or_insert(Bucket { tokens: burst, last: now });
+        let bucket = table.entry(caller).or_insert(Bucket {
+            tokens: burst,
+            last: now,
+        });
         OsvState::take(bucket, now, rate_per_sec, burst, cost)
     }
 
@@ -423,7 +460,14 @@ impl OsvState {
     }
 
     fn admit(&self, caller: OsvCaller, now: Instant) -> bool {
-        self.take_from(&self.buckets, caller, now, self.key_rate(), f64::from(self.limits.key_burst), 0.0)
+        self.take_from(
+            &self.buckets,
+            caller,
+            now,
+            self.key_rate(),
+            f64::from(self.limits.key_burst),
+            0.0,
+        )
     }
 
     fn admit_request(&self, caller: OsvCaller, now: Instant) -> bool {
@@ -441,7 +485,14 @@ impl OsvState {
     /// and the shared budget, which keeps a reserve. Below the reserve a tenant still has its
     /// own floor, so a few busy tenants cannot leave another with nothing.
     fn charge(&self, caller: OsvCaller, now: Instant) -> bool {
-        if !self.take_from(&self.buckets, caller, now, self.key_rate(), f64::from(self.limits.key_burst), 1.0) {
+        if !self.take_from(
+            &self.buckets,
+            caller,
+            now,
+            self.key_rate(),
+            f64::from(self.limits.key_burst),
+            1.0,
+        ) {
             return false;
         }
         let tenant = caller.tenant();
@@ -449,7 +500,13 @@ impl OsvState {
             if let Some(own) = self.buckets.lock().expect("the budgets").get_mut(&caller) {
                 own.tokens += 1.0;
             }
-            if tenants && let Some(t) = self.tenants.lock().expect("the tenant budgets").get_mut(&tenant) {
+            if tenants
+                && let Some(t) = self
+                    .tenants
+                    .lock()
+                    .expect("the tenant budgets")
+                    .get_mut(&tenant)
+            {
                 t.tokens += 1.0;
             }
         };
@@ -462,7 +519,10 @@ impl OsvState {
             if tenants.len() > 10_000 {
                 tenants.retain(|_, b| b.tokens < tenant_burst);
             }
-            let bucket = tenants.entry(tenant).or_insert(Bucket { tokens: tenant_burst, last: now });
+            let bucket = tenants.entry(tenant).or_insert(Bucket {
+                tokens: tenant_burst,
+                last: now,
+            });
             if !OsvState::take(bucket, now, global_rate * share, tenant_burst, 1.0) {
                 drop(tenants);
                 give_back(false);
@@ -472,7 +532,10 @@ impl OsvState {
         let reserve = global_burst * f64::from(self.limits.global_reserve_percent) / 100.0;
         {
             let mut global = self.global.lock().expect("the global budget");
-            let bucket = global.get_or_insert(Bucket { tokens: global_burst, last: now });
+            let bucket = global.get_or_insert(Bucket {
+                tokens: global_burst,
+                last: now,
+            });
             let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
             bucket.tokens = (bucket.tokens + elapsed * global_rate).min(global_burst);
             bucket.last = now;
@@ -487,13 +550,25 @@ impl OsvState {
         if floors.len() > 10_000 {
             floors.retain(|_, b| b.tokens < floor_burst);
         }
-        let bucket = floors.entry(tenant).or_insert(Bucket { tokens: floor_burst, last: now });
-        if OsvState::take(bucket, now, f64::from(self.limits.tenant_floor_per_minute) / 60.0, floor_burst, 1.0) {
+        let bucket = floors.entry(tenant).or_insert(Bucket {
+            tokens: floor_burst,
+            last: now,
+        });
+        if OsvState::take(
+            bucket,
+            now,
+            f64::from(self.limits.tenant_floor_per_minute) / 60.0,
+            floor_burst,
+            1.0,
+        ) {
             // The floor is real only while the shared floor pool lasts.
             let pool_share = f64::from(self.limits.floor_pool_percent) / 100.0;
             let pool_burst = (global_burst * pool_share).max(1.0);
             let mut pool = self.floor_pool.lock().expect("the floor pool");
-            let pool_bucket = pool.get_or_insert(Bucket { tokens: pool_burst, last: now });
+            let pool_bucket = pool.get_or_insert(Bucket {
+                tokens: pool_burst,
+                last: now,
+            });
             if OsvState::take(pool_bucket, now, global_rate * pool_share, pool_burst, 1.0) {
                 return true;
             }
@@ -506,29 +581,41 @@ impl OsvState {
     }
 
     fn open_breaker(&self, retry_after: Option<&str>) {
-        let secs = retry_after.and_then(|v| v.trim().parse::<u64>().ok()).map_or(30, |s| s.min(30));
+        let secs = retry_after
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map_or(30, |s| s.min(30));
         let mut jitter = [0u8; 2];
         let _ = getrandom::fill(&mut jitter);
-        let extra = (secs * 1000 / 10) * u64::from(u16::from_le_bytes(jitter)) / u64::from(u16::MAX);
+        let extra =
+            (secs * 1000 / 10) * u64::from(u16::from_le_bytes(jitter)) / u64::from(u16::MAX);
         let open = Duration::from_millis(secs * 1000 + extra).min(Duration::from_secs(60));
         *self.breaker.lock().expect("the breaker") = Some(self.now() + open);
         self.breaker_openings.fetch_add(1, Ordering::Relaxed);
     }
 
     fn breaker_open(&self) -> bool {
-        self.breaker.lock().expect("the breaker").is_some_and(|until| until > self.now())
+        self.breaker
+            .lock()
+            .expect("the breaker")
+            .is_some_and(|until| until > self.now())
     }
 }
 
 pub fn router(state: Arc<OsvState>) -> Router {
-    Router::new().route("/osv/v1/querybatch", post(querybatch)).with_state(state)
+    Router::new()
+        .route("/osv/v1/querybatch", post(querybatch))
+        .with_state(state)
 }
 
 /// A short, non-reversible tag of a bearer string: enough to recognise a credential that
 /// authenticated before, never the credential.
 fn bearer_tag(headers: &HeaderMap) -> Option<u64> {
     use sha2::{Digest, Sha256};
-    let bearer = headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")?;
+    let bearer = headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
     let digest = Sha256::digest(bearer.as_bytes());
     Some(u64::from_le_bytes(digest[..8].try_into().expect("8 bytes")))
 }
@@ -551,7 +638,14 @@ async fn querybatch(
     // carries a credential that authenticated before: a bad-token flood then cannot occupy
     // the auth gate (NEW-1).
     let tag = bearer_tag(&headers);
-    let known = tag.is_some_and(|t| state.known_good.lock().expect("the known credentials").get(&t).is_some());
+    let known = tag.is_some_and(|t| {
+        state
+            .known_good
+            .lock()
+            .expect("the known credentials")
+            .get(&t)
+            .is_some()
+    });
     // A blocked source is turned away without a lookup unless the credential authenticated
     // before. The rejection is not counted again: a block ends 60 s after the last real
     // failure, and while it lasts a first-time credential from that source (every client
@@ -579,17 +673,31 @@ async fn querybatch(
         let mut table = state.lookup_buckets.lock().expect("the lookup limits");
         let burst = f64::from(state.limits.request_burst);
         if table.get(&tag).is_none() {
-            table.put(tag, Bucket { tokens: burst, last: now });
+            table.put(
+                tag,
+                Bucket {
+                    tokens: burst,
+                    last: now,
+                },
+            );
         }
         let bucket = table.get_mut(&tag).expect("just inserted");
-        if !OsvState::take(bucket, now, f64::from(state.limits.request_rate_per_second), burst, 1.0) {
+        if !OsvState::take(
+            bucket,
+            now,
+            f64::from(state.limits.request_rate_per_second),
+            burst,
+            1.0,
+        ) {
             return plain(StatusCode::TOO_MANY_REQUESTS);
         }
     }
     // Credential first: nothing is read, cached or sent upstream for a stranger. The lookup
     // uses the database through a bounded gate of its own, so a flood of OSV requests
     // cannot take the pool `/sync` needs.
-    let Ok(Ok(gate)) = tokio::time::timeout(Duration::from_secs(1), state.auth_permits.acquire()).await else {
+    let Ok(Ok(gate)) =
+        tokio::time::timeout(Duration::from_secs(1), state.auth_permits.acquire()).await
+    else {
         return plain(StatusCode::TOO_MANY_REQUESTS);
     };
     state.auth_lookups.fetch_add(1, Ordering::Relaxed);
@@ -598,8 +706,16 @@ async fn querybatch(
     let caller = match looked_up {
         Ok(caller) => {
             if let Some(tag) = tag {
-                state.known_good.lock().expect("the known credentials").put(tag, ());
-                state.failed_tags.lock().expect("the failed credentials").pop(&tag);
+                state
+                    .known_good
+                    .lock()
+                    .expect("the known credentials")
+                    .put(tag, ());
+                state
+                    .failed_tags
+                    .lock()
+                    .expect("the failed credentials")
+                    .pop(&tag);
             }
             caller
         }
@@ -608,8 +724,16 @@ async fn querybatch(
             // for a moment. A valid token from outside its allowed sources is not: the real
             // firewall holds the same bearer (R4-1).
             if let (Some(tag), SyncError::Unauthenticated) = (tag, &refused) {
-                state.known_good.lock().expect("the known credentials").pop(&tag);
-                state.failed_tags.lock().expect("the failed credentials").put(tag, now);
+                state
+                    .known_good
+                    .lock()
+                    .expect("the known credentials")
+                    .pop(&tag);
+                state
+                    .failed_tags
+                    .lock()
+                    .expect("the failed credentials")
+                    .put(tag, now);
             }
             state.preauth_failed(source, now);
             return plain(StatusCode::UNAUTHORIZED);
@@ -622,7 +746,12 @@ async fn querybatch(
     // The body first, with a time limit and no permit held: a dripping body costs a socket,
     // not a turn of anyone else's (NEW-2). The cap is bytes; the batch cap below is a count,
     // and the byte cap wins when keys are large.
-    let read = match tokio::time::timeout(state.limits.body_read_timeout, axum::body::to_bytes(body, state.limits.body_cap)).await {
+    let read = match tokio::time::timeout(
+        state.limits.body_read_timeout,
+        axum::body::to_bytes(body, state.limits.body_cap),
+    )
+    .await
+    {
         Ok(read) => read,
         Err(_) => return plain(StatusCode::REQUEST_TIMEOUT),
     };
@@ -637,7 +766,13 @@ async fn querybatch(
     drop(parse_permit);
     let parsed = match parsed {
         Ok(parsed) => parsed,
-        Err(EnvelopeError::NotJson | EnvelopeError::NotAnObject | EnvelopeError::QueriesMissing | EnvelopeError::DuplicateKey | EnvelopeError::TooDeep) => {
+        Err(
+            EnvelopeError::NotJson
+            | EnvelopeError::NotAnObject
+            | EnvelopeError::QueriesMissing
+            | EnvelopeError::DuplicateKey
+            | EnvelopeError::TooDeep,
+        ) => {
             return plain(StatusCode::BAD_REQUEST);
         }
     };
@@ -648,7 +783,10 @@ async fn querybatch(
     let answer = state.answer(caller, parsed, started).await;
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         answer,
     )
         .into_response()
@@ -662,7 +800,11 @@ enum Slot {
 enum Pending {
     Done(Answer),
     /// Waiting on a leader: ours (`led`) or another request's.
-    Wait { rx: watch::Receiver<Option<Answer>>, led: bool, key: OsvKey },
+    Wait {
+        rx: watch::Receiver<Option<Answer>>,
+        led: bool,
+        key: OsvKey,
+    },
     /// Over a remaining budget: degraded, not an upstream failure.
     Budget,
 }
@@ -678,9 +820,16 @@ impl OsvState {
         let mut pending = Vec::with_capacity(keys.len());
         let mut leaders: Vec<Leader> = Vec::new();
         for key in keys {
-            let mut inflight = self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inflight = self
+                .inflight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(rx) = inflight.get(key) {
-                pending.push(Pending::Wait { rx: rx.clone(), led: false, key: key.clone() });
+                pending.push(Pending::Wait {
+                    rx: rx.clone(),
+                    led: false,
+                    key: key.clone(),
+                });
                 continue;
             }
             if let Some(hit) = self.cache.lock().expect("the answer cache").get(key, now) {
@@ -694,7 +843,11 @@ impl OsvState {
             let (tx, rx) = watch::channel(None);
             inflight.insert(key.clone(), rx.clone());
             leaders.push((key.clone(), tx));
-            pending.push(Pending::Wait { rx, led: true, key: key.clone() });
+            pending.push(Pending::Wait {
+                rx,
+                led: true,
+                key: key.clone(),
+            });
         }
         while !leaders.is_empty() {
             let rest = leaders.split_off(leaders.len().min(self.limits.leader_chunk));
@@ -728,16 +881,25 @@ impl OsvState {
         }
 
         let pending = self.register(caller, &distinct);
-        let led: Vec<bool> = pending.iter().map(|p| matches!(p, Pending::Wait { led: true, .. })).collect();
+        let led: Vec<bool> = pending
+            .iter()
+            .map(|p| matches!(p, Pending::Wait { led: true, .. }))
+            .collect();
         let mut resolved = self.settle(caller, pending, started, deadline_at).await;
         // A follower that was handed a foreign leader's failure asks for itself, once, while
         // its own deadline still allows it (SEC-2).
         let retry: Vec<usize> = (0..distinct.len())
-            .filter(|i| matches!(resolved[*i], Some(Answer::Failed)) && !led[*i] && tokio::time::Instant::now() < deadline_at)
+            .filter(|i| {
+                matches!(resolved[*i], Some(Answer::Failed))
+                    && !led[*i]
+                    && tokio::time::Instant::now() < deadline_at
+            })
             .collect();
         if !retry.is_empty() {
             let keys: Vec<OsvKey> = retry.iter().map(|i| distinct[*i].clone()).collect();
-            let again = self.settle(caller, self.register(caller, &keys), started, deadline_at).await;
+            let again = self
+                .settle(caller, self.register(caller, &keys), started, deadline_at)
+                .await;
             for (i, answer) in retry.into_iter().zip(again) {
                 resolved[i] = answer;
             }
@@ -754,8 +916,12 @@ impl OsvState {
                 },
             })
             .collect();
-        let degraded = results.iter().filter(|r| **r == RenderedResult::Degraded).count() as u64;
-        self.results_total.fetch_add(results.len() as u64, Ordering::Relaxed);
+        let degraded = results
+            .iter()
+            .filter(|r| **r == RenderedResult::Degraded)
+            .count() as u64;
+        self.results_total
+            .fetch_add(results.len() as u64, Ordering::Relaxed);
         self.results_degraded.fetch_add(degraded, Ordering::Relaxed);
         render_answer(&results, upstream_ok)
     }
@@ -828,8 +994,15 @@ impl OsvState {
     /// The rescue slot of `key`: the receiver of the one call a follower fires for itself, started
     /// here when no other follower has (charged to the starter), or `None` when the budget is
     /// spent and the follower can only wait.
-    fn rescue_for(self: &Arc<Self>, caller: OsvCaller, key: &OsvKey) -> Option<watch::Receiver<Option<Answer>>> {
-        let mut rescue = self.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn rescue_for(
+        self: &Arc<Self>,
+        caller: OsvCaller,
+        key: &OsvKey,
+    ) -> Option<watch::Receiver<Option<Answer>>> {
+        let mut rescue = self
+            .rescue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(rx) = rescue.get(key) {
             return Some(rx.clone());
         }
@@ -843,13 +1016,33 @@ impl OsvState {
         tokio::spawn(async move {
             // However this task ends, the slot is freed and the sender dropped: a dead rescue
             // must not leave later followers waiting on it.
-            let _slot = RescueGuard { state: Arc::clone(&state), key: key.clone() };
-            let answers = tokio::time::timeout(state.limits.upstream_timeout, state.call_upstream_with(&[&key], &state.rescue_permits)).await;
-            let answer = answers.ok().and_then(|a| a.into_iter().next()).unwrap_or(Answer::Failed);
+            let _slot = RescueGuard {
+                state: Arc::clone(&state),
+                key: key.clone(),
+            };
+            let answers = tokio::time::timeout(
+                state.limits.upstream_timeout,
+                state.call_upstream_with(&[&key], &state.rescue_permits),
+            )
+            .await;
+            let answer = answers
+                .ok()
+                .and_then(|a| a.into_iter().next())
+                .unwrap_or(Answer::Failed);
             let now = state.now();
             match &answer {
-                Answer::Matched(_) => state.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + state.limits.match_ttl, &state.limits),
-                Answer::NoMatch => state.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + state.limits.nomatch_ttl, &state.limits),
+                Answer::Matched(_) => state.cache.lock().expect("the answer cache").put(
+                    key.clone(),
+                    answer.clone(),
+                    now + state.limits.match_ttl,
+                    &state.limits,
+                ),
+                Answer::NoMatch => state.cache.lock().expect("the answer cache").put(
+                    key.clone(),
+                    answer.clone(),
+                    now + state.limits.nomatch_ttl,
+                    &state.limits,
+                ),
                 Answer::Failed => {}
             }
             let _ = tx.send(Some(answer));
@@ -864,11 +1057,17 @@ impl OsvState {
         let keys: Vec<&OsvKey> = leaders.iter().map(|(k, _)| k).collect();
         // However this task ends, its keys leave the in-flight table (a panic must not leave
         // followers waiting on a dead leader).
-        let _guard = InflightGuard { state: Arc::clone(&self), keys: keys.iter().map(|k| (*k).clone()).collect() };
-        let answers = match tokio::time::timeout(self.limits.upstream_timeout, self.call_upstream(&keys)).await {
-            Ok(answers) => answers,
-            Err(_) => vec![Answer::Failed; keys.len()],
+        let _guard = InflightGuard {
+            state: Arc::clone(&self),
+            keys: keys.iter().map(|k| (*k).clone()).collect(),
         };
+        let answers =
+            match tokio::time::timeout(self.limits.upstream_timeout, self.call_upstream(&keys))
+                .await
+            {
+                Ok(answers) => answers,
+                Err(_) => vec![Answer::Failed; keys.len()],
+            };
         if answers.iter().any(|a| matches!(a, Answer::Failed)) {
             self.upstream_failures.fetch_add(1, Ordering::Relaxed);
         }
@@ -877,12 +1076,25 @@ impl OsvState {
             // Store before publishing, publish before leaving the table, so no request
             // sees neither the entry nor the in-flight marker.
             match &answer {
-                Answer::Matched(_) => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.match_ttl, &self.limits),
-                Answer::NoMatch => self.cache.lock().expect("the answer cache").put(key.clone(), answer.clone(), now + self.limits.nomatch_ttl, &self.limits),
+                Answer::Matched(_) => self.cache.lock().expect("the answer cache").put(
+                    key.clone(),
+                    answer.clone(),
+                    now + self.limits.match_ttl,
+                    &self.limits,
+                ),
+                Answer::NoMatch => self.cache.lock().expect("the answer cache").put(
+                    key.clone(),
+                    answer.clone(),
+                    now + self.limits.nomatch_ttl,
+                    &self.limits,
+                ),
                 Answer::Failed => {}
             }
             let _ = tx.send(Some(answer));
-            self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+            self.inflight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
         }
     }
 
@@ -915,8 +1127,12 @@ impl OsvState {
     }
 
     /// One upstream call for already-built `queries`, with the size cap and strict shape.
-    async fn send_queries(&self, queries: Vec<serde_json::Value>) -> Result<Vec<UpResult>, UpstreamError> {
-        let body = serde_json::to_vec(&serde_json::json!({"queries": queries})).expect("a JSON value serializes");
+    async fn send_queries(
+        &self,
+        queries: Vec<serde_json::Value>,
+    ) -> Result<Vec<UpResult>, UpstreamError> {
+        let body = serde_json::to_vec(&serde_json::json!({"queries": queries}))
+            .expect("a JSON value serializes");
         let mut response = self
             .http
             .post(self.upstream.clone())
@@ -927,7 +1143,11 @@ impl OsvState {
             .map_err(|_| UpstreamError::Failed)?;
         let status = response.status();
         if status.as_u16() == 429 {
-            let retry = response.headers().get(header::RETRY_AFTER).and_then(|v| v.to_str().ok()).map(str::to_owned);
+            let retry = response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             self.open_breaker(retry.as_deref());
             return Err(UpstreamError::Failed);
         }
@@ -974,12 +1194,20 @@ impl OsvState {
                 return Ok(Answer::Failed);
             }
             pages += 1;
-            let page = self.send_queries(vec![query_for(key, Some(&next))]).await?.pop().ok_or(UpstreamError::Failed)?;
+            let page = self
+                .send_queries(vec![query_for(key, Some(&next))])
+                .await?
+                .pop()
+                .ok_or(UpstreamError::Failed)?;
             refs.extend(mal_refs(page.vulns));
             token = page.next_page_token;
         }
         refs.truncate(probation_policy::osv_wire::MAX_VULN_REFS);
-        Ok(if refs.is_empty() { Answer::NoMatch } else { Answer::Matched(Arc::new(refs)) })
+        Ok(if refs.is_empty() {
+            Answer::NoMatch
+        } else {
+            Answer::Matched(Arc::new(refs))
+        })
     }
 }
 
@@ -1004,7 +1232,11 @@ struct UpVuln {
 }
 
 fn mal_refs(vulns: Vec<UpVuln>) -> Vec<(String, Option<String>)> {
-    vulns.into_iter().filter(|v| v.id.starts_with("MAL-")).map(|v| (v.id, v.modified)).collect()
+    vulns
+        .into_iter()
+        .filter(|v| v.id.starts_with("MAL-"))
+        .map(|v| (v.id, v.modified))
+        .collect()
 }
 
 fn query_for(key: &OsvKey, page_token: Option<&str>) -> serde_json::Value {
@@ -1025,7 +1257,11 @@ struct RescueGuard {
 
 impl Drop for RescueGuard {
     fn drop(&mut self) {
-        self.state.rescue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.key);
+        self.state
+            .rescue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
     }
 }
 
@@ -1037,7 +1273,11 @@ struct InflightGuard {
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         // A poisoned table is still cleaned: the guard exists for the failure paths.
-        let mut inflight = self.state.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inflight = self
+            .state
+            .inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for key in &self.keys {
             inflight.remove(key);
         }
@@ -1055,9 +1295,13 @@ mod tests {
 
     /// A state that never connects to a database (the pool is lazy).
     fn state() -> Arc<OsvState> {
-        let pool = sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:1/none").expect("a lazy pool");
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:1/none").expect("a lazy pool");
         let sync = Arc::new(SyncState::new(pool, Vec::new(), None));
-        Arc::new(OsvState::new(sync, url::Url::parse("http://127.0.0.1:1/v1/querybatch").unwrap()))
+        Arc::new(OsvState::new(
+            sync,
+            url::Url::parse("http://127.0.0.1:1/v1/querybatch").unwrap(),
+        ))
     }
 
     /// R4-6: a rescue task that dies leaves no entry behind, and its receiver sees the sender gone.
@@ -1069,14 +1313,23 @@ mod tests {
         state.rescue.lock().unwrap().insert(key.clone(), rx.clone());
         let (guard_state, guard_key) = (Arc::clone(&state), key.clone());
         let died = tokio::spawn(async move {
-            let _slot = RescueGuard { state: guard_state, key: guard_key };
+            let _slot = RescueGuard {
+                state: guard_state,
+                key: guard_key,
+            };
             let _tx = tx;
             panic!("the rescue task dies");
         })
         .await;
         assert!(died.is_err());
-        assert!(!state.rescue.lock().unwrap().contains_key(&key), "the slot is free for the next follower");
-        assert!(rx.wait_for(Option::is_some).await.is_err(), "the waiting follower is released, not left on a dead sender");
+        assert!(
+            !state.rescue.lock().unwrap().contains_key(&key),
+            "the slot is free for the next follower"
+        );
+        assert!(
+            rx.wait_for(Option::is_some).await.is_err(),
+            "the waiting follower is released, not left on a dead sender"
+        );
     }
 
     /// A panicking fetch task, or any panic while the in-flight table is held, must not leave a
@@ -1094,8 +1347,17 @@ mod tests {
         })
         .join();
         assert!(state.inflight.is_poisoned());
-        drop(InflightGuard { state: Arc::clone(&state), keys: vec![key.clone()] });
-        let table = state.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!table.contains_key(&key), "the guard removed the key from the poisoned table");
+        drop(InflightGuard {
+            state: Arc::clone(&state),
+            keys: vec![key.clone()],
+        });
+        let table = state
+            .inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !table.contains_key(&key),
+            "the guard removed the key from the poisoned table"
+        );
     }
 }

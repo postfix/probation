@@ -32,10 +32,22 @@ pub struct ExitPlan {
 
 pub fn exit_plan(outcome: StopOutcome) -> ExitPlan {
     match outcome {
-        StopOutcome::Stopped => ExitPlan { code: 0, report_stopped: true },
-        StopOutcome::SettingsRestart => ExitPlan { code: RESTART_FOR_SETTINGS, report_stopped: false },
-        StopOutcome::StoppedUnclean => ExitPlan { code: 1, report_stopped: true },
-        StopOutcome::Failed => ExitPlan { code: 1, report_stopped: false },
+        StopOutcome::Stopped => ExitPlan {
+            code: 0,
+            report_stopped: true,
+        },
+        StopOutcome::SettingsRestart => ExitPlan {
+            code: RESTART_FOR_SETTINGS,
+            report_stopped: false,
+        },
+        StopOutcome::StoppedUnclean => ExitPlan {
+            code: 1,
+            report_stopped: true,
+        },
+        StopOutcome::Failed => ExitPlan {
+            code: 1,
+            report_stopped: false,
+        },
     }
 }
 

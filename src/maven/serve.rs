@@ -38,7 +38,9 @@ use crate::maven::xml;
 use crate::policy::{Candidate, Decision, DenyReason, Ecosystem, PublicationTime};
 use crate::store::cache::Advertised;
 use crate::store::rows::{ProjectRefresh, ReferenceId, ReferenceUpsert};
-use crate::upstream::{MetadataRequest, MetadataResponse, OriginKind, OriginSet, UpstreamError, UpstreamValidators};
+use crate::upstream::{
+    MetadataRequest, MetadataResponse, OriginKind, OriginSet, UpstreamError, UpstreamValidators,
+};
 
 pub struct Rendered {
     pub body: bytes::Bytes,
@@ -105,7 +107,9 @@ impl Known {
     fn publication(&self) -> PublicationTime {
         match self.time {
             Dated::Upstream(micros) => PublicationTime::Upstream(micros),
-            Dated::Undated => self.first_seen.map_or(PublicationTime::Unknown, PublicationTime::FirstSeen),
+            Dated::Undated => self
+                .first_seen
+                .map_or(PublicationTime::Unknown, PublicationTime::FirstSeen),
         }
     }
 }
@@ -161,15 +165,23 @@ impl Default for Shared {
 
 /// The sizes of the process-owned tables (cells, raw documents, gates), so a test can assert each stays bounded.
 pub fn table_sizes(app: &App) -> [usize; 3] {
-    [lock(&app.maven.cells).len(), lock(&app.maven.raw).len(), lock(&app.maven.gates).len()]
+    [
+        lock(&app.maven.cells).len(),
+        lock(&app.maven.raw).len(),
+        lock(&app.maven.gates).len(),
+    ]
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn origin_key(principal: Option<&Principal>) -> Option<String> {
-    principal.and_then(|p| p.registry_origin.as_ref()).map(Url::to_string)
+    principal
+        .and_then(|p| p.registry_origin.as_ref())
+        .map(Url::to_string)
 }
 
 fn cell_for(app: &App, registry_id: u64, principal: Option<&Principal>, name: &str) -> Arc<Cell> {
@@ -185,22 +197,46 @@ fn cell_for(app: &App, registry_id: u64, principal: Option<&Principal>, name: &s
 }
 
 fn exists_ttl(app: &App) -> Duration {
-    if app.service_policy().is_some() { SERVICE_EXISTS_TTL } else { Duration::from_secs(app.config.metadata_ttl_seconds) }
+    if app.service_policy().is_some() {
+        SERVICE_EXISTS_TTL
+    } else {
+        Duration::from_secs(app.config.metadata_ttl_seconds)
+    }
 }
 
 /// A place to refresh in: this registry's share first (so a registry out of places queues without holding a global one),
 /// then a process-wide one.
-async fn refresh_places(app: &App, registry_id: u64) -> Result<(tokio::sync::OwnedSemaphorePermit, tokio::sync::SemaphorePermit<'_>), ApiError> {
+async fn refresh_places(
+    app: &App,
+    registry_id: u64,
+) -> Result<
+    (
+        tokio::sync::OwnedSemaphorePermit,
+        tokio::sync::SemaphorePermit<'_>,
+    ),
+    ApiError,
+> {
     tokio::time::timeout(REFRESH_WAIT, async {
-        let own = {
-            let mut map = lock(&app.maven.per_registry);
-            if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
-                map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
-            }
-            Arc::clone(map.entry(registry_id).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(REFRESHES_PER_REGISTRY))))
-        };
-        let own = own.acquire_owned().await.map_err(|_| ApiError::InternalFailure)?;
-        let place = app.maven.refresh.acquire().await.map_err(|_| ApiError::InternalFailure)?;
+        let own =
+            {
+                let mut map = lock(&app.maven.per_registry);
+                if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
+                    map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
+                }
+                Arc::clone(map.entry(registry_id).or_insert_with(|| {
+                    Arc::new(tokio::sync::Semaphore::new(REFRESHES_PER_REGISTRY))
+                }))
+            };
+        let own = own
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::InternalFailure)?;
+        let place = app
+            .maven
+            .refresh
+            .acquire()
+            .await
+            .map_err(|_| ApiError::InternalFailure)?;
         Ok::<_, ApiError>((own, place))
     })
     .await
@@ -209,7 +245,10 @@ async fn refresh_places(app: &App, registry_id: u64) -> Result<(tokio::sync::Own
 
 /// One request at a time computes one artifact's listing (credential-free reads): the others wait and then find the dates
 /// it committed. A read that carries the caller's credential shares nothing and takes no gate.
-async fn single_flight(app: &App, key: &CellKey) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, ApiError> {
+async fn single_flight(
+    app: &App,
+    key: &CellKey,
+) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, ApiError> {
     if crate::http::credential_read::cache_token(app).is_none() {
         return Ok(None);
     }
@@ -220,7 +259,10 @@ async fn single_flight(app: &App, key: &CellKey) -> Result<Option<tokio::sync::O
         }
         Arc::clone(gates.entry(key.clone()).or_default())
     };
-    tokio::time::timeout(REFRESH_WAIT, gate.lock_owned()).await.map(Some).map_err(|_| ApiError::UpstreamTimeout)
+    tokio::time::timeout(REFRESH_WAIT, gate.lock_owned())
+        .await
+        .map(Some)
+        .map_err(|_| ApiError::UpstreamTimeout)
 }
 
 // ------------------------------------------------------------------ origins
@@ -236,23 +278,35 @@ fn origins_for(app: &App, principal: Option<&Principal>) -> Result<Origins, ApiE
         // A selected registry's origin (its repository root, path included) travels in the slot
         // `selected_npm_with_private` fills.
         Some(origin) => Ok(Origins {
-            set: OriginSet::selected_npm_with_private(origin.clone(), principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone())).map_err(|_| ApiError::NotFound)?,
+            set: OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.map_or(Vec::new(), |p| p.registry_private_cidrs.clone()),
+            )
+            .map_err(|_| ApiError::NotFound)?,
             kind: OriginKind::NpmMetadata,
         }),
-        None => Ok(Origins { set: app.origins.clone(), kind: OriginKind::MavenRepo }),
+        None => Ok(Origins {
+            set: app.origins.clone(),
+            kind: OriginKind::MavenRepo,
+        }),
     }
 }
 
 fn url_of(origins: &Origins, segments: &[String]) -> Result<Url, ApiError> {
     let parts: Vec<&str> = segments.iter().map(String::as_str).collect();
-    origins.set.url_for(origins.kind, &parts).map_err(|_| ApiError::NotFound)
+    origins
+        .set
+        .url_for(origins.kind, &parts)
+        .map_err(|_| ApiError::NotFound)
 }
 
 // ------------------------------------------------------------------ upstream
 
 fn status_error(app: &App, error: UpstreamError) -> ApiError {
     match error {
-        UpstreamError::Status(401) if app.service_policy().is_some() => ApiError::UpstreamUnauthenticated,
+        UpstreamError::Status(401) if app.service_policy().is_some() => {
+            ApiError::UpstreamUnauthenticated
+        }
         UpstreamError::Status(403) if app.service_policy().is_some() => ApiError::UpstreamDenied,
         UpstreamError::Timeout => ApiError::UpstreamTimeout,
         other => {
@@ -262,7 +316,13 @@ fn status_error(app: &App, error: UpstreamError) -> ApiError {
     }
 }
 
-async fn fetch(app: &App, principal: Option<&Principal>, url: Url, accept: &'static str, max_bytes: u64) -> Result<Option<(bytes::Bytes, UpstreamValidators)>, ApiError> {
+async fn fetch(
+    app: &App,
+    principal: Option<&Principal>,
+    url: Url,
+    accept: &'static str,
+    max_bytes: u64,
+) -> Result<Option<(bytes::Bytes, UpstreamValidators)>, ApiError> {
     let fetched = app
         .transport
         .fetch_metadata(MetadataRequest {
@@ -285,7 +345,11 @@ async fn fetch(app: &App, principal: Option<&Principal>, url: Url, accept: &'sta
 }
 
 /// Whether a file exists upstream and its own `Last-Modified`, asked without reading its body.
-async fn probe_dated(app: &App, principal: Option<&Principal>, url: Url) -> Result<Option<Dated>, ApiError> {
+async fn probe_dated(
+    app: &App,
+    principal: Option<&Principal>,
+    url: Url,
+) -> Result<Option<Dated>, ApiError> {
     let fetched = app
         .transport
         .probe_file(MetadataRequest {
@@ -309,7 +373,9 @@ async fn probe_dated(app: &App, principal: Option<&Principal>, url: Url) -> Resu
 /// `Last-Modified` as a publication time: absent or unparseable is no date (the unit then waits on first-seen, which is
 /// never earlier than the truth).
 pub fn dated_of(validators: &UpstreamValidators) -> Dated {
-    let Some(text) = validators.last_modified.as_deref() else { return Dated::Undated };
+    let Some(text) = validators.last_modified.as_deref() else {
+        return Dated::Undated;
+    };
     match jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(text.trim()) {
         Ok(at) if at.as_second() > 0 => Dated::Upstream(at.as_microsecond()),
         _ => Dated::Undated,
@@ -318,7 +384,14 @@ pub fn dated_of(validators: &UpstreamValidators) -> Dated {
 
 // ------------------------------------------------------------------ references
 
-fn reference_of(origins: &Origins, group: &str, artifact: &str, version: &str, file: &str, registry_id: u64) -> Option<(ReferenceId, ArtifactReference)> {
+fn reference_of(
+    origins: &Origins,
+    group: &str,
+    artifact: &str,
+    version: &str,
+    file: &str,
+    registry_id: u64,
+) -> Option<(ReferenceId, ArtifactReference)> {
     let mut segments: Vec<String> = group.split('.').map(str::to_owned).collect();
     segments.push(artifact.to_owned());
     segments.push(version.to_owned());
@@ -334,40 +407,98 @@ fn reference_of(origins: &Origins, group: &str, artifact: &str, version: &str, f
         // download pins the digests (SPEC §9, STATE-01).
         expected: Vec::new(),
     };
-    Some((ReferenceId::compute_in_registry(registry_id, &reference), reference))
+    Some((
+        ReferenceId::compute_in_registry(registry_id, &reference),
+        reference,
+    ))
 }
 
 /// One unit's anchor (its POM) as a reference.
-fn anchor_of(origins: &Origins, group: &str, artifact: &str, unit: &Unit, registry_id: u64) -> Option<(ReferenceId, ArtifactReference)> {
-    reference_of(origins, group, artifact, &unit.version, &unit.anchor(artifact), registry_id)
+fn anchor_of(
+    origins: &Origins,
+    group: &str,
+    artifact: &str,
+    unit: &Unit,
+    registry_id: u64,
+) -> Option<(ReferenceId, ArtifactReference)> {
+    reference_of(
+        origins,
+        group,
+        artifact,
+        &unit.version,
+        &unit.anchor(artifact),
+        registry_id,
+    )
 }
 
 // ------------------------------------------------------------------ policy
 
-fn check_policy(app: &App, principal: Option<&Principal>) -> Result<(Arc<crate::policy::CompiledPolicy>, i64), ApiError> {
+fn check_policy(
+    app: &App,
+    principal: Option<&Principal>,
+) -> Result<(Arc<crate::policy::CompiledPolicy>, i64), ApiError> {
     let now = app.clock.now_utc_micros();
-    let policy = app.policy_for(principal).ok_or(ApiError::PolicyUnavailable)?;
-    if !policy.snapshot.as_deref().is_some_and(|snapshot| snapshot.is_valid_at(now)) {
+    let policy = app
+        .policy_for(principal)
+        .ok_or(ApiError::PolicyUnavailable)?;
+    if !policy
+        .snapshot
+        .as_deref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(now))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     Ok((policy, now))
 }
 
-fn blocked_outright(policy: &crate::policy::CompiledPolicy, now: i64, name: &str, version: Option<&str>) -> Option<Decision> {
-    let candidate = Candidate { ecosystem: Ecosystem::Maven, name, version: version.unwrap_or(""), publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+fn blocked_outright(
+    policy: &crate::policy::CompiledPolicy,
+    now: i64,
+    name: &str,
+    version: Option<&str>,
+) -> Option<Decision> {
+    let candidate = Candidate {
+        ecosystem: Ecosystem::Maven,
+        name,
+        version: version.unwrap_or(""),
+        publication: PublicationTime::Unknown,
+        advertised_digests: &[],
+        pinned_digests: &[],
+    };
     match crate::policy::decide(policy, &candidate, now, false).decision {
-        decision @ Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion) => Some(decision),
+        decision @ Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion) => {
+            Some(decision)
+        }
         _ => None,
     }
 }
 
 /// A name or version a policy blocks outright is refused without asking upstream anything (PERF-01).
-fn locally_blocked(app: &App, principal: Option<&Principal>, name: &str, version: Option<&str>) -> Result<(), ApiError> {
+fn locally_blocked(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &str,
+    version: Option<&str>,
+) -> Result<(), ApiError> {
     let (policy, now) = check_policy(app, principal)?;
     if let Some(decision) = blocked_outright(&policy, now, name, version) {
         if let (Some(principal), Some(managed)) = (principal, app.managed()) {
-            let candidate = Candidate { ecosystem: Ecosystem::Maven, name, version: version.unwrap_or(""), publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
-            managed.record_refused(principal, &policy, now, &candidate, decision, version.is_some());
+            let candidate = Candidate {
+                ecosystem: Ecosystem::Maven,
+                name,
+                version: version.unwrap_or(""),
+                publication: PublicationTime::Unknown,
+                advertised_digests: &[],
+                pinned_digests: &[],
+            };
+            managed.record_refused(
+                principal,
+                &policy,
+                now,
+                &candidate,
+                decision,
+                version.is_some(),
+            );
         }
         return Err(crate::artifacts::decision_error(decision, now));
     }
@@ -379,7 +510,13 @@ fn locally_blocked(app: &App, principal: Option<&Principal>, name: &str, version
 /// Commits the anchors of every `(unit, anchor, dated)` once and remembers what was learned. A date can only get later
 /// (the later of what this process saw, what the row already holds and what the repository says now: a throwaway table of
 /// a credential-bearing read, an evicted table or a restart cannot make a unit look older).
-async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, items: &[(String, ReferenceId, ArtifactReference, Dated)]) -> Result<Vec<Known>, ApiError> {
+async fn record(
+    app: &App,
+    registry_id: u64,
+    name: &str,
+    cell: &Cell,
+    items: &[(String, ReferenceId, ArtifactReference, Dated)],
+) -> Result<Vec<Known>, ApiError> {
     if items.is_empty() {
         return Ok(Vec::new());
     }
@@ -387,7 +524,11 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, items: &[(
     let mono = app.clock.now_monotonic();
     let mut stored = Vec::with_capacity(items.len());
     for (_, id, ..) in items {
-        let row = app.store().get_reference(*id).await.map_err(storage_error)?;
+        let row = app
+            .store()
+            .get_reference(*id)
+            .await
+            .map_err(storage_error)?;
         stored.push(row.and_then(|row| row.publication_micros));
     }
     let merged: Vec<Dated> = {
@@ -430,7 +571,15 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, items: &[(
         .store()
         .commit_request_references_in(
             registry_id,
-            ProjectRefresh { ecosystem: Ecosystem::Maven, name: name.to_owned(), payload: Arc::from(&[][..]), validators: UpstreamValidators::default(), validated_at_micros: now, fetched_at_micros: now, references },
+            ProjectRefresh {
+                ecosystem: Ecosystem::Maven,
+                name: name.to_owned(),
+                payload: Arc::from(&[][..]),
+                validators: UpstreamValidators::default(),
+                validated_at_micros: now,
+                fetched_at_micros: now,
+                references,
+            },
         )
         .await
         .map_err(storage_error)?;
@@ -442,7 +591,11 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, items: &[(
         units.clear();
     }
     for ((key, id, ..), dated) in items.iter().zip(merged) {
-        let known = Known { time: dated, first_seen: committed.first_seen.get(id).copied(), checked: mono };
+        let known = Known {
+            time: dated,
+            first_seen: committed.first_seen.get(id).copied(),
+            checked: mono,
+        };
         units.insert(key.clone(), known);
         learned.push(known);
     }
@@ -451,7 +604,15 @@ async fn record(app: &App, registry_id: u64, name: &str, cell: &Cell, items: &[(
 
 /// The unit's table entry, confirmed to exist within the freshness window: from memory, else one POM. `probe` is the file a
 /// request asked for: a unit with no POM (a bare jar) exists when that file does, and is undated.
-async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, fr: &FileRef, origins: &Origins, cell: &Cell, probe: Option<Url>) -> Result<Known, ApiError> {
+async fn resolve(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    fr: &FileRef,
+    origins: &Origins,
+    cell: &Cell,
+    probe: Option<Url>,
+) -> Result<Known, ApiError> {
     let unit = fr.unit();
     let key = unit.key();
     let mono = app.clock.now_monotonic();
@@ -460,14 +621,28 @@ async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, fr:
     {
         return Ok(known);
     }
-    let (id, reference) = anchor_of(origins, &fr.group, &fr.artifact, &unit, registry_id).ok_or(ApiError::NotFound)?;
+    let (id, reference) = anchor_of(origins, &fr.group, &fr.artifact, &unit, registry_id)
+        .ok_or(ApiError::NotFound)?;
     // The row bound is hard: a unit that has no anchor row yet gets none past it (a POM of a fresh version is a 503 at the bound).
     // Checked before anything is fetched, and again under the project's gate right before the row is committed.
-    let has_row = app.store().get_reference(id).await.map_err(storage_error)?.is_some();
+    let has_row = app
+        .store()
+        .get_reference(id)
+        .await
+        .map_err(storage_error)?
+        .is_some();
     if !has_row {
         within_row_bound(app, registry_id, &fr.name()).await?;
     }
-    let dated = match fetch(app, principal, reference.upstream_url.clone(), "*/*", POM_CAP).await? {
+    let dated = match fetch(
+        app,
+        principal,
+        reference.upstream_url.clone(),
+        "*/*",
+        POM_CAP,
+    )
+    .await?
+    {
         Some((_, validators)) => dated_of(&validators),
         None => {
             let present = match probe {
@@ -482,10 +657,24 @@ async fn resolve(app: &App, principal: Option<&Principal>, registry_id: u64, fr:
         }
     };
     let _gate = row_gate(app, registry_id, &fr.name()).await;
-    if !has_row && app.store().get_reference(id).await.map_err(storage_error)?.is_none() {
+    if !has_row
+        && app
+            .store()
+            .get_reference(id)
+            .await
+            .map_err(storage_error)?
+            .is_none()
+    {
         within_row_bound(app, registry_id, &fr.name()).await?;
     }
-    let learned = record(app, registry_id, &fr.name(), cell, &[(key, id, reference, dated)]).await?;
+    let learned = record(
+        app,
+        registry_id,
+        &fr.name(),
+        cell,
+        &[(key, id, reference, dated)],
+    )
+    .await?;
     learned.into_iter().next().ok_or(ApiError::InternalFailure)
 }
 
@@ -505,7 +694,11 @@ async fn row_gate(app: &App, registry_id: u64, name: &str) -> tokio::sync::Owned
 
 /// A project may hold at most `ROWS_FACTOR` times `max_references_per_project` reference rows: past it a new row is a 503.
 async fn within_row_bound(app: &App, registry_id: u64, name: &str) -> Result<(), ApiError> {
-    let rows = app.store().count_project_references_in(registry_id, Ecosystem::Maven, name).await.map_err(storage_error)?;
+    let rows = app
+        .store()
+        .count_project_references_in(registry_id, Ecosystem::Maven, name)
+        .await
+        .map_err(storage_error)?;
     if rows >= ROWS_FACTOR * u64::from(app.config.max_references_per_project.get()) {
         tracing::warn!(package = %name, rows, "a project is at its reference row bound: a file of one more version or classifier is refused");
         return Err(ApiError::Overloaded);
@@ -513,21 +706,55 @@ async fn within_row_bound(app: &App, registry_id: u64, name: &str) -> Result<(),
     Ok(())
 }
 
-fn candidate<'a>(name: &'a str, version: &'a str, known: &Known, pinned: &'a [crate::policy::Digest]) -> Candidate<'a> {
-    Candidate { ecosystem: Ecosystem::Maven, name, version, publication: known.publication(), advertised_digests: &[], pinned_digests: pinned }
+fn candidate<'a>(
+    name: &'a str,
+    version: &'a str,
+    known: &Known,
+    pinned: &'a [crate::policy::Digest],
+) -> Candidate<'a> {
+    Candidate {
+        ecosystem: Ecosystem::Maven,
+        name,
+        version,
+        publication: known.publication(),
+        advertised_digests: &[],
+        pinned_digests: pinned,
+    }
 }
 
 // ------------------------------------------------------------------ files
 
 /// The reference a `GET {group}/{artifact}/{version}/{file}` names: the unit is dated (one POM at most) and the file's own
 /// row committed before anything else is asked of upstream. A file that does not exist upstream makes no row.
-pub async fn reference_for_file(app: &App, principal: Option<&Principal>, fr: &FileRef, registry_id: u64) -> Result<(ReferenceId, String), ApiError> {
+pub async fn reference_for_file(
+    app: &App,
+    principal: Option<&Principal>,
+    fr: &FileRef,
+    registry_id: u64,
+) -> Result<(ReferenceId, String), ApiError> {
     let name = fr.name();
     locally_blocked(app, principal, &name, Some(&fr.version))?;
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &name);
-    let (id, reference) = reference_of(&origins, &fr.group, &fr.artifact, &fr.version, &fr.file, registry_id).ok_or(ApiError::NotFound)?;
-    let known = resolve(app, principal, registry_id, fr, &origins, &cell, Some(reference.upstream_url.clone())).await?;
+    let (id, reference) = reference_of(
+        &origins,
+        &fr.group,
+        &fr.artifact,
+        &fr.version,
+        &fr.file,
+        registry_id,
+    )
+    .ok_or(ApiError::NotFound)?;
+    let known = resolve(
+        app,
+        principal,
+        registry_id,
+        fr,
+        &origins,
+        &cell,
+        Some(reference.upstream_url.clone()),
+    )
+    .await?;
     let existing = app.store().get_reference(id).await.map_err(storage_error)?;
     let unit_dated = match known.time {
         Dated::Upstream(micros) => Some(micros),
@@ -544,19 +771,31 @@ pub async fn reference_for_file(app: &App, principal: Option<&Principal>, fr: &F
         // makes none) and brings its own `Last-Modified`: a file added to an old version later (a new classifier) waits its own
         // cooldown, never the POM's.
         if fr.file != unit_anchor_name(fr) {
-            let Some(file_dated) = probe_dated(app, principal, reference.upstream_url.clone()).await? else { return Err(ApiError::NotFound) };
+            let Some(file_dated) =
+                probe_dated(app, principal, reference.upstream_url.clone()).await?
+            else {
+                return Err(ApiError::NotFound);
+            };
             if let (Some(unit), Dated::Upstream(file)) = (unit_dated, file_dated)
                 && file > unit
             {
                 dated = Some(file);
-                let later = Known { time: Dated::Upstream(file), ..known };
-                refuse_unless_allowed(app, principal, registry_id, &name, &fr.version, &later).await?;
+                let later = Known {
+                    time: Dated::Upstream(file),
+                    ..known
+                };
+                refuse_unless_allowed(app, principal, registry_id, &name, &fr.version, &later)
+                    .await?;
             }
         }
         if fr.file.ends_with(".module") {
             module_stays_inside(app, principal, reference.upstream_url.clone()).await?;
         }
-    } else if dated.is_none_or(|d| existing.as_ref().is_none_or(|row| row.publication_micros.is_some_and(|stored| stored >= d))) {
+    } else if dated.is_none_or(|d| {
+        existing
+            .as_ref()
+            .is_none_or(|row| row.publication_micros.is_some_and(|stored| stored >= d))
+    }) {
         // The row exists and holds a date at least as late as the unit's: nothing to write (a date only ever gets later, and a file
         // that is later than its unit keeps its own).
         return Ok((id, fr.file.clone()));
@@ -573,39 +812,79 @@ pub async fn reference_for_file(app: &App, principal: Option<&Principal>, fr: &F
         validators: UpstreamValidators::default(),
         validated_at_micros: now,
         fetched_at_micros: now,
-        references: vec![ReferenceUpsert { id, reference, publication_micros: dated, first_seen_micros: Some(known.first_seen.unwrap_or(now)) }],
+        references: vec![ReferenceUpsert {
+            id,
+            reference,
+            publication_micros: dated,
+            first_seen_micros: Some(known.first_seen.unwrap_or(now)),
+        }],
     };
-    app.store().commit_request_references_in(registry_id, refresh).await.map_err(storage_error)?;
+    app.store()
+        .commit_request_references_in(registry_id, refresh)
+        .await
+        .map_err(storage_error)?;
     Ok((id, fr.file.clone()))
 }
 
 /// The decision of one unit as the artifact pipeline will take it; anything but Allow is answered (and logged for a managed key) now.
-async fn refuse_unless_allowed(app: &App, principal: Option<&Principal>, registry_id: u64, name: &str, version: &str, known: &Known) -> Result<(), ApiError> {
+async fn refuse_unless_allowed(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    name: &str,
+    version: &str,
+    known: &Known,
+) -> Result<(), ApiError> {
     let (policy, now) = check_policy(app, principal)?;
-    let decision = crate::osv::evaluate_scoped(&app.osv, &policy, now, &candidate(name, version, known, &[]), app.osv_scope(registry_id)).await;
+    let decision = crate::osv::evaluate_scoped(
+        &app.osv,
+        &policy,
+        now,
+        &candidate(name, version, known, &[]),
+        app.osv_scope(registry_id),
+    )
+    .await;
     if matches!(decision, Decision::Allow) {
         return Ok(());
     }
     if let (Some(principal), Some(managed)) = (principal, app.managed()) {
-        managed.record_refused(principal, &policy, now, &candidate(name, version, known, &[]), decision, true);
+        managed.record_refused(
+            principal,
+            &policy,
+            now,
+            &candidate(name, version, known, &[]),
+            decision,
+            true,
+        );
     }
     Err(crate::artifacts::decision_error(decision, now))
 }
 
 /// Gradle Module Metadata may name files by absolute URL (`files[].url`, `available-at.url`): a `.module` that points outside this
 /// repository would send the client to a host no decision here covers. One that does is refused; a relative URL (the normal form) is not.
-async fn module_stays_inside(app: &App, principal: Option<&Principal>, url: Url) -> Result<(), ApiError> {
-    let Some((body, _)) = fetch(app, principal, url, "application/json", POM_CAP).await? else { return Err(ApiError::NotFound) };
-    let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| invalid("a Gradle module file"))?;
+async fn module_stays_inside(
+    app: &App,
+    principal: Option<&Principal>,
+    url: Url,
+) -> Result<(), ApiError> {
+    let Some((body, _)) = fetch(app, principal, url, "application/json", POM_CAP).await? else {
+        return Err(ApiError::NotFound);
+    };
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| invalid("a Gradle module file"))?;
     if names_outside(&value) {
-        return Err(ApiError::Blocked { reason: "the module metadata names a location outside this repository" });
+        return Err(ApiError::Blocked {
+            reason: "the module metadata names a location outside this repository",
+        });
     }
     Ok(())
 }
 
 fn names_outside(value: &serde_json::Value) -> bool {
     match value {
-        serde_json::Value::Object(map) => map.iter().any(|(key, value)| (key == "url" && value.as_str().is_some_and(absolute_url)) || names_outside(value)),
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            (key == "url" && value.as_str().is_some_and(absolute_url)) || names_outside(value)
+        }),
         serde_json::Value::Array(items) => items.iter().any(names_outside),
         _ => false,
     }
@@ -613,7 +892,12 @@ fn names_outside(value: &serde_json::Value) -> bool {
 
 /// A scheme (`https:`, `file:`), a network-path reference (`//host`) or a backslash form: anything but a relative path.
 fn absolute_url(text: &str) -> bool {
-    text.starts_with("//") || text.starts_with('\\') || text.split('/').next().is_some_and(|first| first.contains(':'))
+    text.starts_with("//")
+        || text.starts_with('\\')
+        || text
+            .split('/')
+            .next()
+            .is_some_and(|first| first.contains(':'))
 }
 
 fn unit_anchor_name(fr: &FileRef) -> String {
@@ -621,14 +905,43 @@ fn unit_anchor_name(fr: &FileRef) -> String {
 }
 
 /// SPEC §9 membership: the file the reference names, if its unit still exists.
-pub async fn ensure_fresh_project_in(app: &App, reference: &ArtifactReference, registry_id: u64, principal: Option<&Principal>) -> Result<Arc<Advertised>, ApiError> {
+pub async fn ensure_fresh_project_in(
+    app: &App,
+    reference: &ArtifactReference,
+    registry_id: u64,
+    principal: Option<&Principal>,
+) -> Result<Arc<Advertised>, ApiError> {
     let (group, artifact) = reference.name.split_once(':').ok_or(ApiError::NotFound)?;
-    let path = format!("{}/{artifact}/{}/{}", group.replace('.', "/"), reference.version, reference.filename);
-    let Some(coords::Parsed::File(fr)) = coords::parse(&path) else { return Err(ApiError::NotFound) };
+    let path = format!(
+        "{}/{artifact}/{}/{}",
+        group.replace('.', "/"),
+        reference.version,
+        reference.filename
+    );
+    let Some(coords::Parsed::File(fr)) = coords::parse(&path) else {
+        return Err(ApiError::NotFound);
+    };
     let origins = origins_for(app, principal)?;
     let cell = cell_for(app, registry_id, principal, &reference.name);
-    let (id, own) = reference_of(&origins, &fr.group, &fr.artifact, &fr.version, &fr.file, registry_id).ok_or(ApiError::NotFound)?;
-    resolve(app, principal, registry_id, &fr, &origins, &cell, Some(own.upstream_url)).await?;
+    let (id, own) = reference_of(
+        &origins,
+        &fr.group,
+        &fr.artifact,
+        &fr.version,
+        &fr.file,
+        registry_id,
+    )
+    .ok_or(ApiError::NotFound)?;
+    resolve(
+        app,
+        principal,
+        registry_id,
+        &fr,
+        &origins,
+        &cell,
+        Some(own.upstream_url),
+    )
+    .await?;
     Ok(Arc::new(Advertised::new([(id, fr.file.as_str())])))
 }
 
@@ -643,19 +956,45 @@ struct Listed {
 
 /// The decision of each unit of a listing, dating those of unknown age first (bounded, newest first).
 #[allow(clippy::too_many_arguments)]
-async fn judge_units(app: &App, principal: Option<&Principal>, registry_id: u64, group: &str, artifact: &str, origins: &Origins, cell: &Cell, units: &[Unit]) -> Result<Vec<Decision>, ApiError> {
+async fn judge_units(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    group: &str,
+    artifact: &str,
+    origins: &Origins,
+    cell: &Cell,
+    units: &[Unit],
+) -> Result<Vec<Decision>, ApiError> {
     let (policy, now) = check_policy(app, principal)?;
     let name = format!("{group}:{artifact}");
     let listed: Vec<Option<Listed>> = units
         .iter()
         .map(|unit| {
             let (id, reference) = anchor_of(origins, group, artifact, unit, registry_id)?;
-            let jar = reference_of(origins, group, artifact, &unit.version, &format!("{artifact}-{}.jar", unit.file_version()), registry_id).map(|(id, _)| id);
-            Some(Listed { key: unit.key(), id, reference, ids: [Some(id), jar] })
+            let jar = reference_of(
+                origins,
+                group,
+                artifact,
+                &unit.version,
+                &format!("{artifact}-{}.jar", unit.file_version()),
+                registry_id,
+            )
+            .map(|(id, _)| id);
+            Some(Listed {
+                key: unit.key(),
+                id,
+                reference,
+                ids: [Some(id), jar],
+            })
         })
         .collect();
     // After a restart or an eviction the table is empty but the store still holds every date it recorded: seed from it.
-    let stored = app.store().list_project_publications_in(registry_id, Ecosystem::Maven, &name).await.map_err(storage_error)?;
+    let stored = app
+        .store()
+        .list_project_publications_in(registry_id, Ecosystem::Maven, &name)
+        .await
+        .map_err(storage_error)?;
     let mono = app.clock.now_monotonic();
     {
         let mut table = lock(&cell.units);
@@ -664,25 +1003,55 @@ async fn judge_units(app: &App, principal: Option<&Principal>, registry_id: u64,
                 break;
             }
             if let (false, Some(micros)) = (table.contains_key(&item.key), stored.get(&item.id)) {
-                table.insert(item.key.clone(), Known { time: Dated::Upstream(*micros), first_seen: None, checked: mono });
+                table.insert(
+                    item.key.clone(),
+                    Known {
+                        time: Dated::Upstream(*micros),
+                        first_seen: None,
+                        checked: mono,
+                    },
+                );
             }
         }
     }
     // Units of unknown age, newest first (a repository lists oldest to newest), bounded before the first call.
     let missing: Vec<usize> = {
         let table = lock(&cell.units);
-        (0..units.len()).rev().filter(|&i| listed[i].as_ref().is_some_and(|item| !table.contains_key(&item.key))).collect()
+        (0..units.len())
+            .rev()
+            .filter(|&i| {
+                listed[i]
+                    .as_ref()
+                    .is_some_and(|item| !table.contains_key(&item.key))
+            })
+            .collect()
     };
     // The rows one project may hold bound its dating too: an artifact (a hostile registry's) that lists more versions than the project
     // may keep rows for is dated only up to the bound, and the rest wait (fail closed) like any undated version.
-    let rows = app.store().count_project_references_in(registry_id, Ecosystem::Maven, &name).await.map_err(storage_error)?;
-    let room = (ROWS_FACTOR * u64::from(app.config.max_references_per_project.get())).saturating_sub(rows) as usize;
-    let wanted: Vec<usize> = missing.into_iter().filter(|&i| blocked_outright(&policy, now, &name, Some(&units[i].version)).is_none()).take(DATE_CAP.min(room)).collect();
+    let rows = app
+        .store()
+        .count_project_references_in(registry_id, Ecosystem::Maven, &name)
+        .await
+        .map_err(storage_error)?;
+    let room = (ROWS_FACTOR * u64::from(app.config.max_references_per_project.get()))
+        .saturating_sub(rows) as usize;
+    let wanted: Vec<usize> = missing
+        .into_iter()
+        .filter(|&i| blocked_outright(&policy, now, &name, Some(&units[i].version)).is_none())
+        .take(DATE_CAP.min(room))
+        .collect();
     let fetched: Vec<(usize, Result<Option<Dated>, ApiError>)> = futures_util::stream::iter(wanted)
         .map(|i| {
             let item = listed[i].as_ref().expect("filtered above");
             let url = item.reference.upstream_url.clone();
-            async move { (i, fetch(app, principal, url, "*/*", POM_CAP).await.map(|found| found.map(|(_, validators)| dated_of(&validators)))) }
+            async move {
+                (
+                    i,
+                    fetch(app, principal, url, "*/*", POM_CAP)
+                        .await
+                        .map(|found| found.map(|(_, validators)| dated_of(&validators))),
+                )
+            }
         })
         .buffer_unordered(DATE_PARALLEL)
         .collect()
@@ -698,48 +1067,116 @@ async fn judge_units(app: &App, principal: Option<&Principal>, registry_id: u64,
             // and ages like any undated unit (its files are confirmed to exist when one is asked for).
             Ok(None) => {
                 let item = listed[i].as_ref().expect("filtered above");
-                items.push((item.key.clone(), item.id, item.reference.clone(), Dated::Undated));
+                items.push((
+                    item.key.clone(),
+                    item.id,
+                    item.reference.clone(),
+                    Dated::Undated,
+                ));
             }
             // Withheld, not fatal: one failed call never hides its neighbours.
-            Err(error) => tracing::warn!(?error, "a unit of the listing could not be dated and is withheld"),
+            Err(error) => tracing::warn!(
+                ?error,
+                "a unit of the listing could not be dated and is withheld"
+            ),
         }
     }
     {
         // Room is counted again under the project's gate, so listings and file requests together never pass the bound.
         let _gate = row_gate(app, registry_id, &name).await;
-        let rows = app.store().count_project_references_in(registry_id, Ecosystem::Maven, &name).await.map_err(storage_error)?;
-        let room = (ROWS_FACTOR * u64::from(app.config.max_references_per_project.get())).saturating_sub(rows) as usize;
+        let rows = app
+            .store()
+            .count_project_references_in(registry_id, Ecosystem::Maven, &name)
+            .await
+            .map_err(storage_error)?;
+        let room = (ROWS_FACTOR * u64::from(app.config.max_references_per_project.get()))
+            .saturating_sub(rows) as usize;
         items.truncate(room);
         record(app, registry_id, &name, cell, &items).await?;
     }
-    let pins = app.store().list_project_pins_in(registry_id, Ecosystem::Maven, &name).await.map_err(storage_error)?;
+    let pins = app
+        .store()
+        .list_project_pins_in(registry_id, Ecosystem::Maven, &name)
+        .await
+        .map_err(storage_error)?;
     let scope = app.osv_scope(registry_id);
     let known: Vec<Option<Known>> = {
         let table = lock(&cell.units);
-        listed.iter().map(|item| item.as_ref().and_then(|item| table.get(&item.key).copied())).collect()
+        listed
+            .iter()
+            .map(|item| item.as_ref().and_then(|item| table.get(&item.key).copied()))
+            .collect()
     };
     let decisions = futures_util::future::join_all(units.iter().enumerate().map(|(i, unit)| {
         let (policy, pins, known, listed, name) = (&policy, &pins, &known, &listed, &name);
         async move {
             let (Some(known), Some(item)) = (known[i], listed[i].as_ref()) else {
                 // Undated: withheld, for the reason policy gives a version with no date (a blocked name or version says so).
-                let undated = Candidate { ecosystem: Ecosystem::Maven, name, version: &unit.version, publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+                let undated = Candidate {
+                    ecosystem: Ecosystem::Maven,
+                    name,
+                    version: &unit.version,
+                    publication: PublicationTime::Unknown,
+                    advertised_digests: &[],
+                    pinned_digests: &[],
+                };
                 return crate::policy::decide(policy, &undated, now, false).decision;
             };
-            let pinned: Vec<crate::policy::Digest> = item.ids.iter().flatten().flat_map(|id| pins.get(id).into_iter().flatten().cloned()).collect();
-            crate::osv::evaluate_scoped(&app.osv, policy, now, &candidate(name, &unit.version, &known, &pinned), scope).await
+            let pinned: Vec<crate::policy::Digest> = item
+                .ids
+                .iter()
+                .flatten()
+                .flat_map(|id| pins.get(id).into_iter().flatten().cloned())
+                .collect();
+            crate::osv::evaluate_scoped(
+                &app.osv,
+                policy,
+                now,
+                &candidate(name, &unit.version, &known, &pinned),
+                scope,
+            )
+            .await
         }
     }))
     .await;
     Ok(decisions)
 }
 
-fn record_refused_listing(app: &App, principal: Option<&Principal>, name: &str, version: &str, decisions: &[Decision]) {
-    let (Some(principal), Some(managed)) = (principal, app.managed()) else { return };
-    let Some(policy) = app.policy_for(Some(principal)) else { return };
+fn record_refused_listing(
+    app: &App,
+    principal: Option<&Principal>,
+    name: &str,
+    version: &str,
+    decisions: &[Decision],
+) {
+    let (Some(principal), Some(managed)) = (principal, app.managed()) else {
+        return;
+    };
+    let Some(policy) = app.policy_for(Some(principal)) else {
+        return;
+    };
     let now = app.clock.now_utc_micros();
-    let Some(decision) = decisions.iter().find(|d| matches!(d, Decision::Deny(DenyReason::BlockedPackage | DenyReason::BlockedVersion | DenyReason::BlockedByOsv | DenyReason::BlockedDigest))) else { return };
-    let candidate = Candidate { ecosystem: Ecosystem::Maven, name, version, publication: PublicationTime::Unknown, advertised_digests: &[], pinned_digests: &[] };
+    let Some(decision) = decisions.iter().find(|d| {
+        matches!(
+            d,
+            Decision::Deny(
+                DenyReason::BlockedPackage
+                    | DenyReason::BlockedVersion
+                    | DenyReason::BlockedByOsv
+                    | DenyReason::BlockedDigest
+            )
+        )
+    }) else {
+        return;
+    };
+    let candidate = Candidate {
+        ecosystem: Ecosystem::Maven,
+        name,
+        version,
+        publication: PublicationTime::Unknown,
+        advertised_digests: &[],
+        pinned_digests: &[],
+    };
     let verdict = crate::managed::refused_verdict(&policy, now, &candidate, *decision);
     managed.record_decision(principal, Ecosystem::Maven, name, None, &verdict);
 }
@@ -761,24 +1198,46 @@ struct Filtered {
 
 /// A document nothing was removed from is served as the repository wrote it (whatever its encoding), so its signature still holds.
 fn unchanged_is_original(filtered: Filtered, original: &[u8]) -> Filtered {
-    if filtered.changed { filtered } else { Filtered { body: original.to_vec(), changed: false } }
+    if filtered.changed {
+        filtered
+    } else {
+        Filtered {
+            body: original.to_vec(),
+            changed: false,
+        }
+    }
 }
 
 fn finish(original: &[u8], edits: Vec<Edit>) -> Filtered {
     if edits.is_empty() {
-        return Filtered { body: original.to_vec(), changed: false };
+        return Filtered {
+            body: original.to_vec(),
+            changed: false,
+        };
     }
     let body = meta::apply(original, edits);
-    Filtered { changed: body != original, body }
+    Filtered {
+        changed: body != original,
+        body,
+    }
 }
 
 /// `groupId`'s plugin prefixes (`mvn compiler:compile`): a plugin whose package a policy blocks is not listed.
-fn filter_plugins(app: &App, principal: Option<&Principal>, group: &str, doc: &[u8], meta: &Meta) -> Result<Filtered, ApiError> {
+fn filter_plugins(
+    app: &App,
+    principal: Option<&Principal>,
+    group: &str,
+    doc: &[u8],
+    meta: &Meta,
+) -> Result<Filtered, ApiError> {
     let (policy, now) = check_policy(app, principal)?;
     let mut edits = Vec::new();
     for plugin in &meta.plugins {
         let name = format!("{group}:{}", plugin.value);
-        if plugin.value.is_empty() || !coords::artifact_ok(&plugin.value) || blocked_outright(&policy, now, &name, None).is_some() {
+        if plugin.value.is_empty()
+            || !coords::artifact_ok(&plugin.value)
+            || blocked_outright(&policy, now, &name, None).is_some()
+        {
             edits.push(meta::cut(doc, plugin.span));
         }
     }
@@ -787,15 +1246,55 @@ fn filter_plugins(app: &App, principal: Option<&Principal>, group: &str, doc: &[
 
 /// An artifact's `maven-metadata.xml`.
 #[allow(clippy::too_many_arguments)]
-async fn filter_artifact(app: &App, principal: Option<&Principal>, registry_id: u64, group: &str, artifact: &str, origins: &Origins, cell: &Cell, doc: &[u8], meta: &Meta) -> Result<Filtered, ApiError> {
+async fn filter_artifact(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    group: &str,
+    artifact: &str,
+    origins: &Origins,
+    cell: &Cell,
+    doc: &[u8],
+    meta: &Meta,
+) -> Result<Filtered, ApiError> {
     let name = format!("{group}:{artifact}");
     // Versions the layout can carry, once each, in the repository's order; anything else is never delivered.
     let mut seen = HashSet::new();
-    let entries: Vec<(&Entry, bool)> = meta.versions.iter().map(|entry| (entry, coords::version_ok(&entry.value) && seen.insert(entry.value.as_str()))).collect();
-    let units: Vec<Unit> = entries.iter().filter(|(entry, ok)| *ok && !is_snapshot(&entry.value)).map(|(entry, _)| Unit { version: entry.value.clone(), build: None }).collect();
+    let entries: Vec<(&Entry, bool)> = meta
+        .versions
+        .iter()
+        .map(|entry| {
+            (
+                entry,
+                coords::version_ok(&entry.value) && seen.insert(entry.value.as_str()),
+            )
+        })
+        .collect();
+    let units: Vec<Unit> = entries
+        .iter()
+        .filter(|(entry, ok)| *ok && !is_snapshot(&entry.value))
+        .map(|(entry, _)| Unit {
+            version: entry.value.clone(),
+            build: None,
+        })
+        .collect();
     let (policy, now) = check_policy(app, principal)?;
-    let decisions = judge_units(app, principal, registry_id, group, artifact, origins, cell, &units).await?;
-    let by_version: HashMap<&str, Decision> = units.iter().zip(&decisions).map(|(unit, decision)| (unit.version.as_str(), *decision)).collect();
+    let decisions = judge_units(
+        app,
+        principal,
+        registry_id,
+        group,
+        artifact,
+        origins,
+        cell,
+        &units,
+    )
+    .await?;
+    let by_version: HashMap<&str, Decision> = units
+        .iter()
+        .zip(&decisions)
+        .map(|(unit, decision)| (unit.version.as_str(), *decision))
+        .collect();
     // A snapshot directory is a container: its builds are judged one by one (version-level metadata and their files), so it
     // is listed unless a block names it.
     let allowed = |version: &str| -> bool {
@@ -814,7 +1313,12 @@ async fn filter_artifact(app: &App, principal: Option<&Principal>, registry_id: 
             edits.push(meta::cut(doc, entry.span));
         }
     }
-    let newest = |releases_only: bool| kept.iter().rev().find(|version| !releases_only || !is_snapshot(version)).copied();
+    let newest = |releases_only: bool| {
+        kept.iter()
+            .rev()
+            .find(|version| !releases_only || !is_snapshot(version))
+            .copied()
+    };
     for (text, releases_only) in [(&meta.latest, false), (&meta.release, true)] {
         let Some(text) = text else { continue };
         if kept.contains(&text.value.as_str()) {
@@ -831,7 +1335,13 @@ async fn filter_artifact(app: &App, principal: Option<&Principal>, registry_id: 
         }
     }
     if !entries.is_empty() && kept.is_empty() {
-        record_refused_listing(app, principal, &name, entries[0].0.value.as_str(), &decisions);
+        record_refused_listing(
+            app,
+            principal,
+            &name,
+            entries[0].0.value.as_str(),
+            &decisions,
+        );
     }
     Ok(finish(doc, edits))
 }
@@ -846,12 +1356,26 @@ fn element_around(doc: &[u8], inner: (usize, usize)) -> Option<Edit> {
 /// A snapshot version's `maven-metadata.xml`: each build is judged, `snapshotVersions` entries of a withheld build are cut and
 /// the `snapshot` pointer names the newest build that remains.
 #[allow(clippy::too_many_arguments)]
-async fn filter_snapshot(app: &App, principal: Option<&Principal>, registry_id: u64, group: &str, artifact: &str, version: &str, origins: &Origins, cell: &Cell, doc: &[u8], meta: &Meta) -> Result<Filtered, ApiError> {
+async fn filter_snapshot(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    group: &str,
+    artifact: &str,
+    version: &str,
+    origins: &Origins,
+    cell: &Cell,
+    doc: &[u8],
+    meta: &Meta,
+) -> Result<Filtered, ApiError> {
     let name = format!("{group}:{artifact}");
     let base = version.strip_suffix("-SNAPSHOT").unwrap_or(version);
     let token_of = |value: &str| -> Option<String> {
         let token = value.strip_prefix(base)?.strip_prefix('-')?;
-        coords::parse(&format!("g/{artifact}/{version}/{artifact}-{base}-{token}.pom")).and_then(|parsed| match parsed {
+        coords::parse(&format!(
+            "g/{artifact}/{version}/{artifact}-{base}-{token}.pom"
+        ))
+        .and_then(|parsed| match parsed {
             coords::Parsed::File(file) => file.build,
             _ => None,
         })
@@ -879,8 +1403,24 @@ async fn filter_snapshot(app: &App, principal: Option<&Principal>, registry_id: 
         index.insert(token.clone(), builds.len());
         builds.push(token.clone());
     }
-    let units: Vec<Unit> = builds.iter().map(|build| Unit { version: version.to_owned(), build: Some(build.clone()) }).collect();
-    let decisions = judge_units(app, principal, registry_id, group, artifact, origins, cell, &units).await?;
+    let units: Vec<Unit> = builds
+        .iter()
+        .map(|build| Unit {
+            version: version.to_owned(),
+            build: Some(build.clone()),
+        })
+        .collect();
+    let decisions = judge_units(
+        app,
+        principal,
+        registry_id,
+        group,
+        artifact,
+        origins,
+        cell,
+        &units,
+    )
+    .await?;
     let decision_of = |token: &str| index.get(token).map(|i| decisions[*i]);
     let allowed = |token: &str| matches!(decision_of(token), Some(Decision::Allow));
     let mut edits = Vec::new();
@@ -888,7 +1428,9 @@ async fn filter_snapshot(app: &App, principal: Option<&Principal>, registry_id: 
         // An entry that is the literal `-SNAPSHOT` name or no build at all is not a build: it is kept unless a block names it.
         match token_of(&entry.value) {
             Some(token) if !allowed(&token) => edits.push(meta::cut(doc, entry.span)),
-            None if entry.value != version && !entry.value.is_empty() => edits.push(meta::cut(doc, entry.span)),
+            None if entry.value != version && !entry.value.is_empty() => {
+                edits.push(meta::cut(doc, entry.span))
+            }
             _ => {}
         }
     }
@@ -896,15 +1438,21 @@ async fn filter_snapshot(app: &App, principal: Option<&Principal>, registry_id: 
         && !allowed(token)
     {
         // The newest build is withheld: name the newest one that is not (and say so with its reason when there is none).
-        let newest = decisions.iter().rposition(|decision| matches!(decision, Decision::Allow)).map(|i| &builds[i]);
+        let newest = decisions
+            .iter()
+            .rposition(|decision| matches!(decision, Decision::Allow))
+            .map(|i| &builds[i]);
         match (newest, &meta.snapshot_timestamp, &meta.snapshot_build) {
             (Some(build), Some(ts), Some(n)) => {
-                let (stamp, number) = build.split_once('-').ok_or_else(|| invalid("a snapshot build"))?;
+                let (stamp, number) = build
+                    .split_once('-')
+                    .ok_or_else(|| invalid("a snapshot build"))?;
                 edits.push(meta::replace_text(ts, stamp));
                 edits.push(meta::replace_text(n, number));
             }
             _ => {
-                let decision = decision_of(token).unwrap_or(Decision::Deny(DenyReason::BlockedVersion));
+                let decision =
+                    decision_of(token).unwrap_or(Decision::Deny(DenyReason::BlockedVersion));
                 let (_, now) = check_policy(app, principal)?;
                 record_refused_listing(app, principal, &name, version, &[decision]);
                 return Err(crate::artifacts::decision_error(decision, now));
@@ -915,8 +1463,16 @@ async fn filter_snapshot(app: &App, principal: Option<&Principal>, registry_id: 
 }
 
 /// `maven-metadata.xml` of `dirs` with its sidecars.
-pub async fn serve_metadata(app: &App, principal: Option<&Principal>, registry_id: u64, dirs: &[String], level: Level, side: Side) -> Result<Rendered, ApiError> {
-    let group_only = dirs.len() == 1 || (level == Level::Artifact && coords::artifact_of(dirs).is_none());
+pub async fn serve_metadata(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    dirs: &[String],
+    level: Level,
+    side: Side,
+) -> Result<Rendered, ApiError> {
+    let group_only =
+        dirs.len() == 1 || (level == Level::Artifact && coords::artifact_of(dirs).is_none());
     let artifact_id = coords::artifact_of(dirs).filter(|_| level == Level::Artifact && !group_only);
     let snapshot_id = coords::snapshot_of(dirs).filter(|_| level == Level::Snapshot);
     // The identity pre-check: a blocked package (or version) costs nothing upstream.
@@ -924,35 +1480,51 @@ pub async fn serve_metadata(app: &App, principal: Option<&Principal>, registry_i
         locally_blocked(app, principal, &format!("{group}:{artifact}"), None)?;
     }
     if let Some((group, artifact, version)) = &snapshot_id {
-        locally_blocked(app, principal, &format!("{group}:{artifact}"), Some(version))?;
+        locally_blocked(
+            app,
+            principal,
+            &format!("{group}:{artifact}"),
+            Some(version),
+        )?;
     }
     let origins = origins_for(app, principal)?;
     let path = coords::metadata_segments(dirs, Side::Doc);
     let url = url_of(&origins, &path)?;
     let cap = app.config.max_metadata_bytes.get().max(DOC_FLOOR_CAP);
     let cell_name = match (&artifact_id, &snapshot_id) {
-        (Some((group, artifact)), _) | (_, Some((group, artifact, _))) => format!("{group}:{artifact}"),
+        (Some((group, artifact)), _) | (_, Some((group, artifact, _))) => {
+            format!("{group}:{artifact}")
+        }
         _ => dirs.join("."),
     };
-    let gate_key = (registry_id, origin_key(principal), format!("{cell_name}@{}", path.join("/")));
+    let gate_key = (
+        registry_id,
+        origin_key(principal),
+        format!("{cell_name}@{}", path.join("/")),
+    );
     let _gate = single_flight(app, &gate_key).await?;
     let _places = refresh_places(app, registry_id).await?;
     let raw_key = (registry_id, origin_key(principal), path.join("/"));
     let body = match shared_raw(app, &raw_key) {
         Some(body) => Some(body),
         None => {
-            let fetched = fetch(app, principal, url, "application/xml", cap).await?.map(|(body, _)| body);
+            let fetched = fetch(app, principal, url, "application/xml", cap)
+                .await?
+                .map(|(body, _)| body);
             if let Some(body) = &fetched {
                 remember_raw(app, raw_key, body);
             }
             fetched
         }
     };
-    let Some(original) = body else { return Err(ApiError::NotFound) };
+    let Some(original) = body else {
+        return Err(ApiError::NotFound);
+    };
     // A document declared ISO-8859-1 is read as UTF-8 text (and served so only when something was removed from it).
     let work = xml::to_utf8(&original).map_err(|_| invalid("a metadata document's encoding"))?;
     let body: &[u8] = &work;
-    let max = MAX_ENTRIES.min((ROWS_FACTOR * u64::from(app.config.max_references_per_project.get())) as usize);
+    let max = MAX_ENTRIES
+        .min((ROWS_FACTOR * u64::from(app.config.max_references_per_project.get())) as usize);
     let meta = meta::read(body, max).map_err(|error| {
         tracing::warn!(?error, "the repository's metadata is unusable");
         ApiError::UpstreamInvalid
@@ -965,7 +1537,19 @@ pub async fn serve_metadata(app: &App, principal: Option<&Principal>, registry_i
             return Err(invalid("a snapshot-level document"));
         }
         let cell = cell_for(app, registry_id, principal, &cell_name);
-        filter_snapshot(app, principal, registry_id, group, artifact, version, &origins, &cell, body, &meta).await?
+        filter_snapshot(
+            app,
+            principal,
+            registry_id,
+            group,
+            artifact,
+            version,
+            &origins,
+            &cell,
+            body,
+            &meta,
+        )
+        .await?
     } else if meta.has_plugins {
         filter_plugins(app, principal, &dirs.join("."), body, &meta)?
     } else if let Some((group, artifact)) = &artifact_id {
@@ -973,24 +1557,47 @@ pub async fn serve_metadata(app: &App, principal: Option<&Principal>, registry_i
             return Err(invalid("an artifact-level document"));
         }
         let cell = cell_for(app, registry_id, principal, &cell_name);
-        filter_artifact(app, principal, registry_id, group, artifact, &origins, &cell, body, &meta).await?
+        filter_artifact(
+            app,
+            principal,
+            registry_id,
+            group,
+            artifact,
+            &origins,
+            &cell,
+            body,
+            &meta,
+        )
+        .await?
     } else {
         // A group-level path whose document names no plugin: nothing in it is a version, so it is passed on.
         if meta.has_versions || !meta.versions.is_empty() {
             return Err(invalid("a group-level document"));
         }
-        Filtered { body: body.to_vec(), changed: false }
+        Filtered {
+            body: body.to_vec(),
+            changed: false,
+        }
     };
     let filtered = unchanged_is_original(filtered, &original);
     logging::record_cache(logging::CacheStatus::Miss);
     match side {
-        Side::Doc => Ok(Rendered { body: filtered.body.into(), content_type: XML }),
-        Side::Sum(sum) => Ok(Rendered { body: sum.hex(&filtered.body).into_bytes().into(), content_type: TEXT }),
+        Side::Doc => Ok(Rendered {
+            body: filtered.body.into(),
+            content_type: XML,
+        }),
+        Side::Sum(sum) => Ok(Rendered {
+            body: sum.hex(&filtered.body).into_bytes().into(),
+            content_type: TEXT,
+        }),
         // A signature is of the repository's bytes: it is relayed only when the served document is those bytes.
         Side::Asc | Side::AscSum(_) if !filtered.changed => {
             let url = url_of(&origins, &coords::metadata_segments(dirs, side))?;
             match fetch(app, principal, url, "*/*", SIDE_CAP).await? {
-                Some((body, _)) => Ok(Rendered { body, content_type: TEXT }),
+                Some((body, _)) => Ok(Rendered {
+                    body,
+                    content_type: TEXT,
+                }),
                 None => Err(ApiError::NotFound),
             }
         }
@@ -1001,7 +1608,10 @@ pub async fn serve_metadata(app: &App, principal: Option<&Principal>, registry_i
 fn shared_raw(app: &App, key: &RawKey) -> Option<bytes::Bytes> {
     crate::http::credential_read::cache_token(app)?;
     let now = app.clock.now_monotonic();
-    lock(&app.maven.raw).get(key).filter(|(at, _)| now.saturating_duration_since(*at) < RAW_TTL).map(|(_, body)| body.clone())
+    lock(&app.maven.raw)
+        .get(key)
+        .filter(|(at, _)| now.saturating_duration_since(*at) < RAW_TTL)
+        .map(|(_, body)| body.clone())
 }
 
 fn remember_raw(app: &App, key: RawKey, body: &bytes::Bytes) {
@@ -1021,7 +1631,12 @@ fn remember_raw(app: &App, key: RawKey, body: &bytes::Bytes) {
 
 /// `archetype-catalog.xml`: an archetype whose package or version a policy blocks is not listed. (An archetype is a
 /// template the client asks for by name and version; the files of the version it names are gated like any other.)
-pub async fn serve_catalog(app: &App, principal: Option<&Principal>, registry_id: u64, side: Side) -> Result<Rendered, ApiError> {
+pub async fn serve_catalog(
+    app: &App,
+    principal: Option<&Principal>,
+    registry_id: u64,
+    side: Side,
+) -> Result<Rendered, ApiError> {
     let (policy, now) = check_policy(app, principal)?;
     let origins = origins_for(app, principal)?;
     let url = url_of(&origins, &[coords::CATALOG.to_owned()])?;
@@ -1037,25 +1652,60 @@ pub async fn serve_catalog(app: &App, principal: Option<&Principal>, registry_id
             if map.len() >= MAX_GATES && !map.contains_key(&registry_id) {
                 map.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
             }
-            Arc::clone(map.entry(registry_id).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))))
+            Arc::clone(
+                map.entry(registry_id)
+                    .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))),
+            )
         };
-        Some(tokio::time::timeout(REFRESH_WAIT, semaphore.acquire_owned()).await.map_err(|_| ApiError::UpstreamTimeout)?.map_err(|_| ApiError::InternalFailure)?)
+        Some(
+            tokio::time::timeout(REFRESH_WAIT, semaphore.acquire_owned())
+                .await
+                .map_err(|_| ApiError::UpstreamTimeout)?
+                .map_err(|_| ApiError::InternalFailure)?,
+        )
     };
-    let slot = if shared { &app.maven.catalog } else { &app.maven.catalog_private };
-    let _one = tokio::time::timeout(REFRESH_WAIT, slot.acquire()).await.map_err(|_| ApiError::UpstreamTimeout)?.map_err(|_| ApiError::InternalFailure)?;
+    let slot = if shared {
+        &app.maven.catalog
+    } else {
+        &app.maven.catalog_private
+    };
+    let _one = tokio::time::timeout(REFRESH_WAIT, slot.acquire())
+        .await
+        .map_err(|_| ApiError::UpstreamTimeout)?
+        .map_err(|_| ApiError::InternalFailure)?;
     let _own = own;
-    let key: RawKey = (registry_id, origin_key(principal), coords::CATALOG.to_owned());
+    let key: RawKey = (
+        registry_id,
+        origin_key(principal),
+        coords::CATALOG.to_owned(),
+    );
     let cached = crate::http::credential_read::cache_token(app).and_then(|_| {
         let now = app.clock.now_monotonic();
-        lock(&app.maven.catalog_doc).as_ref().filter(|(k, at, _)| *k == key && now.saturating_duration_since(*at) < RAW_TTL).map(|(_, _, body)| body.clone())
+        lock(&app.maven.catalog_doc)
+            .as_ref()
+            .filter(|(k, at, _)| *k == key && now.saturating_duration_since(*at) < RAW_TTL)
+            .map(|(_, _, body)| body.clone())
     });
     let body = match cached {
         Some(body) => body,
         None => {
             let _places = refresh_places(app, registry_id).await?;
-            let Some((body, _)) = fetch(app, principal, url, "application/xml", app.config.max_metadata_bytes.get().max(CATALOG_CAP)).await? else { return Err(ApiError::NotFound) };
-            if crate::http::credential_read::cache_token(app).is_some() && body.len() <= MAX_CATALOG_CACHE {
-                *lock(&app.maven.catalog_doc) = Some((key, app.clock.now_monotonic(), body.clone()));
+            let Some((body, _)) = fetch(
+                app,
+                principal,
+                url,
+                "application/xml",
+                app.config.max_metadata_bytes.get().max(CATALOG_CAP),
+            )
+            .await?
+            else {
+                return Err(ApiError::NotFound);
+            };
+            if crate::http::credential_read::cache_token(app).is_some()
+                && body.len() <= MAX_CATALOG_CACHE
+            {
+                *lock(&app.maven.catalog_doc) =
+                    Some((key, app.clock.now_monotonic(), body.clone()));
             }
             body
         }
@@ -1072,19 +1722,24 @@ pub async fn serve_catalog(app: &App, principal: Option<&Principal>, registry_id
     }
     let mut edits = Vec::new();
     for archetype in &meta.archetypes {
-        let (Some(group), Some(artifact)) = (archetype.field("groupId"), archetype.field("artifactId")) else {
+        let (Some(group), Some(artifact)) =
+            (archetype.field("groupId"), archetype.field("artifactId"))
+        else {
             edits.push(meta::cut(body, archetype.span));
             continue;
         };
         let name = format!("{group}:{artifact}");
         let version = archetype.field("version");
-        if !probation_policy::names::valid_name(Ecosystem::Maven, &name) || blocked_outright(&policy, now, &name, version).is_some() {
+        if !probation_policy::names::valid_name(Ecosystem::Maven, &name)
+            || blocked_outright(&policy, now, &name, version).is_some()
+        {
             edits.push(meta::cut(body, archetype.span));
         }
     }
     // An entry's own `<repository>` names another repository's URL: the entry stays, the URL goes (a client resolves the archetype
     // through this firewall's one mirror, never through a repository the catalog names).
-    let mut removed: Vec<(usize, usize)> = edits.iter().map(|edit| (edit.start, edit.end)).collect();
+    let mut removed: Vec<(usize, usize)> =
+        edits.iter().map(|edit| (edit.start, edit.end)).collect();
     removed.sort_unstable();
     for span in &meta.archetype_repositories {
         // Inside a removed entry? The removed ranges are disjoint and sorted: the last one starting at or before the span.
@@ -1095,12 +1750,21 @@ pub async fn serve_catalog(app: &App, principal: Option<&Principal>, registry_id
     }
     let filtered = unchanged_is_original(finish(body, edits), &original);
     match side {
-        Side::Doc => Ok(Rendered { body: filtered.body.into(), content_type: XML }),
-        Side::Sum(sum) => Ok(Rendered { body: sum.hex(&filtered.body).into_bytes().into(), content_type: TEXT }),
+        Side::Doc => Ok(Rendered {
+            body: filtered.body.into(),
+            content_type: XML,
+        }),
+        Side::Sum(sum) => Ok(Rendered {
+            body: sum.hex(&filtered.body).into_bytes().into(),
+            content_type: TEXT,
+        }),
         Side::Asc | Side::AscSum(_) if !filtered.changed => {
             let url = url_of(&origins, &[format!("{}{}", coords::CATALOG, side.suffix())])?;
             match fetch(app, principal, url, "*/*", SIDE_CAP).await? {
-                Some((body, _)) => Ok(Rendered { body, content_type: TEXT }),
+                Some((body, _)) => Ok(Rendered {
+                    body,
+                    content_type: TEXT,
+                }),
                 None => Err(ApiError::NotFound),
             }
         }
@@ -1116,20 +1780,39 @@ pub struct PublishTarget {
     pub origin: Url,
 }
 
-pub fn publish_target(app: &App, principal: &Principal, segments: &[String]) -> Result<PublishTarget, ApiError> {
+pub fn publish_target(
+    app: &App,
+    principal: &Principal,
+    segments: &[String],
+) -> Result<PublishTarget, ApiError> {
     let parts: Vec<&str> = segments.iter().map(String::as_str).collect();
     match principal.registry_origin.as_ref() {
         Some(origin) => {
-            let set = OriginSet::selected_npm_with_private(origin.clone(), principal.registry_private_cidrs.clone()).map_err(|_| ApiError::NotFound)?;
-            let url = set.url_for(OriginKind::NpmMetadata, &parts).map_err(|_| ApiError::NotFound)?;
-            Ok(PublishTarget { url, origin: origin.clone() })
+            let set = OriginSet::selected_npm_with_private(
+                origin.clone(),
+                principal.registry_private_cidrs.clone(),
+            )
+            .map_err(|_| ApiError::NotFound)?;
+            let url = set
+                .url_for(OriginKind::NpmMetadata, &parts)
+                .map_err(|_| ApiError::NotFound)?;
+            Ok(PublishTarget {
+                url,
+                origin: origin.clone(),
+            })
         }
         None => {
             if !app.origins.maven_publish_configured() {
                 return Err(ApiError::NotFound);
             }
-            let url = app.origins.url_for(OriginKind::MavenPublish, &parts).map_err(|_| ApiError::NotFound)?;
-            Ok(PublishTarget { url, origin: app.origins.origin(OriginKind::MavenPublish).clone() })
+            let url = app
+                .origins
+                .url_for(OriginKind::MavenPublish, &parts)
+                .map_err(|_| ApiError::NotFound)?;
+            Ok(PublishTarget {
+                url,
+                origin: app.origins.origin(OriginKind::MavenPublish).clone(),
+            })
         }
     }
 }
@@ -1140,10 +1823,22 @@ mod tests {
 
     #[test]
     fn last_modified_is_the_publication_time_and_nothing_else_is() {
-        let at = |text: &str| dated_of(&UpstreamValidators { etag: None, last_modified: Some(text.to_owned()) });
-        assert_eq!(at("Sat, 13 Feb 2021 16:31:54 GMT"), Dated::Upstream(1_613_233_914_000_000));
+        let at = |text: &str| {
+            dated_of(&UpstreamValidators {
+                etag: None,
+                last_modified: Some(text.to_owned()),
+            })
+        };
+        assert_eq!(
+            at("Sat, 13 Feb 2021 16:31:54 GMT"),
+            Dated::Upstream(1_613_233_914_000_000)
+        );
         assert_eq!(at("not a date"), Dated::Undated);
-        assert_eq!(at("Thu, 01 Jan 1970 00:00:00 GMT"), Dated::Undated, "the epoch is no date");
+        assert_eq!(
+            at("Thu, 01 Jan 1970 00:00:00 GMT"),
+            Dated::Undated,
+            "the epoch is no date"
+        );
         assert_eq!(dated_of(&UpstreamValidators::default()), Dated::Undated);
     }
 }

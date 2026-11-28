@@ -81,27 +81,42 @@ async fn main() -> ExitCode {
     let filter = || {
         EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info"))
-            .add_directive("probation::http::logging=info".parse().expect("static directive"))
+            .add_directive(
+                "probation::http::logging=info"
+                    .parse()
+                    .expect("static directive"),
+            )
     };
     // Under the Windows service control manager stdout goes nowhere: the events go to a bounded, self-rotating file in the
     // installer's access-controlled log directory (src/service_log.rs). If it cannot be opened they fall back to stdout.
     #[cfg(windows)]
     let sink = match &cli.command {
-        Command::Service { log_dir: Some(dir), .. } => {
-            probation::service_log::RotatingFile::open(&dir.join("probation.log"), 50 << 20, 3).ok().map(probation::service_log::SharedLog::new)
-        }
+        Command::Service {
+            log_dir: Some(dir), ..
+        } => probation::service_log::RotatingFile::open(&dir.join("probation.log"), 50 << 20, 3)
+            .ok()
+            .map(probation::service_log::SharedLog::new),
         _ => None,
     };
     #[cfg(not(windows))]
     let sink: Option<probation::service_log::SharedLog> = None;
     match sink {
-        Some(sink) => tracing_subscriber::fmt().json().with_env_filter(filter()).with_writer(move || sink.clone()).init(),
-        None => tracing_subscriber::fmt().json().with_env_filter(filter()).init(),
+        Some(sink) => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter())
+            .with_writer(move || sink.clone())
+            .init(),
+        None => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter())
+            .init(),
     }
 
     match cli.command {
         Command::Serve { config } => match ShutdownSignals::install() {
-            Ok(mut signals) => finish(serve(&config, async move { signals.received().await }, || {}).await),
+            Ok(mut signals) => {
+                finish(serve(&config, async move { signals.received().await }, || {}).await)
+            }
             Err(err) => {
                 tracing::error!(error = %err, "cannot listen for the shutdown signal");
                 ExitCode::FAILURE
@@ -125,9 +140,15 @@ fn reset_revision_floor(path: &Path) -> ExitCode {
     let result = Config::load(path)
         .map_err(|err| err.to_string())
         .and_then(|config| {
-            let policy = config.service_policy.as_ref().ok_or("no [service_policy] section: nothing to reset")?;
-            probation::managed::service_policy::ServicePolicy::reset_revision_floor(policy, &config.data_dir)
-                .map_err(|_| "cannot write the data directory".to_owned())
+            let policy = config
+                .service_policy
+                .as_ref()
+                .ok_or("no [service_policy] section: nothing to reset")?;
+            probation::managed::service_policy::ServicePolicy::reset_revision_floor(
+                policy,
+                &config.data_dir,
+            )
+            .map_err(|_| "cannot write the data directory".to_owned())
         });
     match result {
         Ok(()) => {
@@ -350,9 +371,12 @@ mod windows_service_host {
     use probation::lifecycle::{Control, StopChannel, StopOutcome, exit_plan};
     use probation::service_failure::FailureKind;
     use windows_service::service::{
-        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
     };
-    use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
     use windows_service::{define_windows_service, service_dispatcher};
 
     const NAME: &str = "Probation";
@@ -366,7 +390,9 @@ mod windows_service_host {
     /// Hands a blocking thread to the dispatcher, which returns when the service has stopped.
     pub async fn run(config: PathBuf, log_dir: Option<PathBuf>) -> ExitCode {
         let _ = HOST.set((tokio::runtime::Handle::current(), config, log_dir));
-        match tokio::task::spawn_blocking(|| service_dispatcher::start(NAME, ffi_service_main)).await {
+        match tokio::task::spawn_blocking(|| service_dispatcher::start(NAME, ffi_service_main))
+            .await
+        {
             Ok(Ok(())) => ExitCode::SUCCESS,
             Ok(Err(err)) => {
                 tracing::error!(error = %err, "not started by the service control manager");
@@ -377,7 +403,10 @@ mod windows_service_host {
     }
 
     fn service_main(_arguments: Vec<OsString>) {
-        let (runtime, config, log_dir) = HOST.get().expect("set before the dispatcher starts").clone();
+        let (runtime, config, log_dir) = HOST
+            .get()
+            .expect("set before the dispatcher starts")
+            .clone();
         let (channel, mut waiter) = StopChannel::new();
         let handler = move |control| {
             let kind = match control {
@@ -395,27 +424,69 @@ mod windows_service_host {
         };
         let status = match service_control_handler::register(NAME, handler) {
             Ok(status) => status,
-            Err(err) => fail(log_dir.as_deref(), FailureKind::CannotStart, &format!("cannot register the service control handler: {err}")),
+            Err(err) => fail(
+                log_dir.as_deref(),
+                FailureKind::CannotStart,
+                &format!("cannot register the service control handler: {err}"),
+            ),
         };
-        report(status, ServiceState::StartPending, ServiceControlAccept::empty(), 1, STOP_WAIT);
+        report(
+            status,
+            ServiceState::StartPending,
+            ServiceControlAccept::empty(),
+            1,
+            STOP_WAIT,
+        );
         // A configuration the service cannot load ends it here, with a documented exit code and a file in the log directory,
         // before any log sink could have said why.
         if let Err(err) = probation::config::Config::load(&config) {
-            fail(log_dir.as_deref(), FailureKind::InvalidConfig, &format!("{}: {err}", config.display()));
+            fail(
+                log_dir.as_deref(),
+                FailureKind::InvalidConfig,
+                &format!("{}: {err}", config.display()),
+            );
         }
-        let stopping = async move { waiter.next(|| report(status, ServiceState::StopPending, ServiceControlAccept::empty(), 1, STOP_WAIT)).await };
+        let stopping = async move {
+            waiter
+                .next(|| {
+                    report(
+                        status,
+                        ServiceState::StopPending,
+                        ServiceControlAccept::empty(),
+                        1,
+                        STOP_WAIT,
+                    )
+                })
+                .await
+        };
         let ready = move || {
             let accepted = ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN;
-            report(status, ServiceState::Running, accepted, 0, Duration::default());
+            report(
+                status,
+                ServiceState::Running,
+                accepted,
+                0,
+                Duration::default(),
+            );
         };
         let outcome = runtime.block_on(super::serve(&config, stopping, ready));
         let plan = exit_plan(outcome);
         if plan.report_stopped {
-            report(status, ServiceState::Stopped, ServiceControlAccept::empty(), 0, Duration::default());
+            report(
+                status,
+                ServiceState::Stopped,
+                ServiceControlAccept::empty(),
+                0,
+                Duration::default(),
+            );
         } else {
             // Ending without `Stopped` is how the manager is told this was a failure and the restart action runs.
             if outcome == StopOutcome::Failed {
-                fail(log_dir.as_deref(), FailureKind::CannotStart, "the service stopped on a failure; see probation.log");
+                fail(
+                    log_dir.as_deref(),
+                    FailureKind::CannotStart,
+                    "the service stopped on a failure; see probation.log",
+                );
             }
             std::process::exit(i32::from(plan.code));
         }
@@ -429,7 +500,13 @@ mod windows_service_host {
         std::process::exit(i32::from(kind.code()))
     }
 
-    fn report(status: ServiceStatusHandle, state: ServiceState, accepted: ServiceControlAccept, checkpoint: u32, wait_hint: Duration) {
+    fn report(
+        status: ServiceStatusHandle,
+        state: ServiceState,
+        accepted: ServiceControlAccept,
+        checkpoint: u32,
+        wait_hint: Duration,
+    ) {
         let result = status.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: state,

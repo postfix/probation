@@ -129,13 +129,17 @@ jobs:
       # A CI package is not a release: no RELEASE-PACKAGE marker (the installer takes it as a dev package, the lifecycle driver passes --dev-package).
       # Its binary is attested by attest-macos below, by this workflow, with the action release.yml uses; the installer then verifies that
       # attestation with `--signer-workflow .github/workflows/native-service.yml --source-digest <this commit>` (the repository pin stays),
-      # with every check of the installer left on.
-      - name: Mark the package as a CI build
+      # with every check of the installer left on. The step output names the binary by its exact path: an upload by glob keeps the package
+      # directory in the artifact (ci-binary-*/probation-<version>-<target>/probation), where attest-macos looks for ci-binary-*/probation
+      # (hosted run 46132783086: "Could not find subject"); an upload of one named file stores it at the artifact root.
+      - name: Mark the package as a CI build and name what to upload
+        id: pkg
         run: |
           pkg=$(echo "$RUNNER_TEMP"/pkg/probation-*)
           rm "$pkg/RELEASE-PACKAGE"
           grep -v ' RELEASE-PACKAGE$' "$pkg/SHA256SUMS" > "$pkg/SHA256SUMS.new"
           mv "$pkg/SHA256SUMS.new" "$pkg/SHA256SUMS"
+          echo "binary=$pkg/probation" >> "$GITHUB_OUTPUT"
       # The package must not depend on Homebrew's OpenSSL: no dylib path of it in the binary, and the formula hidden while it runs.
       - name: The packaged binary needs no OpenSSL dylib
         run: |
@@ -158,7 +162,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-binary-${{ matrix.target }}
-          path: ${{ runner.temp }}/pkg/probation-*/probation
+          path: ${{ steps.pkg.outputs.binary }}
           retention-days: 1
           if-no-files-found: error
 
@@ -528,7 +532,8 @@ jobs:
         shell: bash
         run: |
           if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
-          (cd "$RUNNER_TEMP/seed-m2" && find . \( -name '*.jar' -o -name '*.pom' \) | LC_ALL=C sort | xargs $sum) | diff - tests/e2e/compose/clients/maven-seed.sha256
+          # Git for Windows' sha256sum marks every line as binary-mode (`<hash> *<path>`, hosted run 46132783086); the manifest has two spaces.
+          (cd "$RUNNER_TEMP/seed-m2" && find . \( -name '*.jar' -o -name '*.pom' \) | LC_ALL=C sort | xargs $sum | sed -E 's/^([0-9a-f]{64}) \*/\1  /') | diff - tests/e2e/compose/clients/maven-seed.sha256
       # tests/conan_native.rs runs its host scripts with `bash`; on a Windows runner that name finds System32's WSL launcher first (hosted run
       # 45455094825: "Windows Subsystem for Linux has no installed distributions"). Git's bash goes in front (GITHUB_PATH prepends).
       - name: Git's bash before the WSL launcher

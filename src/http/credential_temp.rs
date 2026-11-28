@@ -103,10 +103,15 @@ impl CredentialTemp {
         let parent = match fd::open_dir(rustix::fs::CWD, &parent_path) {
             Ok(parent) => parent,
             Err(errno) if errno == rustix::io::Errno::NOENT => {
-                rustix::fs::mkdirat(rustix::fs::CWD, &parent_path, Mode::RWXU).map_err(|_| TempError::Io)?;
+                rustix::fs::mkdirat(rustix::fs::CWD, &parent_path, Mode::RWXU)
+                    .map_err(|_| TempError::Io)?;
                 fd::open_dir(rustix::fs::CWD, &parent_path).map_err(|_| TempError::Io)?
             }
-            Err(errno) if errno == rustix::io::Errno::LOOP || errno == rustix::io::Errno::NOTDIR => return Err(TempError::UnsafeParent),
+            Err(errno)
+                if errno == rustix::io::Errno::LOOP || errno == rustix::io::Errno::NOTDIR =>
+            {
+                return Err(TempError::UnsafeParent);
+            }
             Err(_) => return Err(TempError::Io),
         };
         Self::check_owner(&rustix::fs::fstat(&parent).map_err(|_| TempError::Io)?)?;
@@ -118,11 +123,27 @@ impl CredentialTemp {
         let dirfd = fd::open_dir(&parent, name.as_str()).map_err(|_| TempError::Io)?;
         rustix::fs::fchmod(&dirfd, Mode::RWXU).map_err(|_| TempError::Io)?;
         let lock = File::from(
-            rustix::fs::openat(&dirfd, "lock", rustix::fs::OFlags::CREATE | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC, Mode::RUSR | Mode::WUSR)
-                .map_err(|_| TempError::Io)?,
+            rustix::fs::openat(
+                &dirfd,
+                "lock",
+                rustix::fs::OFlags::CREATE
+                    | rustix::fs::OFlags::RDWR
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|_| TempError::Io)?,
         );
         lock.try_lock().map_err(|_| TempError::Io)?;
-        Ok(CredentialTemp { dir: parent_path.join(name), dirfd, shared: Arc::new(Shared { limits, used: AtomicU64::new(0) }), _lock: lock })
+        Ok(CredentialTemp {
+            dir: parent_path.join(name),
+            dirfd,
+            shared: Arc::new(Shared {
+                limits,
+                used: AtomicU64::new(0),
+            }),
+            _lock: lock,
+        })
     }
 
     #[cfg(not(unix))]
@@ -141,7 +162,10 @@ impl CredentialTemp {
             dir,
             #[cfg(windows)]
             _pins: [parent, pin],
-            shared: Arc::new(Shared { limits, used: AtomicU64::new(0) }),
+            shared: Arc::new(Shared {
+                limits,
+                used: AtomicU64::new(0),
+            }),
             _lock: lock,
         })
     }
@@ -154,7 +178,8 @@ impl CredentialTemp {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL,
         };
         match crate::key_acl::create_protected_dir(path) {
             Ok(()) | Err(183) => {} // created private, or already there: checked below either way (183: ERROR_ALREADY_EXISTS)
@@ -167,11 +192,14 @@ impl CredentialTemp {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
             .map_err(|_| TempError::Io)?;
-        if !Self::pinned_is_plain_dir(pin.metadata().map_err(|_| TempError::Io)?.file_attributes()) {
+        if !Self::pinned_is_plain_dir(pin.metadata().map_err(|_| TempError::Io)?.file_attributes())
+        {
             return Err(TempError::UnsafeParent);
         }
         let handle = pin.as_raw_handle();
-        if !crate::key_acl::owner_is_trusted_handle(handle) || crate::key_acl::is_shared_handle(handle) {
+        if !crate::key_acl::owner_is_trusted_handle(handle)
+            || crate::key_acl::is_shared_handle(handle)
+        {
             return Err(TempError::UnsafeParent);
         }
         Ok(pin)
@@ -188,9 +216,13 @@ impl CredentialTemp {
     #[cfg(not(any(unix, windows)))]
     fn pin_dir(path: &Path) -> Result<File, TempError> {
         match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => return Err(TempError::UnsafeParent),
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(TempError::UnsafeParent);
+            }
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => std::fs::create_dir(path).map_err(|_| TempError::Io)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                std::fs::create_dir(path).map_err(|_| TempError::Io)?
+            }
             Err(_) => return Err(TempError::Io),
         }
         File::open(path).map_err(|_| TempError::Io)
@@ -201,7 +233,11 @@ impl CredentialTemp {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
-        format!("{}-{nonce:08x}{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst))
+        format!(
+            "{}-{nonce:08x}{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        )
     }
 
     /// The parent must belong to the service user: the user this process runs as. It is not compared with
@@ -209,7 +245,11 @@ impl CredentialTemp {
     /// with only the group set), while the folder this process created on an earlier start is its own.
     #[cfg(unix)]
     fn check_owner(parent: &rustix::fs::Stat) -> Result<(), TempError> {
-        if parent.st_uid == rustix::process::geteuid().as_raw() { Ok(()) } else { Err(TempError::UnsafeParent) }
+        if parent.st_uid == rustix::process::geteuid().as_raw() {
+            Ok(())
+        } else {
+            Err(TempError::UnsafeParent)
+        }
     }
 
     /// Removes only subdirectories whose lock file can be acquired (no live owner). A lock
@@ -221,21 +261,29 @@ impl CredentialTemp {
         const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
         for entry in std::fs::read_dir(parent).into_iter().flatten().flatten() {
             let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
             if !meta.is_dir() {
                 continue;
             }
             let lock_path = path.join("lock");
             match std::fs::symlink_metadata(&lock_path) {
                 Ok(lock_meta) if lock_meta.file_type().is_file() => {
-                    let Ok(lock) = File::options().read(true).write(true).open(&lock_path) else { continue };
+                    let Ok(lock) = File::options().read(true).write(true).open(&lock_path) else {
+                        continue;
+                    };
                     if lock.try_lock().is_ok() {
                         let _ = std::fs::remove_dir_all(&path);
                     }
                 }
                 Ok(_) => continue,
                 Err(_) => {
-                    let old = meta.modified().ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age > GRACE);
+                    let old = meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.elapsed().ok())
+                        .is_some_and(|age| age > GRACE);
                     if old {
                         let _ = std::fs::remove_dir_all(&path);
                     }
@@ -248,10 +296,15 @@ impl CredentialTemp {
     pub fn begin(&self, content_length: Option<u64>) -> Result<TempFile, TempError> {
         let limits = self.shared.limits;
         if let Some(length) = content_length {
-            if limits.max_request_bytes.is_some_and(|max| length > max) || limits.max_total_bytes.is_some_and(|max| length > max) {
+            if limits.max_request_bytes.is_some_and(|max| length > max)
+                || limits.max_total_bytes.is_some_and(|max| length > max)
+            {
                 return Err(TempError::TooLarge);
             }
-            if limits.max_total_bytes.is_some_and(|max| self.shared.used.load(Ordering::SeqCst) + length > max) {
+            if limits
+                .max_total_bytes
+                .is_some_and(|max| self.shared.used.load(Ordering::SeqCst) + length > max)
+            {
                 return Err(TempError::Busy);
             }
         }
@@ -259,7 +312,13 @@ impl CredentialTemp {
         let file = fd::unlinked_file(&self.dirfd).map_err(|error| TempError::from_io(&error))?;
         #[cfg(not(unix))]
         let file = tempfile::tempfile_in(&self.dir).map_err(|error| TempError::from_io(&error))?;
-        Ok(TempFile { file, account: Account { shared: Arc::clone(&self.shared), bytes: 0 } })
+        Ok(TempFile {
+            file,
+            account: Account {
+                shared: Arc::clone(&self.shared),
+                bytes: 0,
+            },
+        })
     }
 
     /// Bytes currently held by this process (the readiness gauge).
@@ -277,7 +336,9 @@ impl TempFile {
         let limits = self.account.shared.limits;
         let len = bytes.len() as u64;
         let own = self.account.bytes + len;
-        if limits.max_request_bytes.is_some_and(|max| own > max) || limits.max_total_bytes.is_some_and(|max| own > max) {
+        if limits.max_request_bytes.is_some_and(|max| own > max)
+            || limits.max_total_bytes.is_some_and(|max| own > max)
+        {
             return Err(TempError::TooLarge);
         }
         // Reserve before writing so concurrent bodies cannot jointly pass the total.
@@ -287,7 +348,9 @@ impl TempFile {
             return Err(TempError::Busy);
         }
         self.account.bytes += len;
-        self.file.write_all(bytes).map_err(|error| TempError::from_io(&error))
+        self.file
+            .write_all(bytes)
+            .map_err(|error| TempError::from_io(&error))
     }
 
     /// [`TempFile::write`] on the blocking pool, so a large body never stalls an async
@@ -299,7 +362,10 @@ impl TempFile {
     }
 
     pub fn into_file(self) -> CompletedTemp {
-        CompletedTemp { file: self.file, _account: self.account }
+        CompletedTemp {
+            file: self.file,
+            _account: self.account,
+        }
     }
 }
 
@@ -315,8 +381,16 @@ mod fd {
     use rustix::io::Errno;
 
     /// Opens `path` (relative to `base`) as a directory without following a symlink at its last component.
-    pub(super) fn open_dir(base: impl AsFd, path: impl rustix::path::Arg) -> Result<OwnedFd, Errno> {
-        openat(base, path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+    pub(super) fn open_dir(
+        base: impl AsFd,
+        path: impl rustix::path::Arg,
+    ) -> Result<OwnedFd, Errno> {
+        openat(
+            base,
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
     }
 
     /// An anonymous read-write file in `dir`. On Linux it is an O_TMPFILE file that never has a name; on a filesystem without
@@ -325,7 +399,12 @@ mod fd {
     pub fn unlinked_file(dir: impl AsFd) -> io::Result<File> {
         let dir = dir.as_fd();
         #[cfg(target_os = "linux")]
-        match openat(dir, ".", OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC, Mode::RUSR | Mode::WUSR) {
+        match openat(
+            dir,
+            ".",
+            OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        ) {
             Ok(file) => return Ok(File::from(file)),
             Err(Errno::OPNOTSUPP | Errno::ISDIR | Errno::NOENT) => {}
             Err(errno) => return Err(errno.into()),
@@ -338,8 +417,12 @@ mod fd {
         let mut bytes = [0u8; 8];
         for _ in 0..8 {
             getrandom::fill(&mut bytes).map_err(|_| io::Error::other("no randomness"))?;
-            let name = format!("body-{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
-            let flags = OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let name = format!(
+                "body-{}",
+                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+            let flags =
+                OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
             match openat(dir, name.as_str(), flags, Mode::RUSR | Mode::WUSR) {
                 Ok(file) => {
                     unlinkat(dir, name.as_str(), AtFlags::empty())?;
@@ -354,7 +437,9 @@ mod fd {
 
     /// The entries of `dir` as the C strings the kernel gave, so a name that is not UTF-8 is still visited.
     fn names(dir: &OwnedFd) -> Vec<CString> {
-        let Ok(reader) = Dir::read_from(dir) else { return Vec::new() };
+        let Ok(reader) = Dir::read_from(dir) else {
+            return Vec::new();
+        };
         reader
             .flatten()
             .map(|entry| entry.file_name().to_owned())
@@ -392,19 +477,28 @@ mod fd {
         const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
         for name in names(parent) {
             // Opening with O_NOFOLLOW|O_DIRECTORY skips anything that is not a real subdirectory.
-            let Ok(dir) = open_dir(parent, name.as_c_str()) else { continue };
+            let Ok(dir) = open_dir(parent, name.as_c_str()) else {
+                continue;
+            };
             match statat(&dir, "lock", AtFlags::SYMLINK_NOFOLLOW) {
                 Ok(lock) if FileType::from_raw_mode(lock.st_mode) == FileType::RegularFile => {
-                    let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-                    let Ok(lock) = openat(&dir, "lock", flags, Mode::empty()).map(File::from) else { continue };
+                    let flags =
+                        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+                    let Ok(lock) = openat(&dir, "lock", flags, Mode::empty()).map(File::from)
+                    else {
+                        continue;
+                    };
                     if lock.try_lock().is_ok() {
                         remove_tree(parent, &name, &dir);
                     }
                 }
                 Ok(_) => continue,
                 Err(_) => {
-                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    let old = fstat(&dir).is_ok_and(|stat| now - stat.st_mtime > GRACE.as_secs() as i64);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs() as i64);
+                    let old =
+                        fstat(&dir).is_ok_and(|stat| now - stat.st_mtime > GRACE.as_secs() as i64);
                     if old {
                         remove_tree(parent, &name, &dir);
                     }
@@ -421,9 +515,15 @@ mod tests {
         use super::CredentialTemp as C;
         assert!(C::pinned_is_plain_dir(0x10), "a directory");
         assert!(C::pinned_is_plain_dir(0x10 | 0x2), "a hidden directory");
-        assert!(!C::pinned_is_plain_dir(0x10 | 0x400), "a junction or symlink to a directory");
+        assert!(
+            !C::pinned_is_plain_dir(0x10 | 0x400),
+            "a junction or symlink to a directory"
+        );
         assert!(!C::pinned_is_plain_dir(0x20), "a file");
-        assert!(!C::pinned_is_plain_dir(0x400), "a reparse point that is not a directory");
+        assert!(
+            !C::pinned_is_plain_dir(0x400),
+            "a reparse point that is not a directory"
+        );
     }
 
     #[cfg(unix)]
@@ -439,6 +539,10 @@ mod tests {
         let mut back = String::new();
         file.read_to_string(&mut back).unwrap();
         assert_eq!(back, "secret");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "the fallback leaves no name behind");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "the fallback leaves no name behind"
+        );
     }
 }

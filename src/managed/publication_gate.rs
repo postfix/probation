@@ -119,7 +119,11 @@ pub(crate) struct AuthorityReceipt {
 
 impl AuthorityReceipt {
     pub(crate) fn new(gate: Arc<PolicyPublicationGate>, generation: u64) -> Self {
-        Self { gate, generation, osv: None }
+        Self {
+            gate,
+            generation,
+            osv: None,
+        }
     }
 
     pub(crate) fn with_osv(mut self, counter: Arc<AtomicU64>, seen: u64) -> Self {
@@ -143,7 +147,10 @@ impl PreparedResponse {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_receipt(receipt: AuthorityReceipt, response: axum::response::Response) -> Self {
+    pub(crate) fn with_receipt(
+        receipt: AuthorityReceipt,
+        response: axum::response::Response,
+    ) -> Self {
         Self {
             gate: receipt.gate,
             generation: receipt.generation,
@@ -251,10 +258,16 @@ mod publication_tests {
     }
 
     async fn body(response: Response) -> Vec<u8> {
-        axum::body::to_bytes(response.into_body(), 100).await.unwrap().to_vec()
+        axum::body::to_bytes(response.into_body(), 100)
+            .await
+            .unwrap()
+            .to_vec()
     }
 
-    fn prepared(gate: &Arc<PolicyPublicationGate>, osv: Option<(&Arc<AtomicU64>, u64)>) -> PreparedResponse {
+    fn prepared(
+        gate: &Arc<PolicyPublicationGate>,
+        osv: Option<(&Arc<AtomicU64>, u64)>,
+    ) -> PreparedResponse {
         let mut receipt = artifact_receipt(gate);
         if let Some((counter, seen)) = osv {
             receipt = receipt.with_osv(Arc::clone(counter), seen);
@@ -271,7 +284,10 @@ mod publication_tests {
         assert_eq!(body(unchanged.unwrap()).await, b"exact bytes");
         let stale = prepared(&gate, Some((&counter, 7)));
         counter.fetch_add(1, Ordering::Release);
-        assert!(respond_order(Arc::clone(&gate), stale).is_err(), "stale OSV allow must not release");
+        assert!(
+            respond_order(Arc::clone(&gate), stale).is_err(),
+            "stale OSV allow must not release"
+        );
     }
 
     #[tokio::test]
@@ -283,7 +299,13 @@ mod publication_tests {
         let poisoned = Arc::new(PolicyPublicationGate::default());
         let victim = prepared(&poisoned, None);
         let writer = Arc::clone(&poisoned);
-        assert!(std::thread::spawn(move || { let _ = writer.publish(|| panic!("boom")); }).join().is_err());
+        assert!(
+            std::thread::spawn(move || {
+                let _ = writer.publish(|| panic!("boom"));
+            })
+            .join()
+            .is_err()
+        );
         assert!(poisoned.is_poisoned());
         assert!(respond_order(poisoned, victim).is_err());
     }
@@ -307,10 +329,16 @@ mod publication_tests {
             reached_rx.recv().unwrap();
             if publish {
                 let writer = Arc::clone(&gate);
-                std::thread::spawn(move || writer.publish(|| ()).unwrap()).join().unwrap();
+                std::thread::spawn(move || writer.publish(|| ()).unwrap())
+                    .join()
+                    .unwrap();
             }
             go_tx.send(()).unwrap();
-            assert_eq!(request.join().unwrap(), !publish, "publication ordered before authorization governs");
+            assert_eq!(
+                request.join().unwrap(),
+                !publish,
+                "publication ordered before authorization governs"
+            );
         }
     }
 
@@ -324,19 +352,33 @@ mod publication_tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let holder_gate = Arc::clone(&gate);
         let holder = std::thread::spawn(move || {
-            holder_gate.read(|_| { held_tx.send(()).unwrap(); release_rx.recv().unwrap(); }).unwrap();
+            holder_gate
+                .read(|_| {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .unwrap();
         });
         held_rx.recv().unwrap();
         let (writer_tx, writer_rx) = std::sync::mpsc::channel();
         let writer_gate = Arc::clone(&gate);
-        let writer = std::thread::spawn(move || { writer_tx.send(()).unwrap(); writer_gate.publish(|| ()).unwrap(); });
+        let writer = std::thread::spawn(move || {
+            writer_tx.send(()).unwrap();
+            writer_gate.publish(|| ()).unwrap();
+        });
         writer_rx.recv().unwrap();
         let prepared = prepared(&gate, None);
         let request_gate = Arc::clone(&gate);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let request = std::thread::spawn(move || { done_tx.send(respond_order(request_gate, prepared).is_ok()).unwrap(); });
+        let request = std::thread::spawn(move || {
+            done_tx
+                .send(respond_order(request_gate, prepared).is_ok())
+                .unwrap();
+        });
         release_tx.send(()).unwrap();
-        let _delivered = done_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("watchdog: deadlock");
+        let _delivered = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("watchdog: deadlock");
         holder.join().unwrap();
         writer.join().unwrap();
         request.join().unwrap();

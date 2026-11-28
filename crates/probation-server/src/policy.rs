@@ -156,7 +156,9 @@ async fn update_layer(
         .map_err(|err| match err {
             StoreError::Db(err) => SaveError::Db(err),
             StoreError::MissingLayer(_) => SaveError::Conflict,
-            StoreError::UnknownEcosystem(tag) => SaveError::Db(StoreError::unknown_ecosystem_as_db(tag)),
+            StoreError::UnknownEcosystem(tag) => {
+                SaveError::Db(StoreError::unknown_ecosystem_as_db(tag))
+            }
         })?
         .ok_or(SaveError::Conflict)?;
     let without_blocks = |layer: &Layer| Layer {
@@ -407,7 +409,9 @@ fn algorithm_str(algorithm: DigestAlgorithm) -> &'static str {
     }
 }
 
-fn block_of((ecosystem, name, version, algorithm, digest, reason): BlockRow) -> Result<Block, StoreError> {
+fn block_of(
+    (ecosystem, name, version, algorithm, digest, reason): BlockRow,
+) -> Result<Block, StoreError> {
     Ok(match (ecosystem, name, digest) {
         (Some(ecosystem), Some(name), None) => match version {
             Some(version) => Block::Version {

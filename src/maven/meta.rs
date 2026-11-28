@@ -26,7 +26,10 @@ pub struct Entry {
 
 impl Entry {
     pub fn field(&self, name: &str) -> Option<&str> {
-        self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        self.fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -101,7 +104,13 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
         new.or(previous)
     };
     xml::scan(doc, |event| match event {
-        Event::Start { name, start, end, depth, .. } => {
+        Event::Start {
+            name,
+            start,
+            end,
+            depth,
+            ..
+        } => {
             // A prefixed name is the same element to a namespace-aware reader and a different one to this: refused.
             bad |= name.contains(':');
             if let Some(parent) = stack.last_mut() {
@@ -111,40 +120,74 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                 meta.root = name.to_owned();
                 root_bad = !matches!(name, "metadata" | "archetype-catalog");
             }
-            stack.push(Frame { name, start, inner_start: end, children: false, fields: Vec::new() });
+            stack.push(Frame {
+                name,
+                start,
+                inner_start: end,
+                children: false,
+                fields: Vec::new(),
+            });
         }
         Event::Text { .. } => {}
-        Event::End { name, start, end, .. } => {
+        Event::End {
+            name, start, end, ..
+        } => {
             let Some(frame) = stack.pop() else { return };
             debug_assert_eq!(frame.name, name);
-            let path: Vec<&str> = stack.iter().map(|f| f.name).chain(std::iter::once(name)).collect();
+            let path: Vec<&str> = stack
+                .iter()
+                .map(|f| f.name)
+                .chain(std::iter::once(name))
+                .collect();
             let leaf = || {
                 (!frame.children).then(|| {
                     let inner = (frame.inner_start, start);
-                    Text { value: decode(&text[inner.0..inner.1]).trim().to_owned(), inner }
+                    Text {
+                        value: decode(&text[inner.0..inner.1]).trim().to_owned(),
+                        inner,
+                    }
                 })
             };
             let span = (frame.start, end);
             match path.as_slice() {
-                ["metadata", "groupId"] => meta.group_id = single(meta.group_id.take(), leaf(), &mut bad),
-                ["metadata", "artifactId"] => meta.artifact_id = single(meta.artifact_id.take(), leaf(), &mut bad),
-                ["metadata", "version"] => meta.version = single(meta.version.take(), leaf(), &mut bad),
-                ["metadata", "versioning", "latest"] => meta.latest = single(meta.latest.take(), leaf(), &mut bad),
-                ["metadata", "versioning", "release"] => meta.release = single(meta.release.take(), leaf(), &mut bad),
-                ["metadata", "versioning", "lastUpdated"] => meta.last_updated = single(meta.last_updated.take(), leaf(), &mut bad),
+                ["metadata", "groupId"] => {
+                    meta.group_id = single(meta.group_id.take(), leaf(), &mut bad)
+                }
+                ["metadata", "artifactId"] => {
+                    meta.artifact_id = single(meta.artifact_id.take(), leaf(), &mut bad)
+                }
+                ["metadata", "version"] => {
+                    meta.version = single(meta.version.take(), leaf(), &mut bad)
+                }
+                ["metadata", "versioning", "latest"] => {
+                    meta.latest = single(meta.latest.take(), leaf(), &mut bad)
+                }
+                ["metadata", "versioning", "release"] => {
+                    meta.release = single(meta.release.take(), leaf(), &mut bad)
+                }
+                ["metadata", "versioning", "lastUpdated"] => {
+                    meta.last_updated = single(meta.last_updated.take(), leaf(), &mut bad)
+                }
                 ["metadata", "versioning", "versions"] => {
                     bad |= meta.has_versions;
                     meta.has_versions = true;
                 }
-                ["metadata", "versioning", "versions", "version"] => {
-                    match leaf() {
-                        Some(_) if meta.versions.len() >= max_entries => too_many = true,
-                        Some(item) => meta.versions.push(Entry { value: item.value, span, fields: Vec::new() }),
-                        None => bad = true,
-                    }
+                ["metadata", "versioning", "versions", "version"] => match leaf() {
+                    Some(_) if meta.versions.len() >= max_entries => too_many = true,
+                    Some(item) => meta.versions.push(Entry {
+                        value: item.value,
+                        span,
+                        fields: Vec::new(),
+                    }),
+                    None => bad = true,
+                },
+                ["metadata", "versioning", "snapshot", "timestamp"] => {
+                    meta.snapshot_timestamp =
+                        single(meta.snapshot_timestamp.take(), leaf(), &mut bad)
                 }
-                ["metadata", "versioning", "snapshot", "timestamp"] => meta.snapshot_timestamp = single(meta.snapshot_timestamp.take(), leaf(), &mut bad),
-                ["metadata", "versioning", "snapshot", "buildNumber"] => meta.snapshot_build = single(meta.snapshot_build.take(), leaf(), &mut bad),
+                ["metadata", "versioning", "snapshot", "buildNumber"] => {
+                    meta.snapshot_build = single(meta.snapshot_build.take(), leaf(), &mut bad)
+                }
                 ["metadata", "versioning", "snapshot"] => {
                     bad |= meta.snapshot_span.is_some();
                     meta.snapshot_span = Some(span);
@@ -153,20 +196,56 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                     bad |= meta.snapshot_versions_span.is_some();
                     meta.snapshot_versions_span = Some(span);
                 }
-                ["metadata", "versioning", "snapshotVersions", "snapshotVersion", field] => {
+                [
+                    "metadata",
+                    "versioning",
+                    "snapshotVersions",
+                    "snapshotVersion",
+                    field,
+                ] => {
                     match (leaf(), stack.last_mut()) {
-                        (Some(item), Some(parent)) => parent.fields.push(((*field).to_owned(), item.value)),
+                        (Some(item), Some(parent)) => {
+                            parent.fields.push(((*field).to_owned(), item.value))
+                        }
                         // A field the firewall reads must be text; any other (a description with markup) is passed on untouched.
-                        (None, _) if matches!(*field, "groupId" | "artifactId" | "version" | "value" | "extension" | "classifier" | "name" | "prefix") => bad = true,
+                        (None, _)
+                            if matches!(
+                                *field,
+                                "groupId"
+                                    | "artifactId"
+                                    | "version"
+                                    | "value"
+                                    | "extension"
+                                    | "classifier"
+                                    | "name"
+                                    | "prefix"
+                            ) =>
+                        {
+                            bad = true
+                        }
                         _ => {}
                     }
                 }
-                ["metadata", "versioning", "snapshotVersions", "snapshotVersion"] => {
+                [
+                    "metadata",
+                    "versioning",
+                    "snapshotVersions",
+                    "snapshotVersion",
+                ] => {
                     if meta.snapshot_versions.len() >= max_entries {
                         too_many = true;
                     } else {
-                        let value = frame.fields.iter().find(|(key, _)| key == "value").map(|(_, v)| v.clone()).unwrap_or_default();
-                        meta.snapshot_versions.push(Entry { value, span, fields: frame.fields });
+                        let value = frame
+                            .fields
+                            .iter()
+                            .find(|(key, _)| key == "value")
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default();
+                        meta.snapshot_versions.push(Entry {
+                            value,
+                            span,
+                            fields: frame.fields,
+                        });
                     }
                 }
                 ["metadata", "plugins"] => {
@@ -175,9 +254,25 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                 }
                 ["metadata", "plugins", "plugin", field] => {
                     match (leaf(), stack.last_mut()) {
-                        (Some(item), Some(parent)) => parent.fields.push(((*field).to_owned(), item.value)),
+                        (Some(item), Some(parent)) => {
+                            parent.fields.push(((*field).to_owned(), item.value))
+                        }
                         // A field the firewall reads must be text; any other (a description with markup) is passed on untouched.
-                        (None, _) if matches!(*field, "groupId" | "artifactId" | "version" | "value" | "extension" | "classifier" | "name" | "prefix") => bad = true,
+                        (None, _)
+                            if matches!(
+                                *field,
+                                "groupId"
+                                    | "artifactId"
+                                    | "version"
+                                    | "value"
+                                    | "extension"
+                                    | "classifier"
+                                    | "name"
+                                    | "prefix"
+                            ) =>
+                        {
+                            bad = true
+                        }
                         _ => {}
                     }
                 }
@@ -185,8 +280,17 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                     if meta.plugins.len() >= max_entries {
                         too_many = true;
                     } else {
-                        let value = frame.fields.iter().find(|(key, _)| key == "artifactId").map(|(_, v)| v.clone()).unwrap_or_default();
-                        meta.plugins.push(Entry { value, span, fields: frame.fields });
+                        let value = frame
+                            .fields
+                            .iter()
+                            .find(|(key, _)| key == "artifactId")
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default();
+                        meta.plugins.push(Entry {
+                            value,
+                            span,
+                            fields: frame.fields,
+                        });
                     }
                 }
                 ["archetype-catalog", "archetypes", "archetype", "repository"] => {
@@ -198,9 +302,25 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                 }
                 ["archetype-catalog", "archetypes", "archetype", field] => {
                     match (leaf(), stack.last_mut()) {
-                        (Some(item), Some(parent)) => parent.fields.push(((*field).to_owned(), item.value)),
+                        (Some(item), Some(parent)) => {
+                            parent.fields.push(((*field).to_owned(), item.value))
+                        }
                         // A field the firewall reads must be text; any other (a description with markup) is passed on untouched.
-                        (None, _) if matches!(*field, "groupId" | "artifactId" | "version" | "value" | "extension" | "classifier" | "name" | "prefix") => bad = true,
+                        (None, _)
+                            if matches!(
+                                *field,
+                                "groupId"
+                                    | "artifactId"
+                                    | "version"
+                                    | "value"
+                                    | "extension"
+                                    | "classifier"
+                                    | "name"
+                                    | "prefix"
+                            ) =>
+                        {
+                            bad = true
+                        }
                         _ => {}
                     }
                 }
@@ -208,8 +328,17 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
                     if meta.archetypes.len() >= max_entries {
                         too_many = true;
                     } else {
-                        let value = frame.fields.iter().find(|(key, _)| key == "artifactId").map(|(_, v)| v.clone()).unwrap_or_default();
-                        meta.archetypes.push(Entry { value, span, fields: frame.fields });
+                        let value = frame
+                            .fields
+                            .iter()
+                            .find(|(key, _)| key == "artifactId")
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default();
+                        meta.archetypes.push(Entry {
+                            value,
+                            span,
+                            fields: frame.fields,
+                        });
                     }
                 }
                 _ => {}
@@ -219,7 +348,10 @@ pub fn read(doc: &[u8], max_entries: usize) -> Result<Meta, MetaError> {
     if root_bad {
         return Err(MetaError::Root);
     }
-    let versioned = meta.has_versions || !meta.versions.is_empty() || meta.snapshot_span.is_some() || !meta.snapshot_versions.is_empty();
+    let versioned = meta.has_versions
+        || !meta.versions.is_empty()
+        || meta.snapshot_span.is_some()
+        || !meta.snapshot_versions.is_empty();
     if bad || (meta.has_plugins && versioned) {
         return Err(MetaError::Malformed);
     }
@@ -259,16 +391,27 @@ pub fn cut(doc: &[u8], span: (usize, usize)) -> Edit {
             end += 1;
         }
     }
-    Edit { start, end, with: String::new() }
+    Edit {
+        start,
+        end,
+        with: String::new(),
+    }
 }
 
 /// The text between two tags replaced (the value is XML-escaped here).
 pub fn replace_text(text: &Text, value: &str) -> Edit {
-    Edit { start: text.inner.0, end: text.inner.1, with: escape(value) }
+    Edit {
+        start: text.inner.0,
+        end: text.inner.1,
+        with: escape(value),
+    }
 }
 
 pub fn escape(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Applies `edits` (any order, never overlapping) to `doc`.
@@ -299,7 +442,13 @@ mod tests {
     fn an_artifact_document_is_read_and_a_version_is_cut_with_its_line() {
         let meta = read(DOC.as_bytes(), 100).unwrap();
         assert_eq!(meta.group_id.as_ref().unwrap().value, "g");
-        assert_eq!(meta.versions.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        assert_eq!(
+            meta.versions
+                .iter()
+                .map(|v| v.value.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3"]
+        );
         assert!(meta.has_versions);
         let cut2 = cut(DOC.as_bytes(), meta.versions[1].span);
         let release = replace_text(meta.release.as_ref().unwrap(), "2");
@@ -309,7 +458,10 @@ mod tests {
         assert!(out.contains("<latest>2</latest>") && out.contains("<release>2</release>"));
         assert!(!out.contains("<version>3</version>") && out.contains("<version>2</version>"));
         assert!(!out.contains("\n\n"), "the cut left no blank line: {out}");
-        assert!(read(out.as_bytes(), 100).is_ok(), "the filtered document is still the same strict format");
+        assert!(
+            read(out.as_bytes(), 100).is_ok(),
+            "the filtered document is still the same strict format"
+        );
         let _ = cut2;
     }
 
@@ -346,7 +498,11 @@ mod tests {
             assert_eq!(read(text.as_bytes(), 10).err(), Some(MetaError::Malformed), "{what}");
         }
         let catalog = "<archetype-catalog><archetypes><archetype><groupId>g</groupId><artifactId>a</artifactId><version>1</version><repository>x</repository><repository>y</repository></archetype></archetypes></archetype-catalog>";
-        assert_eq!(read(catalog.as_bytes(), 1).err(), Some(MetaError::TooMany), "repositories are bounded like archetypes");
+        assert_eq!(
+            read(catalog.as_bytes(), 1).err(),
+            Some(MetaError::TooMany),
+            "repositories are bounded like archetypes"
+        );
         assert!(read(catalog.as_bytes(), 2).is_ok());
         assert!(read(doc("<latest>1</latest><release>1</release><versions><version>1</version></versions>").as_bytes(), 10).is_ok());
     }
@@ -354,8 +510,14 @@ mod tests {
     #[test]
     fn the_wrong_root_an_entity_and_too_many_entries_are_refused() {
         assert_eq!(read(b"<html/>", 10).err(), Some(MetaError::Root));
-        assert!(matches!(read(b"<!DOCTYPE metadata [<!ENTITY a 'b'>]><metadata/>", 10), Err(MetaError::Xml(XmlError::Declaration))));
-        let many = format!("<metadata><versioning><versions>{}</versions></versioning></metadata>", "<version>1</version>".repeat(11));
+        assert!(matches!(
+            read(b"<!DOCTYPE metadata [<!ENTITY a 'b'>]><metadata/>", 10),
+            Err(MetaError::Xml(XmlError::Declaration))
+        ));
+        let many = format!(
+            "<metadata><versioning><versions>{}</versions></versioning></metadata>",
+            "<version>1</version>".repeat(11)
+        );
         assert_eq!(read(many.as_bytes(), 10).err(), Some(MetaError::TooMany));
     }
 }

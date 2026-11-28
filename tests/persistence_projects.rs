@@ -512,29 +512,48 @@ async fn same_name_registry_state_remains_isolated_after_restart() {
     let item = reference("1.0.0", "widget-1.0.0.tgz");
     for (registry_id, marker) in [(41, b'A'), (42, b'B')] {
         let id = ReferenceId::compute_in_registry(registry_id, &item);
-        let mut project = refresh(registry_id as i64, vec![ReferenceUpsert {
-            id,
-            reference: item.clone(),
-            publication_micros: None,
-            first_seen_micros: Some(registry_id as i64),
-        }]);
+        let mut project = refresh(
+            registry_id as i64,
+            vec![ReferenceUpsert {
+                id,
+                reference: item.clone(),
+                publication_micros: None,
+                first_seen_micros: Some(registry_id as i64),
+            }],
+        );
         project.payload = Arc::from(vec![marker]);
-        first.commit_project_refresh_in(registry_id, project).await.expect("scoped refresh");
+        first
+            .commit_project_refresh_in(registry_id, project)
+            .await
+            .expect("scoped refresh");
     }
     drop(first);
     task.await.expect("store stops");
 
     let (restarted, task) = store(&dir).await;
     for (registry_id, marker) in [(41, b'A'), (42, b'B')] {
-        let row = restarted.get_project_in(registry_id, Ecosystem::Npm, "widget")
-            .await.expect("query").expect("scoped project");
+        let row = restarted
+            .get_project_in(registry_id, Ecosystem::Npm, "widget")
+            .await
+            .expect("query")
+            .expect("scoped project");
         assert_eq!(row.payload.as_ref(), &[marker]);
         let id = ReferenceId::compute_in_registry(registry_id, &item);
-        let reference = restarted.get_reference(id).await.expect("query").expect("scoped reference");
+        let reference = restarted
+            .get_reference(id)
+            .await
+            .expect("query")
+            .expect("scoped reference");
         assert_eq!(reference.registry_id, registry_id);
         assert_eq!(reference.first_seen_micros, Some(registry_id as i64));
     }
-    assert!(restarted.get_project(Ecosystem::Npm, "widget").await.expect("query").is_none());
+    assert!(
+        restarted
+            .get_project(Ecosystem::Npm, "widget")
+            .await
+            .expect("query")
+            .is_none()
+    );
     drop(restarted);
     task.await.expect("store stops");
 }
@@ -638,7 +657,8 @@ async fn an_upsert_without_a_date_does_not_blank_a_recorded_go_publication() {
             name: "example.com/race".to_owned(),
             version: "1.0.0".to_owned(),
             filename: "v1.0.0.info".to_owned(),
-            upstream_url: Url::parse("https://goproxy.invalid/example.com/race/@v/v1.0.0.info").unwrap(),
+            upstream_url: Url::parse("https://goproxy.invalid/example.com/race/@v/v1.0.0.info")
+                .unwrap(),
             expected: Vec::new(),
         };
         let id = ReferenceId::compute(&reference);
@@ -649,17 +669,40 @@ async fn an_upsert_without_a_date_does_not_blank_a_recorded_go_publication() {
             validators: UpstreamValidators::default(),
             validated_at_micros: 1,
             fetched_at_micros: 1,
-            references: vec![ReferenceUpsert { id, reference: reference.clone(), publication_micros: publication, first_seen_micros: Some(5) }],
+            references: vec![ReferenceUpsert {
+                id,
+                reference: reference.clone(),
+                publication_micros: publication,
+                first_seen_micros: Some(5),
+            }],
         };
-        store.commit_project_refresh(commit(Some(1_735_689_600_000_000))).await.unwrap();
+        store
+            .commit_project_refresh(commit(Some(1_735_689_600_000_000)))
+            .await
+            .unwrap();
         store.commit_project_refresh(commit(None)).await.unwrap();
         let row = store.get_reference(id).await.unwrap().unwrap();
-        assert_eq!(row.publication_micros, carried.then_some(1_735_689_600_000_000), "{ecosystem:?}");
+        assert_eq!(
+            row.publication_micros,
+            carried.then_some(1_735_689_600_000_000),
+            "{ecosystem:?}"
+        );
         // L5: an overlapping record that computed an EARLIER date and commits last does not move a Go date back.
-        store.commit_project_refresh(commit(Some(1_700_000_000_000_000))).await.unwrap();
+        store
+            .commit_project_refresh(commit(Some(1_700_000_000_000_000)))
+            .await
+            .unwrap();
         let row = store.get_reference(id).await.unwrap().unwrap();
-        let expected = if carried { 1_735_689_600_000_000 } else { 1_700_000_000_000_000 };
-        assert_eq!(row.publication_micros, Some(expected), "{ecosystem:?}: a Go date only gets later");
+        let expected = if carried {
+            1_735_689_600_000_000
+        } else {
+            1_700_000_000_000_000
+        };
+        assert_eq!(
+            row.publication_micros,
+            Some(expected),
+            "{ecosystem:?}: a Go date only gets later"
+        );
     }
     drop(store);
     let _ = task.await;

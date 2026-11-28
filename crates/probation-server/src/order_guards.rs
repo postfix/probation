@@ -31,9 +31,18 @@ mod tests {
 
     #[test]
     fn snapshot_order_checks_standing_before_budget() {
-        assert_eq!(snapshot_order(Standing::Unknown, false), Err(StatusCode::UNAUTHORIZED));
-        assert_eq!(snapshot_order(Standing::Suspended, false), Err(StatusCode::FORBIDDEN));
-        assert_eq!(snapshot_order(Standing::Live, false), Err(StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(
+            snapshot_order(Standing::Unknown, false),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            snapshot_order(Standing::Suspended, false),
+            Err(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            snapshot_order(Standing::Live, false),
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
         assert_eq!(snapshot_order(Standing::Live, true), Ok(()));
     }
 }

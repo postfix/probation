@@ -102,12 +102,19 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')),
         // LS-F6 for Cargo: `[A-Za-z0-9_-]`. Deliberately not crates.io's stricter publishing rules
         // (first character, 64 bytes): a block must be accepted for any name a registry could hold.
-        Ecosystem::Cargo => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+        Ecosystem::Cargo => name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
         // LS-F6 for Go: the decoded path `[A-Za-z0-9._~/-]`, no empty or dot-only element.
         Ecosystem::Go => valid_go_path(name),
         // LS-F6 for NuGet: `[A-Za-z0-9._-]`.
         // A dot-only id and an id that starts or ends with a dot are refused (nuget.org refuses them too).
-        Ecosystem::NuGet => name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) && !name.starts_with('.') && !name.ends_with('.'),
+        Ecosystem::NuGet => {
+            name.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+                && !name.starts_with('.')
+                && !name.ends_with('.')
+        }
         Ecosystem::Maven => valid_maven_name(name),
         Ecosystem::Conan => valid_conan_part(name),
         Ecosystem::Oci => valid_oci_name(name),
@@ -116,8 +123,11 @@ pub fn valid_name(ecosystem: Ecosystem, name: &str) -> bool {
 
 /// A decoded module path: `[A-Za-z0-9._~/-]`, every `/`-separated element non-empty and not `.` or `..`.
 pub fn valid_go_path(name: &str) -> bool {
-    name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/'))
-        && name.split('/').all(|element| !element.is_empty() && element != "." && element != "..")
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/'))
+        && name
+            .split('/')
+            .all(|element| !element.is_empty() && element != "." && element != "..")
 }
 
 /// A version in the form its ecosystem compares by: npm by semver precedence, PyPI by
@@ -167,10 +177,12 @@ pub fn canonical_version(ecosystem: Ecosystem, version: &str) -> Option<Canonica
             parsed.build = semver::BuildMetadata::EMPTY;
             CanonicalVersion::Cargo(Box::new(parsed))
         }),
-        Ecosystem::Go => semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).ok().map(|mut parsed| {
-            parsed.build = semver::BuildMetadata::EMPTY;
-            CanonicalVersion::Go(Box::new(parsed))
-        }),
+        Ecosystem::Go => semver::Version::parse(version.strip_prefix('v').unwrap_or(version))
+            .ok()
+            .map(|mut parsed| {
+                parsed.build = semver::BuildMetadata::EMPTY;
+                CanonicalVersion::Go(Box::new(parsed))
+            }),
         Ecosystem::NuGet => parse_nuget(version).map(CanonicalVersion::NuGet),
         // A Maven version keeps its native spelling: the repository's directory name is the identity and the build
         // tool decides ordering, so only the exact text matches.
@@ -197,8 +209,18 @@ fn parse_nuget(version: &str) -> Option<NuGetVersion> {
         Some((numbers, release)) => (numbers, Some(release)),
         None => (rest, None),
     };
-    let labels = |text: &str| !text.is_empty() && text.split('.').all(|label| !label.is_empty() && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
-    if release.is_some_and(|release| !labels(release)) || metadata.is_some_and(|metadata| !labels(metadata)) {
+    let labels = |text: &str| {
+        !text.is_empty()
+            && text.split('.').all(|label| {
+                !label.is_empty()
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+    };
+    if release.is_some_and(|release| !labels(release))
+        || metadata.is_some_and(|metadata| !labels(metadata))
+    {
         return None;
     }
     let mut parts = [0u32; 4];
@@ -206,9 +228,15 @@ fn parse_nuget(version: &str) -> Option<NuGetVersion> {
         if count == 4 || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        parts[count] = part.parse().ok().filter(|value| *value <= i32::MAX as u32)?;
+        parts[count] = part
+            .parse()
+            .ok()
+            .filter(|value| *value <= i32::MAX as u32)?;
     }
-    Some(NuGetVersion { parts, release: release.map(str::to_ascii_lowercase) })
+    Some(NuGetVersion {
+        parts,
+        release: release.map(str::to_ascii_lowercase),
+    })
 }
 
 /// The one spelling of a NuGet version policy, the blocklist and OSV use: `NuGetVersion.ToNormalizedString`
@@ -239,8 +267,12 @@ fn gem_version_correct(text: &str) -> bool {
     };
     let mut parts = head.split('.');
     let first = parts.next().unwrap_or("");
-    let head_ok = !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) && parts.all(alnum);
-    let tail_ok = tail.is_none_or(|t| t.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')));
+    let head_ok =
+        !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) && parts.all(alnum);
+    let tail_ok = tail.is_none_or(|t| {
+        t.split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    });
     head_ok && tail_ok
 }
 
@@ -259,11 +291,17 @@ fn gem_segments(version: &str) -> Option<Vec<GemSegment>> {
         let mut remaining = piece;
         while !remaining.is_empty() {
             let digits = remaining.starts_with(|c: char| c.is_ascii_digit());
-            let end = remaining.find(|c: char| c.is_ascii_digit() != digits).unwrap_or(remaining.len());
+            let end = remaining
+                .find(|c: char| c.is_ascii_digit() != digits)
+                .unwrap_or(remaining.len());
             let (head, tail) = remaining.split_at(end);
             let seg = if digits {
                 let trimmed = head.trim_start_matches('0');
-                GemSegment::Num(if trimmed.is_empty() { "0".to_owned() } else { trimmed.to_owned() })
+                GemSegment::Num(if trimmed.is_empty() {
+                    "0".to_owned()
+                } else {
+                    trimmed.to_owned()
+                })
             } else {
                 GemSegment::Str(head.to_owned())
             };
@@ -298,14 +336,23 @@ pub fn same_version(ecosystem: Ecosystem, a: &str, b: &str) -> bool {
 /// One part of a Maven coordinate (a group, an artifact id): `[A-Za-z0-9._-]`, not empty, not a dot-only part, no leading
 /// dot (a path element of the repository layout).
 fn maven_part_ok(part: &str) -> bool {
-    !part.is_empty() && !part.starts_with('.') && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    !part.is_empty()
+        && !part.starts_with('.')
+        && part
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// LS-F6 for Maven: `groupId:artifactId`, exactly one `:`, each part `[A-Za-z0-9._-]`, a group with no empty dotted
 /// element (`a..b` would name the empty directory of the layout), case kept.
 pub fn valid_maven_name(name: &str) -> bool {
-    let Some((group, artifact)) = name.split_once(':') else { return false };
-    name.len() <= MAX_MAVEN_NAME_LENGTH && maven_part_ok(group) && maven_part_ok(artifact) && group.split('.').all(|element| !element.is_empty())
+    let Some((group, artifact)) = name.split_once(':') else {
+        return false;
+    };
+    name.len() <= MAX_MAVEN_NAME_LENGTH
+        && maven_part_ok(group)
+        && maven_part_ok(artifact)
+        && group.split('.').all(|element| !element.is_empty())
 }
 
 /// One part of a Conan reference (name, version, user, channel) as the Conan 2 client accepts it:
@@ -313,20 +360,26 @@ pub fn valid_maven_name(name: &str) -> bool {
 pub fn valid_conan_part(part: &str) -> bool {
     let mut bytes = part.bytes();
     part.len() <= MAX_CONAN_NAME_LENGTH
-        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'.' | b'-'))
 }
 
 /// An OCI repository name as the distribution spec writes it: `/`-separated components of `[a-z0-9]+` joined by single
 /// `.`, `_`, `__` or runs of `-`, at most 255 bytes.
 pub fn valid_oci_name(name: &str) -> bool {
-    name.len() <= MAX_OCI_NAME_LENGTH && !name.is_empty() && name.split('/').all(valid_oci_component)
+    name.len() <= MAX_OCI_NAME_LENGTH
+        && !name.is_empty()
+        && name.split('/').all(valid_oci_component)
 }
 
 fn valid_oci_component(component: &str) -> bool {
     let bytes = component.as_bytes();
     let alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
-    let (Some(first), Some(last)) = (bytes.first(), bytes.last()) else { return false };
+    let (Some(first), Some(last)) = (bytes.first(), bytes.last()) else {
+        return false;
+    };
     if !alnum(*first) || !alnum(*last) {
         return false;
     }

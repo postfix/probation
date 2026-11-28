@@ -1146,7 +1146,9 @@ pub(crate) fn blocklist_file(file: Result<String, StoreError>) -> Response {
             .into_response(),
         Err(StoreError::Db(err)) => unavailable(err),
         Err(StoreError::MissingLayer(_)) => not_found(),
-        Err(StoreError::UnknownEcosystem(tag)) => unavailable(StoreError::unknown_ecosystem_as_db(tag)),
+        Err(StoreError::UnknownEcosystem(tag)) => {
+            unavailable(StoreError::unknown_ecosystem_as_db(tag))
+        }
     }
 }
 
@@ -1201,6 +1203,8 @@ pub(crate) async fn import_into(
         )),
         Err(PushError::Store(StoreError::Db(err))) => Err(ChangeError::Store(err)),
         Err(PushError::Store(StoreError::MissingLayer(_))) => Err(ChangeError::NotFound),
-        Err(PushError::Store(StoreError::UnknownEcosystem(tag))) => Err(ChangeError::Store(StoreError::unknown_ecosystem_as_db(tag))),
+        Err(PushError::Store(StoreError::UnknownEcosystem(tag))) => {
+            Err(ChangeError::Store(StoreError::unknown_ecosystem_as_db(tag)))
+        }
     }
 }

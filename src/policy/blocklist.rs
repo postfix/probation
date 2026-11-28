@@ -154,15 +154,21 @@ impl BlocklistSnapshot {
                 // rubygems.org's index is case-insensitive (`/info/Rack` is `rack`).
                 Ecosystem::RubyGems => record.name.to_ascii_lowercase(),
                 // crates.io folds case and `-`/`_` (one namespace).
-                Ecosystem::Cargo => probation_policy::names::canonical_name(Ecosystem::Cargo, &record.name),
+                Ecosystem::Cargo => {
+                    probation_policy::names::canonical_name(Ecosystem::Cargo, &record.name)
+                }
                 // A module path is case-sensitive: kept exactly as the blocklist spells it.
                 Ecosystem::Go => record.name.clone(),
                 // nuget.org ids are case-insensitive: judged under the lower-cased id.
-                Ecosystem::NuGet => probation_policy::names::canonical_name(Ecosystem::NuGet, &record.name),
+                Ecosystem::NuGet => {
+                    probation_policy::names::canonical_name(Ecosystem::NuGet, &record.name)
+                }
                 // `groupId:artifactId` is case-sensitive: kept exactly as the blocklist spells it.
                 Ecosystem::Maven => record.name.clone(),
                 // A Conan name is judged lower-case (a remote that folds case must not be a way round a block).
-                Ecosystem::Conan => probation_policy::names::canonical_name(Ecosystem::Conan, &record.name),
+                Ecosystem::Conan => {
+                    probation_policy::names::canonical_name(Ecosystem::Conan, &record.name)
+                }
                 // A repository name is lower case by the distribution spec and kept exactly as written.
                 Ecosystem::Oci => record.name.clone(),
             };

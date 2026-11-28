@@ -450,7 +450,14 @@ struct RawServicePolicy {
 
 /// What a Windows base image's foreign layers are served from (the `*.data` host is where its redirects land).
 fn default_foreign_layer_hosts() -> Vec<String> {
-    ["mcr.microsoft.com", "*.data.mcr.microsoft.com", "go.microsoft.com", "download.microsoft.com"].map(str::to_owned).to_vec()
+    [
+        "mcr.microsoft.com",
+        "*.data.mcr.microsoft.com",
+        "go.microsoft.com",
+        "download.microsoft.com",
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// An exact host or `*.suffix`, lower case, letters, digits, `-` and `.` only; at most 64 entries (an empty list allows no foreign layer).
@@ -461,9 +468,21 @@ fn foreign_layer_hosts(hosts: Vec<String>) -> Result<Vec<String>, ConfigError> {
     }
     for host in &hosts {
         let name = host.strip_prefix("*.").unwrap_or(host);
-        let labels_ok = !name.is_empty() && name.len() <= 253 && name.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        let labels_ok = !name.is_empty()
+            && name.len() <= 253
+            && name.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            });
         if !labels_ok || name.split('.').count() < 2 {
-            return Err(bad("each entry is a lower-case host (`mcr.microsoft.com`) or `*.` and a lower-case domain (`*.data.mcr.microsoft.com`)"));
+            return Err(bad(
+                "each entry is a lower-case host (`mcr.microsoft.com`) or `*.` and a lower-case domain (`*.data.mcr.microsoft.com`)",
+            ));
         }
     }
     Ok(hosts)
@@ -628,7 +647,10 @@ impl RawConfig {
         }
         // `check_keys` let these two be absent only in managed mode.
         let blocklist_file = self.blocklist_file.unwrap_or_default();
-        if self.management.is_none() && self.service_policy.is_none() && !blocklist_file.is_absolute() {
+        if self.management.is_none()
+            && self.service_policy.is_none()
+            && !blocklist_file.is_absolute()
+        {
             return Err(invalid(
                 "blocklist_file",
                 "must be an absolute path".to_owned(),
@@ -641,20 +663,27 @@ impl RawConfig {
         let npm_upstream_url = upstream_origin("npm_upstream_url", self.npm_upstream_url)?;
         let pypi_upstream_url = upstream_origin("pypi_upstream_url", self.pypi_upstream_url)?;
         let pypi_artifacts_url = upstream_origin("pypi_artifacts_url", self.pypi_artifacts_url)?;
-        let rubygems_upstream_url = upstream_origin("rubygems_upstream_url", self.rubygems_upstream_url)?;
+        let rubygems_upstream_url =
+            upstream_origin("rubygems_upstream_url", self.rubygems_upstream_url)?;
         let cargo_upstream_url = upstream_origin("cargo_upstream_url", self.cargo_upstream_url)?;
         let cargo_artifacts_url = upstream_origin("cargo_artifacts_url", self.cargo_artifacts_url)?;
         let go_upstream_url = upstream_origin("go_upstream_url", self.go_upstream_url)?;
         let go_sumdb_url = upstream_origin("go_sumdb_url", self.go_sumdb_url)?;
-        let go_artifacts_url = upstream_origin_with("go_artifacts_url", self.go_artifacts_url, true)?;
+        let go_artifacts_url =
+            upstream_origin_with("go_artifacts_url", self.go_artifacts_url, true)?;
         let nuget_upstream_url = upstream_origin("nuget_upstream_url", self.nuget_upstream_url)?;
         let nuget_search_url = upstream_origin("nuget_search_url", self.nuget_search_url)?;
         let nuget_publish_url = upstream_origin("nuget_publish_url", self.nuget_publish_url)?;
-        let maven_upstream_url = upstream_origin_with("maven_upstream_url", self.maven_upstream_url, true)?;
-        let maven_publish_url = upstream_origin_with("maven_publish_url", self.maven_publish_url, true)?;
-        let conan_upstream_url = upstream_origin_with("conan_upstream_url", self.conan_upstream_url, true)?;
-        let conan_publish_url = upstream_origin_with("conan_publish_url", self.conan_publish_url, true)?;
-        let oci_upstream_url = upstream_origin_with("oci_upstream_url", self.oci_upstream_url, true)?;
+        let maven_upstream_url =
+            upstream_origin_with("maven_upstream_url", self.maven_upstream_url, true)?;
+        let maven_publish_url =
+            upstream_origin_with("maven_publish_url", self.maven_publish_url, true)?;
+        let conan_upstream_url =
+            upstream_origin_with("conan_upstream_url", self.conan_upstream_url, true)?;
+        let conan_publish_url =
+            upstream_origin_with("conan_publish_url", self.conan_publish_url, true)?;
+        let oci_upstream_url =
+            upstream_origin_with("oci_upstream_url", self.oci_upstream_url, true)?;
         let oci_artifacts_url = upstream_origin("oci_artifacts_url", self.oci_artifacts_url)?;
         let oci_token_url = upstream_origin("oci_token_url", self.oci_token_url)?;
         let oci_foreign_layer_hosts = foreign_layer_hosts(self.oci_foreign_layer_hosts)?;
@@ -798,37 +827,81 @@ impl RawConfig {
             None => DEFAULT_SYNC_INTERVAL_SECONDS,
         };
         if self.management.is_some() && self.service_policy.is_some() {
-            return Err(invalid("service_policy", "cannot be combined with management".to_owned()));
+            return Err(invalid(
+                "service_policy",
+                "cannot be combined with management".to_owned(),
+            ));
         }
-        let service_policy = self.service_policy.map(RawServicePolicy::validate).transpose()?;
-        let allowed_peer_cidrs = self.allowed_peer_cidrs.iter().map(|text| {
-            let cidr = text.parse::<ipnet::IpNet>().map_err(|_| invalid("allowed_peer_cidrs", "must contain valid CIDRs".to_owned()))?;
-            // LS-F10: at least /8 for IPv4 and /32 for IPv6.
-            let floor = if cidr.addr().is_ipv4() { 8 } else { 32 };
-            if cidr.prefix_len() < floor {
-                return Err(invalid("allowed_peer_cidrs", format!("must not be wider than /{floor} ({})", if cidr.addr().is_ipv4() { "IPv4" } else { "IPv6" })));
-            }
-            Ok(cidr)
-        }).collect::<Result<Vec<_>, ConfigError>>()?;
+        let service_policy = self
+            .service_policy
+            .map(RawServicePolicy::validate)
+            .transpose()?;
+        let allowed_peer_cidrs = self
+            .allowed_peer_cidrs
+            .iter()
+            .map(|text| {
+                let cidr = text.parse::<ipnet::IpNet>().map_err(|_| {
+                    invalid("allowed_peer_cidrs", "must contain valid CIDRs".to_owned())
+                })?;
+                // LS-F10: at least /8 for IPv4 and /32 for IPv6.
+                let floor = if cidr.addr().is_ipv4() { 8 } else { 32 };
+                if cidr.prefix_len() < floor {
+                    return Err(invalid(
+                        "allowed_peer_cidrs",
+                        format!(
+                            "must not be wider than /{floor} ({})",
+                            if cidr.addr().is_ipv4() {
+                                "IPv4"
+                            } else {
+                                "IPv6"
+                            }
+                        ),
+                    ));
+                }
+                Ok(cidr)
+            })
+            .collect::<Result<Vec<_>, ConfigError>>()?;
         // The own-listener denial needs the configured port (a descriptor must never point back).
         if service_policy.is_some() && listen.port() == 0 {
-            return Err(invalid("listen", "must name a fixed port when [service_policy] is set".to_owned()));
+            return Err(invalid(
+                "listen",
+                "must name a fixed port when [service_policy] is set".to_owned(),
+            ));
         }
-        if service_policy.is_some() && !listen.ip().to_canonical().is_loopback()
-            && (self.tls_cert_path.is_none() || self.tls_key_path.is_none() || allowed_peer_cidrs.is_empty()) {
-            return Err(invalid("service_policy", "a non-loopback listener requires TLS and allowed_peer_cidrs".to_owned()));
+        if service_policy.is_some()
+            && !listen.ip().to_canonical().is_loopback()
+            && (self.tls_cert_path.is_none()
+                || self.tls_key_path.is_none()
+                || allowed_peer_cidrs.is_empty())
+        {
+            return Err(invalid(
+                "service_policy",
+                "a non-loopback listener requires TLS and allowed_peer_cidrs".to_owned(),
+            ));
         }
         for (key, value) in [
-            ("credential_temp_max_request_bytes", self.credential_temp_max_request_bytes),
-            ("credential_temp_max_total_bytes", self.credential_temp_max_total_bytes),
+            (
+                "credential_temp_max_request_bytes",
+                self.credential_temp_max_request_bytes,
+            ),
+            (
+                "credential_temp_max_total_bytes",
+                self.credential_temp_max_total_bytes,
+            ),
         ] {
             if value == Some(0) {
                 return Err(invalid(key, "must be positive when set".to_owned()));
             }
         }
-        let control_plane_cidrs = self.control_plane_cidrs.iter().map(|text| {
-            text.parse::<ipnet::IpNet>().map_err(|_| invalid("control_plane_cidrs", "must contain valid CIDRs".to_owned()))
-        }).collect::<Result<Vec<_>, ConfigError>>()?;
+        let control_plane_cidrs = self
+            .control_plane_cidrs
+            .iter()
+            .map(|text| {
+                text.parse::<ipnet::IpNet>().map_err(|_| {
+                    invalid("control_plane_cidrs", "must contain valid CIDRs".to_owned())
+                })
+            })
+            .collect::<Result<Vec<_>, ConfigError>>()?;
         let management = self
             .management
             .map(|raw| raw.validate(sync_interval_seconds))
@@ -842,7 +915,9 @@ impl RawConfig {
         if managed_osv && osv_request_timeout_ms.get() < MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS {
             return Err(invalid(
                 "osv_request_timeout_ms",
-                format!("must be at least {MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS} in managed and shared-service mode"),
+                format!(
+                    "must be at least {MIN_MANAGED_OSV_REQUEST_TIMEOUT_MS} in managed and shared-service mode"
+                ),
             ));
         }
         let osv_stale_match_seconds = match self.osv_stale_match_seconds {
@@ -852,10 +927,15 @@ impl RawConfig {
                     "applies only with [management] or [service_policy]".to_owned(),
                 ));
             }
-            Some(value) if !(MIN_OSV_STALE_MATCH_SECONDS..=MAX_OSV_STALE_MATCH_SECONDS).contains(&value) => {
+            Some(value)
+                if !(MIN_OSV_STALE_MATCH_SECONDS..=MAX_OSV_STALE_MATCH_SECONDS)
+                    .contains(&value) =>
+            {
                 return Err(invalid(
                     "osv_stale_match_seconds",
-                    format!("must be between {MIN_OSV_STALE_MATCH_SECONDS} and {MAX_OSV_STALE_MATCH_SECONDS}"),
+                    format!(
+                        "must be between {MIN_OSV_STALE_MATCH_SECONDS} and {MAX_OSV_STALE_MATCH_SECONDS}"
+                    ),
                 ));
             }
             Some(value) => value,
@@ -975,7 +1055,11 @@ fn upstream_origin(key: &'static str, text: Option<String>) -> Result<Option<Url
 
 /// `allow_path`: the one key (`go_artifacts_url`) whose value is an origin AND a path prefix (a storage
 /// bucket's name), admitted by whole path segments.
-fn upstream_origin_with(key: &'static str, text: Option<String>, allow_path: bool) -> Result<Option<Url>, ConfigError> {
+fn upstream_origin_with(
+    key: &'static str,
+    text: Option<String>,
+    allow_path: bool,
+) -> Result<Option<Url>, ConfigError> {
     let Some(text) = text else {
         return Ok(None);
     };
@@ -992,8 +1076,15 @@ fn upstream_origin_with(key: &'static str, text: Option<String>, allow_path: boo
     if url.path() != "/" && !allow_path {
         return Err(invalid(key, "must not carry a path prefix".to_owned()));
     }
-    if url.path().split('/').any(|segment| segment == "." || segment == ".." || segment.contains('%')) {
-        return Err(invalid(key, "must not carry dot or encoded path segments".to_owned()));
+    if url
+        .path()
+        .split('/')
+        .any(|segment| segment == "." || segment == ".." || segment.contains('%'))
+    {
+        return Err(invalid(
+            key,
+            "must not carry dot or encoded path segments".to_owned(),
+        ));
     }
     let literal = match url.host() {
         Some(Host::Ipv4(addr)) => Some(IpAddr::V4(addr)),
@@ -1013,19 +1104,42 @@ fn upstream_origin_with(key: &'static str, text: Option<String>, allow_path: boo
 impl RawServicePolicy {
     fn validate(self) -> Result<ServicePolicyConfig, ConfigError> {
         use std::io::Read;
-        let server_url = Url::parse(&self.server_url)
-            .map_err(|_| invalid("service_policy.server_url", "must be a valid URL".to_owned()))?;
-        if server_url.scheme() != "https" || server_url.host().is_none() || has_userinfo(&server_url)
-            || server_url.query().is_some() || server_url.fragment().is_some()
-            || !matches!(server_url.path(), "" | "/") {
-            return Err(invalid("service_policy.server_url", "requires an HTTPS origin: no path, credentials, query or fragment".to_owned()));
+        let server_url = Url::parse(&self.server_url).map_err(|_| {
+            invalid(
+                "service_policy.server_url",
+                "must be a valid URL".to_owned(),
+            )
+        })?;
+        if server_url.scheme() != "https"
+            || server_url.host().is_none()
+            || has_userinfo(&server_url)
+            || server_url.query().is_some()
+            || server_url.fragment().is_some()
+            || !matches!(server_url.path(), "" | "/")
+        {
+            return Err(invalid(
+                "service_policy.server_url",
+                "requires an HTTPS origin: no path, credentials, query or fragment".to_owned(),
+            ));
         }
         if !self.service_key_file.is_absolute() {
-            return Err(invalid("service_policy.service_key_file", "must be an absolute path".to_owned()));
+            return Err(invalid(
+                "service_policy.service_key_file",
+                "must be an absolute path".to_owned(),
+            ));
         }
-        let file = std::fs::File::open(&self.service_key_file)
-            .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
-        let metadata = file.metadata().map_err(|_| invalid("service_policy.service_key_file", "cannot read permissions".to_owned()))?;
+        let file = std::fs::File::open(&self.service_key_file).map_err(|_| {
+            invalid(
+                "service_policy.service_key_file",
+                "cannot be read".to_owned(),
+            )
+        })?;
+        let metadata = file.metadata().map_err(|_| {
+            invalid(
+                "service_policy.service_key_file",
+                "cannot read permissions".to_owned(),
+            )
+        })?;
         #[cfg(unix)]
         let shared = {
             use std::os::unix::fs::PermissionsExt;
@@ -1037,26 +1151,57 @@ impl RawServicePolicy {
         #[cfg(not(any(unix, windows)))]
         let shared = false;
         if !metadata.is_file() || shared {
-            return Err(invalid("service_policy.service_key_file", "requires a private regular file".to_owned()));
+            return Err(invalid(
+                "service_policy.service_key_file",
+                "requires a private regular file".to_owned(),
+            ));
         }
         let mut key = String::new();
-        file.take(1025).read_to_string(&mut key)
-            .map_err(|_| invalid("service_policy.service_key_file", "cannot be read".to_owned()))?;
+        file.take(1025).read_to_string(&mut key).map_err(|_| {
+            invalid(
+                "service_policy.service_key_file",
+                "cannot be read".to_owned(),
+            )
+        })?;
         // LS-F15: exactly one trailing newline is trimmed; every byte is printable ASCII.
-        let key = key.strip_suffix("\r\n").or_else(|| key.strip_suffix('\n')).unwrap_or(&key);
+        let key = key
+            .strip_suffix("\r\n")
+            .or_else(|| key.strip_suffix('\n'))
+            .unwrap_or(&key);
         if key.len() > 512 || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
-            return Err(invalid("service_policy.service_key_file", "must hold one printable ASCII key of at most 512 bytes".to_owned()));
+            return Err(invalid(
+                "service_policy.service_key_file",
+                "must hold one printable ASCII key of at most 512 bytes".to_owned(),
+            ));
         }
-        if key.len() != 36 || !key.starts_with("prb_") || !key[4..].bytes().all(|byte| byte.is_ascii_alphanumeric()) {
-            return Err(invalid("service_policy.service_key_file", "requires a service API key".to_owned()));
+        if key.len() != 36
+            || !key.starts_with("prb_")
+            || !key[4..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(invalid(
+                "service_policy.service_key_file",
+                "requires a service API key".to_owned(),
+            ));
         }
         Ok(ServicePolicyConfig {
-            server_url, service_key_file: self.service_key_file, service_key: FirewallToken::new(key.to_owned()),
-            sync_interval_seconds: bounded_seconds("service_policy.sync_interval_seconds", self.sync_interval_seconds.unwrap_or(60))?,
+            server_url,
+            service_key_file: self.service_key_file,
+            service_key: FirewallToken::new(key.to_owned()),
+            sync_interval_seconds: bounded_seconds(
+                "service_policy.sync_interval_seconds",
+                self.sync_interval_seconds.unwrap_or(60),
+            )?,
             trusted_proxies: self
                 .trusted_proxies
                 .iter()
-                .map(|text| Cidr::parse(text).ok_or_else(|| invalid("service_policy.trusted_proxies", format!("{text:?} is not an address range"))))
+                .map(|text| {
+                    Cidr::parse(text).ok_or_else(|| {
+                        invalid(
+                            "service_policy.trusted_proxies",
+                            format!("{text:?} is not an address range"),
+                        )
+                    })
+                })
                 .collect::<Result<_, _>>()?,
         })
     }
@@ -1525,7 +1670,14 @@ mod directory_sync_tests {
     #[test]
     fn a_platform_without_directory_sync_does_not_open_the_directory() {
         let opened = Cell::new(false);
-        let outcome = sync_directory_with(std::path::Path::new("."), |path| { opened.set(true); refused(path) }, true);
+        let outcome = sync_directory_with(
+            std::path::Path::new("."),
+            |path| {
+                opened.set(true);
+                refused(path)
+            },
+            true,
+        );
         assert!(outcome.is_ok(), "no directory sync, no error: {outcome:?}");
         assert!(!opened.get(), "the directory is not even opened");
     }
@@ -1533,14 +1685,19 @@ mod directory_sync_tests {
     /// Unix keeps its durability guarantee: a failing directory open or sync is an error, never swallowed.
     #[test]
     fn unix_still_fails_when_the_directory_cannot_be_synced() {
-        let error = sync_directory_with(std::path::Path::new("."), refused, false).expect_err("the failure is reported");
+        let error = sync_directory_with(std::path::Path::new("."), refused, false)
+            .expect_err("the failure is reported");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
     fn a_real_directory_is_synced_on_this_platform() {
         let dir = tempfile::tempdir().unwrap();
-        super::sync_directory(dir.path()).expect("the directory syncs (or is a documented no-op on Windows)");
-        assert!(super::sync_directory(&dir.path().join("missing")).is_ok() == cfg!(windows), "a missing directory is an error where the sync is real");
+        super::sync_directory(dir.path())
+            .expect("the directory syncs (or is a documented no-op on Windows)");
+        assert!(
+            super::sync_directory(&dir.path().join("missing")).is_ok() == cfg!(windows),
+            "a missing directory is an error where the sync is real"
+        );
     }
 }

@@ -46,7 +46,11 @@ pub fn crc32(data: &[u8]) -> u32 {
     for byte in data {
         crc ^= u32::from(*byte);
         for _ in 0..8 {
-            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -63,7 +67,10 @@ struct Record {
 }
 
 fn checksum(eco: &str, name: &str, version: &str, x: u64) -> String {
-    format!("{:08x}", crc32(format!("{eco}|{name}|{version}|{x}").as_bytes()))
+    format!(
+        "{:08x}",
+        crc32(format!("{eco}|{name}|{version}|{x}").as_bytes())
+    )
 }
 
 /// Parses `bytes` (the caller reads at most [`MAX_BYTES`]). Expired records are pruned,
@@ -102,7 +109,8 @@ pub fn load_matches(bytes: &[u8], now: SystemTime, window: Duration) -> LoadedMa
             let record: Record = serde_json::from_slice(line).ok()?;
             let ecosystem = Ecosystem::from_tag(&record.e)?;
             osv_key(ecosystem, &record.n, &record.v).ok()?;
-            (checksum(&record.e, &record.n, &record.v, record.x) == record.c).then_some((ecosystem, record.n, record.v, record.x))
+            (checksum(&record.e, &record.n, &record.v, record.x) == record.c)
+                .then_some((ecosystem, record.n, record.v, record.x))
         })();
         match record {
             None => loaded.skipped += 1,
@@ -115,9 +123,18 @@ pub fn load_matches(bytes: &[u8], now: SystemTime, window: Duration) -> LoadedMa
     }
     let mut entries: Vec<Match> = by_key
         .into_iter()
-        .map(|((ecosystem, name, version), expiry_unix)| Match { ecosystem, name, version, expiry_unix })
+        .map(|((ecosystem, name, version), expiry_unix)| Match {
+            ecosystem,
+            name,
+            version,
+            expiry_unix,
+        })
         .collect();
-    entries.sort_by(|a, b| b.expiry_unix.cmp(&a.expiry_unix).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| {
+        b.expiry_unix
+            .cmp(&a.expiry_unix)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     entries.truncate(MAX_ENTRIES);
     loaded.entries = entries;
     loaded
@@ -149,7 +166,10 @@ pub fn render_matches(entries: &[(Ecosystem, String, String, u64)]) -> Rendered 
         bytes.extend_from_slice(line.as_bytes());
         kept += 1;
     }
-    Rendered { bytes, dropped: entries.len() - kept }
+    Rendered {
+        bytes,
+        dropped: entries.len() - kept,
+    }
 }
 
 /// Temp file in the same directory, owner-only (0600 on Unix, the directory's restricted ACL on Windows), fsync, rename,
@@ -181,6 +201,8 @@ pub fn read_bounded(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
-    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+    file.take(MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
     (bytes.len() <= MAX_BYTES).then_some(bytes)
 }

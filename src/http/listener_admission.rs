@@ -19,7 +19,12 @@ pub struct HostInput {
 /// anything that is not a bare authority (userinfo, path, query, fragment).
 fn canonical(scheme: &str, authority: &str) -> Option<(String, Option<u16>)> {
     let url = Url::parse(&format!("{scheme}://{authority}/")).ok()?;
-    if !url.username().is_empty() || url.password().is_some() || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return None;
     }
     let host = url.host_str()?;
@@ -30,10 +35,18 @@ fn canonical(scheme: &str, authority: &str) -> Option<(String, Option<u16>)> {
 /// LS-F10: exactly one Host, equal to the public URL after normalisation; an HTTP/2
 /// `:authority` and an absolute-form target authority must each equal it.
 pub fn host_matches(public_url: &Url, host: &HostInput) -> bool {
-    let [only] = host.host_headers.as_slice() else { return false };
+    let [only] = host.host_headers.as_slice() else {
+        return false;
+    };
     let scheme = public_url.scheme();
-    let expected = (public_url.host_str().map(|h| h.strip_suffix('.').unwrap_or(h).to_owned()), public_url.port());
-    let matches = |text: &str| canonical(scheme, text).is_some_and(|(h, p)| (Some(h), p) == expected);
+    let expected = (
+        public_url
+            .host_str()
+            .map(|h| h.strip_suffix('.').unwrap_or(h).to_owned()),
+        public_url.port(),
+    );
+    let matches =
+        |text: &str| canonical(scheme, text).is_some_and(|(h, p)| (Some(h), p) == expected);
     matches(only)
         && host.authority.as_deref().is_none_or(matches)
         && host.target_authority.as_deref().is_none_or(matches)

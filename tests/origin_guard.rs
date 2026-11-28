@@ -22,8 +22,8 @@ use probation::upstream::origins::{OriginKind, UrlRejection};
 use probation::upstream::reqwest_transport::refusal_in;
 use probation::upstream::resolver::{GuardedResolver, is_public};
 use probation::upstream::{
-    ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, ReqwestTransport, Transport, UpstreamError,
-    UpstreamValidators,
+    ArtifactRequest, MetadataRequest, MetadataResponse, OriginSet, ReqwestTransport, Transport,
+    UpstreamError, UpstreamValidators,
 };
 use reqwest::dns::{Name, Resolve};
 use url::Url;
@@ -59,12 +59,20 @@ fn selected_private_registry_allows_only_approved_destination_addresses() {
     let selected = OriginSet::selected_npm_with_private(
         parse("https://registry.internal.example:8443/npm/"),
         vec!["10.42.7.0/24".parse().unwrap()],
-    ).expect("approved selected origin");
+    )
+    .expect("approved selected origin");
     assert!(selected.allows_address("10.42.7.9".parse().unwrap()));
     assert!(!selected.allows_address("10.42.8.9".parse().unwrap()));
     assert!(!selected.allows_address("127.0.0.1".parse().unwrap()));
     assert!(OriginSet::selected_npm(parse("https://10.42.7.9:8443/npm/")).is_err());
-    assert!(selected.admit(&parse("https://other.internal.example:8443/npm/pkg"), OriginKind::NpmMetadata).is_err());
+    assert!(
+        selected
+            .admit(
+                &parse("https://other.internal.example:8443/npm/pkg"),
+                OriginKind::NpmMetadata
+            )
+            .is_err()
+    );
 }
 
 /// A `wiremock` socket the transport is pointed at, built while holding
@@ -292,7 +300,9 @@ async fn the_transport_resolves_through_the_guard() {
             origin: None,
             private_cidrs: Vec::new(),
             read_authorization: None,
-            max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
+            max_bytes: A_MEGABYTE,
+            archive_origin: None,
+            allow_archive_redirect: false,
         })
         .await;
     assert!(
@@ -325,10 +335,12 @@ async fn an_ip_literal_never_leaves_through_the_production_transport() {
         let refused = transport
             .open_artifact(ArtifactRequest {
                 origin: None,
-            private_cidrs: Vec::new(),
+                private_cidrs: Vec::new(),
                 read_authorization: None,
                 url: parse(literal),
-                max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
+                max_bytes: A_MEGABYTE,
+                archive_origin: None,
+                allow_archive_redirect: false,
             })
             .await;
         assert!(
@@ -644,31 +656,63 @@ async fn shared_read_credential_reaches_metadata_but_not_an_artifact_redirect() 
     Mock::given(method("GET"))
         .and(path("/metadata"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-        .mount(&upstream.server).await;
+        .mount(&upstream.server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/first.tgz"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "/second.tgz"))
-        .mount(&upstream.server).await;
+        .mount(&upstream.server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/second.tgz"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifact"))
-        .mount(&upstream.server).await;
+        .mount(&upstream.server)
+        .await;
 
     let mut request = metadata(parse(&upstream.url("/metadata")));
     request.read_authorization = Some("Bearer shared-read-secret".to_owned());
-    upstream.transport.fetch_metadata(request).await.expect("metadata read");
-    let body = upstream.transport.open_artifact(ArtifactRequest {
-        url: parse(&upstream.url("/first.tgz")), origin: None,
-        private_cidrs: Vec::new(), read_authorization: Some("Bearer shared-read-secret".to_owned()),
-        max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
-    }).await.expect("artifact read");
-    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    upstream
+        .transport
+        .fetch_metadata(request)
+        .await
+        .expect("metadata read");
+    let body = upstream
+        .transport
+        .open_artifact(ArtifactRequest {
+            url: parse(&upstream.url("/first.tgz")),
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: Some("Bearer shared-read-secret".to_owned()),
+            max_bytes: A_MEGABYTE,
+            archive_origin: None,
+            allow_archive_redirect: false,
+        })
+        .await
+        .expect("artifact read");
+    let bytes: Vec<u8> = body
+        .stream
+        .map(|chunk| chunk.unwrap().to_vec())
+        .collect::<Vec<_>>()
+        .await
+        .concat();
     assert_eq!(bytes, b"artifact");
 
-    let requests = upstream.server.received_requests().await.expect("request log");
+    let requests = upstream
+        .server
+        .received_requests()
+        .await
+        .expect("request log");
     assert_eq!(requests.len(), 3);
     for request in &requests[..2] {
-        assert_eq!(request.headers.get("authorization").unwrap().to_str().unwrap(), "Bearer shared-read-secret");
+        assert_eq!(
+            request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer shared-read-secret"
+        );
     }
     assert!(requests[2].headers.get("authorization").is_none());
 }
@@ -1116,7 +1160,9 @@ async fn the_artifact_client_does_not_decode_what_the_metadata_client_does() {
             private_cidrs: Vec::new(),
             read_authorization: None,
             url: url.clone(),
-            max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: false,
+            max_bytes: A_MEGABYTE,
+            archive_origin: None,
+            allow_archive_redirect: false,
         })
         .await
         .expect("the artifact is served");
@@ -1566,76 +1612,187 @@ async fn go_zip_redirect_to_the_archive_origin_is_followed_and_nothing_else() {
     let proxy = MockServer::start().await;
     let storage = MockServer::start().await;
     let foreign = MockServer::start().await;
-    let url = |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
+    let url =
+        |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
     let npm = parse("http://127.0.0.1:1");
     let origins = OriginSet::for_tests(npm.clone(), npm.clone(), npm)
         .with_go(url(&proxy, ""), parse("http://127.0.0.1:2"))
         .with_go_archives(url(&storage, "/proxy-golang-org-prod"));
     let transport = ReqwestTransport::for_origins(origins.clone());
-    let signed = format!("{}/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip?Expires=1&GoogleAccessId=x&Signature=y%2Bz", storage.uri());
+    let signed = format!(
+        "{}/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip?Expires=1&GoogleAccessId=x&Signature=y%2Bz",
+        storage.uri()
+    );
     let redirect = |location: &str| ResponseTemplate::new(302).insert_header("location", location);
     for (file, location) in [
         ("v1.0.0.zip", signed.clone()),
-        ("v1.0.1.zip", format!("{}/other-bucket/x.zip", storage.uri())),
-        ("v1.0.2.zip", format!("{}/proxy-golang-org-prod/../other-bucket/x.zip", storage.uri())),
+        (
+            "v1.0.1.zip",
+            format!("{}/other-bucket/x.zip", storage.uri()),
+        ),
+        (
+            "v1.0.2.zip",
+            format!(
+                "{}/proxy-golang-org-prod/../other-bucket/x.zip",
+                storage.uri()
+            ),
+        ),
         ("v1.0.3.zip", format!("{}/x.zip", foreign.uri())),
     ] {
-        Mock::given(method("GET")).and(path(format!("/example.com/m/@v/{file}"))).respond_with(redirect(&location)).mount(&proxy).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/example.com/m/@v/{file}")))
+            .respond_with(redirect(&location))
+            .mount(&proxy)
+            .await;
     }
-    Mock::given(method("GET")).and(path("/example.com/m/@v/list")).respond_with(redirect(&signed)).mount(&proxy).await;
-    Mock::given(method("GET")).and(path("/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"a large zip".to_vec())).mount(&storage).await;
-    Mock::given(method("GET")).and(path("/x.zip")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"stolen".to_vec())).mount(&foreign).await;
+    Mock::given(method("GET"))
+        .and(path("/example.com/m/@v/list"))
+        .respond_with(redirect(&signed))
+        .mount(&proxy)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/proxy-golang-org-prod/46128d-example.com:m-v1.0.0.zip",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"a large zip".to_vec()))
+        .mount(&storage)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"stolen".to_vec()))
+        .mount(&foreign)
+        .await;
     let artifact = |file: &str, authorization: Option<&str>| {
         let request = ArtifactRequest {
-            url: origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file]).unwrap(),
-            origin: None, private_cidrs: Vec::new(), read_authorization: authorization.map(str::to_owned), max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: file.ends_with(".zip"),
+            url: origins
+                .url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file])
+                .unwrap(),
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: authorization.map(str::to_owned),
+            max_bytes: A_MEGABYTE,
+            archive_origin: None,
+            allow_archive_redirect: file.ends_with(".zip"),
         };
         let transport = &transport;
         async move { transport.open_artifact(request).await }
     };
-    let body = artifact("v1.0.0.zip", None).await.expect("the archive origin is followed");
-    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    let body = artifact("v1.0.0.zip", None)
+        .await
+        .expect("the archive origin is followed");
+    let bytes: Vec<u8> = body
+        .stream
+        .map(|chunk| chunk.unwrap().to_vec())
+        .collect::<Vec<_>>()
+        .await
+        .concat();
     assert_eq!(bytes, b"a large zip");
     for file in ["v1.0.1.zip", "v1.0.2.zip", "v1.0.3.zip"] {
-        match artifact(file, None).await.err().unwrap_or_else(|| panic!("{file}: refused")) {
+        match artifact(file, None)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{file}: refused"))
+        {
             UpstreamError::RejectedRedirect { .. } => {}
             other => panic!("{file}: expected a refused redirect, got {other:?}"),
         }
     }
-    assert!(foreign.received_requests().await.unwrap().is_empty(), "the foreign host was never contacted");
+    assert!(
+        foreign.received_requests().await.unwrap().is_empty(),
+        "the foreign host was never contacted"
+    );
     // Metadata is not an archive: the same redirect on `list` is refused.
-    let list = origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", "list"]).unwrap();
-    match transport.fetch_metadata(metadata(list)).await.err().expect("a metadata redirect to the archive origin is refused") {
+    let list = origins
+        .url_for(OriginKind::GoProxy, &["example.com", "m", "@v", "list"])
+        .unwrap();
+    match transport
+        .fetch_metadata(metadata(list))
+        .await
+        .err()
+        .expect("a metadata redirect to the archive origin is refused")
+    {
         UpstreamError::RejectedRedirect { .. } => {}
         other => panic!("expected a refused redirect, got {other:?}"),
     }
     // A credentialed read follows by hand and never carries the credential to the archive origin.
-    let body = artifact("v1.0.0.zip", Some("Bearer registry-token")).await.expect("followed with a credential too");
-    let bytes: Vec<u8> = body.stream.map(|chunk| chunk.unwrap().to_vec()).collect::<Vec<_>>().await.concat();
+    let body = artifact("v1.0.0.zip", Some("Bearer registry-token"))
+        .await
+        .expect("followed with a credential too");
+    let bytes: Vec<u8> = body
+        .stream
+        .map(|chunk| chunk.unwrap().to_vec())
+        .collect::<Vec<_>>()
+        .await
+        .concat();
     assert_eq!(bytes, b"a large zip");
     let storage_requests = storage.received_requests().await.unwrap();
-    assert!(storage_requests.iter().all(|request| request.headers.get("authorization").is_none()), "the registry credential never reaches the archive origin");
+    assert!(
+        storage_requests
+            .iter()
+            .all(|request| request.headers.get("authorization").is_none()),
+        "the registry credential never reaches the archive origin"
+    );
 }
 
 /// A selected (private) registry has no second origin: its archive origin is its own, so a redirect
 /// to the public bucket (or anywhere else) is refused; fail closed.
 #[test]
 fn a_selected_go_registry_admits_no_archive_origin_but_its_own() {
-    let selected = OriginSet::selected_npm_with_private(parse("https://goproxy.corp.example/artifactory/api/go/repo/"), Vec::new()).unwrap();
-    assert_eq!(selected.origin(OriginKind::GoArchives).as_str(), "https://goproxy.corp.example/artifactory/api/go/repo/");
+    let selected = OriginSet::selected_npm_with_private(
+        parse("https://goproxy.corp.example/artifactory/api/go/repo/"),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        selected.origin(OriginKind::GoArchives).as_str(),
+        "https://goproxy.corp.example/artifactory/api/go/repo/"
+    );
     let public_bucket = parse("https://storage.googleapis.com/proxy-golang-org-prod/x.zip");
-    assert!(selected.admit(&public_bucket, OriginKind::GoArchives).is_err());
+    assert!(
+        selected
+            .admit(&public_bucket, OriginKind::GoArchives)
+            .is_err()
+    );
     let production = OriginSet::production();
-    assert_eq!(production.origin(OriginKind::GoArchives).as_str(), "https://storage.googleapis.com/proxy-golang-org-prod");
-    assert!(production.admit(&public_bucket, OriginKind::GoArchives).is_ok());
-    assert!(production.admit(&parse("https://storage.googleapis.com/other-bucket/x.zip"), OriginKind::GoArchives).is_err());
-    assert!(production.admit(&parse("https://storage.googleapis.com.evil.example/proxy-golang-org-prod/x.zip"), OriginKind::GoArchives).is_err());
+    assert_eq!(
+        production.origin(OriginKind::GoArchives).as_str(),
+        "https://storage.googleapis.com/proxy-golang-org-prod"
+    );
+    assert!(
+        production
+            .admit(&public_bucket, OriginKind::GoArchives)
+            .is_ok()
+    );
+    assert!(
+        production
+            .admit(
+                &parse("https://storage.googleapis.com/other-bucket/x.zip"),
+                OriginKind::GoArchives
+            )
+            .is_err()
+    );
+    assert!(
+        production
+            .admit(
+                &parse("https://storage.googleapis.com.evil.example/proxy-golang-org-prod/x.zip"),
+                OriginKind::GoArchives
+            )
+            .is_err()
+    );
     // Only a hop from the Go proxy reaches the bucket: not an npm hop, not a private registry's.
     assert!(production.admits_archive_redirect(OriginKind::GoProxy, &public_bucket));
-    assert!(!production.admits_archive_redirect(OriginKind::NpmMetadata, &public_bucket), "an npm hop never lands on the Go bucket");
+    assert!(
+        !production.admits_archive_redirect(OriginKind::NpmMetadata, &public_bucket),
+        "an npm hop never lands on the Go bucket"
+    );
     assert!(!production.admits_archive_redirect(OriginKind::PypiArtifacts, &public_bucket));
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://goproxy.corp.example/artifactory/api/go/repo/x.zip")), "no declared archive origin: no cross-origin redirect");
+    assert!(
+        !selected.admits_archive_redirect(
+            OriginKind::NpmMetadata,
+            &parse("https://goproxy.corp.example/artifactory/api/go/repo/x.zip")
+        ),
+        "no declared archive origin: no cross-origin redirect"
+    );
 }
 
 /// A selected Go registry that declares an archive origin (its zips are redirected to its cloud
@@ -1643,9 +1800,16 @@ fn a_selected_go_registry_admits_no_archive_origin_but_its_own() {
 #[test]
 fn a_declared_go_archive_origin_is_the_one_other_origin_a_selected_registry_redirects_to() {
     let declared = parse("https://corp-modules.s3.example/zips");
-    let selected = OriginSet::selected_npm_with_private(parse("https://goproxy.corp.example/artifactory/api/go/repo/"), Vec::new()).unwrap()
-        .with_selected_archive(declared.clone());
-    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://corp-modules.s3.example/zips/abc.zip?X-Amz-Signature=s")));
+    let selected = OriginSet::selected_npm_with_private(
+        parse("https://goproxy.corp.example/artifactory/api/go/repo/"),
+        Vec::new(),
+    )
+    .unwrap()
+    .with_selected_archive(declared.clone());
+    assert!(selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://corp-modules.s3.example/zips/abc.zip?X-Amz-Signature=s")
+    ));
     for refused in [
         "https://corp-modules.s3.example/other/abc.zip",
         "https://corp-modules.s3.example:8443/zips/abc.zip",
@@ -1653,7 +1817,10 @@ fn a_declared_go_archive_origin_is_the_one_other_origin_a_selected_registry_redi
         "https://evil.example/zips/abc.zip",
         "https://storage.googleapis.com/proxy-golang-org-prod/x.zip",
     ] {
-        assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)), "{refused}");
+        assert!(
+            !selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)),
+            "{refused}"
+        );
     }
     assert_eq!(selected.origin(OriginKind::GoArchives), &declared);
 }
@@ -1662,12 +1829,14 @@ fn a_declared_go_archive_origin_is_the_one_other_origin_a_selected_registry_redi
 /// origin it was on or lands on the archive origin: never another origin of the set (the public proxy, the
 /// checksum database), and the registry credential never travels past the first request.
 #[tokio::test]
-async fn archive_redirect_is_for_zips_only_and_a_credentialed_hop_cannot_reach_another_origin_of_the_set() {
+async fn archive_redirect_is_for_zips_only_and_a_credentialed_hop_cannot_reach_another_origin_of_the_set()
+ {
     let _guard = ENVIRONMENT.lock().await;
     let proxy = MockServer::start().await;
     let storage = MockServer::start().await;
     let sumdb = MockServer::start().await;
-    let url = |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
+    let url =
+        |server: &MockServer, tail: &str| Url::parse(&format!("{}{tail}", server.uri())).unwrap();
     let npm = parse("http://127.0.0.1:1");
     let origins = OriginSet::for_tests(npm.clone(), npm.clone(), npm)
         .with_go(url(&proxy, ""), url(&sumdb, ""))
@@ -1675,28 +1844,85 @@ async fn archive_redirect_is_for_zips_only_and_a_credentialed_hop_cannot_reach_a
     let transport = ReqwestTransport::for_origins(origins.clone());
     let to_bucket = format!("{}/bucket/x?sig=1", storage.uri());
     for file in ["v1.0.0.zip", "v1.0.0.info", "v1.0.0.mod"] {
-        Mock::given(method("GET")).and(path(format!("/example.com/m/@v/{file}"))).respond_with(ResponseTemplate::new(302).insert_header("location", to_bucket.as_str())).mount(&proxy).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/example.com/m/@v/{file}")))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", to_bucket.as_str()))
+            .mount(&proxy)
+            .await;
     }
-    Mock::given(method("GET")).and(path("/example.com/m/@v/v1.0.1.zip")).respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/latest", sumdb.uri()).as_str())).mount(&proxy).await;
-    Mock::given(method("GET")).and(path("/bucket/x")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"zip".to_vec())).mount(&storage).await;
-    Mock::given(method("GET")).and(path("/latest")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"tree".to_vec())).mount(&sumdb).await;
+    Mock::given(method("GET"))
+        .and(path("/example.com/m/@v/v1.0.1.zip"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/latest", sumdb.uri()).as_str()),
+        )
+        .mount(&proxy)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/bucket/x"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"zip".to_vec()))
+        .mount(&storage)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"tree".to_vec()))
+        .mount(&sumdb)
+        .await;
     let get = |file: &str, authorization: Option<&str>, allow: bool| {
         let request = ArtifactRequest {
-            url: origins.url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file]).unwrap(),
-            origin: None, private_cidrs: Vec::new(), read_authorization: authorization.map(str::to_owned), max_bytes: A_MEGABYTE, archive_origin: None, allow_archive_redirect: allow,
+            url: origins
+                .url_for(OriginKind::GoProxy, &["example.com", "m", "@v", file])
+                .unwrap(),
+            origin: None,
+            private_cidrs: Vec::new(),
+            read_authorization: authorization.map(str::to_owned),
+            max_bytes: A_MEGABYTE,
+            archive_origin: None,
+            allow_archive_redirect: allow,
         };
         let transport = &transport;
         async move { transport.open_artifact(request).await }
     };
     for authorization in [None, Some("Bearer registry")] {
-        assert!(get("v1.0.0.zip", authorization, true).await.is_ok(), "a zip follows its archive redirect ({authorization:?})");
+        assert!(
+            get("v1.0.0.zip", authorization, true).await.is_ok(),
+            "a zip follows its archive redirect ({authorization:?})"
+        );
         for file in ["v1.0.0.info", "v1.0.0.mod"] {
-            assert!(matches!(get(file, authorization, false).await.err(), Some(UpstreamError::RejectedRedirect { .. })), "{file} never follows it ({authorization:?})");
+            assert!(
+                matches!(
+                    get(file, authorization, false).await.err(),
+                    Some(UpstreamError::RejectedRedirect { .. })
+                ),
+                "{file} never follows it ({authorization:?})"
+            );
         }
-        assert!(matches!(get("v1.0.1.zip", authorization, true).await.err(), Some(UpstreamError::RejectedRedirect { .. })), "another origin of the set is refused ({authorization:?})");
+        assert!(
+            matches!(
+                get("v1.0.1.zip", authorization, true).await.err(),
+                Some(UpstreamError::RejectedRedirect { .. })
+            ),
+            "another origin of the set is refused ({authorization:?})"
+        );
     }
-    assert!(sumdb.received_requests().await.unwrap().iter().all(|r| r.url.path() != "/latest"), "the checksum database was never contacted by a redirect");
-    assert!(storage.received_requests().await.unwrap().iter().all(|r| r.headers.get("authorization").is_none()), "the registry credential never reaches the archive origin");
+    assert!(
+        sumdb
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.url.path() != "/latest"),
+        "the checksum database was never contacted by a redirect"
+    );
+    assert!(
+        storage
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.headers.get("authorization").is_none()),
+        "the registry credential never reaches the archive origin"
+    );
 }
 
 /// `go_artifacts_url` may carry a path prefix (a bucket's name); no other upstream key may, and no dot or encoded segment.
@@ -1704,11 +1930,31 @@ async fn archive_redirect_is_for_zips_only_and_a_credentialed_hop_cannot_reach_a
 fn go_artifacts_url_carries_a_path_prefix_and_the_others_do_not() {
     use probation::config::Config;
     let sample = std::fs::read_to_string("config.sample.toml").expect("the shipped sample");
-    assert!(Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"https://storage.example/bucket\"\n")).is_ok());
-    for refused in ["http://storage.example/bucket", "https://storage.example/b?x=1", "https://u:p@storage.example/b", "https://storage.example/b%41"] {
-        assert!(Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"{refused}\"\n")).is_err(), "{refused}");
+    assert!(
+        Config::from_toml_str(&format!(
+            "{sample}\ngo_artifacts_url = \"https://storage.example/bucket\"\n"
+        ))
+        .is_ok()
+    );
+    for refused in [
+        "http://storage.example/bucket",
+        "https://storage.example/b?x=1",
+        "https://u:p@storage.example/b",
+        "https://storage.example/b%41",
+    ] {
+        assert!(
+            Config::from_toml_str(&format!("{sample}\ngo_artifacts_url = \"{refused}\"\n"))
+                .is_err(),
+            "{refused}"
+        );
     }
-    assert!(Config::from_toml_str(&format!("{sample}\ngo_upstream_url = \"https://goproxy.example/prefix\"\n")).is_err(), "the module host stays an origin");
+    assert!(
+        Config::from_toml_str(&format!(
+            "{sample}\ngo_upstream_url = \"https://goproxy.example/prefix\"\n"
+        ))
+        .is_err(),
+        "the module host stays an origin"
+    );
 }
 
 /// Row 20: a URL below a resource base a registry's own document named is admitted only when the base itself is
@@ -1718,41 +1964,154 @@ fn url_below_admits_only_a_base_on_the_origin_of_its_kind_and_cannot_walk_out_of
     let origins = OriginSet::production();
     let flat = parse("https://api.nuget.org/v3-flatcontainer/");
     assert_eq!(
-        origins.url_below(OriginKind::NugetIndex, &flat, &["newtonsoft.json", "13.0.3", "newtonsoft.json.13.0.3.nupkg"]).unwrap().as_str(),
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &flat,
+                &["newtonsoft.json", "13.0.3", "newtonsoft.json.13.0.3.nupkg"]
+            )
+            .unwrap()
+            .as_str(),
         "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg"
     );
     // A segment is data: a slash or a scheme in it is one encoded segment, a dot segment is refused.
-    assert_eq!(origins.url_below(OriginKind::NugetIndex, &flat, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://api.nuget.org/v3-flatcontainer/a%2Fb/https:%2F%2Fevil.example%2Fx");
-    assert!(origins.url_below(OriginKind::NugetIndex, &flat, &["..", "x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetIndex, &flat, &[".", "x"]).is_err());
+    assert_eq!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &flat,
+                &["a/b", "https://evil.example/x"]
+            )
+            .unwrap()
+            .as_str(),
+        "https://api.nuget.org/v3-flatcontainer/a%2Fb/https:%2F%2Fevil.example%2Fx"
+    );
+    assert!(
+        origins
+            .url_below(OriginKind::NugetIndex, &flat, &["..", "x"])
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(OriginKind::NugetIndex, &flat, &[".", "x"])
+            .is_err()
+    );
     // The base must be on the kind's origin: the search host is not the index host, another host is no origin.
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://azuresearch-usnc.nuget.org/query"), &["x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetSearch, &flat, &["x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org.evil.example/v3-flatcontainer/"), &["x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("http://api.nuget.org/v3-flatcontainer/"), &["x"]).is_err(), "https only");
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org:8443/v3-flatcontainer/"), &["x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://u:p@api.nuget.org/v3-flatcontainer/"), &["x"]).is_err());
-    assert!(origins.url_below(OriginKind::NugetIndex, &parse("https://api.nuget.org/v3-flatcontainer/?x=1"), &["x"]).is_err());
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("https://azuresearch-usnc.nuget.org/query"),
+                &["x"]
+            )
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(OriginKind::NugetSearch, &flat, &["x"])
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("https://api.nuget.org.evil.example/v3-flatcontainer/"),
+                &["x"]
+            )
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("http://api.nuget.org/v3-flatcontainer/"),
+                &["x"]
+            )
+            .is_err(),
+        "https only"
+    );
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("https://api.nuget.org:8443/v3-flatcontainer/"),
+                &["x"]
+            )
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("https://u:p@api.nuget.org/v3-flatcontainer/"),
+                &["x"]
+            )
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_below(
+                OriginKind::NugetIndex,
+                &parse("https://api.nuget.org/v3-flatcontainer/?x=1"),
+                &["x"]
+            )
+            .is_err()
+    );
     // The three NuGet kinds default to the public hosts and are configurable like every other origin.
-    assert_eq!(origins.origin(OriginKind::NugetIndex).as_str(), "https://api.nuget.org/");
-    assert_eq!(origins.origin(OriginKind::NugetSearch).as_str(), "https://azuresearch-usnc.nuget.org/");
-    assert_eq!(origins.origin(OriginKind::NugetPublish).as_str(), "https://www.nuget.org/");
+    assert_eq!(
+        origins.origin(OriginKind::NugetIndex).as_str(),
+        "https://api.nuget.org/"
+    );
+    assert_eq!(
+        origins.origin(OriginKind::NugetSearch).as_str(),
+        "https://azuresearch-usnc.nuget.org/"
+    );
+    assert_eq!(
+        origins.origin(OriginKind::NugetPublish).as_str(),
+        "https://www.nuget.org/"
+    );
 }
 
 /// Row 20: a selected NuGet registry's archive origin is its own unless it declares one (GitHub Packages and Azure
 /// Artifacts redirect a `.nupkg` to their storage); the public registry has no archive redirect at all.
 #[test]
 fn a_declared_nuget_archive_origin_is_the_one_other_origin_a_selected_registry_redirects_to() {
-    let selected = OriginSet::selected_npm_with_private(parse("https://pkgs.corp.example/"), Vec::new()).unwrap();
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.nupkg")), "no declared archive origin: no cross-origin redirect");
+    let selected =
+        OriginSet::selected_npm_with_private(parse("https://pkgs.corp.example/"), Vec::new())
+            .unwrap();
+    assert!(
+        !selected.admits_archive_redirect(
+            OriginKind::NpmMetadata,
+            &parse("https://blobs.corp.example/store/x.nupkg")
+        ),
+        "no declared archive origin: no cross-origin redirect"
+    );
     let declared = parse("https://blobs.corp.example/store");
     let selected = selected.with_selected_archive(declared);
-    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.nupkg?sig=s")));
-    for refused in ["https://blobs.corp.example/other/abc.nupkg", "https://blobs.corp.example:8443/store/abc.nupkg", "http://blobs.corp.example/store/abc.nupkg", "https://evil.example/store/abc.nupkg", "https://api.nuget.org/v3-flatcontainer/x"] {
-        assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)), "{refused}");
+    assert!(selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://blobs.corp.example/store/abc.nupkg?sig=s")
+    ));
+    for refused in [
+        "https://blobs.corp.example/other/abc.nupkg",
+        "https://blobs.corp.example:8443/store/abc.nupkg",
+        "http://blobs.corp.example/store/abc.nupkg",
+        "https://evil.example/store/abc.nupkg",
+        "https://api.nuget.org/v3-flatcontainer/x",
+    ] {
+        assert!(
+            !selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse(refused)),
+            "{refused}"
+        );
     }
     let production = OriginSet::production();
-    assert!(!production.admits_archive_redirect(OriginKind::NugetIndex, &parse("https://storage.example/x.nupkg")), "api.nuget.org answers a package directly: no redirect is followed");
+    assert!(
+        !production.admits_archive_redirect(
+            OriginKind::NugetIndex,
+            &parse("https://storage.example/x.nupkg")
+        ),
+        "api.nuget.org answers a package directly: no redirect is followed"
+    );
 }
 
 /// Row 21: the Maven repository origin is an origin AND a path prefix (Central's tree is `maven2`), a URL built below it
@@ -1761,32 +2120,116 @@ fn a_declared_nuget_archive_origin_is_the_one_other_origin_a_selected_registry_r
 fn the_maven_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
     use probation::config::Config;
     let origins = OriginSet::production();
-    assert_eq!(origins.origin(OriginKind::MavenRepo).as_str(), "https://repo.maven.apache.org/maven2");
-    assert!(!origins.maven_publish_configured(), "Central has no deploy endpoint: there is none until an operator names one");
     assert_eq!(
-        origins.url_for(OriginKind::MavenRepo, &["org", "apache", "maven", "maven-core", "3.9.0", "maven-core-3.9.0.jar"]).unwrap().as_str(),
+        origins.origin(OriginKind::MavenRepo).as_str(),
+        "https://repo.maven.apache.org/maven2"
+    );
+    assert!(
+        !origins.maven_publish_configured(),
+        "Central has no deploy endpoint: there is none until an operator names one"
+    );
+    assert_eq!(
+        origins
+            .url_for(
+                OriginKind::MavenRepo,
+                &[
+                    "org",
+                    "apache",
+                    "maven",
+                    "maven-core",
+                    "3.9.0",
+                    "maven-core-3.9.0.jar"
+                ]
+            )
+            .unwrap()
+            .as_str(),
         "https://repo.maven.apache.org/maven2/org/apache/maven/maven-core/3.9.0/maven-core-3.9.0.jar"
     );
-    assert!(origins.url_for(OriginKind::MavenRepo, &["..", "x"]).is_err());
+    assert!(
+        origins
+            .url_for(OriginKind::MavenRepo, &["..", "x"])
+            .is_err()
+    );
     assert!(origins.url_for(OriginKind::MavenRepo, &[".", "x"]).is_err());
     // A segment is data: a slash or a scheme in it is one encoded segment of the tree.
-    assert_eq!(origins.url_for(OriginKind::MavenRepo, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://repo.maven.apache.org/maven2/a%2Fb/https:%2F%2Fevil.example%2Fx");
-    assert!(origins.admit(&parse("https://repo.maven.apache.org/other/x.jar"), OriginKind::MavenRepo).is_err(), "outside the configured path prefix");
-    assert!(origins.admit(&parse("https://repo.maven.apache.org/maven2x/x.jar"), OriginKind::MavenRepo).is_err(), "whole segments");
-    assert!(origins.admit(&parse("https://repo.maven.apache.org/maven2/a/b.jar"), OriginKind::MavenRepo).is_ok());
+    assert_eq!(
+        origins
+            .url_for(OriginKind::MavenRepo, &["a/b", "https://evil.example/x"])
+            .unwrap()
+            .as_str(),
+        "https://repo.maven.apache.org/maven2/a%2Fb/https:%2F%2Fevil.example%2Fx"
+    );
+    assert!(
+        origins
+            .admit(
+                &parse("https://repo.maven.apache.org/other/x.jar"),
+                OriginKind::MavenRepo
+            )
+            .is_err(),
+        "outside the configured path prefix"
+    );
+    assert!(
+        origins
+            .admit(
+                &parse("https://repo.maven.apache.org/maven2x/x.jar"),
+                OriginKind::MavenRepo
+            )
+            .is_err(),
+        "whole segments"
+    );
+    assert!(
+        origins
+            .admit(
+                &parse("https://repo.maven.apache.org/maven2/a/b.jar"),
+                OriginKind::MavenRepo
+            )
+            .is_ok()
+    );
     // Configuration: a mirror's origin and prefix are accepted, a userinfo, a query, a dot segment and http are not.
     let sample = std::fs::read_to_string("config.sample.toml").unwrap();
-    assert!(Config::from_toml_str(&format!("{sample}\nmaven_upstream_url = \"https://nexus.example/repository/maven-central\"\n")).is_ok());
-    for bad in ["http://nexus.example/repo", "https://u:p@nexus.example/repo", "https://nexus.example/repo?x=1", "https://127.0.0.1/repo"] {
-        assert!(Config::from_toml_str(&format!("{sample}\nmaven_upstream_url = \"{bad}\"\n")).is_err(), "{bad}");
+    assert!(
+        Config::from_toml_str(&format!(
+            "{sample}\nmaven_upstream_url = \"https://nexus.example/repository/maven-central\"\n"
+        ))
+        .is_ok()
+    );
+    for bad in [
+        "http://nexus.example/repo",
+        "https://u:p@nexus.example/repo",
+        "https://nexus.example/repo?x=1",
+        "https://127.0.0.1/repo",
+    ] {
+        assert!(
+            Config::from_toml_str(&format!("{sample}\nmaven_upstream_url = \"{bad}\"\n")).is_err(),
+            "{bad}"
+        );
     }
     // A selected Maven registry's archive origin is its own unless it declares one.
-    let selected = OriginSet::selected_npm_with_private(parse("https://nexus.corp.example/repository/releases/"), Vec::new()).unwrap();
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.jar")));
+    let selected = OriginSet::selected_npm_with_private(
+        parse("https://nexus.corp.example/repository/releases/"),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(!selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://blobs.corp.example/store/x.jar")
+    ));
     let selected = selected.with_selected_archive(parse("https://blobs.corp.example/store"));
-    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.jar?sig=s")));
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.jar")));
-    assert!(!origins.admits_archive_redirect(OriginKind::MavenRepo, &parse("https://storage.example/x.jar")), "Central answers a file directly: no redirect is followed");
+    assert!(selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://blobs.corp.example/store/abc.jar?sig=s")
+    ));
+    assert!(!selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://evil.example/store/abc.jar")
+    ));
+    assert!(
+        !origins.admits_archive_redirect(
+            OriginKind::MavenRepo,
+            &parse("https://storage.example/x.jar")
+        ),
+        "Central answers a file directly: no redirect is followed"
+    );
 }
 
 /// Row 23: the Conan remote origin is an origin AND an optional path prefix (an Artifactory repository has one), a URL built below
@@ -1795,32 +2238,99 @@ fn the_maven_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
 fn the_conan_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
     use probation::config::Config;
     let origins = OriginSet::production();
-    assert_eq!(origins.origin(OriginKind::ConanRemote).as_str(), "https://center2.conan.io/");
-    assert!(!origins.conan_publish_configured(), "ConanCenter takes no upload: there is none until an operator names one");
     assert_eq!(
-        origins.url_for(OriginKind::ConanRemote, &["v2", "conans", "zlib", "1.3.1", "_", "_", "revisions"]).unwrap().as_str(),
+        origins.origin(OriginKind::ConanRemote).as_str(),
+        "https://center2.conan.io/"
+    );
+    assert!(
+        !origins.conan_publish_configured(),
+        "ConanCenter takes no upload: there is none until an operator names one"
+    );
+    assert_eq!(
+        origins
+            .url_for(
+                OriginKind::ConanRemote,
+                &["v2", "conans", "zlib", "1.3.1", "_", "_", "revisions"]
+            )
+            .unwrap()
+            .as_str(),
         "https://center2.conan.io/v2/conans/zlib/1.3.1/_/_/revisions"
     );
-    assert!(origins.url_for(OriginKind::ConanRemote, &["..", "x"]).is_err());
-    assert!(origins.url_for(OriginKind::ConanRemote, &[".", "x"]).is_err());
+    assert!(
+        origins
+            .url_for(OriginKind::ConanRemote, &["..", "x"])
+            .is_err()
+    );
+    assert!(
+        origins
+            .url_for(OriginKind::ConanRemote, &[".", "x"])
+            .is_err()
+    );
     // A segment is data: a slash or a scheme in it is one encoded segment of the tree.
-    assert_eq!(origins.url_for(OriginKind::ConanRemote, &["a/b", "https://evil.example/x"]).unwrap().as_str(), "https://center2.conan.io/a%2Fb/https:%2F%2Fevil.example%2Fx");
-    assert!(origins.admit(&parse("https://center2.conan.io/v2/conans/a"), OriginKind::ConanRemote).is_ok());
-    assert!(origins.admit(&parse("https://evil.example/v2/conans/a"), OriginKind::ConanRemote).is_err());
+    assert_eq!(
+        origins
+            .url_for(OriginKind::ConanRemote, &["a/b", "https://evil.example/x"])
+            .unwrap()
+            .as_str(),
+        "https://center2.conan.io/a%2Fb/https:%2F%2Fevil.example%2Fx"
+    );
+    assert!(
+        origins
+            .admit(
+                &parse("https://center2.conan.io/v2/conans/a"),
+                OriginKind::ConanRemote
+            )
+            .is_ok()
+    );
+    assert!(
+        origins
+            .admit(
+                &parse("https://evil.example/v2/conans/a"),
+                OriginKind::ConanRemote
+            )
+            .is_err()
+    );
     // Configuration: a mirror's origin and prefix are accepted, a userinfo, a query, http and a private address are not.
     let sample = std::fs::read_to_string("config.sample.toml").unwrap();
     assert!(Config::from_toml_str(&format!("{sample}\nconan_upstream_url = \"https://art.example/artifactory/api/conan/conan-center\"\n")).is_ok());
     assert!(Config::from_toml_str(&format!("{sample}\nconan_publish_url = \"https://art.example/artifactory/api/conan/conan-local\"\n")).is_ok());
-    for bad in ["http://art.example/repo", "https://u:p@art.example/repo", "https://art.example/repo?x=1", "https://127.0.0.1/repo"] {
-        assert!(Config::from_toml_str(&format!("{sample}\nconan_upstream_url = \"{bad}\"\n")).is_err(), "{bad}");
+    for bad in [
+        "http://art.example/repo",
+        "https://u:p@art.example/repo",
+        "https://art.example/repo?x=1",
+        "https://127.0.0.1/repo",
+    ] {
+        assert!(
+            Config::from_toml_str(&format!("{sample}\nconan_upstream_url = \"{bad}\"\n")).is_err(),
+            "{bad}"
+        );
     }
     // A selected Conan registry's archive origin is its own unless it declares one.
-    let selected = OriginSet::selected_npm_with_private(parse("https://art.corp.example/artifactory/api/conan/c/"), Vec::new()).unwrap();
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/x.tgz")));
+    let selected = OriginSet::selected_npm_with_private(
+        parse("https://art.corp.example/artifactory/api/conan/c/"),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(!selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://blobs.corp.example/store/x.tgz")
+    ));
     let selected = selected.with_selected_archive(parse("https://blobs.corp.example/store"));
-    assert!(selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://blobs.corp.example/store/abc.tgz?sig=s")));
-    assert!(!selected.admits_archive_redirect(OriginKind::NpmMetadata, &parse("https://evil.example/store/abc.tgz")));
-    assert!(!origins.admits_archive_redirect(OriginKind::ConanRemote, &parse("https://storage.example/x.tgz")), "ConanCenter answers a file directly: no redirect is followed");
+    assert!(selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://blobs.corp.example/store/abc.tgz?sig=s")
+    ));
+    assert!(!selected.admits_archive_redirect(
+        OriginKind::NpmMetadata,
+        &parse("https://evil.example/store/abc.tgz")
+    ));
+    assert!(
+        !origins.admits_archive_redirect(
+            OriginKind::ConanRemote,
+            &parse("https://storage.example/x.tgz")
+        ),
+        "ConanCenter answers a file directly: no redirect is followed"
+    );
 }
 
 /// Row 24 (R3): a foreign layer's own URL is admitted only on the operator's host list: https on the default port, no user name, no address, an
@@ -1829,21 +2339,66 @@ fn the_conan_origins_carry_a_path_prefix_and_a_url_cannot_walk_out_of_it() {
 fn a_foreign_layer_url_is_admitted_only_on_the_operators_host_list() {
     use probation::config::Config;
     let origins = OriginSet::production();
-    for good in ["https://mcr.microsoft.com/v2/windows/blobs/x", "https://go.microsoft.com/fwlink/?linkid=1", "https://download.microsoft.com/a/b", "https://eastus.data.mcr.microsoft.com/abc?sig=1"] {
+    for good in [
+        "https://mcr.microsoft.com/v2/windows/blobs/x",
+        "https://go.microsoft.com/fwlink/?linkid=1",
+        "https://download.microsoft.com/a/b",
+        "https://eastus.data.mcr.microsoft.com/abc?sig=1",
+    ] {
         assert!(origins.admits_foreign(&parse(good)), "{good}");
     }
-    for bad in ["http://mcr.microsoft.com/x", "https://mcr.microsoft.com:8443/x", "https://u:p@mcr.microsoft.com/x", "https://mcr.microsoft.com.evil.example/x", "https://evilmcr.microsoft.com/x", "https://data.mcr.microsoft.com/x", "https://127.0.0.1/x", "https://[::1]/x", "https://elsewhere.example/x", "https://mcr.microsoft.com/x#f"] {
+    for bad in [
+        "http://mcr.microsoft.com/x",
+        "https://mcr.microsoft.com:8443/x",
+        "https://u:p@mcr.microsoft.com/x",
+        "https://mcr.microsoft.com.evil.example/x",
+        "https://evilmcr.microsoft.com/x",
+        "https://data.mcr.microsoft.com/x",
+        "https://127.0.0.1/x",
+        "https://[::1]/x",
+        "https://elsewhere.example/x",
+        "https://mcr.microsoft.com/x#f",
+    ] {
         assert!(!origins.admits_foreign(&parse(bad)), "{bad}");
     }
     let sample = std::fs::read_to_string("config.sample.toml").unwrap();
     let config = Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = [\"layers.example\", \"*.cdn.example\"]\noci_token_url = \"https://gitlab.example\"\n")).unwrap();
-    assert_eq!(config.oci_foreign_layer_hosts, ["layers.example", "*.cdn.example"]);
-    assert_eq!(config.oci_token_url.as_ref().map(url::Url::as_str), Some("https://gitlab.example/"));
-    assert!(Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = []\n")).unwrap().oci_foreign_layer_hosts.is_empty(), "an empty list allows no foreign layer");
-    for bad in ["[\"UPPER.example\"]", "[\"https://x.example\"]", "[\"*.\"]", "[\"localhost\"]", "[\"a b.example\"]", "[\"*.*.example\"]"] {
-        assert!(Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = {bad}\n")).is_err(), "{bad}");
+    assert_eq!(
+        config.oci_foreign_layer_hosts,
+        ["layers.example", "*.cdn.example"]
+    );
+    assert_eq!(
+        config.oci_token_url.as_ref().map(url::Url::as_str),
+        Some("https://gitlab.example/")
+    );
+    assert!(
+        Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = []\n"))
+            .unwrap()
+            .oci_foreign_layer_hosts
+            .is_empty(),
+        "an empty list allows no foreign layer"
+    );
+    for bad in [
+        "[\"UPPER.example\"]",
+        "[\"https://x.example\"]",
+        "[\"*.\"]",
+        "[\"localhost\"]",
+        "[\"a b.example\"]",
+        "[\"*.*.example\"]",
+    ] {
+        assert!(
+            Config::from_toml_str(&format!("{sample}\noci_foreign_layer_hosts = {bad}\n")).is_err(),
+            "{bad}"
+        );
     }
-    for bad in ["http://gitlab.example", "https://u:p@gitlab.example", "https://127.0.0.1"] {
-        assert!(Config::from_toml_str(&format!("{sample}\noci_token_url = \"{bad}\"\n")).is_err(), "{bad}");
+    for bad in [
+        "http://gitlab.example",
+        "https://u:p@gitlab.example",
+        "https://127.0.0.1",
+    ] {
+        assert!(
+            Config::from_toml_str(&format!("{sample}\noci_token_url = \"{bad}\"\n")).is_err(),
+            "{bad}"
+        );
     }
 }

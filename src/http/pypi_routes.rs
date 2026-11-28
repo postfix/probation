@@ -247,22 +247,28 @@ pub async fn selected_project(
     Path((registry, project)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let registry = super::registry_read::registry_id(&registry)?;
-    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let (_permit, principal) =
+        super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
     let name = parse_name(&project)?;
     let representation = negotiate(&headers)?;
     if !name.is_canonical() {
         let mut response = StatusCode::MOVED_PERMANENTLY.into_response();
         let location = format!("/registry/pypi/{}/simple/{}/", registry.0, name.as_str());
-        response.headers_mut().insert(header::LOCATION, HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?);
+        response.headers_mut().insert(
+            header::LOCATION,
+            HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?,
+        );
         return Ok(response);
     }
-    let rendered = pypi::serve_in(&app, Some(&principal), &name, representation, registry.0).await?;
+    let rendered =
+        pypi::serve_in(&app, Some(&principal), &name, representation, registry.0).await?;
     let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
     if current.policy.policy.fingerprint != principal.policy.policy.fingerprint
         || current.registry_origin != principal.registry_origin
         || current.registry_trusted != principal.registry_trusted
         || current.registry_private_cidrs != principal.registry_private_cidrs
-        || current.registry_read_authorization != principal.registry_read_authorization {
+        || current.registry_read_authorization != principal.registry_read_authorization
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     Ok(respond(rendered))
@@ -275,11 +281,15 @@ pub async fn selected_project_without_slash(
     Path((registry, project)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let registry = super::registry_read::registry_id(&registry)?;
-    let (_permit, _principal) = super::registry_read::admit_pypi(&app, peer, registry, &headers).await?;
+    let (_permit, _principal) =
+        super::registry_read::admit_pypi(&app, peer, registry, &headers).await?;
     let name = parse_name(&project)?;
     let mut response = StatusCode::MOVED_PERMANENTLY.into_response();
     let location = format!("/registry/pypi/{}/simple/{}/", registry.0, name.as_str());
-    response.headers_mut().insert(header::LOCATION, HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?);
+    response.headers_mut().insert(
+        header::LOCATION,
+        HeaderValue::from_str(&location).map_err(|_| ApiError::NotFound)?,
+    );
     Ok(response)
 }
 
@@ -290,9 +300,16 @@ pub async fn selected_index(
     Path(registry): Path<String>,
 ) -> Result<Response, ApiError> {
     let registry = super::registry_read::registry_id(&registry)?;
-    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
-    let policy = app.policy_for(Some(&principal)).ok_or(ApiError::PolicyUnavailable)?;
-    if !policy.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros())) {
+    let (_permit, principal) =
+        super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let policy = app
+        .policy_for(Some(&principal))
+        .ok_or(ApiError::PolicyUnavailable)?;
+    if !policy
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_valid_at(app.clock.now_utc_micros()))
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     let rendered = pypi::index(&app, Some(&principal), &negotiate(&headers)?).await?;
@@ -308,20 +325,31 @@ pub async fn selected_artifact(
     Path((registry, reference, filename)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
     let registry = super::registry_read::registry_id(&registry)?;
-    let (permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let (permit, principal) =
+        super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
     let id = crate::store::rows::ReferenceId::parse_hex(&reference)
         .map_err(|_| ApiError::InvalidInput("a reference id is 64 hexadecimal characters"))?;
-    let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok());
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
     let response = crate::artifacts::serve_artifact_in(
-        &app, Some(&principal), crate::policy::Ecosystem::PyPi, registry.0,
-        id, &filename, &method, range,
-    ).await?;
+        &app,
+        Some(&principal),
+        crate::policy::Ecosystem::PyPi,
+        registry.0,
+        id,
+        &filename,
+        &method,
+        range,
+    )
+    .await?;
     let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
     if current.policy.policy.fingerprint != principal.policy.policy.fingerprint
         || current.registry_origin != principal.registry_origin
         || current.registry_trusted != principal.registry_trusted
         || current.registry_private_cidrs != principal.registry_private_cidrs
-        || current.registry_read_authorization != principal.registry_read_authorization {
+        || current.registry_read_authorization != principal.registry_read_authorization
+    {
         return Err(ApiError::PolicyUnavailable);
     }
     Ok(response.under(&app.limits, permit).into_response())
@@ -336,26 +364,65 @@ pub async fn selected_upload(
 ) -> Result<Response, ApiError> {
     // LS-F10 class W: a write without the caller's own credential is refused locally with
     // 401 before admission, a permit or any registry lookup (S28-5b).
-    let auth = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
-        .filter(|value| (value.starts_with("Basic ") && value.len() > 6) || (value.starts_with("Bearer ") && value.len() > 7))
-        .ok_or(ApiError::Unauthenticated)?.to_owned();
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            (value.starts_with("Basic ") && value.len() > 6)
+                || (value.starts_with("Bearer ") && value.len() > 7)
+        })
+        .ok_or(ApiError::Unauthenticated)?
+        .to_owned();
     let registry = super::registry_read::registry_id(&registry)?;
-    let (_permit, principal) = super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
-    let origin = principal.registry_origin.clone().ok_or(ApiError::NotFound)?;
-    let origins = crate::upstream::OriginSet::selected_npm_with_private(origin.clone(), principal.registry_private_cidrs.clone())
+    let (_permit, principal) =
+        super::registry_read::admit_pypi(&app, peer.clone(), registry, &headers).await?;
+    let origin = principal
+        .registry_origin
+        .clone()
+        .ok_or(ApiError::NotFound)?;
+    let origins = crate::upstream::OriginSet::selected_npm_with_private(
+        origin.clone(),
+        principal.registry_private_cidrs.clone(),
+    )
+    .map_err(|_| ApiError::NotFound)?;
+    origins
+        .admit(&origin, crate::upstream::OriginKind::NpmMetadata)
         .map_err(|_| ApiError::NotFound)?;
-    origins.admit(&origin, crate::upstream::OriginKind::NpmMetadata).map_err(|_| ApiError::NotFound)?;
-    let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
         .filter(|value| value.starts_with("multipart/form-data; boundary=") && value.len() <= 256)
-        .ok_or(ApiError::InvalidInput("Twine upload requires multipart content type"))?.to_owned();
-    let cap = app.config.max_artifact_bytes.get().checked_mul(2)
+        .ok_or(ApiError::InvalidInput(
+            "Twine upload requires multipart content type",
+        ))?
+        .to_owned();
+    let cap = app
+        .config
+        .max_artifact_bytes
+        .get()
+        .checked_mul(2)
         .and_then(|limit| limit.checked_add(app.config.max_metadata_bytes.get()))
         .ok_or(ApiError::InvalidInput("upload size limit overflow"))?;
-    if headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok()).is_some_and(|length| length > cap) {
+    if headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > cap)
+    {
         return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
     }
-    let super::spool::Spooled::Body(spool) = super::spool::spool(&app, super::spool::owner_of(&app, &principal, &headers), headers.get(header::CONTENT_LENGTH).and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok()), cap, body).await? else {
+    let super::spool::Spooled::Body(spool) = super::spool::spool(
+        &app,
+        super::spool::owner_of(&app, &principal, &headers),
+        headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok()),
+        cap,
+        body,
+    )
+    .await?
+    else {
         return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response());
     };
     // The spool's place and bytes are held until this request is done with the file.
@@ -363,21 +430,36 @@ pub async fn selected_upload(
     let current = super::registry_read::recheck_pypi(&app, peer, registry, &headers).await?;
     if current.registry_origin != principal.registry_origin
         || current.registry_private_cidrs != principal.registry_private_cidrs
-        || current.policy.policy.fingerprint != principal.policy.policy.fingerprint {
+        || current.policy.policy.fingerprint != principal.policy.policy.fingerprint
+    {
         return Err(ApiError::PolicyUnavailable);
     }
-    let result = app.transport.send_action(crate::upstream::ActionRequest {
-        url: origin.clone(), origin, private_cidrs: principal.registry_private_cidrs.clone(),
-        method: axum::http::Method::POST, authorization: Some(auth), content_type: Some(content_type), otp: None, api_key: None,
-        body: file, body_len: length, max_bytes: app.config.max_metadata_bytes.get(),
-    }).await.map_err(|error| match error {
-        crate::upstream::UpstreamError::Timeout => ApiError::UpstreamTimeout,
-        _ => ApiError::UpstreamFailure,
-    })?;
+    let result = app
+        .transport
+        .send_action(crate::upstream::ActionRequest {
+            url: origin.clone(),
+            origin,
+            private_cidrs: principal.registry_private_cidrs.clone(),
+            method: axum::http::Method::POST,
+            authorization: Some(auth),
+            content_type: Some(content_type),
+            otp: None,
+            api_key: None,
+            body: file,
+            body_len: length,
+            max_bytes: app.config.max_metadata_bytes.get(),
+        })
+        .await
+        .map_err(|error| match error {
+            crate::upstream::UpstreamError::Timeout => ApiError::UpstreamTimeout,
+            _ => ApiError::UpstreamFailure,
+        })?;
     let status = StatusCode::from_u16(result.status).map_err(|_| ApiError::UpstreamInvalid)?;
     let mut response = (status, result.body).into_response();
     if let Some(content_type) = result.content_type.and_then(|value| value.parse().ok()) {
-        response.headers_mut().insert(header::CONTENT_TYPE, content_type);
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, content_type);
     }
     Ok(response)
 }

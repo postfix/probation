@@ -1550,7 +1550,11 @@ async fn t_portal_block_ecosystem() {
             "{fields:?}: {}",
             refused.body
         );
-        assert!(refused.has("Choose npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven, Conan or OCI"), "{}", refused.body);
+        assert!(
+            refused.has("Choose npm, PyPI, RubyGems, Cargo, Go, NuGet, Maven, Conan or OCI"),
+            "{}",
+            refused.body
+        );
         assert_eq!(layer_row(&fx.db, world.acme).await, before);
     }
     let digest = "a".repeat(64);
@@ -1849,22 +1853,46 @@ async fn t_registry_read_credential_is_sealed_and_not_listed() {
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let path = format!("/org/{}/registries", world.acme.id);
     let credential = "Bearer shared-read-secret-123";
-    let added = admin.submit(&path, &path, &[
-        ("name", "Private npm"), ("ecosystem", "npm"),
-        ("target_url", "https://packages.example.test/"),
-        ("read_authorization", credential),
-    ]).await;
+    let added = admin
+        .submit(
+            &path,
+            &path,
+            &[
+                ("name", "Private npm"),
+                ("ecosystem", "npm"),
+                ("target_url", "https://packages.example.test/"),
+                ("read_authorization", credential),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
     let catalog = admin.get(&path).await;
     assert_eq!(catalog.status, StatusCode::OK);
     assert!(!catalog.has(credential));
     let sealed: Vec<u8> = sqlx::query_scalar(
         "SELECT read_authorization_enc FROM registries WHERE org_id = $1 AND name = 'Private npm'",
-    ).bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert!(!sealed.windows(credential.len()).any(|bytes| bytes == credential.as_bytes()));
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert!(
+        !sealed
+            .windows(credential.len())
+            .any(|bytes| bytes == credential.as_bytes())
+    );
     let secrets = accounts::SecretBox::new(common::SECRET_KEY);
-    assert_eq!(secrets.open(&format!("registry read org {}", world.acme.id), &sealed).as_deref(), Some(credential.as_bytes()));
-    assert!(secrets.open(&format!("registry read org {}", world.globex.id), &sealed).is_none());
+    assert_eq!(
+        secrets
+            .open(&format!("registry read org {}", world.acme.id), &sealed)
+            .as_deref(),
+        Some(credential.as_bytes())
+    );
+    assert!(
+        secrets
+            .open(&format!("registry read org {}", world.globex.id), &sealed)
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1873,31 +1901,68 @@ async fn t_registry_read_credential_can_be_replaced_and_cleared() {
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
-    let added = admin.submit(&catalog, &catalog, &[
-        ("name", "Rotating npm"), ("ecosystem", "npm"),
-        ("target_url", "https://packages.example.test/"),
-        ("read_authorization", "Bearer old-secret"),
-    ]).await;
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Rotating npm"),
+                ("ecosystem", "npm"),
+                ("target_url", "https://packages.example.test/"),
+                ("read_authorization", "Bearer old-secret"),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER);
-    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Rotating npm'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let registry: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Rotating npm'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
     let action = format!("{catalog}/{registry}/read-credential");
-    let changed = admin.submit(&catalog, &action, &[("read_authorization", "Bearer new-secret")]).await;
+    let changed = admin
+        .submit(
+            &catalog,
+            &action,
+            &[("read_authorization", "Bearer new-secret")],
+        )
+        .await;
     assert_eq!(changed.status, StatusCode::SEE_OTHER, "{}", changed.body);
-    let sealed: Vec<u8> = sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
-        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
+    let sealed: Vec<u8> =
+        sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
+            .bind(registry)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
     let secrets = accounts::SecretBox::new(common::SECRET_KEY);
-    assert_eq!(secrets.open(&format!("registry read org {}", world.acme.id), &sealed).as_deref(), Some(b"Bearer new-secret".as_slice()));
+    assert_eq!(
+        secrets
+            .open(&format!("registry read org {}", world.acme.id), &sealed)
+            .as_deref(),
+        Some(b"Bearer new-secret".as_slice())
+    );
     assert!(!admin.get(&catalog).await.has("new-secret"));
 
     let cleared = admin.submit(&catalog, &action, &[("clear", "on")]).await;
     assert_eq!(cleared.status, StatusCode::SEE_OTHER, "{}", cleared.body);
-    let stored: Option<Vec<u8>> = sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
-        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT read_authorization_enc FROM registries WHERE id = $1")
+            .bind(registry)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
     assert!(stored.is_none());
-    let identity: (String, String) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE id = $1")
-        .bind(registry).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!(identity, ("npm".into(), "https://packages.example.test/".into()));
+    let identity: (String, String) =
+        sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE id = $1")
+            .bind(registry)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    assert_eq!(
+        identity,
+        ("npm".into(), "https://packages.example.test/".into())
+    );
 }
 
 async fn group_of(db: &Db, member: PlaceRef) -> Option<i32> {
@@ -4259,7 +4324,10 @@ async fn t_cross_tenant_routes_places() {
             let csrf = ana.get("/keys").await.csrf();
             let mut answers = Vec::new();
             for id in [&globex_id, &unknown] {
-                let concrete = path.replace("{id}", id).replace("{org}", id).replace("{registry}", "999999");
+                let concrete = path
+                    .replace("{id}", id)
+                    .replace("{org}", id)
+                    .replace("{registry}", "999999");
                 let page = match method {
                     "GET" => ana.get(&concrete).await,
                     _ => {
@@ -4447,27 +4515,83 @@ async fn t_registry_osv_scope_form_sets_clears_and_is_listed() {
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
-    let added = admin.submit(&catalog, &catalog, &[
-        ("name", "Mirror npm"), ("ecosystem", "npm"), ("target_url", "https://packages.example.test/"),
-    ]).await;
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Mirror npm"),
+                ("ecosystem", "npm"),
+                ("target_url", "https://packages.example.test/"),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Mirror npm'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT osv_scope FROM registries WHERE id = $1").bind(registry).fetch_one(&fx.db.app).await.unwrap() };
-    assert_eq!(stored().await, None, "new registries carry no scope: the default rule applies");
+    let registry: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Mirror npm'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>("SELECT osv_scope FROM registries WHERE id = $1")
+            .bind(registry)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        stored().await,
+        None,
+        "new registries carry no scope: the default rule applies"
+    );
     let action = format!("{catalog}/{registry}/osv-scope");
-    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("osv_scope", "private")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await.as_deref(), Some("private"));
-    assert!(admin.get(&catalog).await.has("OSV scope"), "the catalog shows the field");
-    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    assert!(
+        admin.get(&catalog).await.has("OSV scope"),
+        "the catalog shows the field"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("osv_scope", "public")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await.as_deref(), Some("public"));
-    assert_eq!(admin.submit(&catalog, &action, &[("osv_scope", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("osv_scope", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
-    assert_ne!(admin.submit(&catalog, &action, &[("osv_scope", "weird")]).await.status, StatusCode::SEE_OTHER, "an unknown value is refused");
+    assert_ne!(
+        admin
+            .submit(&catalog, &action, &[("osv_scope", "weird")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER,
+        "an unknown value is refused"
+    );
     // Another organisation's administrator cannot set it.
     let mut other = admin_browser(&fx, "gus@globex.test").await;
     let foreign = format!("/org/{}/registries/{registry}/osv-scope", world.globex.id);
-    let refused = other.submit(&format!("/org/{}/registries", world.globex.id), &foreign, &[("osv_scope", "private")]).await;
+    let refused = other
+        .submit(
+            &format!("/org/{}/registries", world.globex.id),
+            &foreign,
+            &[("osv_scope", "private")],
+        )
+        .await;
     assert_ne!(refused.status, StatusCode::SEE_OTHER);
     assert_eq!(stored().await, None);
 }
@@ -4486,65 +4610,230 @@ async fn t_registry_catalog_shows_osv_coverage_and_scope() {
         ("Public npm", "npm", "https://registry.npmjs.org/"),
         ("Images", "oci", "https://registry.example.test/"),
     ] {
-        let added = admin.submit(&catalog, &catalog, &[("name", name), ("ecosystem", ecosystem), ("target_url", target)]).await;
+        let added = admin
+            .submit(
+                &catalog,
+                &catalog,
+                &[
+                    ("name", name),
+                    ("ecosystem", ecosystem),
+                    ("target_url", target),
+                ],
+            )
+            .await;
         assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
     }
-    let id = |name: &'static str| { let pool = fx.db.app.clone(); let org = world.acme.id as i32; async move {
-        sqlx::query_scalar::<_, i64>("SELECT id FROM registries WHERE org_id = $1 AND name = $2").bind(org).bind(name).fetch_one(&pool).await.unwrap() } };
-    let (mirror, public, images) = (id("Mirror npm").await, id("Public npm").await, id("Images").await);
+    let id = |name: &'static str| {
+        let pool = fx.db.app.clone();
+        let org = world.acme.id as i32;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM registries WHERE org_id = $1 AND name = $2",
+            )
+            .bind(org)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (mirror, public, images) = (
+        id("Mirror npm").await,
+        id("Public npm").await,
+        id("Images").await,
+    );
     // The coverage table lists every family with the mapping's spelling, and OCI as absent.
     let page = admin.get(&catalog).await;
-    for (tag, osv) in [("npm", "npm"), ("pypi", "PyPI"), ("rubygems", "RubyGems"), ("cargo", "crates.io"), ("go", "Go"), ("nuget", "NuGet"), ("maven", "Maven"), ("conan", "ConanCenter")] {
-        assert!(page.has(&format!("data-osv-family=\"{tag}\"")) && page.has(&format!("OSV ecosystem {osv}")), "{tag}: {}", page.body);
+    for (tag, osv) in [
+        ("npm", "npm"),
+        ("pypi", "PyPI"),
+        ("rubygems", "RubyGems"),
+        ("cargo", "crates.io"),
+        ("go", "Go"),
+        ("nuget", "NuGet"),
+        ("maven", "Maven"),
+        ("conan", "ConanCenter"),
+    ] {
+        assert!(
+            page.has(&format!("data-osv-family=\"{tag}\""))
+                && page.has(&format!("OSV ecosystem {osv}")),
+            "{tag}: {}",
+            page.body
+        );
     }
     assert!(page.has("data-osv-family=\"oci\""), "OCI is listed");
     // A custom target with the default scope is queried and says so; the fixed public source is not "internal".
-    let line = |page: &Page, registry: i64| { let marker = format!("data-osv-registry=\"{registry}\">"); let at = page.body.find(&marker).unwrap_or_else(|| panic!("no line for registry {registry}")) + marker.len(); page.body[at..].split('<').next().unwrap().to_owned() };
-    assert_eq!(line(&page, mirror), "OSV queried: names reach the shared server");
+    let line = |page: &Page, registry: i64| {
+        let marker = format!("data-osv-registry=\"{registry}\">");
+        let at = page
+            .body
+            .find(&marker)
+            .unwrap_or_else(|| panic!("no line for registry {registry}"))
+            + marker.len();
+        page.body[at..].split('<').next().unwrap().to_owned()
+    };
+    assert_eq!(
+        line(&page, mirror),
+        "OSV queried: names reach the shared server"
+    );
     assert_eq!(line(&page, public), "OSV queried: public registry");
     assert_eq!(line(&page, images), "OSV not applicable");
     // Private opts out; the form keeps the stored value selected; OCI stays not applicable under Public.
     let action = |registry: i64| format!("{catalog}/{registry}/osv-scope");
-    assert_eq!(admin.submit(&catalog, &action(mirror), &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(admin.submit(&catalog, &action(images), &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &action(mirror), &[("osv_scope", "private")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action(images), &[("osv_scope", "public")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     let page = admin.get(&catalog).await;
     assert_eq!(line(&page, mirror), "OSV not applicable");
-    assert_eq!(line(&page, images), "OSV not applicable", "an OCI registry is never queried, whatever its scope");
-    assert!(page.has("<option value=\"private\" selected>"), "the stored scope is preselected: {}", page.body);
-    assert_eq!(admin.submit(&catalog, &action(mirror), &[("osv_scope", "public")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        line(&page, images),
+        "OSV not applicable",
+        "an OCI registry is never queried, whatever its scope"
+    );
+    assert!(
+        page.has("<option value=\"private\" selected>"),
+        "the stored scope is preselected: {}",
+        page.body
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action(mirror), &[("osv_scope", "public")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     let page = admin.get(&catalog).await;
-    assert_eq!(line(&page, mirror), "OSV queried: names reach the shared server");
-    assert!(page.has("<option value=\"public\" selected>"), "{}", page.body);
+    assert_eq!(
+        line(&page, mirror),
+        "OSV queried: names reach the shared server"
+    );
+    assert!(
+        page.has("<option value=\"public\" selected>"),
+        "{}",
+        page.body
+    );
     // Security review M1: the privacy statement is on the page BEFORE a registry exists (the Add-registry form) and beside the default
     // option, and the Add form offers every family of `Ecosystem::ALL`.
-    assert!(page.has("data-osv-privacy=\"add\"") && page.has("reach the shared OSV server and api.osv.dev"), "the Add-registry form carries the privacy warning: {}", page.body);
-    assert!(page.has("Default (queried: package names reach the shared OSV server"), "the default option says what the default does: {}", page.body);
+    assert!(
+        page.has("data-osv-privacy=\"add\"")
+            && page.has("reach the shared OSV server and api.osv.dev"),
+        "the Add-registry form carries the privacy warning: {}",
+        page.body
+    );
+    assert!(
+        page.has("Default (queried: package names reach the shared OSV server"),
+        "the default option says what the default does: {}",
+        page.body
+    );
     for ecosystem in probation_policy::Ecosystem::ALL {
-        assert!(page.has(&format!("<option value=\"{}\">", ecosystem.as_tag())), "the Add form lacks {ecosystem:?}");
+        assert!(
+            page.has(&format!("<option value=\"{}\">", ecosystem.as_tag())),
+            "the Add form lacks {ecosystem:?}"
+        );
     }
     // A public-source registry with a stored Private scope says why the choice has no effect.
-    assert_eq!(admin.submit(&catalog, &action(public), &[("osv_scope", "private")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &action(public), &[("osv_scope", "private")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     let page = admin.get(&catalog).await;
-    assert!(line(&page, public).contains("the stored Private scope has no effect"), "{}", line(&page, public));
+    assert!(
+        line(&page, public).contains("the stored Private scope has no effect"),
+        "{}",
+        line(&page, public)
+    );
     // Security review L1: every change of the egress property and of its sibling settings is in the audit log (actor, registry, before, after).
     type AuditRow = (String, Option<String>, Option<String>, Option<i32>);
     let osv_rows: Vec<AuditRow> = sqlx::query_as(
         "SELECT subject, before->>'osv_scope', after->>'osv_scope', org_id FROM audit_log WHERE action = 'registry.osv_scope' ORDER BY id",
     ).fetch_all(&fx.db.app).await.unwrap();
-    assert_eq!(osv_rows.len(), 4, "four osv-scope changes were made above (mirror private, images public, mirror public, the public-source registry private): {osv_rows:?}");
-    assert_eq!(osv_rows[0], (format!("registry:{mirror}"), None, Some("private".into()), Some(world.acme.id as i32)));
-    assert_eq!(osv_rows[2], (format!("registry:{mirror}"), Some("private".into()), Some("public".into()), Some(world.acme.id as i32)));
-    let added: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'registry.add' AND org_id = $1").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!(added, 3, "the three registries added at the start are audited");
-    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/trust"), &[("trusted", "on")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/read-credential"), &[("read_authorization", "Bearer s3cret-value")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        osv_rows.len(),
+        4,
+        "four osv-scope changes were made above (mirror private, images public, mirror public, the public-source registry private): {osv_rows:?}"
+    );
+    assert_eq!(
+        osv_rows[0],
+        (
+            format!("registry:{mirror}"),
+            None,
+            Some("private".into()),
+            Some(world.acme.id as i32)
+        )
+    );
+    assert_eq!(
+        osv_rows[2],
+        (
+            format!("registry:{mirror}"),
+            Some("private".into()),
+            Some("public".into()),
+            Some(world.acme.id as i32)
+        )
+    );
+    let added: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'registry.add' AND org_id = $1",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        added, 3,
+        "the three registries added at the start are audited"
+    );
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &format!("{catalog}/{mirror}/trust"),
+                &[("trusted", "on")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &format!("{catalog}/{mirror}/read-credential"),
+                &[("read_authorization", "Bearer s3cret-value")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     let trusted: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'trusted', after->>'trusted' FROM audit_log WHERE action = 'registry.trust' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
     assert_eq!(trusted, (Some("false".into()), Some("true".into())));
     let credential: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'read_credential_configured', after->>'read_credential_configured' FROM audit_log WHERE action = 'registry.read_credential' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!(credential, (Some("false".into()), Some("true".into())), "the audit row says a credential was set and never contains it");
+    assert_eq!(
+        credential,
+        (Some("false".into()), Some("true".into())),
+        "the audit row says a credential was set and never contains it"
+    );
     let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE after::text LIKE '%s3cret%' OR before::text LIKE '%s3cret%'").fetch_one(&fx.db.app).await.unwrap();
     assert_eq!(leaked, 0);
-    assert_eq!(admin.submit(&catalog, &format!("{catalog}/{mirror}/remove"), &[]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &format!("{catalog}/{mirror}/remove"), &[])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     let removed: (Option<String>,) = sqlx::query_as("SELECT after->>'removed' FROM audit_log WHERE action = 'registry.remove' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
     assert_eq!(removed.0.as_deref(), Some("true"));
 }
@@ -4557,20 +4846,43 @@ async fn t_registry_audit_before_is_the_row_the_update_replaced() {
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Raced npm"), ("ecosystem", "npm"), ("target_url", "https://packages.example.test/")]).await;
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Raced npm"),
+                ("ecosystem", "npm"),
+                ("target_url", "https://packages.example.test/"),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let registry: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Raced npm'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
+    let registry: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Raced npm'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
     // Another admin's edit holds the row, uncommitted, while this edit starts.
     let mut other = fx.db.owner.begin().await.unwrap();
-    sqlx::query("UPDATE registries SET trusted = true WHERE id = $1").bind(registry).execute(&mut *other).await.unwrap();
+    sqlx::query("UPDATE registries SET trusted = true WHERE id = $1")
+        .bind(registry)
+        .execute(&mut *other)
+        .await
+        .unwrap();
     let action = format!("{catalog}/{registry}/trust");
-    let (answer, ()) = tokio::join!(
-        admin.submit(&catalog, &action, &[]),
-        async { tokio::time::sleep(std::time::Duration::from_millis(500)).await; other.commit().await.unwrap(); },
-    );
+    let (answer, ()) = tokio::join!(admin.submit(&catalog, &action, &[]), async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        other.commit().await.unwrap();
+    },);
     assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
     let row: (Option<String>, Option<String>) = sqlx::query_as("SELECT before->>'trusted', after->>'trusted' FROM audit_log WHERE action = 'registry.trust' ORDER BY id DESC LIMIT 1").fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!(row, (Some("true".into()), Some("false".into())), "before is what the UPDATE replaced (the other admin's committed edit), not a read taken before it");
+    assert_eq!(
+        row,
+        (Some("true".into()), Some("false".into())),
+        "before is what the UPDATE replaced (the other admin's committed edit), not a read taken before it"
+    );
 }
 
 /// Row 18 (user decision 2026-11-19): a Cargo registry's optional archive origin is set, cleared, listed
@@ -4583,38 +4895,156 @@ async fn t_registry_archive_origin_form_sets_clears_and_reaches_the_snapshot() {
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     for (name, ecosystem) in [("Mirror cargo", "cargo"), ("Mirror npm", "npm")] {
-        let added = admin.submit(&catalog, &catalog, &[("name", name), ("ecosystem", ecosystem), ("target_url", "https://packages.example.test/api/cargo/repo/index/")]).await;
+        let added = admin
+            .submit(
+                &catalog,
+                &catalog,
+                &[
+                    ("name", name),
+                    ("ecosystem", ecosystem),
+                    (
+                        "target_url",
+                        "https://packages.example.test/api/cargo/repo/index/",
+                    ),
+                ],
+            )
+            .await;
         assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
     }
     let id = |name: &'static str| {
         let (db, org) = (fx.db.app.clone(), world.acme.id as i32);
-        async move { sqlx::query_scalar::<_, i64>("SELECT id FROM registries WHERE org_id = $1 AND name = $2").bind(org).bind(name).fetch_one(&db).await.unwrap() }
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM registries WHERE org_id = $1 AND name = $2",
+            )
+            .bind(org)
+            .bind(name)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
     };
     let (cargo, npm) = (id("Mirror cargo").await, id("Mirror npm").await);
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(cargo).fetch_one(&fx.db.app).await.unwrap() };
-    assert_eq!(stored().await, None, "new registries declare none: archives must lie under the target");
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(cargo)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        stored().await,
+        None,
+        "new registries declare none: archives must lie under the target"
+    );
     // N2: the field is on Cargo rows only, and the stored value is shown there.
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin").count(), 1, "one Cargo row, one field (the npm row has none)");
-    assert!(!page.body.contains("Archive origin: "), "nothing stored, nothing shown");
+    assert_eq!(
+        page.body.matches("Archive origin").count(),
+        1,
+        "one Cargo row, one field (the npm row has none)"
+    );
+    assert!(
+        !page.body.contains("Archive origin: "),
+        "nothing stored, nothing shown"
+    );
     let action = format!("{catalog}/{cargo}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://packages.example.test/api/cargo/repo/crates")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"));
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[(
+                    "archive_origin",
+                    "https://packages.example.test/api/cargo/repo/crates"
+                )]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://packages.example.test/api/cargo/repo/crates")
+    );
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains("Archive origin: https://packages.example.test/api/cargo/repo/crates"), "the stored origin is listed: {}", page.body);
-    assert!(page.body.contains(r#"value="https://packages.example.test/api/cargo/repo/crates""#), "and prefilled in its form");
-    for refused in ["http://files.example.test/", "https://user:pw@files.example.test/", "https://files.example.test/?x=1", "https://files.example.test/#f", "files"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert!(
+        page.body
+            .contains("Archive origin: https://packages.example.test/api/cargo/repo/crates"),
+        "the stored origin is listed: {}",
+        page.body
+    );
+    assert!(
+        page.body
+            .contains(r#"value="https://packages.example.test/api/cargo/repo/crates""#),
+        "and prefilled in its form"
+    );
+    for refused in [
+        "http://files.example.test/",
+        "https://user:pw@files.example.test/",
+        "https://files.example.test/?x=1",
+        "https://files.example.test/#f",
+        "files",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"), "a refused value changes nothing");
-    assert_ne!(admin.submit(&catalog, &format!("{catalog}/{npm}/archive-origin"), &[("archive_origin", "https://files.example.test/")]).await.status, StatusCode::SEE_OTHER, "only a Cargo registry takes one");
-    let snapshot_origin: Option<String> = sqlx::query_scalar("SELECT archive_origin FROM registries WHERE id = $1").bind(npm).fetch_one(&fx.db.app).await.unwrap();
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://packages.example.test/api/cargo/repo/crates"),
+        "a refused value changes nothing"
+    );
+    assert_ne!(
+        admin
+            .submit(
+                &catalog,
+                &format!("{catalog}/{npm}/archive-origin"),
+                &[("archive_origin", "https://files.example.test/")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER,
+        "only a Cargo registry takes one"
+    );
+    let snapshot_origin: Option<String> =
+        sqlx::query_scalar("SELECT archive_origin FROM registries WHERE id = $1")
+            .bind(npm)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
     assert_eq!(snapshot_origin, None);
     let mut other = admin_browser(&fx, "gus@globex.test").await;
     let foreign = format!("/org/{}/registries/{cargo}/archive-origin", world.globex.id);
-    assert_ne!(other.submit(&format!("/org/{}/registries", world.globex.id), &foreign, &[("archive_origin", "https://evil.example.test/")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://packages.example.test/api/cargo/repo/crates"));
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_ne!(
+        other
+            .submit(
+                &format!("/org/{}/registries", world.globex.id),
+                &foreign,
+                &[("archive_origin", "https://evil.example.test/")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://packages.example.test/api/cargo/repo/crates")
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
 }
 
@@ -4623,35 +5053,124 @@ async fn t_registry_archive_origin_form_sets_clears_and_reaches_the_snapshot() {
 /// mode sends its zips to its own storage; migration 0017 widened who may hold one) with the same shape
 /// rules as a Cargo registry's, and the block form offers Go.
 #[tokio::test]
-async fn t_registry_form_adds_a_go_registry_with_an_optional_archive_origin_and_the_block_form_offers_go() {
+async fn t_registry_form_adds_a_go_registry_with_an_optional_archive_origin_and_the_block_form_offers_go()
+ {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains(r#"<option value="go">Go</option>"#), "the add form lists Go: {}", page.body);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Corp Go"), ("ecosystem", "go"), ("target_url", "https://goproxy.example.test/artifactory/api/go/repo/")]).await;
+    assert!(
+        page.body.contains(r#"<option value="go">Go</option>"#),
+        "the add form lists Go: {}",
+        page.body
+    );
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Corp Go"),
+                ("ecosystem", "go"),
+                (
+                    "target_url",
+                    "https://goproxy.example.test/artifactory/api/go/repo/",
+                ),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Go'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!((tag.as_str(), target.as_deref()), ("go", Some("https://goproxy.example.test/artifactory/api/go/repo/")));
-    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Go'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let (tag, target): (String, Option<String>) = sqlx::query_as(
+        "SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Go'",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (tag.as_str(), target.as_deref()),
+        (
+            "go",
+            Some("https://goproxy.example.test/artifactory/api/go/repo/")
+        )
+    );
+    let id: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Go'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     assert_eq!(stored().await, None);
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a Go registry has the archive origin field");
+    assert_eq!(
+        page.body.matches("Archive origin (empty for none)").count(),
+        1,
+        "a Go registry has the archive origin field"
+    );
     let action = format!("{catalog}/{id}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://zips.example.test/bucket")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://zips.example.test/bucket"));
-    for refused in ["http://zips.example.test/", "https://user:pw@zips.example.test/", "https://zips.example.test/?x=1", "zips"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("archive_origin", "https://zips.example.test/bucket")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://zips.example.test/bucket")
+    );
+    for refused in [
+        "http://zips.example.test/",
+        "https://user:pw@zips.example.test/",
+        "https://zips.example.test/?x=1",
+        "zips",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://zips.example.test/bucket"), "a refused value changes nothing");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://zips.example.test/bucket"),
+        "a refused value changes nothing"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
-    assert_eq!(policy.body.matches(r#"<option value="go">Go</option>"#).count(), 2, "the block and exception forms offer Go: {}", policy.body);
+    assert_eq!(
+        policy
+            .body
+            .matches(r#"<option value="go">Go</option>"#)
+            .count(),
+        2,
+        "the block and exception forms offer Go: {}",
+        policy.body
+    );
 }
 
 /// Row 20: the registry add form lists NuGet and takes it, a NuGet registry is stored under the tag `nuget`
@@ -4659,48 +5178,179 @@ async fn t_registry_form_adds_a_go_registry_with_an_optional_archive_origin_and_
 /// storage; migration 0018 widened who may hold one) with the same shape rules as a Cargo registry's, and the
 /// block and exception forms offer NuGet.
 #[tokio::test]
-async fn t_registry_form_adds_a_nuget_registry_with_an_optional_archive_origin_and_the_block_form_offers_nuget() {
+async fn t_registry_form_adds_a_nuget_registry_with_an_optional_archive_origin_and_the_block_form_offers_nuget()
+ {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains(r#"<option value="nuget">NuGet</option>"#), "the add form lists NuGet: {}", page.body);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Corp NuGet"), ("ecosystem", "nuget"), ("target_url", "https://pkgs.example.test/nuget/v3/index.json")]).await;
+    assert!(
+        page.body
+            .contains(r#"<option value="nuget">NuGet</option>"#),
+        "the add form lists NuGet: {}",
+        page.body
+    );
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Corp NuGet"),
+                ("ecosystem", "nuget"),
+                (
+                    "target_url",
+                    "https://pkgs.example.test/nuget/v3/index.json",
+                ),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!((tag.as_str(), target.as_deref()), ("nuget", Some("https://pkgs.example.test/nuget/v3/index.json")));
-    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let (tag, target): (String, Option<String>) = sqlx::query_as(
+        "SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (tag.as_str(), target.as_deref()),
+        (
+            "nuget",
+            Some("https://pkgs.example.test/nuget/v3/index.json")
+        )
+    );
+    let id: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp NuGet'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     assert_eq!(stored().await, None);
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a NuGet registry has the archive origin field");
+    assert_eq!(
+        page.body.matches("Archive origin (empty for none)").count(),
+        1,
+        "a NuGet registry has the archive origin field"
+    );
     let action = format!("{catalog}/{id}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
-    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("archive_origin", "https://blobs.example.test/store")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store")
+    );
+    for refused in [
+        "http://blobs.example.test/",
+        "https://user:pw@blobs.example.test/",
+        "https://blobs.example.test/?x=1",
+        "blobs",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store"),
+        "a refused value changes nothing"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
     // The resource path prefix (security review F3): whole segments, NuGet registries only, empty keeps the whole host.
-    let prefix = || async { sqlx::query_scalar::<_, Option<String>>("SELECT resource_path_prefix FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let prefix = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT resource_path_prefix FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 1, "a NuGet registry has the prefix field");
+    assert_eq!(
+        page.body
+            .matches("Resource path prefix (empty for the whole host)")
+            .count(),
+        1,
+        "a NuGet registry has the prefix field"
+    );
     let action = format!("{catalog}/{id}/resource-prefix");
-    assert_eq!(admin.submit(&catalog, &action, &[("resource_path_prefix", "/org-a/_packaging")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("resource_path_prefix", "/org-a/_packaging")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(prefix().await.as_deref(), Some("/org-a/_packaging"));
     for refused in ["org-a", "/org-a/", "/a/../b", "/a b", "/", "https://x/y"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("resource_path_prefix", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("resource_path_prefix", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(prefix().await.as_deref(), Some("/org-a/_packaging"), "a refused value changes nothing");
-    assert_eq!(admin.submit(&catalog, &action, &[("resource_path_prefix", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        prefix().await.as_deref(),
+        Some("/org-a/_packaging"),
+        "a refused value changes nothing"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("resource_path_prefix", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(prefix().await, None, "cleared");
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
-    assert_eq!(policy.body.matches(r#"<option value="nuget">NuGet</option>"#).count(), 2, "the block and exception forms offer NuGet: {}", policy.body);
+    assert_eq!(
+        policy
+            .body
+            .matches(r#"<option value="nuget">NuGet</option>"#)
+            .count(),
+        2,
+        "the block and exception forms offer NuGet: {}",
+        policy.body
+    );
 }
 
 /// Row 21: the registry add form lists Maven and takes it, a Maven registry is stored under the tag `maven` (migration 0014
@@ -4708,38 +5358,141 @@ async fn t_registry_form_adds_a_nuget_registry_with_an_optional_archive_origin_a
 /// widened who may hold one) with the same shape rules as the other families, takes no NuGet-only resource path prefix, and the
 /// block and exception forms offer Maven.
 #[tokio::test]
-async fn t_registry_form_adds_a_maven_registry_with_an_optional_archive_origin_and_the_block_form_offers_maven() {
+async fn t_registry_form_adds_a_maven_registry_with_an_optional_archive_origin_and_the_block_form_offers_maven()
+ {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains(r#"<option value="maven">Maven</option>"#), "the add form lists Maven: {}", page.body);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Corp Maven"), ("ecosystem", "maven"), ("target_url", "https://nexus.example.test/repository/releases/")]).await;
+    assert!(
+        page.body
+            .contains(r#"<option value="maven">Maven</option>"#),
+        "the add form lists Maven: {}",
+        page.body
+    );
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Corp Maven"),
+                ("ecosystem", "maven"),
+                (
+                    "target_url",
+                    "https://nexus.example.test/repository/releases/",
+                ),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Maven'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!((tag.as_str(), target.as_deref()), ("maven", Some("https://nexus.example.test/repository/releases/")));
-    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Maven'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let (tag, target): (String, Option<String>) = sqlx::query_as(
+        "SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Maven'",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (tag.as_str(), target.as_deref()),
+        (
+            "maven",
+            Some("https://nexus.example.test/repository/releases/")
+        )
+    );
+    let id: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Maven'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     assert_eq!(stored().await, None);
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a Maven registry has the archive origin field");
-    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 0, "the resource path prefix is NuGet's alone");
+    assert_eq!(
+        page.body.matches("Archive origin (empty for none)").count(),
+        1,
+        "a Maven registry has the archive origin field"
+    );
+    assert_eq!(
+        page.body
+            .matches("Resource path prefix (empty for the whole host)")
+            .count(),
+        0,
+        "the resource path prefix is NuGet's alone"
+    );
     let action = format!("{catalog}/{id}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
-    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("archive_origin", "https://blobs.example.test/store")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store")
+    );
+    for refused in [
+        "http://blobs.example.test/",
+        "https://user:pw@blobs.example.test/",
+        "https://blobs.example.test/?x=1",
+        "blobs",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store"),
+        "a refused value changes nothing"
+    );
     let prefix_action = format!("{catalog}/{id}/resource-prefix");
-    assert_ne!(admin.submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")]).await.status, StatusCode::SEE_OTHER, "no resource path prefix on a Maven registry");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_ne!(
+        admin
+            .submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER,
+        "no resource path prefix on a Maven registry"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
-    assert_eq!(policy.body.matches(r#"<option value="maven">Maven</option>"#).count(), 2, "the block and exception forms offer Maven: {}", policy.body);
+    assert_eq!(
+        policy
+            .body
+            .matches(r#"<option value="maven">Maven</option>"#)
+            .count(),
+        2,
+        "the block and exception forms offer Maven: {}",
+        policy.body
+    );
 }
 
 /// Row 23: the registry add form lists Conan and takes it, a Conan registry is stored under the tag `conan` (migration 0014
@@ -4747,38 +5500,141 @@ async fn t_registry_form_adds_a_maven_registry_with_an_optional_archive_origin_a
 /// widened who may hold one) with the same shape rules as the other families, takes no NuGet-only resource path prefix, and the
 /// block and exception forms offer Conan.
 #[tokio::test]
-async fn t_registry_form_adds_a_conan_registry_with_an_optional_archive_origin_and_the_block_form_offers_conan() {
+async fn t_registry_form_adds_a_conan_registry_with_an_optional_archive_origin_and_the_block_form_offers_conan()
+ {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains(r#"<option value="conan">Conan</option>"#), "the add form lists Conan: {}", page.body);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Corp Conan"), ("ecosystem", "conan"), ("target_url", "https://art.example.test/artifactory/api/conan/c/")]).await;
+    assert!(
+        page.body
+            .contains(r#"<option value="conan">Conan</option>"#),
+        "the add form lists Conan: {}",
+        page.body
+    );
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Corp Conan"),
+                ("ecosystem", "conan"),
+                (
+                    "target_url",
+                    "https://art.example.test/artifactory/api/conan/c/",
+                ),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Conan'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!((tag.as_str(), target.as_deref()), ("conan", Some("https://art.example.test/artifactory/api/conan/c/")));
-    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Conan'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let (tag, target): (String, Option<String>) = sqlx::query_as(
+        "SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp Conan'",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (tag.as_str(), target.as_deref()),
+        (
+            "conan",
+            Some("https://art.example.test/artifactory/api/conan/c/")
+        )
+    );
+    let id: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp Conan'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     assert_eq!(stored().await, None);
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a Conan registry has the archive origin field");
-    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 0, "the resource path prefix is NuGet's alone");
+    assert_eq!(
+        page.body.matches("Archive origin (empty for none)").count(),
+        1,
+        "a Conan registry has the archive origin field"
+    );
+    assert_eq!(
+        page.body
+            .matches("Resource path prefix (empty for the whole host)")
+            .count(),
+        0,
+        "the resource path prefix is NuGet's alone"
+    );
     let action = format!("{catalog}/{id}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
-    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("archive_origin", "https://blobs.example.test/store")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store")
+    );
+    for refused in [
+        "http://blobs.example.test/",
+        "https://user:pw@blobs.example.test/",
+        "https://blobs.example.test/?x=1",
+        "blobs",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store"),
+        "a refused value changes nothing"
+    );
     let prefix_action = format!("{catalog}/{id}/resource-prefix");
-    assert_ne!(admin.submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")]).await.status, StatusCode::SEE_OTHER, "no resource path prefix on a Conan registry");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_ne!(
+        admin
+            .submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER,
+        "no resource path prefix on a Conan registry"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
-    assert_eq!(policy.body.matches(r#"<option value="conan">Conan</option>"#).count(), 2, "the block and exception forms offer Conan: {}", policy.body);
+    assert_eq!(
+        policy
+            .body
+            .matches(r#"<option value="conan">Conan</option>"#)
+            .count(),
+        2,
+        "the block and exception forms offer Conan: {}",
+        policy.body
+    );
 }
 
 /// Row 24: the registry add form lists OCI and takes it, a OCI registry is stored under the tag `oci` (migration 0014
@@ -4786,49 +5642,193 @@ async fn t_registry_form_adds_a_conan_registry_with_an_optional_archive_origin_a
 /// widened who may hold one) with the same shape rules as the other families, takes no NuGet-only resource path prefix, and the
 /// block and exception forms offer OCI.
 #[tokio::test]
-async fn t_registry_form_adds_a_oci_registry_with_an_optional_archive_origin_and_the_block_form_offers_oci() {
+async fn t_registry_form_adds_a_oci_registry_with_an_optional_archive_origin_and_the_block_form_offers_oci()
+ {
     let fx = Fixture::start().await;
     let world = World::new(&fx).await;
     let mut admin = admin_browser(&fx, "ana@acme.test").await;
     let catalog = format!("/org/{}/registries", world.acme.id);
     let page = admin.get(&catalog).await;
-    assert!(page.body.contains(r#"<option value="oci">OCI</option>"#), "the add form lists OCI: {}", page.body);
-    let added = admin.submit(&catalog, &catalog, &[("name", "Corp OCI"), ("ecosystem", "oci"), ("target_url", "https://registry.example.test/")]).await;
+    assert!(
+        page.body.contains(r#"<option value="oci">OCI</option>"#),
+        "the add form lists OCI: {}",
+        page.body
+    );
+    let added = admin
+        .submit(
+            &catalog,
+            &catalog,
+            &[
+                ("name", "Corp OCI"),
+                ("ecosystem", "oci"),
+                ("target_url", "https://registry.example.test/"),
+            ],
+        )
+        .await;
     assert_eq!(added.status, StatusCode::SEE_OTHER, "{}", added.body);
-    let (tag, target): (String, Option<String>) = sqlx::query_as("SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp OCI'")
-        .bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    assert_eq!((tag.as_str(), target.as_deref()), ("oci", Some("https://registry.example.test/")));
-    let id: i64 = sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp OCI'").bind(world.acme.id as i32).fetch_one(&fx.db.app).await.unwrap();
-    let stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT archive_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let (tag, target): (String, Option<String>) = sqlx::query_as(
+        "SELECT ecosystem, target_url FROM registries WHERE org_id = $1 AND name = 'Corp OCI'",
+    )
+    .bind(world.acme.id as i32)
+    .fetch_one(&fx.db.app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (tag.as_str(), target.as_deref()),
+        ("oci", Some("https://registry.example.test/"))
+    );
+    let id: i64 =
+        sqlx::query_scalar("SELECT id FROM registries WHERE org_id = $1 AND name = 'Corp OCI'")
+            .bind(world.acme.id as i32)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_origin FROM registries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&fx.db.app)
+        .await
+        .unwrap()
+    };
     assert_eq!(stored().await, None);
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Archive origin (empty for none)").count(), 1, "a OCI registry has the archive origin field");
-    assert_eq!(page.body.matches("Resource path prefix (empty for the whole host)").count(), 0, "the resource path prefix is NuGet's alone");
+    assert_eq!(
+        page.body.matches("Archive origin (empty for none)").count(),
+        1,
+        "a OCI registry has the archive origin field"
+    );
+    assert_eq!(
+        page.body
+            .matches("Resource path prefix (empty for the whole host)")
+            .count(),
+        0,
+        "the resource path prefix is NuGet's alone"
+    );
     let action = format!("{catalog}/{id}/archive-origin");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "https://blobs.example.test/store")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"));
-    for refused in ["http://blobs.example.test/", "https://user:pw@blobs.example.test/", "https://blobs.example.test/?x=1", "blobs"] {
-        assert_ne!(admin.submit(&catalog, &action, &[("archive_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &action,
+                &[("archive_origin", "https://blobs.example.test/store")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store")
+    );
+    for refused in [
+        "http://blobs.example.test/",
+        "https://user:pw@blobs.example.test/",
+        "https://blobs.example.test/?x=1",
+        "blobs",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &action, &[("archive_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(stored().await.as_deref(), Some("https://blobs.example.test/store"), "a refused value changes nothing");
+    assert_eq!(
+        stored().await.as_deref(),
+        Some("https://blobs.example.test/store"),
+        "a refused value changes nothing"
+    );
     let prefix_action = format!("{catalog}/{id}/resource-prefix");
-    assert_ne!(admin.submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")]).await.status, StatusCode::SEE_OTHER, "no resource path prefix on a OCI registry");
+    assert_ne!(
+        admin
+            .submit(&catalog, &prefix_action, &[("resource_path_prefix", "/x")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER,
+        "no resource path prefix on a OCI registry"
+    );
     // The token origin (migration 0023): a field of an OCI registry only, an https origin without a path.
-    let token_stored = || async { sqlx::query_scalar::<_, Option<String>>("SELECT token_origin FROM registries WHERE id = $1").bind(id).fetch_one(&fx.db.app).await.unwrap() };
+    let token_stored = || async {
+        sqlx::query_scalar::<_, Option<String>>("SELECT token_origin FROM registries WHERE id = $1")
+            .bind(id)
+            .fetch_one(&fx.db.app)
+            .await
+            .unwrap()
+    };
     let page = admin.get(&catalog).await;
-    assert_eq!(page.body.matches("Token origin (empty for the registry").count(), 1, "an OCI registry has the token origin field");
+    assert_eq!(
+        page.body
+            .matches("Token origin (empty for the registry")
+            .count(),
+        1,
+        "an OCI registry has the token origin field"
+    );
     let token_action = format!("{catalog}/{id}/token-origin");
-    assert_eq!(admin.submit(&catalog, &token_action, &[("token_origin", "https://gitlab.example.test")]).await.status, StatusCode::SEE_OTHER);
-    assert_eq!(token_stored().await.as_deref(), Some("https://gitlab.example.test"));
-    for refused in ["http://gitlab.example.test", "https://gitlab.example.test/jwt/auth", "https://user:pw@gitlab.example.test", "https://gitlab.example.test/?x=1", "gitlab"] {
-        assert_ne!(admin.submit(&catalog, &token_action, &[("token_origin", refused)]).await.status, StatusCode::SEE_OTHER, "{refused}");
+    assert_eq!(
+        admin
+            .submit(
+                &catalog,
+                &token_action,
+                &[("token_origin", "https://gitlab.example.test")]
+            )
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        token_stored().await.as_deref(),
+        Some("https://gitlab.example.test")
+    );
+    for refused in [
+        "http://gitlab.example.test",
+        "https://gitlab.example.test/jwt/auth",
+        "https://user:pw@gitlab.example.test",
+        "https://gitlab.example.test/?x=1",
+        "gitlab",
+    ] {
+        assert_ne!(
+            admin
+                .submit(&catalog, &token_action, &[("token_origin", refused)])
+                .await
+                .status,
+            StatusCode::SEE_OTHER,
+            "{refused}"
+        );
     }
-    assert_eq!(token_stored().await.as_deref(), Some("https://gitlab.example.test"), "a refused value changes nothing");
-    assert_eq!(admin.submit(&catalog, &token_action, &[("token_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        token_stored().await.as_deref(),
+        Some("https://gitlab.example.test"),
+        "a refused value changes nothing"
+    );
+    assert_eq!(
+        admin
+            .submit(&catalog, &token_action, &[("token_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(token_stored().await, None, "cleared");
-    assert_eq!(admin.submit(&catalog, &action, &[("archive_origin", "")]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        admin
+            .submit(&catalog, &action, &[("archive_origin", "")])
+            .await
+            .status,
+        StatusCode::SEE_OTHER
+    );
     assert_eq!(stored().await, None, "cleared");
     let policy = admin.get(&format!("/policy/org-{}", world.acme.id)).await;
     assert_eq!(policy.status, StatusCode::OK, "{}", policy.body);
-    assert_eq!(policy.body.matches(r#"<option value="oci">OCI</option>"#).count(), 2, "the block and exception forms offer OCI: {}", policy.body);
+    assert_eq!(
+        policy
+            .body
+            .matches(r#"<option value="oci">OCI</option>"#)
+            .count(),
+        2,
+        "the block and exception forms offer OCI: {}",
+        policy.body
+    );
 }

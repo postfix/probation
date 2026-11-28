@@ -164,12 +164,10 @@ async fn ensure_in(transaction: &Transaction<'_>) -> Result<(), SchemaError> {
         // Earlier rows have no registry identity. Invalidate their ambiguous package
         // snapshots and references, keeping blocklist and content metadata intact.
         Some((from @ (4 | 5), _)) => {
-            tracing::info!(
-                from,
-                to = SCHEMA_VERSION,
-                "upgrading the database schema"
-            );
-            transaction.execute("DROP TABLE artifact_references", ()).await?;
+            tracing::info!(from, to = SCHEMA_VERSION, "upgrading the database schema");
+            transaction
+                .execute("DROP TABLE artifact_references", ())
+                .await?;
             transaction.execute("DROP TABLE projects", ()).await?;
             for statement in DDL.split_inclusive(';').filter(|s| !s.trim().is_empty()) {
                 transaction.execute(statement, ()).await?;
@@ -182,7 +180,12 @@ async fn ensure_in(transaction: &Transaction<'_>) -> Result<(), SchemaError> {
                 .await?;
         }
         Some((6, _)) => {
-            transaction.execute("UPDATE schema_meta SET schema_version = 7, engine_version = ?1 WHERE id = 1", (TURSO_CRATE_VERSION,)).await?;
+            transaction
+                .execute(
+                    "UPDATE schema_meta SET schema_version = 7, engine_version = ?1 WHERE id = 1",
+                    (TURSO_CRATE_VERSION,),
+                )
+                .await?;
         }
         // A database this build did not write. Refuse, and change nothing: the
         // transaction, tables and all, is rolled back on the way out.
@@ -369,10 +372,17 @@ mod tests {
 
         let content_index = "CREATE INDEX IF NOT EXISTS artifact_references_by_content\n    \
                              ON artifact_references (content_key);\n";
-        let version_4 = DDL.replace(content_index, "")
+        let version_4 = DDL
+            .replace(content_index, "")
             .replace("    registry_id INTEGER NOT NULL DEFAULT 0,\n", "")
-            .replace("PRIMARY KEY (registry_id, ecosystem, name)", "PRIMARY KEY (ecosystem, name)")
-            .replace("ON artifact_references (registry_id, ecosystem, name)", "ON artifact_references (ecosystem, name)");
+            .replace(
+                "PRIMARY KEY (registry_id, ecosystem, name)",
+                "PRIMARY KEY (ecosystem, name)",
+            )
+            .replace(
+                "ON artifact_references (registry_id, ecosystem, name)",
+                "ON artifact_references (ecosystem, name)",
+            );
         assert_ne!(
             version_4, DDL,
             "the fixture lacks exactly the version 5 index"
@@ -414,16 +424,23 @@ mod tests {
         drop(rows);
 
         for table in ["projects", "artifact_references"] {
-            let mut rows = connection.query(&format!("SELECT count(*) FROM {table}"), ())
-                .await.expect("the package table");
+            let mut rows = connection
+                .query(&format!("SELECT count(*) FROM {table}"), ())
+                .await
+                .expect("the package table");
             let row = rows.next().await.expect("count row").expect("one row");
             assert_eq!(row.get_value(0).unwrap().as_integer().copied(), Some(0));
         }
-        let mut rows = connection.query("SELECT revision, snapshot FROM blocklist WHERE id = 1", ())
-            .await.expect("preserved blocklist");
+        let mut rows = connection
+            .query("SELECT revision, snapshot FROM blocklist WHERE id = 1", ())
+            .await
+            .expect("preserved blocklist");
         let row = rows.next().await.expect("blocklist row").expect("one row");
         assert_eq!(row.get_value(0).unwrap().as_integer().copied(), Some(7));
-        assert_eq!(row.get_value(1).unwrap().as_blob().cloned(), Some(vec![0x42]));
+        assert_eq!(
+            row.get_value(1).unwrap().as_blob().cloned(),
+            Some(vec![0x42])
+        );
         drop(rows);
 
         let mut rows = connection

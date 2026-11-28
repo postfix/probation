@@ -36,7 +36,10 @@ mod tests {
             version: 1,
             key_id: probation_policy::api::KeyId(7),
             org: probation_policy::api::OrgId(10),
-            account: probation_policy::PlaceRef { kind: probation_policy::LayerKind::Org, id: 10 },
+            account: probation_policy::PlaceRef {
+                kind: probation_policy::LayerKind::Org,
+                id: 10,
+            },
             revision: 5,
             place_chain: Vec::new(),
             layers: Vec::new(),
@@ -45,7 +48,10 @@ mod tests {
             registries: Vec::new(),
         };
         let deny = Denylist::default();
-        assert!(activation_order(&snapshot, &deny, None).is_err(), "no chain: invalid shape");
+        assert!(
+            activation_order(&snapshot, &deny, None).is_err(),
+            "no chain: invalid shape"
+        );
         let floor = ActiveRevision::of(&snapshot);
         snapshot.revision = 4;
         assert!(activation_order(&snapshot, &deny, Some(&floor)).is_err());

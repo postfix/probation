@@ -12,7 +12,10 @@ fn an_old_shape_report_parses_and_has_no_osv() {
     assert_eq!(report.osv, None);
     assert_eq!(report.settings_revision, 3);
     let again = serde_json::to_string(&report).unwrap();
-    assert!(!again.contains("\"osv\":{"), "an absent osv is left out: {again}");
+    assert!(
+        !again.contains("\"osv\":{"),
+        "an absent osv is left out: {again}"
+    );
 }
 
 #[test]
@@ -32,8 +35,14 @@ fn rubygems_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
     let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok"}"#).unwrap();
     assert_eq!(old.rubygems, None);
-    assert!(!serde_json::to_string(&old).unwrap().contains("rubygems"), "an unknown state is not written");
-    let new = Upstreams { rubygems: Some(Reachability::Unreachable), ..old };
+    assert!(
+        !serde_json::to_string(&old).unwrap().contains("rubygems"),
+        "an unknown state is not written"
+    );
+    let new = Upstreams {
+        rubygems: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""rubygems":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -43,7 +52,10 @@ fn rubygems_reachability_is_additive_in_both_directions() {
         osv: Reachability,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.pypi, older.osv), (Reachability::Ok, Reachability::Ok, Reachability::Ok));
+    assert_eq!(
+        (older.npm, older.pypi, older.osv),
+        (Reachability::Ok, Reachability::Ok, Reachability::Ok)
+    );
 }
 
 /// Row 18: the Cargo upstream state is additive in the same way (absent from an older report,
@@ -51,10 +63,14 @@ fn rubygems_reachability_is_additive_in_both_directions() {
 #[test]
 fn cargo_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","rubygems":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","rubygems":"ok"}"#).unwrap();
     assert_eq!(old.cargo, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("cargo"));
-    let new = Upstreams { cargo: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        cargo: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""cargo":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -63,17 +79,24 @@ fn cargo_reachability_is_additive_in_both_directions() {
         rubygems: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.rubygems), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.rubygems),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }
 
 /// Row 19: the Go upstream state is additive in the same way as RubyGems and Cargo.
 #[test]
 fn go_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","cargo":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","cargo":"ok"}"#).unwrap();
     assert_eq!(old.go, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("\"go\""));
-    let new = Upstreams { go: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        go: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""go":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -82,17 +105,24 @@ fn go_reachability_is_additive_in_both_directions() {
         cargo: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.cargo), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.cargo),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }
 
 /// Row 20: the NuGet upstream state is additive in the same way as the families before it.
 #[test]
 fn nuget_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","go":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","go":"ok"}"#).unwrap();
     assert_eq!(old.nuget, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("nuget"));
-    let new = Upstreams { nuget: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        nuget: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""nuget":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -101,17 +131,24 @@ fn nuget_reachability_is_additive_in_both_directions() {
         go: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.go), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.go),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }
 
 /// Row 21: the Maven upstream state is additive in the same way as the families before it.
 #[test]
 fn maven_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","nuget":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","nuget":"ok"}"#).unwrap();
     assert_eq!(old.maven, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("maven"));
-    let new = Upstreams { maven: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        maven: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""maven":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -120,17 +157,24 @@ fn maven_reachability_is_additive_in_both_directions() {
         nuget: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.nuget), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.nuget),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }
 
 /// Row 23: the Conan upstream state is additive in the same way as the families before it.
 #[test]
 fn conan_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","maven":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","maven":"ok"}"#).unwrap();
     assert_eq!(old.conan, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("conan"));
-    let new = Upstreams { conan: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        conan: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""conan":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -139,17 +183,24 @@ fn conan_reachability_is_additive_in_both_directions() {
         maven: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.maven), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.maven),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }
 
 /// Row 24: the OCI upstream state is additive in the same way as the families before it.
 #[test]
 fn oci_reachability_is_additive_in_both_directions() {
     use probation_policy::api::{Reachability, Upstreams};
-    let old: Upstreams = serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","conan":"ok"}"#).unwrap();
+    let old: Upstreams =
+        serde_json::from_str(r#"{"npm":"ok","pypi":"ok","osv":"ok","conan":"ok"}"#).unwrap();
     assert_eq!(old.oci, None);
     assert!(!serde_json::to_string(&old).unwrap().contains("oci"));
-    let new = Upstreams { oci: Some(Reachability::Unreachable), ..old };
+    let new = Upstreams {
+        oci: Some(Reachability::Unreachable),
+        ..old
+    };
     let text = serde_json::to_string(&new).unwrap();
     assert!(text.contains(r#""oci":"unreachable""#), "{text}");
     #[derive(serde::Deserialize)]
@@ -158,5 +209,8 @@ fn oci_reachability_is_additive_in_both_directions() {
         conan: Option<Reachability>,
     }
     let older: OlderServer = serde_json::from_str(&text).unwrap();
-    assert_eq!((older.npm, older.conan), (Reachability::Ok, Some(Reachability::Ok)));
+    assert_eq!(
+        (older.npm, older.conan),
+        (Reachability::Ok, Some(Reachability::Ok))
+    );
 }

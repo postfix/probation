@@ -12,7 +12,11 @@ pub const MAX_NAME: usize = 128;
 
 /// A crate name as the index spells a path: `[A-Za-z0-9_-]`, bounded (LS-F6).
 pub fn valid_crate_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_NAME && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    !name.is_empty()
+        && name.len() <= MAX_NAME
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
 /// The path segments of the index file of `lower` (already lower case): `1/a`, `2/ab`,
@@ -22,7 +26,11 @@ pub fn index_segments(lower: &str) -> Vec<String> {
         1 => vec!["1".to_owned(), lower.to_owned()],
         2 => vec!["2".to_owned(), lower.to_owned()],
         3 => vec!["3".to_owned(), lower[..1].to_owned(), lower.to_owned()],
-        _ => vec![lower[..2].to_owned(), lower[2..4].to_owned(), lower.to_owned()],
+        _ => vec![
+            lower[..2].to_owned(),
+            lower[2..4].to_owned(),
+            lower.to_owned(),
+        ],
     }
 }
 
@@ -34,7 +42,11 @@ pub fn name_of_path(segments: &[&str]) -> Option<String> {
     if !valid_crate_name(name) || name.bytes().any(|b| b.is_ascii_uppercase()) {
         return None;
     }
-    (index_segments(name).iter().map(String::as_str).eq(segments.iter().copied())).then(|| name.to_owned())
+    (index_segments(name)
+        .iter()
+        .map(String::as_str)
+        .eq(segments.iter().copied()))
+    .then(|| name.to_owned())
 }
 
 /// One line of an index file: a version of one crate.
@@ -65,7 +77,10 @@ impl Entry {
     }
 
     pub fn expected(&self) -> Vec<Digest> {
-        vec![Digest { algorithm: HashAlgorithm::Sha256, bytes: Box::from(self.cksum.as_slice()) }]
+        vec![Digest {
+            algorithm: HashAlgorithm::Sha256,
+            bytes: Box::from(self.cksum.as_slice()),
+        }]
     }
 }
 
@@ -99,7 +114,9 @@ struct Line {
 }
 
 fn micros(text: &Option<String>) -> Option<i64> {
-    text.as_deref().and_then(|text| text.parse::<jiff::Timestamp>().ok()).map(|t| t.as_microsecond())
+    text.as_deref()
+        .and_then(|text| text.parse::<jiff::Timestamp>().ok())
+        .map(|t| t.as_microsecond())
 }
 
 /// Parses an index file for the crate whose lower-case name is `lower`. A line that is not a
@@ -121,9 +138,14 @@ pub fn parse_index(body: &[u8], lower: &str, max_entries: usize) -> Result<Vec<E
         if lines > max_entries {
             return Err(IndexError::TooMany);
         }
-        let Ok(parsed) = serde_json::from_str::<Line>(raw) else { continue };
+        let Ok(parsed) = serde_json::from_str::<Line>(raw) else {
+            continue;
+        };
         let mut cksum = [0u8; 32];
-        if parsed.cksum.len() != 64 || hex::decode_to_slice(&parsed.cksum, &mut cksum).is_err() || semver::Version::parse(&parsed.vers).is_err() {
+        if parsed.cksum.len() != 64
+            || hex::decode_to_slice(&parsed.cksum, &mut cksum).is_err()
+            || semver::Version::parse(&parsed.vers).is_err()
+        {
             continue;
         }
         if !valid_crate_name(&parsed.name) {
@@ -139,7 +161,14 @@ pub fn parse_index(body: &[u8], lower: &str, max_entries: usize) -> Result<Vec<E
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         };
-        entries.push(Entry { name: parsed.name, vers: parsed.vers, cksum, yanked: parsed.yanked, published_micros, line: raw.to_owned() });
+        entries.push(Entry {
+            name: parsed.name,
+            vers: parsed.vers,
+            cksum,
+            yanked: parsed.yanked,
+            published_micros,
+            line: raw.to_owned(),
+        });
     }
     if lines > 0 && entries.is_empty() {
         return Err(IndexError::NothingUsable);
@@ -176,8 +205,13 @@ struct RawConfig {
 
 pub fn parse_config(body: &[u8]) -> Option<UpstreamConfig> {
     let raw: RawConfig = serde_json::from_slice(body).ok()?;
-    (raw.dl.len() <= 2048 && raw.api.as_ref().is_none_or(|api| api.len() <= 2048))
-        .then_some(UpstreamConfig { dl: raw.dl, api: raw.api, auth_required: raw.auth_required })
+    (raw.dl.len() <= 2048 && raw.api.as_ref().is_none_or(|api| api.len() <= 2048)).then_some(
+        UpstreamConfig {
+            dl: raw.dl,
+            api: raw.api,
+            auth_required: raw.auth_required,
+        },
+    )
 }
 
 /// The URL of one archive from the registry's `dl`: the cargo markers `{crate}`, `{version}`,
@@ -185,7 +219,13 @@ pub fn parse_config(body: &[u8]) -> Option<UpstreamConfig> {
 /// them gets `/{crate}/{version}/download` appended. `None` for a value that is not an absolute
 /// http(s) URL, or one that carries userinfo, a query or a fragment.
 pub fn archive_url(dl: &str, name: &str, vers: &str, cksum_hex: &str) -> Option<Url> {
-    const MARKERS: [&str; 5] = ["{crate}", "{version}", "{prefix}", "{lowerprefix}", "{sha256-checksum}"];
+    const MARKERS: [&str; 5] = [
+        "{crate}",
+        "{version}",
+        "{prefix}",
+        "{lowerprefix}",
+        "{sha256-checksum}",
+    ];
     // The directory part only: `ab/cd` for `abcd...`, `3/a` for `abc`, `1` and `2` for short names.
     let directory = |name: &str| {
         let mut segments = index_segments(name);
@@ -203,5 +243,11 @@ pub fn archive_url(dl: &str, name: &str, vers: &str, cksum_hex: &str) -> Option<
         format!("{}/{name}/{vers}/download", dl.trim_end_matches('/'))
     };
     let url = Url::parse(&text).ok()?;
-    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some() && url.username().is_empty() && url.password().is_none() && url.query().is_none() && url.fragment().is_none()).then_some(url)
+    (matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then_some(url)
 }

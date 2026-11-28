@@ -144,3 +144,20 @@ probation = { path = ".", features = ["test-support"] }
 # are committed under `proptest-regressions/` and replayed on the next run.
 proptest = "1.11.0"
 wiremock = "0.6.5"
+
+# The embedded database runs unoptimised in the dev and test profile, so a
+# 4096-page NuGet registration took ~16 s of CPU per request and crossed the
+# 60 s document deadline on hosted runners (Release run 46132787494). Building
+# only these dependencies optimised keeps the deadline and every assertion.
+[profile.dev.package.turso_core]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.turso_parser]
+opt-level = 3
+
+[profile.dev.package.turso]
+opt-level = 3
+
+[profile.dev.package.turso_sdk_kit]
+opt-level = 3

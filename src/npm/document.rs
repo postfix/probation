@@ -93,7 +93,12 @@ impl PackageDocument {
         Ok(entries)
     }
 
-    fn entry(&self, registry_id: u64, version: &str, record: &Value) -> Result<VersionEntry, UnusableVersion> {
+    fn entry(
+        &self,
+        registry_id: u64,
+        version: &str,
+        record: &Value,
+    ) -> Result<VersionEntry, UnusableVersion> {
         let dist = record
             .get("dist")
             .and_then(Value::as_object)

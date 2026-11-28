@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, Uri};
-use common::maven::{self, REPO, PUBLISH, at, http_date, metadata, serve_version};
+use common::maven::{self, PUBLISH, REPO, at, http_date, metadata, serve_version};
 use common::{FakeAnswer, FakeRegistry, TestClock, TestServer, fake_origins, sample_config};
 use probation::http::credential_read::{FamilyReadRules, ReadClass, RequestParts, classify_read};
 use probation::upstream::{OriginSet, Transport};
@@ -31,10 +31,20 @@ fn host_mode() -> bool {
 fn host_tool_ready() -> bool {
     // Through bash: Maven ships mvn.cmd on Windows, which Command::new("mvn") (mvn.exe only) cannot find. An explicit child PATH is searched first,
     // so the lane's Git bash wins over System32's WSL launcher.
-    let output = std::process::Command::new("bash").env("PATH", std::env::var_os("PATH").unwrap_or_default()).args(["-c", "mvn --version"]).output().unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but mvn does not run: {err}"));
+    let output = std::process::Command::new("bash")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args(["-c", "mvn --version"])
+        .output()
+        .unwrap_or_else(|err| panic!("PROBATION_NATIVE_HOST=1 but mvn does not run: {err}"));
     let version = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(version.contains("Apache Maven 3.9.16") && version.contains("Java version: 21."), "the pinned toolchain is Maven 3.9.16 on Java 21; the host has: {version}");
-    assert!(std::env::var("PROBATION_MAVEN_SEED").is_ok(), "PROBATION_MAVEN_SEED names the seeded plugin repository");
+    assert!(
+        version.contains("Apache Maven 3.9.16") && version.contains("Java version: 21."),
+        "the pinned toolchain is Maven 3.9.16 on Java 21; the host has: {version}"
+    );
+    assert!(
+        std::env::var("PROBATION_MAVEN_SEED").is_ok(),
+        "PROBATION_MAVEN_SEED names the seeded plugin repository"
+    );
     true
 }
 
@@ -42,7 +52,10 @@ fn client_available() -> bool {
     if host_mode() {
         return host_tool_ready();
     }
-    std::process::Command::new("podman").args(["image", "exists", IMAGE]).status().is_ok_and(|status| status.success())
+    std::process::Command::new("podman")
+        .args(["image", "exists", IMAGE])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 macro_rules! need_mvn {
@@ -61,18 +74,37 @@ macro_rules! need_mvn {
 async fn mvn(dir: &Path, script: &str) -> (bool, String) {
     if host_mode() {
         let here = dir.display().to_string().replace('\\', "/");
-        let seed = std::env::var("PROBATION_MAVEN_SEED").unwrap().replace('\\', "/");
-        let script = format!("trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home; rm -rf {here}/.m2repo {here}/out; mkdir -p {here}/.m2repo {here}/home && cp -r {seed}/. {here}/.m2repo/ && {}", script.replace("/work", &here));
+        let seed = std::env::var("PROBATION_MAVEN_SEED")
+            .unwrap()
+            .replace('\\', "/");
+        let script = format!(
+            "trap 'kill $(jobs -p) 2>/dev/null' EXIT; export HOME={here}/home; rm -rf {here}/.m2repo {here}/out; mkdir -p {here}/.m2repo {here}/home && cp -r {seed}/. {here}/.m2repo/ && {}",
+            script.replace("/work", &here)
+        );
         let dir = dir.to_path_buf();
         return tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("bash").env("PATH", std::env::var_os("PATH").unwrap_or_default()).current_dir(&dir).args(["-c", &script]).output().expect("bash runs the host mvn");
-            (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+            let output = std::process::Command::new("bash")
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .current_dir(&dir)
+                .args(["-c", &script])
+                .output()
+                .expect("bash runs the host mvn");
+            (
+                output.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
         })
         .await
         .unwrap();
     }
     let dir = dir.to_path_buf();
-    let script = format!("export HOME=/work/home; rm -rf /work/.m2repo /work/out; mkdir -p /work/.m2repo /work/home && cp -r /opt/seed-m2/. /work/.m2repo/ && {script}");
+    let script = format!(
+        "export HOME=/work/home; rm -rf /work/.m2repo /work/out; mkdir -p /work/.m2repo /work/home && cp -r /opt/seed-m2/. /work/.m2repo/ && {script}"
+    );
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("podman")
             .args(["run", "--rm", "--network=host", "--userns=keep-id", "-v"])
@@ -80,7 +112,14 @@ async fn mvn(dir: &Path, script: &str) -> (bool, String) {
             .args(["-w", "/work", "--entrypoint", "sh", IMAGE, "-c", &script])
             .output()
             .expect("podman runs the pinned client");
-        (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
     })
     .await
     .unwrap()
@@ -89,15 +128,21 @@ async fn mvn(dir: &Path, script: &str) -> (bool, String) {
 const COPY: &str = "mvn -B -s settings.xml -Dmaven.repo.local=/work/.m2repo org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies -DoutputDirectory=/work/out && ls /work/out";
 
 fn project(dependencies: &str) -> String {
-    format!("<project><modelVersion>4.0.0</modelVersion><groupId>e2e</groupId><artifactId>app</artifactId><version>1</version><packaging>pom</packaging><repositories><repository><id>snaps</id><url>https://central.invalid/</url><snapshots><enabled>true</enabled></snapshots></repository></repositories><dependencies>{dependencies}</dependencies></project>")
+    format!(
+        "<project><modelVersion>4.0.0</modelVersion><groupId>e2e</groupId><artifactId>app</artifactId><version>1</version><packaging>pom</packaging><repositories><repository><id>snaps</id><url>https://central.invalid/</url><snapshots><enabled>true</enabled></snapshots></repository></repositories><dependencies>{dependencies}</dependencies></project>"
+    )
 }
 
 fn dependency(artifact: &str, version: &str) -> String {
-    format!("<dependency><groupId>org.demo</groupId><artifactId>{artifact}</artifactId><version>{version}</version></dependency>")
+    format!(
+        "<dependency><groupId>org.demo</groupId><artifactId>{artifact}</artifactId><version>{version}</version></dependency>"
+    )
 }
 
 fn settings(port: u16) -> String {
-    format!("<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>http://127.0.0.1:{port}/maven/</url></mirror></mirrors></settings>")
+    format!(
+        "<settings><mirrors><mirror><id>probation</id><mirrorOf>*</mirrorOf><url>http://127.0.0.1:{port}/maven/</url></mirror></mirrors></settings>"
+    )
 }
 
 struct Native {
@@ -110,30 +155,88 @@ struct Native {
 async fn start() -> Native {
     let dir = tempfile::tempdir().unwrap();
     let registry = FakeRegistry::new();
-    registry.answer(&at("org/demo/lib/maven-metadata.xml"), FakeAnswer::Body(metadata("org.demo", "lib", "2.0", "2.0", &["1.0", "1.1", "2.0"])));
+    registry.answer(
+        &at("org/demo/lib/maven-metadata.xml"),
+        FakeAnswer::Body(metadata(
+            "org.demo",
+            "lib",
+            "2.0",
+            "2.0",
+            &["1.0", "1.1", "2.0"],
+        )),
+    );
     serve_version(&registry, "org.demo", "lib", "1.0", Some(OLD));
     serve_version(&registry, "org.demo", "lib", "1.1", Some(OLD));
     serve_version(&registry, "org.demo", "lib", "2.0", Some(YOUNG));
     let builds = ["20250101.120000-1", "20260405.120000-2"];
-    registry.answer(&at("org/demo/snap/1.0-SNAPSHOT/maven-metadata.xml"), FakeAnswer::Body(maven::snapshot_metadata("org.demo", "snap", "1.0-SNAPSHOT", &builds)));
-    registry.answer(&at("org/demo/snap/maven-metadata.xml"), FakeAnswer::Body(metadata("org.demo", "snap", "1.0-SNAPSHOT", "", &["1.0-SNAPSHOT"])));
+    registry.answer(
+        &at("org/demo/snap/1.0-SNAPSHOT/maven-metadata.xml"),
+        FakeAnswer::Body(maven::snapshot_metadata(
+            "org.demo",
+            "snap",
+            "1.0-SNAPSHOT",
+            &builds,
+        )),
+    );
+    registry.answer(
+        &at("org/demo/snap/maven-metadata.xml"),
+        FakeAnswer::Body(metadata(
+            "org.demo",
+            "snap",
+            "1.0-SNAPSHOT",
+            "",
+            &["1.0-SNAPSHOT"],
+        )),
+    );
     for (build, date) in [(builds[0], OLD), (builds[1], YOUNG)] {
         let file = format!("snap-1.0-{build}");
-        registry.answer(&at(&format!("org/demo/snap/1.0-SNAPSHOT/{file}.pom")), FakeAnswer::Dated { body: maven::pom("org.demo", "snap", "1.0-SNAPSHOT").into_bytes(), last_modified: http_date(date) });
-        registry.answer(&at(&format!("org/demo/snap/1.0-SNAPSHOT/{file}.jar")), FakeAnswer::Dated { body: maven::jar("snap", build), last_modified: http_date(date) });
+        registry.answer(
+            &at(&format!("org/demo/snap/1.0-SNAPSHOT/{file}.pom")),
+            FakeAnswer::Dated {
+                body: maven::pom("org.demo", "snap", "1.0-SNAPSHOT").into_bytes(),
+                last_modified: http_date(date),
+            },
+        );
+        registry.answer(
+            &at(&format!("org/demo/snap/1.0-SNAPSHOT/{file}.jar")),
+            FakeAnswer::Dated {
+                body: maven::jar("snap", build),
+                last_modified: http_date(date),
+            },
+        );
     }
     let blocklist = dir.path().join("blocklist.json");
-    std::fs::write(&blocklist, common::snapshot(1, "2020-01-01T00:00:00Z", "2099-01-01T00:00:00Z", "")).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        &blocklist,
+        common::snapshot(1, "2020-01-01T00:00:00Z", "2099-01-01T00:00:00Z", ""),
+    )
+    .unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let mut config = sample_config();
     config.blocklist_file = blocklist;
     config.cooldown_seconds = 7 * 86_400;
     config.listen = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     config.public_url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-    let origins: OriginSet = fake_origins().with_maven(Url::parse(REPO).unwrap(), Url::parse(PUBLISH).unwrap());
-    let server = TestServer::start_with_upstream(config, TestClock::at_rfc3339(NOW).shared(), Arc::clone(&registry) as Arc<dyn Transport>, origins).await;
+    let origins: OriginSet =
+        fake_origins().with_maven(Url::parse(REPO).unwrap(), Url::parse(PUBLISH).unwrap());
+    let server = TestServer::start_with_upstream(
+        config,
+        TestClock::at_rfc3339(NOW).shared(),
+        Arc::clone(&registry) as Arc<dyn Transport>,
+        origins,
+    )
+    .await;
     std::fs::create_dir_all(dir.path().join("app")).unwrap();
-    Native { server, registry, dir, port }
+    Native {
+        server,
+        registry,
+        dir,
+        port,
+    }
 }
 
 fn write_project(n: &Native, dependencies: &str) -> std::path::PathBuf {
@@ -150,12 +253,28 @@ async fn native_mvn_takes_the_newest_allowed_version_of_a_range_and_the_pin_of_a
     let app = write_project(&n, &dependency("lib", "[1.0,3.0)"));
     let (ok, output) = mvn(&app, COPY).await;
     assert!(ok, "{output}");
-    assert!(output.contains("lib-1.1.jar") && !output.contains("lib-2.0.jar"), "{output}");
-    assert_eq!(std::fs::read(app.join("out/lib-1.1.jar")).unwrap(), maven::jar("lib", "1.1"), "the jar mvn copied is the repository's, exactly");
+    assert!(
+        output.contains("lib-1.1.jar") && !output.contains("lib-2.0.jar"),
+        "{output}"
+    );
+    assert_eq!(
+        std::fs::read(app.join("out/lib-1.1.jar")).unwrap(),
+        maven::jar("lib", "1.1"),
+        "the jar mvn copied is the repository's, exactly"
+    );
     let held = write_project(&n, &dependency("lib", "2.0"));
     let (ok, output) = mvn(&held, COPY).await;
-    assert!(!ok && (output.contains("403") || output.contains("Forbidden")), "the exact pin of the held version fails: {output}");
-    assert!(!n.registry.calls().iter().any(|url| url.path().ends_with("lib-2.0.jar")), "the held jar was never fetched");
+    assert!(
+        !ok && (output.contains("403") || output.contains("Forbidden")),
+        "the exact pin of the held version fails: {output}"
+    );
+    assert!(
+        !n.registry
+            .calls()
+            .iter()
+            .any(|url| url.path().ends_with("lib-2.0.jar")),
+        "the held jar was never fetched"
+    );
     n.server.shutdown().await;
 }
 
@@ -166,8 +285,17 @@ async fn native_mvn_resolves_a_snapshot_to_the_newest_allowed_build() {
     let app = write_project(&n, &dependency("snap", "1.0-SNAPSHOT"));
     let (ok, output) = mvn(&app, COPY).await;
     assert!(ok, "{output}");
-    assert!(output.contains("snap-1.0") && !output.contains("20260405"), "the held build is never offered: {output}");
-    assert!(!n.registry.calls().iter().any(|url| url.path().contains("20260405.120000-2.jar")), "the held build's jar was never fetched");
+    assert!(
+        output.contains("snap-1.0") && !output.contains("20260405"),
+        "the held build is never offered: {output}"
+    );
+    assert!(
+        !n.registry
+            .calls()
+            .iter()
+            .any(|url| url.path().contains("20260405.120000-2.jar")),
+        "the held build's jar was never fetched"
+    );
     n.server.shutdown().await;
 }
 
@@ -191,18 +319,35 @@ async fn mvn_native_client_sends_only_allow_listed_headers() {
     let dir = tempfile::tempdir().unwrap();
     let app_dir = dir.path().join("app");
     std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(app_dir.join("pom.xml"), project(&dependency("lib", "[1.0,3.0)"))).unwrap();
+    std::fs::write(
+        app_dir.join("pom.xml"),
+        project(&dependency("lib", "[1.0,3.0)")),
+    )
+    .unwrap();
     std::fs::write(app_dir.join("settings.xml"), settings(port)).unwrap();
     let (ok, _) = mvn(&app_dir, COPY).await;
     assert!(!ok, "the tap answers 404 to everything");
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty(), "mvn reached the tap");
-    let mut names: Vec<String> = seen.iter().flat_map(|(_, headers)| headers.keys().map(|k| k.as_str().to_owned())).collect();
+    let mut names: Vec<String> = seen
+        .iter()
+        .flat_map(|(_, headers)| headers.keys().map(|k| k.as_str().to_owned()))
+        .collect();
     names.sort();
     names.dedup();
     eprintln!("mvn sends these header names on a plain read: {names:?}");
     for (uri, headers) in seen.iter() {
-        let class = classify_read(&RequestParts { uri, headers, extra_pseudo_headers: &[] }, &FamilyReadRules::MAVEN);
-        assert!(matches!(class, ReadClass::CacheEligible(_)), "a native client header is off the allow-list: {uri} {headers:?}");
+        let class = classify_read(
+            &RequestParts {
+                uri,
+                headers,
+                extra_pseudo_headers: &[],
+            },
+            &FamilyReadRules::MAVEN,
+        );
+        assert!(
+            matches!(class, ReadClass::CacheEligible(_)),
+            "a native client header is off the allow-list: {uri} {headers:?}"
+        );
     }
 }

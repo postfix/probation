@@ -23,13 +23,20 @@ fn digits(s: &str, max: usize) -> bool {
 
 /// One group of a tile index: `x001` (not the last) or `234`; the last may end in `.p`.
 fn tile_group(group: &str) -> bool {
-    group.strip_prefix('x').map_or_else(|| digits(group, 3) && group.len() == 3, |rest| rest.len() == 3 && digits(rest, 3))
+    group.strip_prefix('x').map_or_else(
+        || digits(group, 3) && group.len() == 3,
+        |rest| rest.len() == 3 && digits(rest, 3),
+    )
 }
 
 /// The URL path segments below the database root for a request path `{db}/{tail}`, or `None` when
 /// it is not one of the protocol's reads or names another database.
 pub fn segments_of(app: &App, rest: &str) -> Option<(Vec<String>, &'static str)> {
-    let db = app.origins.origin(OriginKind::GoSumdb).host_str()?.to_owned();
+    let db = app
+        .origins
+        .origin(OriginKind::GoSumdb)
+        .host_str()?
+        .to_owned();
     let tail = rest.strip_prefix(&db)?.strip_prefix('/')?;
     let parts: Vec<&str> = tail.split('/').collect();
     match parts.as_slice() {
@@ -57,11 +64,24 @@ pub fn segments_of(app: &App, rest: &str) -> Option<(Vec<String>, &'static str)>
                 None => (rest, None),
             };
             let last = groups.len() - 1;
-            let groups_ok = groups.iter().enumerate().all(|(i, group)| tile_group(if i == last { group.strip_suffix(".p").unwrap_or(group) } else { group }));
+            let groups_ok = groups.iter().enumerate().all(|(i, group)| {
+                tile_group(if i == last {
+                    group.strip_suffix(".p").unwrap_or(group)
+                } else {
+                    group
+                })
+            });
             if !groups_ok || width.is_some_and(|w| !digits(w, 3)) {
                 return None;
             }
-            Some((std::iter::once("tile").chain([*height, *level]).chain(rest.iter().copied()).map(str::to_owned).collect(), "application/octet-stream"))
+            Some((
+                std::iter::once("tile")
+                    .chain([*height, *level])
+                    .chain(rest.iter().copied())
+                    .map(str::to_owned)
+                    .collect(),
+                "application/octet-stream",
+            ))
         }
         _ => None,
     }
@@ -73,7 +93,10 @@ const TEXT: &str = "text/plain; charset=utf-8";
 pub async fn serve(app: &App, rest: &str) -> Result<Rendered, ApiError> {
     let (segments, content_type) = segments_of(app, rest).ok_or(ApiError::NotFound)?;
     let parts: Vec<&str> = segments.iter().map(String::as_str).collect();
-    let url = app.origins.url_for(OriginKind::GoSumdb, &parts).map_err(|_| ApiError::NotFound)?;
+    let url = app
+        .origins
+        .url_for(OriginKind::GoSumdb, &parts)
+        .map_err(|_| ApiError::NotFound)?;
     let fetched = app
         .transport
         .fetch_metadata(MetadataRequest {
@@ -89,7 +112,10 @@ pub async fn serve(app: &App, rest: &str) -> Result<Rendered, ApiError> {
         .await;
     app.upstreams.record_upstream(Call::Go, &fetched);
     match fetched {
-        Ok(MetadataResponse::Fresh { body, .. }) => Ok(Rendered { body: Arc::from(body.as_ref()), content_type }),
+        Ok(MetadataResponse::Fresh { body, .. }) => Ok(Rendered {
+            body: Arc::from(body.as_ref()),
+            content_type,
+        }),
         Ok(MetadataResponse::Missing) => Err(ApiError::NotFound),
         Ok(MetadataResponse::NotModified { .. }) => Err(ApiError::UpstreamInvalid),
         Err(crate::upstream::UpstreamError::Timeout) => Err(ApiError::UpstreamTimeout),

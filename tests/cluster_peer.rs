@@ -28,14 +28,20 @@ const FORWARDER: &str = "10.77.0.9";
 
 /// The service's configuration as the cluster ships it: deploy/kubernetes/config.toml, the file the ConfigMap is generated from.
 fn shipped_config() -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/kubernetes/config.toml")).expect("deploy/kubernetes/config.toml is readable")
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/kubernetes/config.toml"),
+    )
+    .expect("deploy/kubernetes/config.toml is readable")
 }
 
 /// `config` with every line named in `edits` replaced; each old line must exist (a drifted manifest fails here).
 fn edit(config: &str, edits: &[(&str, String)]) -> String {
     let mut out = config.to_owned();
     for (old, new) in edits {
-        assert!(out.contains(old), "the shipped configuration no longer contains {old:?}");
+        assert!(
+            out.contains(old),
+            "the shipped configuration no longer contains {old:?}"
+        );
         out = out.replacen(old, new, 1);
     }
     out
@@ -54,18 +60,38 @@ fn files() -> Files {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let tls = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
     let service_key = dir.path().join("service.key");
-    std::fs::write(&service_key, format!("prb_{}\n", "a".repeat(32))).expect("the service key is written");
-    std::fs::set_permissions(&service_key, std::fs::Permissions::from_mode(0o600)).expect("the key is private");
+    std::fs::write(&service_key, format!("prb_{}\n", "a".repeat(32)))
+        .expect("the service key is written");
+    std::fs::set_permissions(&service_key, std::fs::Permissions::from_mode(0o600))
+        .expect("the key is private");
     let data = dir.path().join("data");
-    Files { cert: tls.join("cert.pem"), key: tls.join("key.pem"), service_key, data, dir }
+    Files {
+        cert: tls.join("cert.pem"),
+        key: tls.join("key.pem"),
+        service_key,
+        data,
+        dir,
+    }
 }
 
 fn render(files: &Files, extra: &[(&str, String)]) -> String {
     let mut edits = vec![
-        ("data_dir = \"/var/lib/probation\"", format!("data_dir = \"{}\"", files.data.display())),
-        ("tls_cert_path = \"/etc/probation/tls/tls.crt\"", format!("tls_cert_path = \"{}\"", files.cert.display())),
-        ("tls_key_path = \"/etc/probation/tls/tls.key\"", format!("tls_key_path = \"{}\"", files.key.display())),
-        ("service_key_file = \"/run/probation/service.key\"", format!("service_key_file = \"{}\"", files.service_key.display())),
+        (
+            "data_dir = \"/var/lib/probation\"",
+            format!("data_dir = \"{}\"", files.data.display()),
+        ),
+        (
+            "tls_cert_path = \"/etc/probation/tls/tls.crt\"",
+            format!("tls_cert_path = \"{}\"", files.cert.display()),
+        ),
+        (
+            "tls_key_path = \"/etc/probation/tls/tls.key\"",
+            format!("tls_key_path = \"{}\"", files.key.display()),
+        ),
+        (
+            "service_key_file = \"/run/probation/service.key\"",
+            format!("service_key_file = \"{}\"", files.service_key.display()),
+        ),
     ];
     edits.extend(extra.iter().map(|(old, new)| (*old, new.clone())));
     edit(&shipped_config(), &edits)
@@ -74,31 +100,55 @@ fn render(files: &Files, extra: &[(&str, String)]) -> String {
 fn check_config(config: &str, dir: &Path) -> std::process::Output {
     let path = dir.join("config.toml");
     std::fs::write(&path, config).expect("the configuration is written");
-    Command::new(BINARY).args(["check-config", path.to_str().expect("a UTF-8 path")]).output().expect("the binary runs")
+    Command::new(BINARY)
+        .args(["check-config", path.to_str().expect("a UTF-8 path")])
+        .output()
+        .expect("the binary runs")
 }
 
 #[test]
 fn shipped_configmap_is_what_the_binary_accepts() {
     let files = files();
     let ok = check_config(&render(&files, &[]), files.dir.path());
-    assert!(ok.status.success(), "the shipped configuration is accepted: {}{}", String::from_utf8_lossy(&ok.stdout), String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "the shipped configuration is accepted: {}{}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
 
     // What the pod's configuration must keep: each removal is refused by the product's own parser, so the manifest checker's
     // idea of "safe" and the service's agree.
     let rendered = render(&files, &[]);
     let nodes = "allowed_peer_cidrs = [\"192.0.2.11/32\", \"192.0.2.12/32\", \"192.0.2.13/32\"]";
     let no_tls = rendered
-        .replace(&format!("tls_cert_path = \"{}\"\n", files.cert.display()), "")
+        .replace(
+            &format!("tls_cert_path = \"{}\"\n", files.cert.display()),
+            "",
+        )
         .replace(&format!("tls_key_path = \"{}\"\n", files.key.display()), "");
     for (what, config) in [
         ("no TLS on a non-loopback listener", no_tls),
-        ("no approved node", rendered.replace(nodes, "allowed_peer_cidrs = []")),
-        ("the whole internet approved", rendered.replace(nodes, "allowed_peer_cidrs = [\"0.0.0.0/0\"]")),
-        ("a /7 approved", rendered.replace(nodes, "allowed_peer_cidrs = [\"10.0.0.0/7\"]")),
+        (
+            "no approved node",
+            rendered.replace(nodes, "allowed_peer_cidrs = []"),
+        ),
+        (
+            "the whole internet approved",
+            rendered.replace(nodes, "allowed_peer_cidrs = [\"0.0.0.0/0\"]"),
+        ),
+        (
+            "a /7 approved",
+            rendered.replace(nodes, "allowed_peer_cidrs = [\"10.0.0.0/7\"]"),
+        ),
     ] {
         assert_ne!(config, rendered, "{what}: the edit changed nothing");
         let refused = check_config(&config, files.dir.path());
-        assert!(!refused.status.success(), "{what} must be refused: {}", String::from_utf8_lossy(&refused.stdout));
+        assert!(
+            !refused.status.success(),
+            "{what} must be refused: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
     }
 }
 
@@ -111,25 +161,45 @@ fn real_tcp_peers_in_a_network_namespace() {
         let out = Command::new("unshare")
             .args(["--user", "--map-root-user", "--net", "--"])
             .arg(exe)
-            .args(["--ignored", "--exact", "real_tcp_peers_in_a_network_namespace", "--nocapture", "--test-threads=1"])
+            .args([
+                "--ignored",
+                "--exact",
+                "real_tcp_peers_in_a_network_namespace",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(INNER, "1")
             .output()
-            .expect("unshare runs (this test fails, it never skips, when namespaces are unavailable)");
+            .expect(
+                "unshare runs (this test fails, it never skips, when namespaces are unavailable)",
+            );
         assert!(
             out.status.success(),
             "the namespace run failed:\n{}\n{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(String::from_utf8_lossy(&out.stdout).contains("cluster_peer inner: six peer checks held"), "the inner run did not reach its last check");
+        assert!(
+            String::from_utf8_lossy(&out.stdout)
+                .contains("cluster_peer inner: six peer checks held"),
+            "the inner run did not reach its last check"
+        );
         return;
     }
-    tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime").block_on(inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(inner());
 }
 
 fn ip(args: &[&str]) {
     let out = Command::new("ip").args(args).output().expect("ip runs");
-    assert!(out.status.success(), "ip {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "ip {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 struct Service(Child);
@@ -154,10 +224,22 @@ async fn inner() {
     let config = render(
         &files,
         &[
-            ("listen = \"0.0.0.0:8443\"", "listen = \"0.0.0.0:18443\"".to_owned()),
-            ("public_url = \"https://probation.cluster.example:30443\"", format!("public_url = \"https://{SERVICE_NODE}:18443\"")),
-            ("allowed_peer_cidrs = [\"192.0.2.11/32\", \"192.0.2.12/32\", \"192.0.2.13/32\"]", format!("allowed_peer_cidrs = [\"{APPROVED_NODE}/32\"]")),
-            ("server_url = \"https://policy.example.org\"", "server_url = \"https://policy.invalid\"".to_owned()),
+            (
+                "listen = \"0.0.0.0:8443\"",
+                "listen = \"0.0.0.0:18443\"".to_owned(),
+            ),
+            (
+                "public_url = \"https://probation.cluster.example:30443\"",
+                format!("public_url = \"https://{SERVICE_NODE}:18443\""),
+            ),
+            (
+                "allowed_peer_cidrs = [\"192.0.2.11/32\", \"192.0.2.12/32\", \"192.0.2.13/32\"]",
+                format!("allowed_peer_cidrs = [\"{APPROVED_NODE}/32\"]"),
+            ),
+            (
+                "server_url = \"https://policy.example.org\"",
+                "server_url = \"https://policy.invalid\"".to_owned(),
+            ),
         ],
     );
     let path = files.dir.path().join("config.toml");
@@ -187,7 +269,10 @@ async fn inner() {
             for (name, value) in headers {
                 request = request.header(name, value);
             }
-            let response = request.send().await.expect("the request reaches the service");
+            let response = request
+                .send()
+                .await
+                .expect("the request reaches the service");
             let status = response.status().as_u16();
             (status, response.text().await.unwrap_or_default())
         }
@@ -195,66 +280,153 @@ async fn inner() {
     let base = format!("https://{SERVICE_NODE}:18443");
     let mut ready = false;
     for _ in 0..200 {
-        if client_from(APPROVED_NODE).get(format!("{base}/health/live")).send().await.is_ok() {
+        if client_from(APPROVED_NODE)
+            .get(format!("{base}/health/live"))
+            .send()
+            .await
+            .is_ok()
+        {
             ready = true;
             break;
         }
         if let Some(status) = service.0.try_wait().expect("the child can be polled") {
             let (mut stdout, mut stderr) = (String::new(), String::new());
-            let _ = service.0.stdout.take().expect("piped").read_to_string(&mut stdout);
-            let _ = service.0.stderr.take().expect("piped").read_to_string(&mut stderr);
+            let _ = service
+                .0
+                .stdout
+                .take()
+                .expect("piped")
+                .read_to_string(&mut stdout);
+            let _ = service
+                .0
+                .stderr
+                .take()
+                .expect("piped")
+                .read_to_string(&mut stderr);
             panic!("the service exited early: {status}\n{stdout}\n{stderr}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(ready, "the service did not start listening on {SERVICE_NODE}:18443");
+    assert!(
+        ready,
+        "the service did not start listening on {SERVICE_NODE}:18443"
+    );
 
     // 1. An approved node is admitted (the service then has no policy to apply: 503 POLICY_UNAVAILABLE, not a refusal).
     let (status, body) = get(APPROVED_NODE, format!("{base}/v2/"), vec![]).await;
-    assert!(status != 403 && !body.contains("NETWORK_NOT_ALLOWED"), "an approved node is admitted: {status} {body}");
-    assert!(body.contains("POLICY_UNAVAILABLE"), "it got as far as the policy: {status} {body}");
+    assert!(
+        status != 403 && !body.contains("NETWORK_NOT_ALLOWED"),
+        "an approved node is admitted: {status} {body}"
+    );
+    assert!(
+        body.contains("POLICY_UNAVAILABLE"),
+        "it got as far as the policy: {status} {body}"
+    );
 
     // 2. An unapproved host that reaches the node's port with its own source address is refused before any protocol work.
     let (status, body) = get(EXTERNAL_HOST, format!("{base}/v2/"), vec![]).await;
-    assert_eq!((status, body.contains("NETWORK_NOT_ALLOWED")), (403, true), "an unapproved source is refused: {status} {body}");
-    for path in ["/registry/oci/1/v2/", "/npm/left-pad", "/pypi/simple/requests/", "/v2/library/alpine/manifests/latest"] {
+    assert_eq!(
+        (status, body.contains("NETWORK_NOT_ALLOWED")),
+        (403, true),
+        "an unapproved source is refused: {status} {body}"
+    );
+    for path in [
+        "/registry/oci/1/v2/",
+        "/npm/left-pad",
+        "/pypi/simple/requests/",
+        "/v2/library/alpine/manifests/latest",
+    ] {
         let (status, _) = get(EXTERNAL_HOST, format!("{base}{path}"), vec![]).await;
         assert_eq!(status, 403, "{path} from an unapproved source");
     }
 
     // 3. Forwarding headers never admit anybody: a caller names an approved address and is still refused.
-    let forged = vec![("x-forwarded-for", APPROVED_NODE), ("x-real-ip", APPROVED_NODE), ("forwarded", "for=10.77.0.2")];
+    let forged = vec![
+        ("x-forwarded-for", APPROVED_NODE),
+        ("x-real-ip", APPROVED_NODE),
+        ("forwarded", "for=10.77.0.2"),
+    ];
     let (status, _) = get(EXTERNAL_HOST, format!("{base}/v2/"), forged).await;
-    assert_eq!(status, 403, "a forged X-Forwarded-For from an unapproved source");
+    assert_eq!(
+        status, 403,
+        "a forged X-Forwarded-For from an unapproved source"
+    );
 
     // 4. The kubelet's probes and a load balancer's checks reach the pod from any address, with the pod's own address as Host.
-    let (status, _) = get(EXTERNAL_HOST, format!("{base}/health/live"), vec![("host", "10.244.1.7:8443")]).await;
-    assert_eq!(status, 200, "liveness answers every peer and needs no Host header");
-    let (status, body) = get(EXTERNAL_HOST, format!("{base}/health/ready"), vec![("host", "10.244.1.7:8443")]).await;
-    assert!(body.is_empty(), "an unapproved peer gets no readiness detail (status {status}): {body}");
+    let (status, _) = get(
+        EXTERNAL_HOST,
+        format!("{base}/health/live"),
+        vec![("host", "10.244.1.7:8443")],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "liveness answers every peer and needs no Host header"
+    );
+    let (status, body) = get(
+        EXTERNAL_HOST,
+        format!("{base}/health/ready"),
+        vec![("host", "10.244.1.7:8443")],
+    )
+    .await;
+    assert!(
+        body.is_empty(),
+        "an unapproved peer gets no readiness detail (status {status}): {body}"
+    );
 
     // 5. What externalTrafficPolicy: Cluster would do: a forwarder on an approved node connects from the node's own address (kube-proxy's
     // source rewrite). The external host did nothing different, and the service now admits it. This is why the Service says Local.
-    let listener = tokio::net::TcpListener::bind(format!("{FORWARDER}:18444")).await.expect("the forwarder listens");
+    let listener = tokio::net::TcpListener::bind(format!("{FORWARDER}:18444"))
+        .await
+        .expect("the forwarder listens");
     tokio::spawn(async move {
         loop {
-            let Ok((mut inbound, _)) = listener.accept().await else { return };
+            let Ok((mut inbound, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 let socket = tokio::net::TcpSocket::new_v4().expect("a socket");
-                socket.bind(format!("{APPROVED_NODE}:0").parse().expect("an address")).expect("bind the approved source");
-                let Ok(mut outbound) = socket.connect(format!("{SERVICE_NODE}:18443").parse::<SocketAddr>().expect("an address")).await else { return };
+                socket
+                    .bind(format!("{APPROVED_NODE}:0").parse().expect("an address"))
+                    .expect("bind the approved source");
+                let Ok(mut outbound) = socket
+                    .connect(
+                        format!("{SERVICE_NODE}:18443")
+                            .parse::<SocketAddr>()
+                            .expect("an address"),
+                    )
+                    .await
+                else {
+                    return;
+                };
                 let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
             });
         }
     });
-    let (status, body) = get(EXTERNAL_HOST, format!("https://{FORWARDER}:18444/v2/"), vec![("host", "10.77.0.1:18443")]).await;
-    assert!(status != 403 && body.contains("POLICY_UNAVAILABLE"), "behind a source-rewriting hop the external host IS admitted (the failure Local prevents): {status} {body}");
+    let (status, body) = get(
+        EXTERNAL_HOST,
+        format!("https://{FORWARDER}:18444/v2/"),
+        vec![("host", "10.77.0.1:18443")],
+    )
+    .await;
+    assert!(
+        status != 403 && body.contains("POLICY_UNAVAILABLE"),
+        "behind a source-rewriting hop the external host IS admitted (the failure Local prevents): {status} {body}"
+    );
     // And the same host, direct, is refused again: preserving the source is the whole difference.
     let (status, _) = get(EXTERNAL_HOST, format!("{base}/v2/"), vec![]).await;
     assert_eq!(status, 403, "the same host without the rewriting hop");
 
     // 6. The pod's own loopback is admitted (nothing outside the pod can be a loopback peer).
-    let (status, body) = get("127.0.0.1", "https://127.0.0.1:18443/v2/".to_owned(), vec![]).await;
-    assert!(status != 403 && body.contains("POLICY_UNAVAILABLE"), "a loopback peer is admitted: {status} {body}");
+    let (status, body) = get(
+        "127.0.0.1",
+        "https://127.0.0.1:18443/v2/".to_owned(),
+        vec![],
+    )
+    .await;
+    assert!(
+        status != 403 && body.contains("POLICY_UNAVAILABLE"),
+        "a loopback peer is admitted: {status} {body}"
+    );
     println!("cluster_peer inner: six peer checks held");
 }

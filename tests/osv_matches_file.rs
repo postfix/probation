@@ -3,7 +3,9 @@
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use probation::osv::matches::{self, HEADER, MAX_ENTRIES, MAX_RECORD, crc32, load_matches, render_matches};
+use probation::osv::matches::{
+    self, HEADER, MAX_ENTRIES, MAX_RECORD, crc32, load_matches, render_matches,
+};
 use probation_policy::Ecosystem;
 
 const WINDOW: Duration = Duration::from_secs(86_400);
@@ -56,7 +58,11 @@ fn osv_matches_file_torn_last_line_skipped() {
 fn osv_matches_file_expiry_clamped_to_stale_window() {
     let far = at(10 * 86_400);
     let loaded = load_matches(&file(&[record("npm", "a", "1.0.0", far)]), now(), WINDOW);
-    assert_eq!(loaded.entries[0].expiry_unix, at(86_400), "a clock set back cannot extend protection");
+    assert_eq!(
+        loaded.entries[0].expiry_unix,
+        at(86_400),
+        "a clock set back cannot extend protection"
+    );
 }
 
 #[test]
@@ -79,7 +85,8 @@ fn osv_matches_file_record_revalidated_with_wire_bounds() {
     let negative = r#"{"e":"npm","n":"a","v":"1","x":-5,"c":"00000000"}"#.to_owned() + "\n";
     let float = r#"{"e":"npm","n":"a","v":"1","x":1.5e9,"c":"00000000"}"#.to_owned() + "\n";
     let unknown_eco = record("maven", "a", "1", at(100));
-    let extra = r#"{"e":"npm","n":"a","v":"1","x":1900000000,"c":"00000000","z":1}"#.to_owned() + "\n";
+    let extra =
+        r#"{"e":"npm","n":"a","v":"1","x":1900000000,"c":"00000000","z":1}"#.to_owned() + "\n";
     let bytes = file(&[bad_checksum, charset, negative, float, unknown_eco, extra]);
     let loaded = load_matches(&bytes, now(), WINDOW);
     assert!(loaded.entries.is_empty());
@@ -90,14 +97,23 @@ fn osv_matches_file_record_revalidated_with_wire_bounds() {
 /// skipped and counted: modelled here by a record the current charset already refuses.
 #[test]
 fn osv_matches_file_older_records_skipped_after_charset_change() {
-    let loaded = load_matches(&file(&[record("pypi", "Mixed_Case", "1.0", at(100))]), now(), WINDOW);
+    let loaded = load_matches(
+        &file(&[record("pypi", "Mixed_Case", "1.0", at(100))]),
+        now(),
+        WINDOW,
+    );
     assert!(loaded.entries.is_empty());
     assert_eq!(loaded.skipped, 1);
 }
 
 #[test]
 fn osv_matches_file_unknown_header_loads_empty() {
-    for bytes in [b"".to_vec(), b"probation-osv-matches v2\n".to_vec(), b"garbage".to_vec(), vec![0xff, 0xfe, 0x00]] {
+    for bytes in [
+        b"".to_vec(),
+        b"probation-osv-matches v2\n".to_vec(),
+        b"garbage".to_vec(),
+        vec![0xff, 0xfe, 0x00],
+    ] {
         let loaded = load_matches(&bytes, now(), WINDOW);
         assert!(loaded.entries.is_empty() && !loaded.header_ok, "{bytes:?}");
     }
@@ -110,7 +126,12 @@ fn osv_matches_file_unknown_header_loads_empty() {
 fn osv_matches_file_record_over_the_bound_skipped() {
     let long = "a".repeat(1000);
     let c = crc32(format!("npm|{long}|{}|{}", "1".repeat(1000), at(100)).as_bytes());
-    let line = format!(r#"{{"e":"npm","n":"{long}","v":"{}","x":{},"c":"{c:08x}","pad":"{}"}}"#, "1".repeat(1000), at(100), "p".repeat(400)) + "\n";
+    let line = format!(
+        r#"{{"e":"npm","n":"{long}","v":"{}","x":{},"c":"{c:08x}","pad":"{}"}}"#,
+        "1".repeat(1000),
+        at(100),
+        "p".repeat(400)
+    ) + "\n";
     assert!(line.len() > MAX_RECORD);
     let ok = record("npm", "fine", "1.0.0", at(100));
     let loaded = load_matches(&file(&[line, ok]), now(), WINDOW);
@@ -120,7 +141,10 @@ fn osv_matches_file_record_over_the_bound_skipped() {
 
 #[test]
 fn osv_matches_file_duplicate_keys_later_line_wins() {
-    let bytes = file(&[record("npm", "a", "1.0.0", at(100)), record("npm", "a", "1.0.0", at(500))]);
+    let bytes = file(&[
+        record("npm", "a", "1.0.0", at(100)),
+        record("npm", "a", "1.0.0", at(500)),
+    ]);
     let loaded = load_matches(&bytes, now(), WINDOW);
     assert_eq!(loaded.entries.len(), 1);
     assert_eq!(loaded.entries[0].expiry_unix, at(500));
@@ -135,20 +159,40 @@ fn osv_matches_file_bounds_on_load_and_write() {
     }
     let loaded = load_matches(&file(&lines), now(), Duration::from_secs(10_000_000));
     assert_eq!(loaded.entries.len(), MAX_ENTRIES);
-    assert!(loaded.entries.iter().all(|e| e.expiry_unix >= at(15)), "the nearest expiries went");
+    assert!(
+        loaded.entries.iter().all(|e| e.expiry_unix >= at(15)),
+        "the nearest expiries went"
+    );
     // At the cap is accepted untouched.
-    let at_cap = load_matches(&file(&lines[..MAX_ENTRIES]), now(), Duration::from_secs(10_000_000));
+    let at_cap = load_matches(
+        &file(&lines[..MAX_ENTRIES]),
+        now(),
+        Duration::from_secs(10_000_000),
+    );
     assert_eq!(at_cap.entries.len(), MAX_ENTRIES);
 
     // Write: over the entry cap drops the nearest expiry, never the newest.
     let entries: Vec<_> = (0..(MAX_ENTRIES + 3))
-        .map(|i| (Ecosystem::Npm, format!("p{i}"), "1.0.0".to_owned(), at(10 + i as u64)))
+        .map(|i| {
+            (
+                Ecosystem::Npm,
+                format!("p{i}"),
+                "1.0.0".to_owned(),
+                at(10 + i as u64),
+            )
+        })
         .collect();
     let rendered = render_matches(&entries);
     assert_eq!(rendered.dropped, 3);
     let reloaded = load_matches(&rendered.bytes, now(), Duration::from_secs(10_000_000));
     assert_eq!(reloaded.entries.len(), MAX_ENTRIES);
-    assert!(reloaded.entries.iter().any(|e| e.name == format!("p{}", MAX_ENTRIES + 2)), "the newest survives");
+    assert!(
+        reloaded
+            .entries
+            .iter()
+            .any(|e| e.name == format!("p{}", MAX_ENTRIES + 2)),
+        "the newest survives"
+    );
     assert!(rendered.bytes.len() <= 16 << 20);
 }
 
@@ -156,11 +200,25 @@ fn osv_matches_file_bounds_on_load_and_write() {
 fn osv_matches_file_mode_owner_only_and_atomic_replace() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("osv-matches");
-    matches::write_atomic(&path, &render_matches(&[(Ecosystem::Npm, "a".into(), "1.0.0".into(), at(100))]).bytes).unwrap();
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    matches::write_atomic(
+        &path,
+        &render_matches(&[(Ecosystem::Npm, "a".into(), "1.0.0".into(), at(100))]).bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     // A replace leaves no temp file behind and the old content only until the rename.
-    matches::write_atomic(&path, &render_matches(&[(Ecosystem::Npm, "b".into(), "2.0.0".into(), at(100))]).bytes).unwrap();
-    let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    matches::write_atomic(
+        &path,
+        &render_matches(&[(Ecosystem::Npm, "b".into(), "2.0.0".into(), at(100))]).bytes,
+    )
+    .unwrap();
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
     assert_eq!(names, ["osv-matches"], "{names:?}");
     let loaded = load_matches(&std::fs::read(&path).unwrap(), now(), WINDOW);
     assert_eq!(loaded.entries[0].name, "b");

@@ -30,12 +30,18 @@ pub fn inflate(input: &[u8], zlib: bool, cap: u64) -> Result<Vec<u8>, InflateErr
     if zlib {
         let mut reader = flate2::bufread::ZlibDecoder::new(input);
         loop {
-            let n = reader.read(&mut chunk).map_err(|_| InflateError::Malformed)?;
+            let n = reader
+                .read(&mut chunk)
+                .map_err(|_| InflateError::Malformed)?;
             if n == 0 {
                 break;
             }
             out.extend_from_slice(&chunk[..n]);
-            guard(out.len() as u64, input.len() as u64 - reader.get_ref().len() as u64, cap)?;
+            guard(
+                out.len() as u64,
+                input.len() as u64 - reader.get_ref().len() as u64,
+                cap,
+            )?;
         }
         // A zlib stream ends at its checksum; anything after it is refused.
         if !reader.get_ref().is_empty() {
@@ -44,12 +50,18 @@ pub fn inflate(input: &[u8], zlib: bool, cap: u64) -> Result<Vec<u8>, InflateErr
     } else {
         let mut reader = flate2::bufread::MultiGzDecoder::new(input);
         loop {
-            let n = reader.read(&mut chunk).map_err(|_| InflateError::Malformed)?;
+            let n = reader
+                .read(&mut chunk)
+                .map_err(|_| InflateError::Malformed)?;
             if n == 0 {
                 break;
             }
             out.extend_from_slice(&chunk[..n]);
-            guard(out.len() as u64, input.len() as u64 - reader.get_ref().len() as u64, cap)?;
+            guard(
+                out.len() as u64,
+                input.len() as u64 - reader.get_ref().len() as u64,
+                cap,
+            )?;
         }
         if !reader.get_ref().is_empty() {
             return Err(InflateError::Malformed);

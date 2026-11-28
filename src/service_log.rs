@@ -20,7 +20,13 @@ impl RotatingFile {
     pub fn open(path: &Path, max_bytes: u64, backups: u32) -> io::Result<RotatingFile> {
         let file = open_append(path)?;
         let len = file.metadata()?.len();
-        Ok(RotatingFile { path: path.to_path_buf(), max_bytes, backups, file, len })
+        Ok(RotatingFile {
+            path: path.to_path_buf(),
+            max_bytes,
+            backups,
+            file,
+            len,
+        })
     }
 
     fn rotate(&mut self) -> io::Result<()> {
@@ -83,9 +89,15 @@ impl SharedLog {
 
 impl Write for SharedLog {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().map_err(|_| io::Error::other("log lock poisoned"))?.write(buf)
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("log lock poisoned"))?
+            .write(buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.lock().map_err(|_| io::Error::other("log lock poisoned"))?.flush()
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("log lock poisoned"))?
+            .flush()
     }
 }
